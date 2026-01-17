@@ -1,6 +1,6 @@
 //! Install phase - installs files to their destinations.
 
-use crate::{InstallFile, Shell};
+use crate::{DesktopSpec, InstallFile, Shell};
 
 use super::context::Context;
 use super::error::ExecuteError;
@@ -166,5 +166,78 @@ fn install_file(ctx: &Context, file: &InstallFile) -> Result<(), ExecuteError> {
     };
 
     run_cmd(ctx, &cmd)?;
+    Ok(())
+}
+
+/// Install a desktop entry file.
+///
+/// Generates a .desktop file following the freedesktop.org specification
+/// and installs it to $PREFIX/share/applications/{package-name}.desktop
+pub fn install_desktop(
+    ctx: &Context,
+    package_name: &str,
+    spec: &DesktopSpec,
+    description: Option<&str>,
+) -> Result<(), ExecuteError> {
+    // Use comment from spec, or fall back to package description
+    let comment = spec.comment.as_deref().or(description).unwrap_or("");
+
+    // Ensure categories ends with semicolon if present
+    let categories = spec.categories.as_ref().map(|c| {
+        if c.ends_with(';') {
+            c.clone()
+        } else {
+            format!("{};", c)
+        }
+    });
+
+    // Build the .desktop file content
+    let mut content = String::new();
+    content.push_str("[Desktop Entry]\n");
+    content.push_str("Type=Application\n");
+    content.push_str(&format!("Name={}\n", spec.name));
+    content.push_str(&format!("Exec={}\n", spec.exec));
+
+    if let Some(ref icon) = spec.icon {
+        content.push_str(&format!("Icon={}\n", icon));
+    }
+
+    if !comment.is_empty() {
+        content.push_str(&format!("Comment={}\n", comment));
+    }
+
+    if let Some(ref cats) = categories {
+        content.push_str(&format!("Categories={}\n", cats));
+    }
+
+    content.push_str(&format!("Terminal={}\n", if spec.terminal { "true" } else { "false" }));
+
+    // Destination path
+    let dest_dir = ctx.prefix.join("share").join("applications");
+    let dest_file = dest_dir.join(format!("{}.desktop", package_name));
+
+    if ctx.dry_run {
+        println!("[dry-run] Would create {}", dest_file.display());
+        println!("{}", content);
+        return Ok(());
+    }
+
+    // Create the directory if needed
+    std::fs::create_dir_all(&dest_dir)?;
+
+    // Write the .desktop file
+    std::fs::write(&dest_file, &content)?;
+
+    // Set permissions (644)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dest_file, std::fs::Permissions::from_mode(0o644))?;
+    }
+
+    if ctx.verbose {
+        println!("Installed desktop entry: {}", dest_file.display());
+    }
+
     Ok(())
 }

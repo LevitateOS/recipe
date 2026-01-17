@@ -95,6 +95,11 @@ impl Executor {
             self.install(spec)?;
         }
 
+        // Install desktop entry if specified
+        if let Some(ref spec) = recipe.desktop {
+            self.install_desktop(recipe, spec)?;
+        }
+
         if let Some(ref spec) = recipe.configure {
             self.configure(spec)?;
         }
@@ -126,6 +131,11 @@ impl Executor {
     /// Execute the install phase.
     pub fn install(&self, spec: &crate::InstallSpec) -> Result<(), ExecuteError> {
         install::install(&self.ctx, spec)
+    }
+
+    /// Install a desktop entry file.
+    pub fn install_desktop(&self, recipe: &Recipe, spec: &crate::DesktopSpec) -> Result<(), ExecuteError> {
+        install::install_desktop(&self.ctx, &recipe.name, spec, recipe.description.as_deref())
     }
 
     /// Execute the configure phase.

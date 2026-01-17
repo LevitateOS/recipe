@@ -61,6 +61,7 @@ pub struct Recipe {
     pub stop: Option<StopSpec>,
     pub remove: Option<RemoveSpec>,
     pub cleanup: Option<CleanupSpec>,
+    pub desktop: Option<DesktopSpec>,
 
     // Split packages
     pub subpackages: Vec<Subpackage>,
@@ -234,6 +235,23 @@ pub enum CleanupTarget {
     Artifacts,
 }
 
+/// Desktop entry specification for .desktop file generation.
+#[derive(Debug, Clone)]
+pub struct DesktopSpec {
+    /// Application name (Name= field)
+    pub name: String,
+    /// Executable command (Exec= field)
+    pub exec: String,
+    /// Icon name or path (Icon= field)
+    pub icon: Option<String>,
+    /// Tooltip/description (Comment= field, defaults to package description)
+    pub comment: Option<String>,
+    /// Semicolon-separated categories (Categories= field)
+    pub categories: Option<String>,
+    /// Whether to run in terminal (Terminal= field)
+    pub terminal: bool,
+}
+
 impl Recipe {
     /// Parse a recipe from an S-expression.
     pub fn from_expr(expr: &Expr) -> Result<Self, RecipeError> {
@@ -276,6 +294,7 @@ impl Recipe {
             stop: None,
             remove: None,
             cleanup: None,
+            desktop: None,
             subpackages: Vec::new(),
         };
 
@@ -370,6 +389,9 @@ impl Recipe {
             }
             "subpackages" => {
                 self.subpackages = Self::parse_subpackages(expr)?;
+            }
+            "desktop" => {
+                self.desktop = Self::parse_desktop(expr)?;
             }
             "update" | "hooks" => {
                 // TODO: implement these
@@ -1043,6 +1065,70 @@ impl Recipe {
         Ok(Some(CleanupSpec { target, keep }))
     }
 
+    /// Parse desktop entry specification.
+    /// Format:
+    /// (desktop
+    ///   (name "Application Name")
+    ///   (exec "command")
+    ///   (icon "icon-name")           ; optional
+    ///   (comment "Description")      ; optional, defaults to package description
+    ///   (categories "Cat1;Cat2")     ; optional
+    ///   (terminal))                  ; optional flag
+    fn parse_desktop(expr: &Expr) -> Result<Option<DesktopSpec>, RecipeError> {
+        let tail = match expr.tail() {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+
+        let mut name = None;
+        let mut exec = None;
+        let mut icon = None;
+        let mut comment = None;
+        let mut categories = None;
+        let mut terminal = false;
+
+        for item in tail {
+            // Check for bare (terminal) flag
+            if item.is_atom("terminal") {
+                terminal = true;
+                continue;
+            }
+
+            let head = match item.head() {
+                Some(h) => h,
+                None => continue,
+            };
+
+            let value = item.tail()
+                .and_then(|t| t.first())
+                .and_then(|e| e.as_atom())
+                .map(|s| s.to_string());
+
+            match head {
+                "name" => name = value,
+                "exec" => exec = value,
+                "icon" => icon = value,
+                "comment" => comment = value,
+                "categories" => categories = value,
+                "terminal" => terminal = true,
+                _ => {}
+            }
+        }
+
+        // Both name and exec are required
+        match (name, exec) {
+            (Some(name), Some(exec)) => Ok(Some(DesktopSpec {
+                name,
+                exec,
+                icon,
+                comment,
+                categories,
+                terminal,
+            })),
+            _ => Ok(None),
+        }
+    }
+
     /// Get all dependencies for the given enabled features.
     pub fn deps_for_features(&self, enabled_features: &std::collections::HashSet<String>) -> Vec<&Dependency> {
         self.deps.iter()
@@ -1294,5 +1380,57 @@ mod tests {
         } else {
             panic!("expected Source acquire");
         }
+    }
+
+    #[test]
+    fn test_parse_desktop() {
+        let input = r#"
+            (package "myapp" "1.0.0"
+              (description "My Application Description")
+              (desktop
+                (name "My Application")
+                (exec "myapp")
+                (icon "myapp-icon")
+                (categories "Utility;Development")
+                (terminal)
+                (comment "Custom tooltip"))
+              (install
+                (to-bin "myapp")))
+        "#;
+
+        let expr = parse(input).unwrap();
+        let recipe = Recipe::from_expr(&expr).unwrap();
+
+        assert!(recipe.desktop.is_some());
+        let desktop = recipe.desktop.unwrap();
+        assert_eq!(desktop.name, "My Application");
+        assert_eq!(desktop.exec, "myapp");
+        assert_eq!(desktop.icon, Some("myapp-icon".to_string()));
+        assert_eq!(desktop.categories, Some("Utility;Development".to_string()));
+        assert!(desktop.terminal);
+        assert_eq!(desktop.comment, Some("Custom tooltip".to_string()));
+    }
+
+    #[test]
+    fn test_parse_desktop_minimal() {
+        // Test with only required fields
+        let input = r#"
+            (package "simpleapp" "1.0"
+              (desktop
+                (name "Simple App")
+                (exec "simpleapp")))
+        "#;
+
+        let expr = parse(input).unwrap();
+        let recipe = Recipe::from_expr(&expr).unwrap();
+
+        assert!(recipe.desktop.is_some());
+        let desktop = recipe.desktop.unwrap();
+        assert_eq!(desktop.name, "Simple App");
+        assert_eq!(desktop.exec, "simpleapp");
+        assert!(desktop.icon.is_none());
+        assert!(desktop.categories.is_none());
+        assert!(!desktop.terminal);
+        assert!(desktop.comment.is_none());
     }
 }

@@ -63,7 +63,7 @@ pub use features::{expand_feature_conditionals, DepSpec, Feature, FeatureError, 
 pub use parser::{parse, ParseError};
 pub use recipe::{
     AcquireSpec, BuildSpec, BuildStep, CleanupSpec, CleanupTarget, ConfigureSpec, ConfigureStep,
-    GitRef, InstallFile, InstallSpec, PatchSource, PatchSpec, Recipe, RecipeError, RemoveSpec,
-    RemoveStep, SandboxConfig, Shell, StartSpec, StopSpec, Subpackage, Verify,
+    DesktopSpec, GitRef, InstallFile, InstallSpec, PatchSource, PatchSpec, Recipe, RecipeError,
+    RemoveSpec, RemoveStep, SandboxConfig, Shell, StartSpec, StopSpec, Subpackage, Verify,
 };
 pub use version::{Dependency, Version, VersionConstraint, VersionError};
