@@ -19,4 +19,10 @@
     (run "cd wofi-v1.4.1 && ninja -C build -j$NPROC")
     (run "cd wofi-v1.4.1 && ninja -C build install"))
 
+  (desktop
+    (name "Wofi")
+    (exec "wofi --show drun")
+    (icon "wofi")
+    (categories "Utility"))
+
   (cleanup sources))

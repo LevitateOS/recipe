@@ -19,4 +19,10 @@
     (run "cd foot && ninja -C build -j$NPROC")
     (run "cd foot && ninja -C build install"))
 
+  (desktop
+    (name "Foot")
+    (exec "foot")
+    (icon "utilities-terminal")
+    (categories "System;TerminalEmulator"))
+
   (cleanup sources))
