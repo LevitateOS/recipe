@@ -23,7 +23,7 @@ impl Default for Context {
     fn default() -> Self {
         Self {
             prefix: PathBuf::from("/usr/local"),
-            build_dir: std::env::temp_dir().join("levitate-build"),
+            build_dir: std::env::temp_dir().join("recipe-build"),
             arch: std::env::consts::ARCH.to_string(),
             nproc: std::thread::available_parallelism()
                 .map(|n| n.get())

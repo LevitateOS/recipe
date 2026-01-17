@@ -1,4 +1,4 @@
-//! Levitate - Package manager for LevitateOS
+//! recipe - Package manager for LevitateOS
 //!
 //! Installs packages from S-expression recipes.
 //! Self-sufficient: handles ALL dependencies through recipes, no external package managers.
@@ -11,18 +11,18 @@ use std::fs;
 use std::path::PathBuf;
 
 /// Default recipe directory
-const RECIPE_DIR: &str = "/usr/share/levitate/recipes";
+const RECIPE_DIR: &str = "/usr/share/recipe/recipes";
 
 /// Track installed packages to avoid cycles and redundant work
-const INSTALLED_DB: &str = "/var/lib/levitate/installed";
+const INSTALLED_DB: &str = "/var/lib/recipe/installed";
 
 #[derive(Parser)]
-#[command(name = "levitate")]
+#[command(name = "recipe")]
 #[command(about = "LevitateOS package manager - self-sufficient, no external dependencies")]
 #[command(version)]
 struct Cli {
-    /// Recipe directory (default: /usr/share/levitate/recipes)
-    #[arg(long, env = "LEVITATE_RECIPE_DIR")]
+    /// Recipe directory (default: /usr/share/recipe/recipes)
+    #[arg(long, env = "RECIPE_DIR")]
     recipe_dir: Option<PathBuf>,
 
     /// Installation prefix (default: /usr/local)
@@ -64,9 +64,6 @@ enum Commands {
         package: String,
     },
 
-    /// Install the complete Sway desktop environment
-    Desktop,
-
     /// Show dependency tree for a package
     Deps {
         /// Package name
@@ -95,7 +92,6 @@ fn main() -> Result<()> {
         }
         Commands::List => list_packages(&recipe_dir),
         Commands::Info { package } => show_info(&package, &recipe_dir),
-        Commands::Desktop => install_desktop(&recipe_dir, &cli.prefix, cli.verbose, cli.dry_run),
         Commands::Deps { package } => show_deps(&package, &recipe_dir),
     }
 }
@@ -419,73 +415,3 @@ fn show_deps_recursive(
     Ok(())
 }
 
-/// Install the complete Sway desktop
-fn install_desktop(
-    recipe_dir: &PathBuf,
-    prefix: &PathBuf,
-    verbose: bool,
-    dry_run: bool,
-) -> Result<()> {
-    // Start with build tools - these must exist first!
-    // Then Wayland stack, then desktop apps
-    let packages = [
-        // Build tools (must come first - they build everything else)
-        "meson",
-        "ninja",
-        "cmake",
-        "pkg-config",
-        // Wayland core
-        "wayland",
-        "wayland-protocols",
-        "libxkbcommon",
-        "libinput",
-        // Session
-        "seatd",
-        // Compositor
-        "wlroots",
-        // Sway
-        "sway",
-        "swaybg",
-        "swaylock",
-        "swayidle",
-        // Desktop apps
-        "gtk-layer-shell",
-        "foot",
-        "waybar",
-        "wofi",
-        "mako",
-        // Utilities
-        "grim",
-        "slurp",
-        "wl-clipboard",
-    ];
-
-    println!("Installing Sway desktop environment...\n");
-    println!("This will install {} packages (with dependencies):\n", packages.len());
-    for pkg in &packages {
-        println!("  - {}", pkg);
-    }
-    println!();
-
-    let mut installed = load_installed_db();
-
-    // FAIL FAST: Stop on first failure - don't continue with broken deps
-    for package in &packages {
-        install_with_deps(package, recipe_dir, prefix, verbose, dry_run, &mut installed)
-            .with_context(|| format!("Failed to install '{}' - stopping", package))?;
-    }
-
-    // Save installed database
-    if !dry_run {
-        save_installed_db(&installed)?;
-    }
-
-    println!();
-    println!("Desktop installation complete: {} packages", packages.len());
-
-    if !dry_run {
-        println!("\nTo start Sway, run: sway");
-    }
-
-    Ok(())
-}
