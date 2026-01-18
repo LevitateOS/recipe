@@ -62,6 +62,29 @@ pub fn clear_context() {
     CONTEXT.with(|c| *c.borrow_mut() = None);
 }
 
+/// RAII guard that clears context when dropped.
+/// Use this to ensure context cleanup even if recipe execution panics.
+pub struct ContextGuard;
+
+impl ContextGuard {
+    /// Create a new context guard. Context will be cleared when guard is dropped.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for ContextGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for ContextGuard {
+    fn drop(&mut self) {
+        clear_context();
+    }
+}
+
 /// Execute a closure with immutable access to the context
 pub fn with_context<F, R>(f: F) -> Result<R, Box<EvalAltResult>>
 where

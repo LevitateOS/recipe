@@ -3,8 +3,43 @@
 //! Copy outputs to PREFIX: install_bin, install_lib, install_man, rpm_install
 
 use crate::engine::context::{record_installed_file, with_context};
+use crate::engine::output;
 use rhai::EvalAltResult;
+use std::path::Path;
 use std::process::Command;
+
+/// Validate that a path is within the given prefix directory.
+/// This prevents path traversal attacks via symlinks or relative paths.
+fn validate_path_within_prefix(path: &Path, prefix: &Path) -> Result<(), String> {
+    // Canonicalize both paths to resolve symlinks and .. components
+    let canonical_prefix = prefix.canonicalize()
+        .map_err(|e| format!("Failed to canonicalize prefix '{}': {}", prefix.display(), e))?;
+
+    // For the target path, we need to handle the case where it doesn't exist yet
+    // We canonicalize the parent directory and append the filename
+    let canonical_path = if path.exists() {
+        path.canonicalize()
+            .map_err(|e| format!("Failed to canonicalize path '{}': {}", path.display(), e))?
+    } else {
+        // Path doesn't exist yet - canonicalize parent and append filename
+        let parent = path.parent().ok_or_else(|| "Path has no parent".to_string())?;
+        let filename = path.file_name().ok_or_else(|| "Path has no filename".to_string())?;
+        let canonical_parent = parent.canonicalize()
+            .map_err(|e| format!("Failed to canonicalize parent '{}': {}", parent.display(), e))?;
+        canonical_parent.join(filename)
+    };
+
+    // Check if the canonical path starts with the canonical prefix
+    if !canonical_path.starts_with(&canonical_prefix) {
+        return Err(format!(
+            "Path traversal detected: '{}' is outside prefix '{}'",
+            path.display(),
+            prefix.display()
+        ));
+    }
+
+    Ok(())
+}
 
 /// Install files to PREFIX/bin with executable permissions
 pub fn install_bin(pattern: &str) -> Result<(), Box<EvalAltResult>> {
@@ -45,7 +80,11 @@ pub fn install_man(pattern: &str) -> Result<(), Box<EvalAltResult>> {
             std::fs::create_dir_all(&man_dir).map_err(|e| format!("cannot create dir: {}", e))?;
 
             let dest = man_dir.join(filename);
-            println!("     install {} -> {}", src.display(), dest.display());
+
+            // Validate destination path is within PREFIX
+            validate_path_within_prefix(&dest, &ctx.prefix)?;
+
+            output::detail(&format!("install {} -> {}", src.display(), dest.display()));
             std::fs::copy(&src, &dest).map_err(|e| format!("install failed: {}", e))?;
             installed.push(dest);
         }
@@ -77,11 +116,18 @@ pub fn install_to_dir(pattern: &str, subdir: &str, mode: Option<u32>) -> Result<
         let dest_dir = ctx.prefix.join(subdir);
         std::fs::create_dir_all(&dest_dir).map_err(|e| format!("cannot create dir: {}", e))?;
 
+        // Validate that dest_dir is within PREFIX (prevents path traversal via subdir)
+        validate_path_within_prefix(&dest_dir, &ctx.prefix)?;
+
         let mut installed = Vec::new();
         for src in matches {
             let filename = src.file_name().ok_or("invalid filename")?;
             let dest = dest_dir.join(filename);
-            println!("     install {} -> {}", src.display(), dest.display());
+
+            // Validate each destination path (catches symlink-based traversal)
+            validate_path_within_prefix(&dest, &ctx.prefix)?;
+
+            output::detail(&format!("install {} -> {}", src.display(), dest.display()));
             std::fs::copy(&src, &dest).map_err(|e| format!("install failed: {}", e))?;
 
             #[cfg(unix)]
@@ -121,7 +167,7 @@ pub fn rpm_install() -> Result<(), Box<EvalAltResult>> {
 
         let mut installed = Vec::new();
         for rpm in &matches {
-            println!("     rpm_install {}", rpm.display());
+            output::detail(&format!("rpm_install {}", rpm.display()));
 
             // Extract RPM contents to prefix using rpm2cpio, capturing file list
             let output = Command::new("sh")
@@ -150,6 +196,13 @@ pub fn rpm_install() -> Result<(), Box<EvalAltResult>> {
                     let file_path = ctx.prefix.join(line.trim_start_matches("./"));
                     // Track both files and symlinks (symlinks are important, e.g., /bin/sh)
                     if file_path.is_file() || file_path.is_symlink() {
+                        // Validate each installed file is within PREFIX
+                        // Note: cpio already extracts to prefix, but RPM could contain
+                        // paths with .. or symlinks that escape
+                        if let Err(e) = validate_path_within_prefix(&file_path, &ctx.prefix) {
+                            output::warning(&e);
+                            continue;
+                        }
                         installed.push(file_path);
                     }
                 }

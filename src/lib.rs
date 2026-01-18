@@ -63,6 +63,7 @@
 mod engine;
 
 pub use engine::deps;
+pub use engine::output;
 pub use engine::recipe_state;
 pub use engine::util;
 pub use engine::RecipeEngine;

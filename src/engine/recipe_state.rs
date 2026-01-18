@@ -4,7 +4,61 @@
 //! This module provides functions to read and update these variables in recipe files.
 
 use anyhow::{Context, Result};
+use std::io::Write;
 use std::path::Path;
+
+/// Strip inline comments from a value string
+///
+/// Handles:
+/// - `// line comment` - removes everything after //
+/// - `/* block comment */` - removes block comments
+///
+/// Note: This is a simple implementation that doesn't handle comments inside strings.
+fn strip_inline_comments(s: &str) -> String {
+    let mut result = s.to_string();
+
+    // Handle // line comments (but not inside strings)
+    // Find // that isn't inside a string
+    let mut in_string = false;
+    let mut escape_next = false;
+    let mut comment_start = None;
+
+    for (i, ch) in result.char_indices() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_string => escape_next = true,
+            '"' => in_string = !in_string,
+            '/' if !in_string => {
+                // Check for //
+                if result[i..].starts_with("//") {
+                    comment_start = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(start) = comment_start {
+        result = result[..start].to_string();
+    }
+
+    // Handle /* */ block comments (simple non-nested)
+    while let Some(start) = result.find("/*") {
+        if let Some(end) = result[start..].find("*/") {
+            result = format!("{}{}", &result[..start], &result[start + end + 2..]);
+        } else {
+            // Unclosed block comment - remove to end
+            result = result[..start].to_string();
+            break;
+        }
+    }
+
+    result.trim().to_string()
+}
 
 /// Read a variable value from a recipe file
 pub fn get_var<T: FromRecipeVar>(recipe_path: &Path, var_name: &str) -> Result<Option<T>> {
@@ -22,7 +76,9 @@ pub fn get_var<T: FromRecipeVar>(recipe_path: &Path, var_name: &str) -> Result<O
                     let after_name = after_name.trim();
                     if let Some(value_part) = after_name.strip_prefix('=') {
                         let value_str = value_part.trim().trim_end_matches(';').trim();
-                        return T::from_recipe_str(value_str).map(Some);
+                        // Strip inline comments before parsing
+                        let value_str = strip_inline_comments(value_str);
+                        return T::from_recipe_str(&value_str).map(Some);
                     }
                 }
             }
@@ -32,7 +88,7 @@ pub fn get_var<T: FromRecipeVar>(recipe_path: &Path, var_name: &str) -> Result<O
     Ok(None)
 }
 
-/// Set a variable value in a recipe file
+/// Set a variable value in a recipe file (atomic write via temp file + rename)
 pub fn set_var<T: ToRecipeVar>(recipe_path: &Path, var_name: &str, value: &T) -> Result<()> {
     let content = std::fs::read_to_string(recipe_path)
         .with_context(|| format!("Failed to read recipe: {}", recipe_path.display()))?;
@@ -65,8 +121,31 @@ pub fn set_var<T: ToRecipeVar>(recipe_path: &Path, var_name: &str, value: &T) ->
     }
 
     let new_content = lines.join("\n");
-    std::fs::write(recipe_path, new_content)
-        .with_context(|| format!("Failed to write recipe: {}", recipe_path.display()))?;
+
+    // Atomic write: write to temp file in same directory, then rename
+    // This ensures the recipe file is never left in a partial state
+    let parent = recipe_path.parent().unwrap_or(Path::new("."));
+    let temp_path = parent.join(format!(
+        ".{}.tmp.{}",
+        recipe_path.file_name().unwrap_or_default().to_string_lossy(),
+        std::process::id()
+    ));
+
+    // Write to temp file
+    let mut temp_file = std::fs::File::create(&temp_path)
+        .with_context(|| format!("Failed to create temp file: {}", temp_path.display()))?;
+    temp_file.write_all(new_content.as_bytes())
+        .with_context(|| format!("Failed to write temp file: {}", temp_path.display()))?;
+    temp_file.sync_all()
+        .with_context(|| format!("Failed to sync temp file: {}", temp_path.display()))?;
+    drop(temp_file);
+
+    // Atomic rename (on Unix, rename is atomic if on same filesystem)
+    std::fs::rename(&temp_path, recipe_path).with_context(|| {
+        // Clean up temp file on error
+        let _ = std::fs::remove_file(&temp_path);
+        format!("Failed to write recipe: {}", recipe_path.display())
+    })?;
 
     Ok(())
 }

@@ -6,11 +6,71 @@
 //! 3. build() - Compile/transform (optional)
 //! 4. install() - Copy to PREFIX
 
-use crate::engine::context::{clear_context, get_installed_files, init_context_with_recipe};
+use crate::engine::context::{get_installed_files, init_context_with_recipe, ContextGuard};
+use crate::engine::output;
 use crate::engine::recipe_state::{self, OptionalString};
 use anyhow::{Context, Result};
+use fs2::FileExt;
 use rhai::{Engine, Scope, AST};
+use std::fs::File;
 use std::path::Path;
+
+/// Acquire an exclusive lock on a recipe file to prevent concurrent execution.
+/// Returns a guard that releases the lock when dropped.
+fn acquire_recipe_lock(recipe_path: &Path) -> Result<RecipeLock> {
+    let lock_path = recipe_path.with_extension("rhai.lock");
+    let lock_file = File::create(&lock_path)
+        .with_context(|| format!("Failed to create lock file: {}", lock_path.display()))?;
+
+    lock_file.try_lock_exclusive().map_err(|_| {
+        anyhow::anyhow!(
+            "Recipe '{}' is already being executed by another process. \
+             If this is incorrect, delete '{}'",
+            recipe_path.display(),
+            lock_path.display()
+        )
+    })?;
+
+    Ok(RecipeLock { _file: lock_file, path: lock_path })
+}
+
+/// RAII guard for recipe lock - releases lock and deletes lock file when dropped
+struct RecipeLock {
+    _file: File,
+    path: std::path::PathBuf,
+}
+
+impl Drop for RecipeLock {
+    fn drop(&mut self) {
+        // Lock is automatically released when file is dropped
+        // Clean up lock file
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Compare two version strings semantically.
+/// Returns true if `current` is the same as or newer than `installed`.
+/// Falls back to string comparison for non-semver versions.
+fn version_is_up_to_date(installed: Option<&str>, current: Option<&str>) -> bool {
+    match (installed, current) {
+        (None, None) => true,
+        (Some(_), None) => false, // No current version but something installed
+        (None, Some(_)) => false, // Current version but nothing installed
+        (Some(installed), Some(current)) => {
+            // Try semver parsing first
+            if let (Ok(installed_ver), Ok(current_ver)) = (
+                semver::Version::parse(installed.trim_start_matches('v')),
+                semver::Version::parse(current.trim_start_matches('v')),
+            ) {
+                // Up to date if installed >= current (no upgrade needed)
+                installed_ver >= current_ver
+            } else {
+                // Fall back to string comparison for non-semver versions
+                installed == current
+            }
+        }
+    }
+}
 
 /// Execute a recipe following the lifecycle phases
 pub fn execute(
@@ -26,12 +86,17 @@ pub fn execute(
     let recipe_path_canonical = recipe_path.canonicalize()
         .unwrap_or_else(|_| recipe_path.to_path_buf());
 
+    // Acquire exclusive lock to prevent concurrent execution
+    let _lock = acquire_recipe_lock(&recipe_path_canonical)?;
+
     // Set up execution context with recipe path
+    // Use ContextGuard to ensure cleanup even if execution panics
     init_context_with_recipe(
         prefix.to_path_buf(),
         build_dir.to_path_buf(),
         Some(recipe_path_canonical.clone()),
     );
+    let _context_guard = ContextGuard::new();
 
     // Create scope with variables
     let mut scope = Scope::new();
@@ -63,15 +128,13 @@ pub fn execute(
                 .unwrap_or(false);
 
             if still_installed {
-                println!("==> {} already installed, skipping", name);
-                clear_context();
+                output::skip(&format!("{} already installed, skipping", name));
                 return Ok(());
             }
             // If is_installed() returns false, files might have been deleted
             // Continue with reinstall
         } else {
-            println!("==> {} already installed, skipping", name);
-            clear_context();
+            output::skip(&format!("{} already installed, skipping", name));
             return Ok(());
         }
     } else if has_action(&ast, "is_installed") {
@@ -81,36 +144,46 @@ pub fn execute(
             .unwrap_or(false);
 
         if installed {
-            println!("==> {} already installed, skipping", name);
-            clear_context();
+            output::skip(&format!("{} already installed, skipping", name));
             return Ok(());
         }
     }
 
-    println!("==> Installing {}", name);
+    output::action(&format!("Installing {}", name));
 
     // PHASE 2: Acquire source materials
-    println!("  -> acquire");
+    output::sub_action("acquire");
     call_action(engine, &mut scope, &ast, "acquire")?;
 
     // PHASE 3: Build (only if recipe defines it)
     if has_action(&ast, "build") {
-        println!("  -> build");
+        output::sub_action("build");
         call_action(engine, &mut scope, &ast, "build")?;
     }
 
+    // PRE-INSTALL HOOK (if defined)
+    if has_action(&ast, "pre_install") {
+        output::sub_action("pre_install");
+        call_action(engine, &mut scope, &ast, "pre_install")?;
+    }
+
     // PHASE 4: Install to PREFIX
-    println!("  -> install");
+    output::sub_action("install");
     call_action(engine, &mut scope, &ast, "install")?;
+
+    // POST-INSTALL HOOK (if defined)
+    if has_action(&ast, "post_install") {
+        output::sub_action("post_install");
+        call_action(engine, &mut scope, &ast, "post_install")?;
+    }
 
     // Record installed state in recipe
     let installed_files = get_installed_files();
     update_recipe_state(&recipe_path_canonical, &version, &installed_files)?;
 
-    // Clean up context
-    clear_context();
+    // Context cleanup handled by _context_guard Drop
 
-    println!("==> {} installed", name);
+    output::success(&format!("{} installed", name));
     Ok(())
 }
 
@@ -200,6 +273,9 @@ pub fn remove(
     let recipe_path_canonical = recipe_path.canonicalize()
         .unwrap_or_else(|_| recipe_path.to_path_buf());
 
+    // Acquire exclusive lock to prevent concurrent operations
+    let _lock = acquire_recipe_lock(&recipe_path_canonical)?;
+
     // Check if package is installed
     let installed: Option<bool> = recipe_state::get_var(&recipe_path_canonical, "installed")
         .unwrap_or(None);
@@ -221,7 +297,13 @@ pub fn remove(
 
     let name = get_recipe_name(engine, &mut scope, &ast, recipe_path);
 
-    println!("==> Removing {}", name);
+    output::action(&format!("Removing {}", name));
+
+    // PRE-REMOVE HOOK (if defined) - runs before any files are deleted
+    if has_action(&ast, "pre_remove") {
+        output::sub_action("pre_remove");
+        let _ = call_action(engine, &mut scope, &ast, "pre_remove");
+    }
 
     // Get installed files list
     let installed_files: Option<Vec<String>> = recipe_state::get_var(&recipe_path_canonical, "installed_files")
@@ -229,9 +311,9 @@ pub fn remove(
 
     let files = installed_files.unwrap_or_default();
 
-    // Run recipe's remove() function if defined (for custom cleanup)
+    // Run recipe's remove() function if defined (for custom cleanup during file deletion)
     if has_action(&ast, "remove") {
-        println!("  -> remove (custom cleanup)");
+        output::sub_action("remove (custom cleanup)");
         let _ = call_action(engine, &mut scope, &ast, "remove");
     }
 
@@ -243,11 +325,11 @@ pub fn remove(
         if path.exists() {
             match std::fs::remove_file(path) {
                 Ok(()) => {
-                    println!("     rm {}", file);
+                    output::detail(&format!("rm {}", file));
                     deleted += 1;
                 }
                 Err(e) => {
-                    eprintln!("     failed to remove {}: {}", file, e);
+                    output::warning(&format!("failed to remove {}: {}", file, e));
                     failed += 1;
                 }
             }
@@ -276,7 +358,13 @@ pub fn remove(
     recipe_state::set_var(&recipe_path_canonical, "installed_files", &Vec::<String>::new())
         .with_context(|| "Failed to clear installed_files")?;
 
-    println!("==> {} removed ({} files)", name, deleted);
+    // POST-REMOVE HOOK (if defined) - runs after all files are deleted
+    if has_action(&ast, "post_remove") {
+        output::sub_action("post_remove");
+        let _ = call_action(engine, &mut scope, &ast, "post_remove");
+    }
+
+    output::success(&format!("{} removed ({} files)", name, deleted));
 
     Ok(())
 }
@@ -333,7 +421,7 @@ pub fn update(
 
     // Check if recipe has check_update function
     if !has_action(&ast, "check_update") {
-        println!("  {} has no update checker", name);
+        output::detail(&format!("{} has no update checker", name));
         return Ok(None);
     }
 
@@ -346,15 +434,15 @@ pub fn update(
     match result {
         Ok(new_version) => {
             if new_version.is_unit() {
-                println!("  {} is up to date", name);
+                output::detail(&format!("{} is up to date", name));
                 return Ok(None);
             }
 
             if let Some(ver_str) = new_version.clone().try_cast::<String>() {
                 if Some(&ver_str) != current_version.as_ref() {
-                    println!("  {} {} -> {} available", name,
+                    output::info(&format!("{} {} -> {} available", name,
                         current_version.as_deref().unwrap_or("?"),
-                        ver_str);
+                        ver_str));
 
                     // Update the version variable in the recipe
                     recipe_state::set_var(&recipe_path_canonical, "version", &ver_str)
@@ -406,16 +494,16 @@ pub fn upgrade(
         .unwrap_or(None);
     let installed_version: Option<String> = installed_version.and_then(|v| v.into());
 
-    // Compare versions
-    if recipe_version == installed_version {
-        println!("==> {} is up to date ({})", name, recipe_version.as_deref().unwrap_or("?"));
+    // Compare versions semantically
+    if version_is_up_to_date(installed_version.as_deref(), recipe_version.as_deref()) {
+        output::skip(&format!("{} is up to date ({})", name, recipe_version.as_deref().unwrap_or("?")));
         return Ok(false);
     }
 
-    println!("==> Upgrading {} ({} -> {})",
+    output::action(&format!("Upgrading {} ({} -> {})",
         name,
         installed_version.as_deref().unwrap_or("?"),
-        recipe_version.as_deref().unwrap_or("?"));
+        recipe_version.as_deref().unwrap_or("?")));
 
     // Remove old version
     remove(engine, prefix, recipe_path)?;

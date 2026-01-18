@@ -11,7 +11,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use levitate_recipe::{deps, recipe_state, RecipeEngine};
+use levitate_recipe::{deps, output, recipe_state, RecipeEngine};
 use std::path::PathBuf;
 
 /// Default recipes directory (XDG compliant)
@@ -130,13 +130,14 @@ fn main() -> Result<()> {
                 let uninstalled = deps::filter_uninstalled(install_order)?;
 
                 if uninstalled.is_empty() {
-                    println!("==> {} and all dependencies already installed", package);
+                    output::skip(&format!("{} and all dependencies already installed", package));
                 } else {
                     let names: Vec<_> = uninstalled.iter().map(|(n, _)| n.as_str()).collect();
-                    println!("==> Installing {} package(s): {}", names.len(), names.join(", "));
+                    output::info(&format!("Installing {} package(s): {}", names.len(), names.join(", ")));
 
-                    for (name, path) in uninstalled {
-                        println!("\n==> Installing {}...", name);
+                    let total = uninstalled.len();
+                    for (i, (name, path)) in uninstalled.into_iter().enumerate() {
+                        output::action_numbered(i + 1, total, &format!("Installing {}", name));
                         engine.execute(&path)?;
                     }
                 }
@@ -160,7 +161,7 @@ fn main() -> Result<()> {
                 engine.update(&recipe_path)?;
             } else {
                 // Update all installed packages
-                println!("==> Checking for updates...");
+                output::action("Checking for updates...");
                 let recipes = find_installed_recipes(&recipes_path)?;
                 for recipe_path in recipes {
                     engine.update(&recipe_path)?;
@@ -176,10 +177,14 @@ fn main() -> Result<()> {
                 engine.upgrade(&recipe_path)?;
             } else {
                 // Upgrade all packages with pending updates
-                println!("==> Upgrading packages...");
+                output::action("Upgrading packages...");
                 let recipes = find_upgradable_recipes(&recipes_path)?;
-                for recipe_path in recipes {
-                    engine.upgrade(&recipe_path)?;
+                if recipes.is_empty() {
+                    output::info("All packages are up to date");
+                } else {
+                    for recipe_path in recipes {
+                        engine.upgrade(&recipe_path)?;
+                    }
                 }
             }
         }
@@ -198,15 +203,20 @@ fn main() -> Result<()> {
         }
 
         Commands::Deps { package, resolve } => {
+            use owo_colors::OwoColorize;
+
             if resolve {
                 // Show resolved install order
                 let install_order = deps::resolve_deps(&package, &recipes_path)?;
-                println!("Install order for {}:", package);
+                output::info(&format!("Install order for {}:", package.bold()));
                 for (i, (name, path)) in install_order.iter().enumerate() {
                     let installed: Option<bool> =
                         recipe_state::get_var(path, "installed").unwrap_or(None);
-                    let status = if installed == Some(true) { " [installed]" } else { "" };
-                    println!("  {}. {}{}", i + 1, name, status);
+                    if installed == Some(true) {
+                        println!("  {}. {} {}", i + 1, name.green(), "[installed]".dimmed());
+                    } else {
+                        println!("  {}. {}", i + 1, name);
+                    }
                 }
             } else {
                 // Show direct dependencies only
@@ -214,15 +224,15 @@ fn main() -> Result<()> {
                 let pkg_deps: Option<Vec<String>> =
                     recipe_state::get_var(&recipe_path, "deps").unwrap_or(None);
 
-                println!("Dependencies for {}:", package);
+                output::info(&format!("Dependencies for {}:", package.bold()));
                 match pkg_deps {
                     Some(ref d) if !d.is_empty() => {
                         for dep in d {
-                            println!("  - {}", dep);
+                            println!("  {} {}", "-".cyan(), dep);
                         }
                     }
                     _ => {
-                        println!("  (none)");
+                        println!("  {}", "(none)".dimmed());
                     }
                 }
             }
@@ -354,8 +364,10 @@ fn find_upgradable_recipes(recipes_path: &PathBuf) -> Result<Vec<PathBuf>> {
 
 /// List all packages
 fn list_packages(recipes_path: &PathBuf) -> Result<()> {
+    use owo_colors::OwoColorize;
+
     if !recipes_path.exists() {
-        println!("No recipes found in {}", recipes_path.display());
+        output::info(&format!("No recipes found in {}", recipes_path.display()));
         return Ok(());
     }
 
@@ -372,11 +384,12 @@ fn list_packages(recipes_path: &PathBuf) -> Result<()> {
                 recipe_state::get_var(&path, "installed_version").unwrap_or(None);
             let installed_version: Option<String> = installed_version.and_then(|v| v.into());
 
-            let status = if installed == Some(true) {
+            let is_installed = installed == Some(true);
+            let status = if is_installed {
                 if version != installed_version {
-                    format!("[installed: {}, update: {}]",
+                    format!("[installed: {}, {} available]",
                         installed_version.as_deref().unwrap_or("?"),
-                        version.as_deref().unwrap_or("?"))
+                        version.as_deref().unwrap_or("?").yellow())
                 } else {
                     format!("[installed: {}]", installed_version.as_deref().unwrap_or("?"))
                 }
@@ -384,13 +397,13 @@ fn list_packages(recipes_path: &PathBuf) -> Result<()> {
                 format!("[available: {}]", version.as_deref().unwrap_or("?"))
             };
 
-            println!("  {} {}", name, status);
+            output::list_item(&name, &status, is_installed);
             found = true;
         }
     }
 
     if !found {
-        println!("No recipes found in {}", recipes_path.display());
+        output::info(&format!("No recipes found in {}", recipes_path.display()));
     }
 
     Ok(())
@@ -398,8 +411,10 @@ fn list_packages(recipes_path: &PathBuf) -> Result<()> {
 
 /// Search for packages
 fn search_packages(pattern: &str, recipes_path: &PathBuf) -> Result<()> {
+    use owo_colors::OwoColorize;
+
     if !recipes_path.exists() {
-        println!("No recipes found");
+        output::info("No recipes found");
         return Ok(());
     }
 
@@ -418,10 +433,10 @@ fn search_packages(pattern: &str, recipes_path: &PathBuf) -> Result<()> {
                 let version: Option<String> = recipe_state::get_var(&path, "version").unwrap_or(None);
                 let description: Option<String> = recipe_state::get_var(&path, "description").unwrap_or(None);
 
-                println!("  {} - {} - {}",
-                    name,
-                    version.as_deref().unwrap_or("?"),
-                    description.as_deref().unwrap_or("")
+                println!("  {} {} {}",
+                    name.bold(),
+                    version.as_deref().unwrap_or("?").cyan(),
+                    description.as_deref().unwrap_or("").dimmed()
                 );
                 found = true;
             }
@@ -429,7 +444,7 @@ fn search_packages(pattern: &str, recipes_path: &PathBuf) -> Result<()> {
     }
 
     if !found {
-        println!("No packages matching '{}' found", pattern);
+        output::info(&format!("No packages matching '{}' found", pattern));
     }
 
     Ok(())
@@ -437,6 +452,8 @@ fn search_packages(pattern: &str, recipes_path: &PathBuf) -> Result<()> {
 
 /// Show package info
 fn show_info(recipe_path: &PathBuf) -> Result<()> {
+    use owo_colors::OwoColorize;
+
     let name = recipe_path.file_stem().unwrap().to_string_lossy();
 
     let version: Option<String> = recipe_state::get_var(recipe_path, "version").unwrap_or(None);
@@ -450,45 +467,45 @@ fn show_info(recipe_path: &PathBuf) -> Result<()> {
     let installed_files: Option<Vec<String>> =
         recipe_state::get_var(recipe_path, "installed_files").unwrap_or(None);
 
-    println!("Name:        {}", name);
-    println!("Version:     {}", version.as_deref().unwrap_or("?"));
+    println!("{:<12} {}", "Name:".bold(), name.bold().cyan());
+    println!("{:<12} {}", "Version:".bold(), version.as_deref().unwrap_or("?").green());
     if let Some(desc) = description {
-        println!("Description: {}", desc);
+        println!("{:<12} {}", "Description:".bold(), desc);
     }
     match pkg_deps {
         Some(ref deps) if !deps.is_empty() => {
-            println!("Depends:     {}", deps.join(", "));
+            println!("{:<12} {}", "Depends:".bold(), deps.join(", "));
         }
         _ => {}
     }
-    println!("Recipe:      {}", recipe_path.display());
+    println!("{:<12} {}", "Recipe:".bold(), recipe_path.display().to_string().dimmed());
     println!();
 
     if installed == Some(true) {
-        println!("Status:      Installed");
+        println!("{:<12} {}", "Status:".bold(), "Installed".green());
         if let Some(ver) = installed_version {
-            println!("Installed:   {}", ver);
+            println!("{:<12} {}", "Installed:".bold(), ver);
         }
         if let Some(ts) = installed_at {
             // Convert timestamp to human readable
             let datetime = chrono_lite(ts);
-            println!("Installed at: {}", datetime);
+            println!("{:<12} {}", "Installed at:".bold(), datetime.dimmed());
         }
         if let Some(files) = installed_files {
-            println!("Files:       {} installed", files.len());
+            println!("{:<12} {} files", "Files:".bold(), files.len());
             if files.len() <= 10 {
                 for f in &files {
-                    println!("             {}", f);
+                    println!("             {}", f.dimmed());
                 }
             } else {
                 for f in files.iter().take(5) {
-                    println!("             {}", f);
+                    println!("             {}", f.dimmed());
                 }
-                println!("             ... and {} more", files.len() - 5);
+                println!("             {} and {} more", "...".dimmed(), files.len() - 5);
             }
         }
     } else {
-        println!("Status:      Not installed");
+        println!("{:<12} {}", "Status:".bold(), "Not installed".yellow());
     }
 
     Ok(())

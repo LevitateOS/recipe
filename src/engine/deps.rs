@@ -57,7 +57,11 @@ impl DepGraph {
     ///
     /// Returns packages in dependency order (dependencies before dependents).
     /// Detects cycles and returns an error if found.
+    /// Also validates that all dependencies exist in the graph.
     pub fn topological_sort(&self, targets: &[String]) -> Result<Vec<String>> {
+        // Validate all dependencies exist before sorting
+        self.validate_dependencies()?;
+
         let mut state: HashMap<String, NodeState> = HashMap::new();
         let mut result: Vec<String> = Vec::new();
 
@@ -75,6 +79,29 @@ impl DepGraph {
         }
 
         Ok(result)
+    }
+
+    /// Validate that all dependencies reference existing packages
+    fn validate_dependencies(&self) -> Result<()> {
+        let mut missing: Vec<(String, String)> = Vec::new();
+
+        for (package, deps) in &self.edges {
+            for dep in deps {
+                if !self.edges.contains_key(dep) {
+                    missing.push((package.clone(), dep.clone()));
+                }
+            }
+        }
+
+        if !missing.is_empty() {
+            let errors: Vec<String> = missing
+                .iter()
+                .map(|(pkg, dep)| format!("'{}' depends on missing package '{}'", pkg, dep))
+                .collect();
+            bail!("Missing dependencies:\n  {}", errors.join("\n  "));
+        }
+
+        Ok(())
     }
 
     /// Iterative DFS with explicit stack to avoid recursion limits
@@ -678,11 +705,12 @@ let installed = false;
         graph.add_package("b".into(), vec!["missing".into()], PathBuf::from("b.rhai"));
         // "missing" is not added to graph
 
-        let order = graph.topological_sort(&["a".into()]).unwrap();
-        // Should include a and b, but "missing" is just ignored since it's not in graph
-        // (it's referenced but not defined - this is allowed for flexibility)
-        assert!(order.contains(&"a".to_string()));
-        assert!(order.contains(&"b".to_string()));
+        // Should fail with missing dependency error
+        let result = graph.topological_sort(&["a".into()]);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Missing dependencies"), "Expected missing dependency error, got: {}", err);
+        assert!(err.contains("'b' depends on missing package 'missing'"), "Expected specific error message, got: {}", err);
     }
 
     #[test]

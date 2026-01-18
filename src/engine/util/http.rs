@@ -3,10 +3,25 @@
 //! Provides helpers for checking updates and fetching remote content.
 
 use rhai::EvalAltResult;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 /// Default HTTP timeout in seconds
-const HTTP_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_HTTP_TIMEOUT_SECS: u64 = 30;
+
+/// Get HTTP timeout from environment variable or use default.
+/// Cached for performance (only reads env var once).
+fn get_http_timeout() -> Duration {
+    static TIMEOUT: OnceLock<Duration> = OnceLock::new();
+    *TIMEOUT.get_or_init(|| {
+        let secs = std::env::var("RECIPE_HTTP_TIMEOUT")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_HTTP_TIMEOUT_SECS);
+        // Clamp to reasonable range (5-300 seconds)
+        Duration::from_secs(secs.clamp(5, 300))
+    })
+}
 
 /// Default GitHub API base URL
 const GITHUB_API_BASE: &str = "https://api.github.com";
@@ -14,7 +29,7 @@ const GITHUB_API_BASE: &str = "https://api.github.com";
 /// Fetch content from a URL (GET request)
 pub fn http_get(url: &str) -> Result<String, Box<EvalAltResult>> {
     ureq::get(url)
-        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+        .timeout(get_http_timeout())
         .call()
         .map_err(|e| format!("HTTP GET failed: {}", e))?
         .into_string()
@@ -37,7 +52,7 @@ fn github_latest_release_with_base(repo: &str, base_url: &str) -> Result<String,
     let url = format!("{}/repos/{}/releases/latest", base_url, repo);
 
     let response = ureq::get(&url)
-        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+        .timeout(get_http_timeout())
         .set("Accept", "application/vnd.github.v3+json")
         .set("User-Agent", "recipe-package-manager")
         .call()
@@ -78,7 +93,7 @@ fn github_latest_tag_with_base(repo: &str, base_url: &str) -> Result<String, Box
     let url = format!("{}/repos/{}/tags", base_url, repo);
 
     let response = ureq::get(&url)
-        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+        .timeout(get_http_timeout())
         .set("Accept", "application/vnd.github.v3+json")
         .set("User-Agent", "recipe-package-manager")
         .call()
@@ -227,9 +242,17 @@ mod tests {
 
     #[test]
     fn test_timeout_is_reasonable() {
-        // Timeout should be between 5 and 120 seconds
-        assert!(HTTP_TIMEOUT_SECS >= 5);
-        assert!(HTTP_TIMEOUT_SECS <= 120);
+        // Default timeout should be between 5 and 120 seconds
+        assert!(DEFAULT_HTTP_TIMEOUT_SECS >= 5);
+        assert!(DEFAULT_HTTP_TIMEOUT_SECS <= 120);
+    }
+
+    #[test]
+    fn test_get_http_timeout_returns_duration() {
+        // Should return a valid Duration
+        let timeout = get_http_timeout();
+        assert!(timeout.as_secs() >= 5);
+        assert!(timeout.as_secs() <= 300);
     }
 
     // ==================== Mocked HTTP tests ====================

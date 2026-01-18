@@ -5,6 +5,7 @@
 mod context;
 pub mod deps;
 mod lifecycle;
+pub mod output;
 mod phases;
 pub mod recipe_state;
 pub mod util;
