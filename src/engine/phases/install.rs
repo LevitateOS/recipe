@@ -2,7 +2,7 @@
 //!
 //! Copy outputs to PREFIX: install_bin, install_lib, install_man, rpm_install
 
-use crate::engine::context::with_context;
+use crate::engine::context::{record_installed_file, with_context};
 use rhai::EvalAltResult;
 use std::process::Command;
 
@@ -18,7 +18,7 @@ pub fn install_lib(pattern: &str) -> Result<(), Box<EvalAltResult>> {
 
 /// Install man pages to PREFIX/share/man/man{N}/
 pub fn install_man(pattern: &str) -> Result<(), Box<EvalAltResult>> {
-    with_context(|ctx| {
+    let installed_paths = with_context(|ctx| {
         let full_pattern = ctx.current_dir.join(pattern);
         let matches: Vec<_> = glob::glob(&full_pattern.to_string_lossy())
             .map_err(|e| format!("invalid pattern: {}", e))?
@@ -29,6 +29,7 @@ pub fn install_man(pattern: &str) -> Result<(), Box<EvalAltResult>> {
             return Err(format!("no files match pattern: {}", pattern).into());
         }
 
+        let mut installed = Vec::new();
         for src in matches {
             let filename = src.file_name().ok_or("invalid filename")?;
             let filename_str = filename.to_string_lossy();
@@ -46,15 +47,23 @@ pub fn install_man(pattern: &str) -> Result<(), Box<EvalAltResult>> {
             let dest = man_dir.join(filename);
             println!("     install {} -> {}", src.display(), dest.display());
             std::fs::copy(&src, &dest).map_err(|e| format!("install failed: {}", e))?;
+            installed.push(dest);
         }
 
-        Ok(())
-    })
+        Ok(installed)
+    })?;
+
+    // Record installed files in context
+    for path in installed_paths {
+        record_installed_file(path);
+    }
+
+    Ok(())
 }
 
 /// Install files to a specific subdirectory of PREFIX
 pub fn install_to_dir(pattern: &str, subdir: &str, mode: Option<u32>) -> Result<(), Box<EvalAltResult>> {
-    with_context(|ctx| {
+    let installed_paths = with_context(|ctx| {
         let full_pattern = ctx.current_dir.join(pattern);
         let matches: Vec<_> = glob::glob(&full_pattern.to_string_lossy())
             .map_err(|e| format!("invalid pattern: {}", e))?
@@ -68,6 +77,7 @@ pub fn install_to_dir(pattern: &str, subdir: &str, mode: Option<u32>) -> Result<
         let dest_dir = ctx.prefix.join(subdir);
         std::fs::create_dir_all(&dest_dir).map_err(|e| format!("cannot create dir: {}", e))?;
 
+        let mut installed = Vec::new();
         for src in matches {
             let filename = src.file_name().ok_or("invalid filename")?;
             let dest = dest_dir.join(filename);
@@ -80,15 +90,24 @@ pub fn install_to_dir(pattern: &str, subdir: &str, mode: Option<u32>) -> Result<
                 std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(m))
                     .map_err(|e| format!("chmod failed: {}", e))?;
             }
+
+            installed.push(dest);
         }
 
-        Ok(())
-    })
+        Ok(installed)
+    })?;
+
+    // Record installed files in context
+    for path in installed_paths {
+        record_installed_file(path);
+    }
+
+    Ok(())
 }
 
 /// Extract RPM contents to PREFIX
 pub fn rpm_install() -> Result<(), Box<EvalAltResult>> {
-    with_context(|ctx| {
+    let installed_paths = with_context(|ctx| {
         // Find RPM files in build_dir
         let pattern = ctx.build_dir.join("*.rpm");
         let matches: Vec<_> = glob::glob(&pattern.to_string_lossy())
@@ -100,28 +119,50 @@ pub fn rpm_install() -> Result<(), Box<EvalAltResult>> {
             return Err("no RPM files found in build directory".to_string().into());
         }
 
-        for rpm in matches {
+        let mut installed = Vec::new();
+        for rpm in &matches {
             println!("     rpm_install {}", rpm.display());
 
-            // Extract RPM contents to prefix using rpm2cpio
-            let status = Command::new("sh")
+            // Extract RPM contents to prefix using rpm2cpio, capturing file list
+            let output = Command::new("sh")
                 .args([
                     "-c",
                     &format!(
-                        "rpm2cpio '{}' | cpio -idmv -D '{}'",
+                        "rpm2cpio '{}' | cpio -idmv -D '{}' 2>&1",
                         rpm.display(),
                         ctx.prefix.display()
                     ),
                 ])
                 .current_dir(&ctx.build_dir)
-                .status()
+                .output()
                 .map_err(|e| format!("rpm2cpio failed: {}", e))?;
 
-            if !status.success() {
+            if !output.status.success() {
                 return Err(format!("rpm_install failed for {}", rpm.display()).into());
+            }
+
+            // Parse cpio verbose output for installed files
+            let output_str = String::from_utf8_lossy(&output.stdout);
+            for line in output_str.lines() {
+                let line = line.trim();
+                if !line.is_empty() && !line.starts_with('.') {
+                    // cpio outputs relative paths, make them absolute
+                    let file_path = ctx.prefix.join(line.trim_start_matches("./"));
+                    // Track both files and symlinks (symlinks are important, e.g., /bin/sh)
+                    if file_path.is_file() || file_path.is_symlink() {
+                        installed.push(file_path);
+                    }
+                }
             }
         }
 
-        Ok(())
-    })
+        Ok(installed)
+    })?;
+
+    // Record installed files in context
+    for path in installed_paths {
+        record_installed_file(path);
+    }
+
+    Ok(())
 }

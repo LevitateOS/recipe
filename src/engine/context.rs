@@ -13,6 +13,11 @@ pub struct ExecutionContext {
     pub build_dir: PathBuf,
     pub current_dir: PathBuf,
     pub last_downloaded: Option<PathBuf>,
+    /// Files installed during this execution (for state tracking)
+    pub installed_files: Vec<PathBuf>,
+    /// Path to the recipe file being executed (available for helper functions)
+    #[allow(dead_code)]
+    pub recipe_path: Option<PathBuf>,
 }
 
 thread_local! {
@@ -20,15 +25,36 @@ thread_local! {
     pub static CONTEXT: RefCell<Option<ExecutionContext>> = const { RefCell::new(None) };
 }
 
-/// Initialize the execution context
-pub fn init_context(prefix: PathBuf, build_dir: PathBuf) {
+/// Initialize the execution context with recipe path
+pub fn init_context_with_recipe(prefix: PathBuf, build_dir: PathBuf, recipe_path: Option<PathBuf>) {
     let ctx = ExecutionContext {
         prefix,
         build_dir: build_dir.clone(),
         current_dir: build_dir,
         last_downloaded: None,
+        installed_files: Vec::new(),
+        recipe_path,
     };
     CONTEXT.with(|c| *c.borrow_mut() = Some(ctx));
+}
+
+/// Record an installed file in the context
+pub fn record_installed_file(path: PathBuf) {
+    CONTEXT.with(|c| {
+        if let Some(ref mut ctx) = *c.borrow_mut() {
+            ctx.installed_files.push(path);
+        }
+    });
+}
+
+/// Get all installed files from the context
+pub fn get_installed_files() -> Vec<PathBuf> {
+    CONTEXT.with(|c| {
+        c.borrow()
+            .as_ref()
+            .map(|ctx| ctx.installed_files.clone())
+            .unwrap_or_default()
+    })
 }
 
 /// Clear the execution context

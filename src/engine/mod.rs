@@ -5,6 +5,7 @@
 mod context;
 mod lifecycle;
 mod phases;
+pub mod recipe_state;
 mod util;
 
 use anyhow::Result;
@@ -33,6 +34,7 @@ impl RecipeEngine {
         engine.register_fn("extract", phases::extract);
         engine.register_fn("cd", phases::change_dir);
         engine.register_fn("run", phases::run_cmd);
+        engine.register_fn("shell", phases::run_cmd); // Alias for run, use when recipe defines own run()
 
         // Register install phase helpers
         engine.register_fn("install_bin", phases::install_bin);
@@ -62,6 +64,16 @@ impl RecipeEngine {
         engine.register_fn("run_output", util::run_output);
         engine.register_fn("run_status", util::run_status);
 
+        // Register HTTP utilities for update checking
+        engine.register_fn("http_get", util::http_get);
+        engine.register_fn("github_latest_release", util::github_latest_release);
+        engine.register_fn("github_latest_tag", util::github_latest_tag);
+        engine.register_fn("parse_version", util::parse_version);
+
+        // Register execution utilities for run command
+        engine.register_fn("exec", util::exec);
+        engine.register_fn("exec_output", util::exec_output);
+
         Self {
             engine,
             prefix,
@@ -79,7 +91,7 @@ impl RecipeEngine {
         self
     }
 
-    /// Execute a recipe script
+    /// Execute a recipe script (install a package)
     ///
     /// Follows the package lifecycle:
     /// 1. is_installed() - Check if already done (skip if true)
@@ -88,6 +100,33 @@ impl RecipeEngine {
     /// 4. install() - Copy to PREFIX
     pub fn execute(&self, recipe_path: &Path) -> Result<()> {
         lifecycle::execute(&self.engine, &self.prefix, &self.build_dir, recipe_path)
+    }
+
+    /// Remove an installed package
+    pub fn remove(&self, recipe_path: &Path) -> Result<()> {
+        lifecycle::remove(&self.engine, &self.prefix, recipe_path)
+    }
+
+    /// Check for updates to a package
+    /// Returns Some(new_version) if update available
+    pub fn update(&self, recipe_path: &Path) -> Result<Option<String>> {
+        lifecycle::update(&self.engine, recipe_path)
+    }
+
+    /// Upgrade a package (reinstall if newer version in recipe)
+    /// Returns true if upgrade was performed
+    pub fn upgrade(&self, recipe_path: &Path) -> Result<bool> {
+        lifecycle::upgrade(&self.engine, &self.prefix, &self.build_dir, recipe_path)
+    }
+
+    /// Get the prefix path
+    pub fn prefix(&self) -> &Path {
+        &self.prefix
+    }
+
+    /// Get the recipes path
+    pub fn recipes_path(&self) -> Option<&Path> {
+        self.recipes_path.as_deref()
     }
 }
 
