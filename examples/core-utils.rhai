@@ -4,6 +4,7 @@
 let name = "core-utils";
 let version = "1.0.0";
 let description = "Core utility functions (example base package)";
+let installed = false;
 let deps = [];
 
 fn acquire() {

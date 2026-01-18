@@ -93,7 +93,7 @@ pub fn install_man(pattern: &str) -> Result<(), Box<EvalAltResult>> {
     Ok(())
 }
 
-/// Install files to a custom subdirectory of PREFIX.
+/// Install files to a custom subdirectory of PREFIX (without mode change).
 ///
 /// Generic install function for advanced use cases. Use install_bin/install_lib
 /// for standard locations.
@@ -101,14 +101,30 @@ pub fn install_man(pattern: &str) -> Result<(), Box<EvalAltResult>> {
 /// # Arguments
 /// * `pattern` - Glob pattern for files to install
 /// * `subdir` - Subdirectory under PREFIX (e.g., "share/doc")
-/// * `mode` - Optional Unix permissions (e.g., Some(0o755))
 ///
 /// # Example
 /// ```rhai
-/// install_to_dir("docs/*", "share/doc/myapp", ());  // No mode change
-/// install_to_dir("scripts/*", "libexec", 0o755);     // Executable
+/// install_to_dir("docs/*", "share/doc/myapp");  // No mode change
 /// ```
-pub fn install_to_dir(pattern: &str, subdir: &str, mode: Option<u32>) -> Result<(), Box<EvalAltResult>> {
+pub fn install_to_dir(pattern: &str, subdir: &str) -> Result<(), Box<EvalAltResult>> {
+    install_to_dir_with_mode(pattern, subdir, None)
+}
+
+/// Install files to a custom subdirectory of PREFIX with optional mode.
+///
+/// Generic install function for advanced use cases. Use install_bin/install_lib
+/// for standard locations.
+///
+/// # Arguments
+/// * `pattern` - Glob pattern for files to install
+/// * `subdir` - Subdirectory under PREFIX (e.g., "share/doc")
+/// * `mode` - Unix permissions (e.g., 0o755)
+///
+/// # Example
+/// ```rhai
+/// install_to_dir("scripts/*", "libexec", 0o755);  // Executable
+/// ```
+pub fn install_to_dir_with_mode(pattern: &str, subdir: &str, mode: Option<u32>) -> Result<(), Box<EvalAltResult>> {
     let installed_paths = with_context(|ctx| {
         let full_pattern = ctx.current_dir.join(pattern);
         let matches: Vec<_> = glob::glob(&full_pattern.to_string_lossy())
@@ -156,6 +172,13 @@ pub fn install_to_dir(pattern: &str, subdir: &str, mode: Option<u32>) -> Result<
     }
 
     Ok(())
+}
+
+/// Install files to a custom subdirectory of PREFIX with mode (Rhai i64 wrapper).
+///
+/// This is an overload for Rhai's i64 integer type.
+pub fn install_to_dir_i64(pattern: &str, subdir: &str, mode: i64) -> Result<(), Box<EvalAltResult>> {
+    install_to_dir_with_mode(pattern, subdir, Some(mode as u32))
 }
 
 /// Extract RPM contents to PREFIX
@@ -529,7 +552,7 @@ mod tests {
         std::fs::write(build_dir.join("file"), "content").unwrap();
 
         // Install to deeply nested path
-        let result = install_to_dir("file", "a/b/c/d", None);
+        let result = install_to_dir_with_mode("file", "a/b/c/d", None);
         assert!(result.is_ok());
         assert!(prefix.join("a/b/c/d/file").exists());
 

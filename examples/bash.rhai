@@ -4,6 +4,7 @@
 let name = "bash";
 let version = "5.2.37";
 let description = "GNU Bourne-Again Shell";
+let installed = false;
 
 fn acquire() {
     download(`https://ftp.gnu.org/gnu/bash/bash-${version}.tar.gz`);

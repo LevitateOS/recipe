@@ -144,6 +144,7 @@ fn test_regression_partial_removal_state_preserved() {
 let name = "partial";
 let version = "1.0.0";
 let installed = true;
+let installed_version = "1.0.0";
 let installed_files = ["{}"];
 fn acquire() {{}}
 fn install() {{}}
@@ -175,6 +176,7 @@ fn test_regression_update_error_propagated() {
     let recipe_path = write_recipe(&recipes_dir, "failing-update", r#"
 let name = "failing-update";
 let version = "1.0.0";
+let installed = false;
 
 fn acquire() {}
 fn install() {}
@@ -333,6 +335,7 @@ fn test_regression_state_not_corrupted_on_install_failure() {
 let name = "fail-install";
 let version = "1.0.0";
 let installed = false;
+let installed = false;
 
 fn acquire() {}
 fn install() {
@@ -358,6 +361,7 @@ fn test_regression_state_not_corrupted_on_acquire_failure() {
     let recipe_path = write_recipe(&recipes_dir, "fail-acquire", r#"
 let name = "fail-acquire";
 let version = "1.0.0";
+let installed = false;
 
 fn acquire() {
     throw "Acquire failed!";
@@ -382,6 +386,7 @@ fn test_regression_state_not_corrupted_on_build_failure() {
     let recipe_path = write_recipe(&recipes_dir, "fail-build", r#"
 let name = "fail-build";
 let version = "1.0.0";
+let installed = false;
 
 fn acquire() {}
 fn build() {
@@ -411,6 +416,7 @@ fn test_regression_empty_installed_files_handled() {
 let name = "empty-files";
 let version = "1.0.0";
 let installed = true;
+let installed_version = "1.0.0";
 let installed_files = [];
 fn acquire() {}
 fn install() {}
@@ -431,6 +437,7 @@ fn test_regression_unicode_in_recipe_preserved() {
     let original = r#"let name = "日本語パッケージ";
 let description = "Package with 📦 emoji";
 let version = "1.0.0";"#;
+let installed = false;
 
     std::fs::write(&path, original).unwrap();
 
@@ -451,6 +458,7 @@ fn test_regression_comments_preserved() {
     let original = r#"// Package definition
 let name = "test";
 let version = "1.0.0";  // Current version
+let installed = false;
 /* Multi-line
    comment */
 fn acquire() {}"#;

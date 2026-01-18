@@ -44,7 +44,8 @@ pub fn register_all(engine: &mut Engine) {
     engine.register_fn("install_bin", install::install_bin);
     engine.register_fn("install_lib", install::install_lib);
     engine.register_fn("install_man", install::install_man);
-    engine.register_fn("install_to_dir", install::install_to_dir);
+    engine.register_fn("install_to_dir", install::install_to_dir); // 2-arg version
+    engine.register_fn("install_to_dir", install::install_to_dir_i64); // 3-arg version with mode
     engine.register_fn("rpm_install", install::rpm_install);
 
     // Filesystem utilities

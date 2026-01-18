@@ -6,6 +6,7 @@
 let name = "myapp";
 let version = "3.0.0";
 let description = "Example application with diamond dependencies";
+let installed = false;
 let deps = ["dev-tools", "core-utils"];
 
 fn acquire() {

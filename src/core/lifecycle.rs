@@ -48,6 +48,100 @@ impl Drop for RecipeLock {
     }
 }
 
+/// Required variables that every recipe MUST define
+const REQUIRED_VARS: &[&str] = &["name", "version", "installed"];
+
+/// Required functions that every recipe MUST define
+const REQUIRED_FUNCTIONS: &[&str] = &["acquire", "install"];
+
+/// Validate that a recipe has all required variables and functions.
+/// Returns an error with a clear message listing ALL missing items.
+fn validate_recipe(engine: &Engine, ast: &AST, recipe_path: &Path) -> Result<()> {
+    let mut errors: Vec<String> = Vec::new();
+
+    // Check required variables by running the script
+    let mut scope = Scope::new();
+    if let Err(e) = engine.run_ast_with_scope(&mut scope, ast) {
+        return Err(anyhow::anyhow!(
+            "Recipe '{}' failed to execute: {}",
+            recipe_path.display(),
+            e
+        ));
+    }
+
+    // Check each required variable
+    for var in REQUIRED_VARS {
+        if scope.get_value::<rhai::Dynamic>(var).is_none() {
+            errors.push(format!("missing required variable: `let {} = ...;`", var));
+        }
+    }
+
+    // Validate variable types
+    if let Some(name) = scope.get_value::<rhai::Dynamic>("name") {
+        if !name.is_string() {
+            errors.push(format!(
+                "`name` must be a string, got: {}",
+                name.type_name()
+            ));
+        } else if name.clone().into_string().map(|s| s.is_empty()).unwrap_or(true) {
+            errors.push("`name` cannot be empty".to_string());
+        }
+    }
+
+    if let Some(version) = scope.get_value::<rhai::Dynamic>("version") {
+        if !version.is_string() {
+            errors.push(format!(
+                "`version` must be a string, got: {}",
+                version.type_name()
+            ));
+        } else if version.clone().into_string().map(|s| s.is_empty()).unwrap_or(true) {
+            errors.push("`version` cannot be empty".to_string());
+        }
+    }
+
+    // Validate `installed` is a boolean
+    if let Some(installed) = scope.get_value::<rhai::Dynamic>("installed") {
+        if !installed.is_bool() {
+            errors.push(format!(
+                "`installed` must be a boolean (true/false), got: {}",
+                installed.type_name()
+            ));
+        } else if installed.as_bool().unwrap_or(false) {
+            // If installed = true, then installed_version and installed_files are REQUIRED
+            if scope.get_value::<rhai::Dynamic>("installed_version").is_none() {
+                errors.push("missing `installed_version` (required when installed = true)".to_string());
+            }
+            if scope.get_value::<rhai::Dynamic>("installed_files").is_none() {
+                errors.push("missing `installed_files` (required when installed = true)".to_string());
+            }
+        }
+    }
+
+    // Check required functions
+    for func in REQUIRED_FUNCTIONS {
+        if !has_action(ast, func) {
+            errors.push(format!("missing required function: `fn {}() {{ ... }}`", func));
+        }
+    }
+
+    // If any errors, fail with a comprehensive message
+    if !errors.is_empty() {
+        let recipe_name = recipe_path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        return Err(anyhow::anyhow!(
+            "Invalid recipe '{}' ({}):\n  - {}",
+            recipe_name,
+            recipe_path.display(),
+            errors.join("\n  - ")
+        ));
+    }
+
+    Ok(())
+}
+
 /// Compare two version strings semantically.
 /// Returns true if `current` is the same as or newer than `installed`.
 /// Falls back to string comparison for non-semver versions.
@@ -110,6 +204,9 @@ pub fn execute(
     let ast = engine
         .compile(&script)
         .map_err(|e| anyhow::anyhow!("Failed to compile recipe: {}", e))?;
+
+    // VALIDATE: Check required variables and functions BEFORE doing anything else
+    validate_recipe(engine, &ast, &recipe_path_canonical)?;
 
     // Extract package info for logging and state
     let name = get_recipe_name(engine, &mut scope, &ast, recipe_path);
@@ -537,6 +634,242 @@ mod tests {
         let path = recipes_dir.join(format!("{}.rhai", name));
         std::fs::write(&path, content).unwrap();
         path
+    }
+
+    // ==================== validate_recipe tests ====================
+
+    #[test]
+    fn test_validate_recipe_missing_name() {
+        let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(&recipes_dir, "no-name", r#"
+let version = "1.0";
+fn acquire() {}
+fn install() {}
+"#);
+        let engine = rhai::Engine::new();
+        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let result = validate_recipe(&engine, &ast, &recipe_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("missing required variable"));
+        assert!(err.contains("name"));
+    }
+
+    #[test]
+    fn test_validate_recipe_missing_version() {
+        let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(&recipes_dir, "no-version", r#"
+let name = "test";
+fn acquire() {}
+fn install() {}
+"#);
+        let engine = rhai::Engine::new();
+        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let result = validate_recipe(&engine, &ast, &recipe_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("missing required variable"));
+        assert!(err.contains("version"));
+    }
+
+    #[test]
+    fn test_validate_recipe_missing_acquire() {
+        let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(&recipes_dir, "no-acquire", r#"
+let name = "test";
+let version = "1.0";
+fn install() {}
+"#);
+        let engine = rhai::Engine::new();
+        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let result = validate_recipe(&engine, &ast, &recipe_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("missing required function"));
+        assert!(err.contains("acquire"));
+    }
+
+    #[test]
+    fn test_validate_recipe_missing_install() {
+        let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(&recipes_dir, "no-install", r#"
+let name = "test";
+let version = "1.0";
+fn acquire() {}
+"#);
+        let engine = rhai::Engine::new();
+        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let result = validate_recipe(&engine, &ast, &recipe_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("missing required function"));
+        assert!(err.contains("install"));
+    }
+
+    #[test]
+    fn test_validate_recipe_multiple_errors() {
+        let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(&recipes_dir, "many-errors", r#"
+// Completely empty recipe - missing everything
+let x = 1;
+"#);
+        let engine = rhai::Engine::new();
+        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let result = validate_recipe(&engine, &ast, &recipe_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        // Should list ALL missing items
+        assert!(err.contains("name"));
+        assert!(err.contains("version"));
+        assert!(err.contains("installed"));
+        assert!(err.contains("acquire"));
+        assert!(err.contains("install"));
+    }
+
+    #[test]
+    fn test_validate_recipe_empty_name() {
+        let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(&recipes_dir, "empty-name", r#"
+let name = "";
+let version = "1.0";
+let installed = false;
+fn acquire() {}
+fn install() {}
+"#);
+        let engine = rhai::Engine::new();
+        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let result = validate_recipe(&engine, &ast, &recipe_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("cannot be empty"));
+    }
+
+    #[test]
+    fn test_validate_recipe_wrong_type_name() {
+        let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(&recipes_dir, "wrong-type", r#"
+let name = 123;  // Should be string
+let version = "1.0";
+let installed = false;
+fn acquire() {}
+fn install() {}
+"#);
+        let engine = rhai::Engine::new();
+        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let result = validate_recipe(&engine, &ast, &recipe_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("must be a string"));
+    }
+
+    #[test]
+    fn test_validate_recipe_missing_installed() {
+        let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(&recipes_dir, "no-installed", r#"
+let name = "test";
+let version = "1.0";
+fn acquire() {}
+fn install() {}
+"#);
+        let engine = rhai::Engine::new();
+        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let result = validate_recipe(&engine, &ast, &recipe_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("installed"));
+    }
+
+    #[test]
+    fn test_validate_recipe_installed_wrong_type() {
+        let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(&recipes_dir, "installed-wrong-type", r#"
+let name = "test";
+let version = "1.0";
+let installed = "yes";  // Should be boolean
+fn acquire() {}
+fn install() {}
+"#);
+        let engine = rhai::Engine::new();
+        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let result = validate_recipe(&engine, &ast, &recipe_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("must be a boolean"));
+    }
+
+    #[test]
+    fn test_validate_recipe_installed_true_missing_version() {
+        let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(&recipes_dir, "installed-no-version", r#"
+let name = "test";
+let version = "1.0";
+let installed = true;
+let installed_files = [];
+fn acquire() {}
+fn install() {}
+"#);
+        let engine = rhai::Engine::new();
+        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let result = validate_recipe(&engine, &ast, &recipe_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("installed_version"));
+        assert!(err.contains("required when installed = true"));
+    }
+
+    #[test]
+    fn test_validate_recipe_installed_true_missing_files() {
+        let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(&recipes_dir, "installed-no-files", r#"
+let name = "test";
+let version = "1.0";
+let installed = true;
+let installed_version = "1.0";
+fn acquire() {}
+fn install() {}
+"#);
+        let engine = rhai::Engine::new();
+        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let result = validate_recipe(&engine, &ast, &recipe_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("installed_files"));
+        assert!(err.contains("required when installed = true"));
+    }
+
+    #[test]
+    fn test_validate_recipe_installed_true_valid() {
+        let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(&recipes_dir, "installed-valid", r#"
+let name = "test";
+let version = "1.0";
+let installed = true;
+let installed_version = "1.0";
+let installed_files = ["/usr/bin/test"];
+fn acquire() {}
+fn install() {}
+"#);
+        let engine = rhai::Engine::new();
+        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let result = validate_recipe(&engine, &ast, &recipe_path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_recipe_valid() {
+        let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(&recipes_dir, "valid", r#"
+let name = "test-package";
+let version = "1.0.0";
+let installed = false;
+let description = "A test package";  // Optional
+fn acquire() {}
+fn install() {}
+"#);
+        let engine = rhai::Engine::new();
+        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let result = validate_recipe(&engine, &ast, &recipe_path);
+        assert!(result.is_ok());
     }
 
     // ==================== has_action tests ====================

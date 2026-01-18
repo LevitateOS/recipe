@@ -94,6 +94,7 @@ fn test_cli_install_success() {
     write_recipe(&recipes, "simple", r#"
 let name = "simple";
 let version = "1.0.0";
+let installed = false;
 fn acquire() {}
 fn install() {}
 "#);
@@ -113,6 +114,8 @@ fn test_cli_install_already_installed() {
 let name = "already";
 let version = "1.0.0";
 let installed = true;
+let installed_version = "1.0.0";
+let installed_files = [];
 fn acquire() {}
 fn install() {}
 "#);
@@ -155,6 +158,7 @@ fn test_cli_remove_success() {
 let name = "removable";
 let version = "1.0.0";
 let installed = true;
+let installed_version = "1.0.0";
 let installed_files = [];
 fn acquire() {}
 fn install() {}
@@ -191,6 +195,7 @@ let name = "pkg1";
 let version = "1.0.0";
 let installed = true;
 let installed_version = "1.0.0";
+let installed_files = [];
 fn acquire() {}
 fn install() {}
 "#);
@@ -225,6 +230,7 @@ let version = "1.5.0";
 let description = "A detailed package";
 let installed = true;
 let installed_version = "1.5.0";
+let installed_files = [];
 fn acquire() {}
 fn install() {}
 "#);
@@ -258,6 +264,7 @@ fn test_cli_search_finds_matches() {
     write_recipe(&recipes, "ripgrep", r#"
 let name = "ripgrep";
 let version = "14.0.0";
+let installed = false;
 let description = "Fast grep replacement";
 fn acquire() {}
 fn install() {}
@@ -266,6 +273,7 @@ fn install() {}
     write_recipe(&recipes, "fd", r#"
 let name = "fd";
 let version = "9.0.0";
+let installed = false;
 let description = "Fast find replacement";
 fn acquire() {}
 fn install() {}
@@ -286,6 +294,7 @@ fn test_cli_search_no_matches() {
     write_recipe(&recipes, "pkg", r#"
 let name = "pkg";
 let version = "1.0.0";
+let installed = false;
 fn acquire() {}
 fn install() {}
 "#);
@@ -309,6 +318,8 @@ fn test_cli_update_no_checker() {
 let name = "no-checker";
 let version = "1.0.0";
 let installed = true;
+let installed_version = "1.0.0";
+let installed_files = [];
 fn acquire() {}
 fn install() {}
 "#);
@@ -328,6 +339,8 @@ fn test_cli_update_with_checker() {
 let name = "updatable";
 let version = "1.0.0";
 let installed = true;
+let installed_version = "1.0.0";
+let installed_files = [];
 fn acquire() {}
 fn install() {}
 fn check_update() {
@@ -414,6 +427,7 @@ fn test_cli_accepts_explicit_rhai_path() {
     std::fs::write(&recipe_path, r#"
 let name = "explicit";
 let version = "1.0.0";
+let installed = false;
 fn acquire() {}
 fn install() {}
 "#).unwrap();
@@ -454,6 +468,7 @@ fn test_cli_deps_shows_direct_dependencies() {
     write_recipe(&recipes, "mylib", r#"
 let name = "mylib";
 let version = "1.0.0";
+let installed = false;
 let deps = [];
 fn acquire() {}
 fn install() {}
@@ -462,6 +477,7 @@ fn install() {}
     write_recipe(&recipes, "myapp", r#"
 let name = "myapp";
 let version = "2.0.0";
+let installed = false;
 let deps = ["mylib"];
 fn acquire() {}
 fn install() {}
@@ -481,6 +497,7 @@ fn test_cli_deps_no_dependencies() {
     write_recipe(&recipes, "standalone", r#"
 let name = "standalone";
 let version = "1.0.0";
+let installed = false;
 let deps = [];
 fn acquire() {}
 fn install() {}
@@ -501,6 +518,7 @@ fn test_cli_deps_resolve_shows_install_order() {
     write_recipe(&recipes, "core", r#"
 let name = "core";
 let version = "1.0.0";
+let installed = false;
 let deps = [];
 fn acquire() {}
 fn install() {}
@@ -509,6 +527,7 @@ fn install() {}
     write_recipe(&recipes, "lib", r#"
 let name = "lib";
 let version = "1.0.0";
+let installed = false;
 let deps = ["core"];
 fn acquire() {}
 fn install() {}
@@ -517,6 +536,7 @@ fn install() {}
     write_recipe(&recipes, "app", r#"
 let name = "app";
 let version = "1.0.0";
+let installed = false;
 let deps = ["lib"];
 fn acquire() {}
 fn install() {}
@@ -542,6 +562,8 @@ let name = "installed-lib";
 let version = "1.0.0";
 let deps = [];
 let installed = true;
+let installed_version = "1.0.0";
+let installed_files = [];
 fn acquire() {}
 fn install() {}
 "#);
@@ -549,6 +571,7 @@ fn install() {}
     write_recipe(&recipes, "new-app", r#"
 let name = "new-app";
 let version = "1.0.0";
+let installed = false;
 let deps = ["installed-lib"];
 fn acquire() {}
 fn install() {}
@@ -569,6 +592,7 @@ fn test_cli_deps_diamond_pattern() {
     write_recipe(&recipes, "bottom", r#"
 let name = "bottom";
 let version = "1.0.0";
+let installed = false;
 let deps = [];
 fn acquire() {}
 fn install() {}
@@ -577,6 +601,7 @@ fn install() {}
     write_recipe(&recipes, "left", r#"
 let name = "left";
 let version = "1.0.0";
+let installed = false;
 let deps = ["bottom"];
 fn acquire() {}
 fn install() {}
@@ -585,6 +610,7 @@ fn install() {}
     write_recipe(&recipes, "right", r#"
 let name = "right";
 let version = "1.0.0";
+let installed = false;
 let deps = ["bottom"];
 fn acquire() {}
 fn install() {}
@@ -593,6 +619,7 @@ fn install() {}
     write_recipe(&recipes, "top", r#"
 let name = "top";
 let version = "1.0.0";
+let installed = false;
 let deps = ["left", "right"];
 fn acquire() {}
 fn install() {}
@@ -639,6 +666,7 @@ fn test_cli_install_deps_installs_in_order() {
     write_recipe(&recipes, "dep1", r#"
 let name = "dep1";
 let version = "1.0.0";
+let installed = false;
 let deps = [];
 fn acquire() {}
 fn install() {}
@@ -647,6 +675,7 @@ fn install() {}
     write_recipe(&recipes, "app", r#"
 let name = "app";
 let version = "1.0.0";
+let installed = false;
 let deps = ["dep1"];
 fn acquire() {}
 fn install() {}
@@ -671,6 +700,8 @@ let name = "already-installed";
 let version = "1.0.0";
 let deps = [];
 let installed = true;
+let installed_version = "1.0.0";
+let installed_files = [];
 fn acquire() {}
 fn install() {}
 "#);
@@ -678,6 +709,7 @@ fn install() {}
     write_recipe(&recipes, "needs-it", r#"
 let name = "needs-it";
 let version = "1.0.0";
+let installed = false;
 let deps = ["already-installed"];
 fn acquire() {}
 fn install() {}
@@ -701,6 +733,8 @@ let name = "dep-installed";
 let version = "1.0.0";
 let deps = [];
 let installed = true;
+let installed_version = "1.0.0";
+let installed_files = [];
 fn acquire() {}
 fn install() {}
 "#);
@@ -710,6 +744,8 @@ let name = "app-installed";
 let version = "1.0.0";
 let deps = ["dep-installed"];
 let installed = true;
+let installed_version = "1.0.0";
+let installed_files = [];
 fn acquire() {}
 fn install() {}
 "#);
@@ -734,6 +770,7 @@ fn test_cli_install_deps_deep_chain() {
         write_recipe(&recipes, name, &format!(r#"
 let name = "{}";
 let version = "1.0.0";
+let installed = false;
 {}
 fn acquire() {{}}
 fn install() {{}}
@@ -759,6 +796,7 @@ fn test_cli_info_shows_dependencies() {
     write_recipe(&recipes, "with-deps", r#"
 let name = "with-deps";
 let version = "1.0.0";
+let installed = false;
 let deps = ["lib1", "lib2"];
 fn acquire() {}
 fn install() {}
@@ -780,6 +818,7 @@ fn test_cli_info_no_deps_field() {
     write_recipe(&recipes, "no-deps-field", r#"
 let name = "no-deps-field";
 let version = "1.0.0";
+let installed = false;
 fn acquire() {}
 fn install() {}
 "#);

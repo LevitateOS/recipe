@@ -4,6 +4,7 @@
 let name = "fd";
 let version = "10.2.0";
 let description = "Simple, fast and user-friendly alternative to find";
+let installed = false;
 
 fn acquire() {
     if ARCH == "x86_64" {

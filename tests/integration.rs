@@ -37,6 +37,7 @@ fn test_full_install_lifecycle() {
     let recipe_path = write_recipe(&recipes_dir, "simple", &format!(r#"
 let name = "simple";
 let version = "1.0.0";
+let installed = false;
 let description = "A simple test package";
 
 fn acquire() {{
@@ -112,6 +113,7 @@ fn test_reinstall_after_remove() {
     let recipe_path = write_recipe(&recipes_dir, "reinstall", r#"
 let name = "reinstall";
 let version = "1.0.0";
+let installed = false;
 
 fn acquire() {}
 fn install() {}
@@ -147,6 +149,7 @@ let name = "already-installed";
 let version = "1.0.0";
 let installed = true;
 let installed_version = "1.0.0";
+let installed_files = [];
 
 fn acquire() {
     // This should not be called if already installed
@@ -176,6 +179,7 @@ fn test_update_finds_new_version() {
     let recipe_path = write_recipe(&recipes_dir, "updatable", r#"
 let name = "updatable";
 let version = "1.0.0";
+let installed = false;
 
 fn acquire() {}
 fn install() {}
@@ -202,6 +206,7 @@ fn test_update_no_new_version() {
     let recipe_path = write_recipe(&recipes_dir, "up-to-date", r#"
 let name = "up-to-date";
 let version = "1.0.0";
+let installed = false;
 
 fn acquire() {}
 fn install() {}
@@ -277,6 +282,7 @@ fn test_state_persists_after_install() {
     let recipe_path = write_recipe(&recipes_dir, "persistent", r#"
 let name = "persistent";
 let version = "1.0.0";
+let installed = false;
 
 fn acquire() {}
 fn install() {}
@@ -302,6 +308,7 @@ fn test_state_preserves_original_content() {
     let original = r#"// Comment at top
 let name = "preserve-content";
 let version = "1.0.0";
+let installed = false;
 let description = "Test description";
 
 fn acquire() {
@@ -337,6 +344,7 @@ fn test_execute_missing_acquire() {
     let recipe_path = write_recipe(&recipes_dir, "no-acquire", r#"
 let name = "no-acquire";
 let version = "1.0.0";
+let installed = false;
 
 fn install() {}
 "#);
@@ -355,6 +363,7 @@ fn test_execute_missing_install() {
     let recipe_path = write_recipe(&recipes_dir, "no-install", r#"
 let name = "no-install";
 let version = "1.0.0";
+let installed = false;
 
 fn acquire() {}
 "#);
@@ -373,6 +382,7 @@ fn test_execute_acquire_failure() {
     let recipe_path = write_recipe(&recipes_dir, "acquire-fail", r#"
 let name = "acquire-fail";
 let version = "1.0.0";
+let installed = false;
 
 fn acquire() {
     throw "Acquire failed!";
@@ -399,6 +409,7 @@ fn test_execute_install_failure() {
     let recipe_path = write_recipe(&recipes_dir, "install-fail", r#"
 let name = "install-fail";
 let version = "1.0.0";
+let installed = false;
 
 fn acquire() {}
 
@@ -430,6 +441,7 @@ fn test_optional_build_phase() {
     let recipe_path = write_recipe(&recipes_dir, "no-build", r#"
 let name = "no-build";
 let version = "1.0.0";
+let installed = false;
 
 fn acquire() {}
 fn install() {}
@@ -449,6 +461,7 @@ fn test_with_build_phase() {
     let recipe_path = write_recipe(&recipes_dir, "with-build", r#"
 let name = "with-build";
 let version = "1.0.0";
+let installed = false;
 
 fn acquire() {}
 fn build() {
@@ -470,6 +483,7 @@ fn test_build_failure_prevents_install() {
     let recipe_path = write_recipe(&recipes_dir, "build-fail", r#"
 let name = "build-fail";
 let version = "1.0.0";
+let installed = false;
 
 fn acquire() {}
 fn build() {
@@ -500,6 +514,8 @@ fn test_is_installed_function_overrides_state() {
 let name = "check-installed";
 let version = "1.0.0";
 let installed = true;
+let installed_version = "1.0.0";
+let installed_files = [];
 
 fn is_installed() {
     false  // Files were deleted
@@ -527,6 +543,7 @@ fn test_multiple_recipes_independent() {
     let recipe1 = write_recipe(&recipes_dir, "pkg1", r#"
 let name = "pkg1";
 let version = "1.0.0";
+let installed = false;
 fn acquire() {}
 fn install() {}
 "#);
@@ -534,6 +551,7 @@ fn install() {}
     let recipe2 = write_recipe(&recipes_dir, "pkg2", r#"
 let name = "pkg2";
 let version = "2.0.0";
+let installed = false;
 fn acquire() {}
 fn install() {}
 "#);

@@ -4,6 +4,7 @@
 let name = "dev-tools";
 let version = "2.0.0";
 let description = "Developer tools (depends on core-utils)";
+let installed = false;
 let deps = ["core-utils"];
 
 fn acquire() {

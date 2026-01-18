@@ -170,6 +170,7 @@ mod tests {
             r#"
             let name = "test";
             let version = "1.0.0";
+            let installed = false;
 
             fn acquire() {}
             fn build() {}

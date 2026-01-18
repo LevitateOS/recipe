@@ -4,6 +4,7 @@
 let name = "ripgrep";
 let version = "14.1.1";
 let description = "Fast line-oriented search tool that recursively searches directories";
+let installed = false;
 
 fn acquire() {
     if ARCH == "x86_64" {

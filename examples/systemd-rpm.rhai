@@ -4,6 +4,7 @@
 let name = "systemd";
 let version = "257";
 let description = "System and Service Manager";
+let installed = false;
 
 fn acquire() {
     // Copy RPM from configured path
