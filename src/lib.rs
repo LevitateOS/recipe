@@ -1,69 +1,58 @@
-//! S-expression package recipe parser for LevitateOS.
+//! Rhai-based package recipe executor for LevitateOS
 //!
-//! This crate parses package recipes in S-expression format:
+//! Recipes are Rhai scripts that define how to acquire, build, and install packages.
+//! The engine provides helper functions and executes the `acquire()`, `build()`, and
+//! `install()` functions defined in each recipe.
 //!
-//! ```text
-//! (package "ripgrep" "14.1.0"
-//!   (description "Fast grep alternative written in Rust")
-//!   (license "MIT")
-//!   (deps)
-//!   (build (extract tar-gz))
-//!   (install (to-bin "rg")))
+//! # Example Recipe
+//!
+//! ```rhai
+//! let name = "bash";
+//! let version = "5.2.26";
+//!
+//! fn acquire() {
+//!     download("https://ftp.gnu.org/gnu/bash/bash-5.2.26.tar.gz");
+//!     verify_sha256("abc123...");
+//! }
+//!
+//! fn build() {
+//!     extract("tar.gz");
+//!     cd("bash-5.2.26");
+//!     run(`./configure --prefix=${PREFIX}`);
+//!     run(`make -j${NPROC}`);
+//! }
+//!
+//! fn install() {
+//!     run("make install");
+//! }
 //! ```
 //!
-//! # Enhanced Features
+//! # Engine-Provided Functions
 //!
-//! The recipe format supports:
-//! - **Version constraints**: `(deps "openssl >= 1.1.0" "zlib")`
-//! - **Features/variants**: `(features (default "x264") (x264 "H.264 support"))`
-//! - **Patches**: `(patches "fix.patch" (url "https://..." (sha256 "...")))`
-//! - **Provides/conflicts**: `(provides "editor") (conflicts "vim")`
-//! - **Split packages**: `(subpackages (openssl-dev ...))`
+//! ## Acquire Phase
+//! - `download(url)` - Download file from URL
+//! - `copy(pattern)` - Copy files matching glob pattern
+//! - `verify_sha256(hash)` - Verify last downloaded/copied file
 //!
-//! # Example
+//! ## Build Phase
+//! - `extract(format)` - Extract archive (tar.gz, tar.xz, tar.bz2, zip)
+//! - `cd(dir)` - Change working directory
+//! - `run(cmd)` - Execute shell command
 //!
-//! ```
-//! use levitate_recipe::{parse, Recipe};
+//! ## Install Phase
+//! - `install_bin(pattern)` - Install to PREFIX/bin
+//! - `install_lib(pattern)` - Install to PREFIX/lib
+//! - `install_man(pattern)` - Install to PREFIX/share/man/man{N}
+//! - `rpm_install()` - Extract RPM contents to PREFIX
 //!
-//! let input = r#"(package "hello" "1.0.0" (deps))"#;
-//! let expr = parse(input).unwrap();
-//! let recipe = Recipe::from_expr(&expr).unwrap();
-//! assert_eq!(recipe.name, "hello");
-//! ```
+//! # Variables Available in Scripts
 //!
-//! # Example with features and version constraints
-//!
-//! ```
-//! use levitate_recipe::{parse, Recipe};
-//!
-//! let input = r#"
-//!     (package "myapp" "1.0"
-//!       (features
-//!         (default "ssl")
-//!         (ssl "Enable SSL support"))
-//!       (deps
-//!         "zlib"
-//!         (if ssl "openssl >= 1.1.0")))
-//! "#;
-//! let expr = parse(input).unwrap();
-//! let recipe = Recipe::from_expr(&expr).unwrap();
-//! assert!(recipe.features.is_some());
-//! ```
+//! - `PREFIX` - Installation prefix
+//! - `BUILD_DIR` - Temporary build directory
+//! - `ARCH` - Target architecture (x86_64, aarch64)
+//! - `NPROC` - Number of CPUs
+//! - `RPM_PATH` - Path to RPM repository (from environment)
 
-mod ast;
-mod executor;
-pub mod features;
-mod parser;
-mod recipe;
-pub mod version;
+mod engine;
 
-pub use ast::Expr;
-pub use executor::{Context, ExecuteError, Executor};
-pub use features::{expand_feature_conditionals, DepSpec, Feature, FeatureError, FeatureSet};
-pub use parser::{parse, ParseError};
-pub use recipe::{
-    AcquireSpec, BuildSpec, BuildStep, CleanupSpec, CleanupTarget, ConfigureSpec, ConfigureStep,
-    DesktopSpec, GitRef, InstallFile, InstallSpec, PatchSource, PatchSpec, Recipe, RecipeError,
-    RemoveSpec, RemoveStep, SandboxConfig, Shell, StartSpec, StopSpec, Subpackage, Verify,
-};
-pub use version::{Dependency, Version, VersionConstraint, VersionError};
+pub use engine::RecipeEngine;

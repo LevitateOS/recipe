@@ -5,13 +5,13 @@ members = [".", "xtask"]
 name = "levitate-recipe"
 version = "0.1.0"
 edition = "2024"
-description = "S-expression package recipe parser and executor for LevitateOS"
+description = "Rhai-based package recipe executor for LevitateOS"
 license = "MIT"
 repository = "https://github.com/levitate-os/levitate-recipe"
 homepage = "https://github.com/levitate-os/levitate-recipe"
 documentation = "https://docs.rs/levitate-recipe"
 readme = "README.md"
-keywords = ["package-manager", "recipe", "s-expression", "lisp", "build"]
+keywords = ["package-manager", "recipe", "rhai", "scripting", "build"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
@@ -19,14 +19,14 @@ name = "recipe"
 path = "src/bin/recipe.rs"
 
 [dependencies]
-thiserror = "2"
-clap = { version = "4", features = ["derive", "env"] }
+rhai = { version = "1.19", features = ["sync"] }
 anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
 sha2 = "0.10"
+hex = "0.4"
+tempfile = "3"
+num_cpus = "1.16"
+glob = "0.3"
 
 [dev-dependencies]
-testcontainers = "0.23"
-bollard = "0.18"
-tokio = { version = "1", features = ["full"] }
-futures = "0.3"
 tempfile = "3"
