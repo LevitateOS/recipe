@@ -3,6 +3,7 @@
 //! Provides the execution environment for recipe scripts.
 
 mod context;
+pub mod deps;
 mod lifecycle;
 mod phases;
 pub mod recipe_state;

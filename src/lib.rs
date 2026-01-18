@@ -9,6 +9,7 @@
 //! ```rhai
 //! let name = "bash";
 //! let version = "5.2.26";
+//! let deps = ["readline", "ncurses"];  // Optional dependencies
 //!
 //! fn acquire() {
 //!     download("https://ftp.gnu.org/gnu/bash/bash-5.2.26.tar.gz");
@@ -26,6 +27,12 @@
 //!     run("make install");
 //! }
 //! ```
+//!
+//! # Dependencies
+//!
+//! Recipes can declare dependencies using `let deps = ["pkg1", "pkg2"]`.
+//! Use `recipe install --deps <package>` to install dependencies automatically.
+//! The `recipe deps <package>` command shows dependency information.
 //!
 //! # Engine-Provided Functions
 //!
@@ -55,6 +62,7 @@
 
 mod engine;
 
+pub use engine::deps;
 pub use engine::recipe_state;
 pub use engine::util;
 pub use engine::RecipeEngine;

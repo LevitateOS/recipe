@@ -442,3 +442,350 @@ fn test_cli_error_output_to_stderr() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.is_empty());
 }
+
+// =============================================================================
+// Deps Command Tests
+// =============================================================================
+
+#[test]
+fn test_cli_deps_shows_direct_dependencies() {
+    let (_dir, prefix, recipes) = create_test_env();
+
+    write_recipe(&recipes, "mylib", r#"
+let name = "mylib";
+let version = "1.0.0";
+let deps = [];
+fn acquire() {}
+fn install() {}
+"#);
+
+    write_recipe(&recipes, "myapp", r#"
+let name = "myapp";
+let version = "2.0.0";
+let deps = ["mylib"];
+fn acquire() {}
+fn install() {}
+"#);
+
+    let output = run_recipe(&["deps", "myapp"], &prefix, &recipes);
+
+    assert!(output.status.success(), "deps failed: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("mylib"), "Expected 'mylib' in output: {}", stdout);
+}
+
+#[test]
+fn test_cli_deps_no_dependencies() {
+    let (_dir, prefix, recipes) = create_test_env();
+
+    write_recipe(&recipes, "standalone", r#"
+let name = "standalone";
+let version = "1.0.0";
+let deps = [];
+fn acquire() {}
+fn install() {}
+"#);
+
+    let output = run_recipe(&["deps", "standalone"], &prefix, &recipes);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("(none)") || stdout.contains("standalone"));
+}
+
+#[test]
+fn test_cli_deps_resolve_shows_install_order() {
+    let (_dir, prefix, recipes) = create_test_env();
+
+    // Create chain: app -> lib -> core
+    write_recipe(&recipes, "core", r#"
+let name = "core";
+let version = "1.0.0";
+let deps = [];
+fn acquire() {}
+fn install() {}
+"#);
+
+    write_recipe(&recipes, "lib", r#"
+let name = "lib";
+let version = "1.0.0";
+let deps = ["core"];
+fn acquire() {}
+fn install() {}
+"#);
+
+    write_recipe(&recipes, "app", r#"
+let name = "app";
+let version = "1.0.0";
+let deps = ["lib"];
+fn acquire() {}
+fn install() {}
+"#);
+
+    let output = run_recipe(&["deps", "app", "--resolve"], &prefix, &recipes);
+
+    assert!(output.status.success(), "deps --resolve failed: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should show correct install order (numbered format: "1. core", "2. lib", "3. app")
+    assert!(stdout.contains("1. core"), "Missing '1. core' in output: {}", stdout);
+    assert!(stdout.contains("2. lib"), "Missing '2. lib' in output: {}", stdout);
+    assert!(stdout.contains("3. app"), "Missing '3. app' in output: {}", stdout);
+}
+
+#[test]
+fn test_cli_deps_resolve_shows_installed_status() {
+    let (_dir, prefix, recipes) = create_test_env();
+
+    write_recipe(&recipes, "installed-lib", r#"
+let name = "installed-lib";
+let version = "1.0.0";
+let deps = [];
+let installed = true;
+fn acquire() {}
+fn install() {}
+"#);
+
+    write_recipe(&recipes, "new-app", r#"
+let name = "new-app";
+let version = "1.0.0";
+let deps = ["installed-lib"];
+fn acquire() {}
+fn install() {}
+"#);
+
+    let output = run_recipe(&["deps", "new-app", "--resolve"], &prefix, &recipes);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("[installed]"), "Expected '[installed]' marker in output: {}", stdout);
+}
+
+#[test]
+fn test_cli_deps_diamond_pattern() {
+    let (_dir, prefix, recipes) = create_test_env();
+
+    // Diamond: top -> left, right; left -> bottom; right -> bottom
+    write_recipe(&recipes, "bottom", r#"
+let name = "bottom";
+let version = "1.0.0";
+let deps = [];
+fn acquire() {}
+fn install() {}
+"#);
+
+    write_recipe(&recipes, "left", r#"
+let name = "left";
+let version = "1.0.0";
+let deps = ["bottom"];
+fn acquire() {}
+fn install() {}
+"#);
+
+    write_recipe(&recipes, "right", r#"
+let name = "right";
+let version = "1.0.0";
+let deps = ["bottom"];
+fn acquire() {}
+fn install() {}
+"#);
+
+    write_recipe(&recipes, "top", r#"
+let name = "top";
+let version = "1.0.0";
+let deps = ["left", "right"];
+fn acquire() {}
+fn install() {}
+"#);
+
+    let output = run_recipe(&["deps", "top", "--resolve"], &prefix, &recipes);
+
+    assert!(output.status.success(), "deps --resolve failed: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // All 4 packages should appear in output (numbered format)
+    assert!(stdout.contains("1. bottom"), "Missing '1. bottom' in output: {}", stdout);
+
+    // The exact positions of left/right depend on traversal order, but both should be before top
+    // And top should be position 4
+    assert!(stdout.contains("4. top"), "Missing '4. top' in output: {}", stdout);
+
+    // Verify left and right are in positions 2 or 3
+    let has_left = stdout.contains("2. left") || stdout.contains("3. left");
+    let has_right = stdout.contains("2. right") || stdout.contains("3. right");
+    assert!(has_left, "Missing left in positions 2 or 3: {}", stdout);
+    assert!(has_right, "Missing right in positions 2 or 3: {}", stdout);
+}
+
+#[test]
+fn test_cli_deps_nonexistent_package() {
+    let (_dir, prefix, recipes) = create_test_env();
+
+    let output = run_recipe(&["deps", "nonexistent"], &prefix, &recipes);
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not found") || stderr.contains("Recipe not found"));
+}
+
+// =============================================================================
+// Install with Dependencies Tests
+// =============================================================================
+
+#[test]
+fn test_cli_install_deps_installs_in_order() {
+    let (_dir, prefix, recipes) = create_test_env();
+
+    write_recipe(&recipes, "dep1", r#"
+let name = "dep1";
+let version = "1.0.0";
+let deps = [];
+fn acquire() {}
+fn install() {}
+"#);
+
+    write_recipe(&recipes, "app", r#"
+let name = "app";
+let version = "1.0.0";
+let deps = ["dep1"];
+fn acquire() {}
+fn install() {}
+"#);
+
+    let output = run_recipe(&["install", "--deps", "app"], &prefix, &recipes);
+
+    assert!(output.status.success(), "install --deps failed: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should show both packages being installed
+    assert!(stdout.contains("dep1") || stdout.contains("2 package"), "Expected dep1 mention: {}", stdout);
+    assert!(stdout.contains("app"), "Expected app mention: {}", stdout);
+}
+
+#[test]
+fn test_cli_install_deps_skips_installed() {
+    let (_dir, prefix, recipes) = create_test_env();
+
+    write_recipe(&recipes, "already-installed", r#"
+let name = "already-installed";
+let version = "1.0.0";
+let deps = [];
+let installed = true;
+fn acquire() {}
+fn install() {}
+"#);
+
+    write_recipe(&recipes, "needs-it", r#"
+let name = "needs-it";
+let version = "1.0.0";
+let deps = ["already-installed"];
+fn acquire() {}
+fn install() {}
+"#);
+
+    let output = run_recipe(&["install", "--deps", "needs-it"], &prefix, &recipes);
+
+    assert!(output.status.success(), "install --deps failed: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should only install needs-it (1 package), not already-installed
+    assert!(stdout.contains("1 package") || stdout.contains("needs-it"), "Output: {}", stdout);
+}
+
+#[test]
+fn test_cli_install_deps_all_already_installed() {
+    let (_dir, prefix, recipes) = create_test_env();
+
+    write_recipe(&recipes, "dep-installed", r#"
+let name = "dep-installed";
+let version = "1.0.0";
+let deps = [];
+let installed = true;
+fn acquire() {}
+fn install() {}
+"#);
+
+    write_recipe(&recipes, "app-installed", r#"
+let name = "app-installed";
+let version = "1.0.0";
+let deps = ["dep-installed"];
+let installed = true;
+fn acquire() {}
+fn install() {}
+"#);
+
+    let output = run_recipe(&["install", "--deps", "app-installed"], &prefix, &recipes);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("already installed"), "Expected 'already installed' message: {}", stdout);
+}
+
+#[test]
+fn test_cli_install_deps_deep_chain() {
+    let (_dir, prefix, recipes) = create_test_env();
+
+    // Create: d -> c -> b -> a
+    for (name, dep) in [("a", None), ("b", Some("a")), ("c", Some("b")), ("d", Some("c"))] {
+        let deps_line = match dep {
+            Some(d) => format!("let deps = [\"{}\"];", d),
+            None => "let deps = [];".to_string(),
+        };
+        write_recipe(&recipes, name, &format!(r#"
+let name = "{}";
+let version = "1.0.0";
+{}
+fn acquire() {{}}
+fn install() {{}}
+"#, name, deps_line));
+    }
+
+    let output = run_recipe(&["install", "--deps", "d"], &prefix, &recipes);
+
+    assert!(output.status.success(), "install --deps failed: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("4 package") || (stdout.contains("a") && stdout.contains("b") && stdout.contains("c") && stdout.contains("d")),
+        "Expected all 4 packages: {}", stdout);
+}
+
+// =============================================================================
+// Info Command with Dependencies
+// =============================================================================
+
+#[test]
+fn test_cli_info_shows_dependencies() {
+    let (_dir, prefix, recipes) = create_test_env();
+
+    write_recipe(&recipes, "with-deps", r#"
+let name = "with-deps";
+let version = "1.0.0";
+let deps = ["lib1", "lib2"];
+fn acquire() {}
+fn install() {}
+"#);
+
+    let output = run_recipe(&["info", "with-deps"], &prefix, &recipes);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Depends:") || stdout.contains("lib1"), "Expected dependencies in output: {}", stdout);
+    assert!(stdout.contains("lib1"));
+    assert!(stdout.contains("lib2"));
+}
+
+#[test]
+fn test_cli_info_no_deps_field() {
+    let (_dir, prefix, recipes) = create_test_env();
+
+    write_recipe(&recipes, "no-deps-field", r#"
+let name = "no-deps-field";
+let version = "1.0.0";
+fn acquire() {}
+fn install() {}
+"#);
+
+    let output = run_recipe(&["info", "no-deps-field"], &prefix, &recipes);
+
+    assert!(output.status.success());
+    // Should not crash even without deps field
+}

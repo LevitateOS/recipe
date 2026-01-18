@@ -11,7 +11,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use levitate_recipe::{recipe_state, RecipeEngine};
+use levitate_recipe::{deps, recipe_state, RecipeEngine};
 use std::path::PathBuf;
 
 /// Default recipes directory (XDG compliant)
@@ -59,6 +59,10 @@ enum Commands {
     Install {
         /// Package name or path to recipe file
         package: String,
+
+        /// Also install dependencies
+        #[arg(short = 'd', long = "deps")]
+        with_deps: bool,
     },
 
     /// Remove an installed package
@@ -93,6 +97,16 @@ enum Commands {
         /// Package name
         package: String,
     },
+
+    /// Show package dependencies
+    Deps {
+        /// Package name
+        package: String,
+
+        /// Show install order (resolved dependencies)
+        #[arg(long)]
+        resolve: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -107,10 +121,29 @@ fn main() -> Result<()> {
     }
 
     match cli.command {
-        Commands::Install { package } => {
-            let recipe_path = resolve_recipe(&package, &recipes_path)?;
+        Commands::Install { package, with_deps } => {
             let engine = create_engine(&cli.prefix, cli.build_dir.as_deref(), &recipes_path)?;
-            engine.execute(&recipe_path)?;
+
+            if with_deps {
+                // Resolve dependencies and install in order
+                let install_order = deps::resolve_deps(&package, &recipes_path)?;
+                let uninstalled = deps::filter_uninstalled(install_order)?;
+
+                if uninstalled.is_empty() {
+                    println!("==> {} and all dependencies already installed", package);
+                } else {
+                    let names: Vec<_> = uninstalled.iter().map(|(n, _)| n.as_str()).collect();
+                    println!("==> Installing {} package(s): {}", names.len(), names.join(", "));
+
+                    for (name, path) in uninstalled {
+                        println!("\n==> Installing {}...", name);
+                        engine.execute(&path)?;
+                    }
+                }
+            } else {
+                let recipe_path = resolve_recipe(&package, &recipes_path)?;
+                engine.execute(&recipe_path)?;
+            }
         }
 
         Commands::Remove { package } => {
@@ -162,6 +195,37 @@ fn main() -> Result<()> {
         Commands::Info { package } => {
             let recipe_path = resolve_recipe(&package, &recipes_path)?;
             show_info(&recipe_path)?;
+        }
+
+        Commands::Deps { package, resolve } => {
+            if resolve {
+                // Show resolved install order
+                let install_order = deps::resolve_deps(&package, &recipes_path)?;
+                println!("Install order for {}:", package);
+                for (i, (name, path)) in install_order.iter().enumerate() {
+                    let installed: Option<bool> =
+                        recipe_state::get_var(path, "installed").unwrap_or(None);
+                    let status = if installed == Some(true) { " [installed]" } else { "" };
+                    println!("  {}. {}{}", i + 1, name, status);
+                }
+            } else {
+                // Show direct dependencies only
+                let recipe_path = resolve_recipe(&package, &recipes_path)?;
+                let pkg_deps: Option<Vec<String>> =
+                    recipe_state::get_var(&recipe_path, "deps").unwrap_or(None);
+
+                println!("Dependencies for {}:", package);
+                match pkg_deps {
+                    Some(ref d) if !d.is_empty() => {
+                        for dep in d {
+                            println!("  - {}", dep);
+                        }
+                    }
+                    _ => {
+                        println!("  (none)");
+                    }
+                }
+            }
         }
     }
 
@@ -377,6 +441,7 @@ fn show_info(recipe_path: &PathBuf) -> Result<()> {
 
     let version: Option<String> = recipe_state::get_var(recipe_path, "version").unwrap_or(None);
     let description: Option<String> = recipe_state::get_var(recipe_path, "description").unwrap_or(None);
+    let pkg_deps: Option<Vec<String>> = recipe_state::get_var(recipe_path, "deps").unwrap_or(None);
     let installed: Option<bool> = recipe_state::get_var(recipe_path, "installed").unwrap_or(None);
     let installed_version: Option<recipe_state::OptionalString> =
         recipe_state::get_var(recipe_path, "installed_version").unwrap_or(None);
@@ -389,6 +454,12 @@ fn show_info(recipe_path: &PathBuf) -> Result<()> {
     println!("Version:     {}", version.as_deref().unwrap_or("?"));
     if let Some(desc) = description {
         println!("Description: {}", desc);
+    }
+    match pkg_deps {
+        Some(ref deps) if !deps.is_empty() => {
+            println!("Depends:     {}", deps.join(", "));
+        }
+        _ => {}
     }
     println!("Recipe:      {}", recipe_path.display());
     println!();

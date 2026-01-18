@@ -8,6 +8,9 @@ use std::time::Duration;
 /// Default HTTP timeout in seconds
 const HTTP_TIMEOUT_SECS: u64 = 30;
 
+/// Default GitHub API base URL
+const GITHUB_API_BASE: &str = "https://api.github.com";
+
 /// Fetch content from a URL (GET request)
 pub fn http_get(url: &str) -> Result<String, Box<EvalAltResult>> {
     ureq::get(url)
@@ -26,7 +29,12 @@ pub fn http_get(url: &str) -> Result<String, Box<EvalAltResult>> {
 /// # Returns
 /// The latest release tag name (often a version like "14.1.0" or "v14.1.0")
 pub fn github_latest_release(repo: &str) -> Result<String, Box<EvalAltResult>> {
-    let url = format!("https://api.github.com/repos/{}/releases/latest", repo);
+    github_latest_release_with_base(repo, GITHUB_API_BASE)
+}
+
+/// Internal: Get latest release with configurable base URL (for testing)
+fn github_latest_release_with_base(repo: &str, base_url: &str) -> Result<String, Box<EvalAltResult>> {
+    let url = format!("{}/repos/{}/releases/latest", base_url, repo);
 
     let response = ureq::get(&url)
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
@@ -62,7 +70,12 @@ pub fn github_latest_release(repo: &str) -> Result<String, Box<EvalAltResult>> {
 /// # Returns
 /// The latest tag name
 pub fn github_latest_tag(repo: &str) -> Result<String, Box<EvalAltResult>> {
-    let url = format!("https://api.github.com/repos/{}/tags", repo);
+    github_latest_tag_with_base(repo, GITHUB_API_BASE)
+}
+
+/// Internal: Get latest tag with configurable base URL (for testing)
+fn github_latest_tag_with_base(repo: &str, base_url: &str) -> Result<String, Box<EvalAltResult>> {
+    let url = format!("{}/repos/{}/tags", base_url, repo);
 
     let response = ureq::get(&url)
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
@@ -173,10 +186,9 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // Integration tests - require network, run with: cargo test -- --ignored
+    // Integration tests - hit real network endpoints
 
     #[test]
-    #[ignore]
     fn test_http_get_real_url() {
         // Test with a known stable URL
         let result = http_get("https://httpbin.org/get");
@@ -185,7 +197,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_github_latest_release_real() {
         // Test with a well-known repo
         let result = github_latest_release("BurntSushi/ripgrep");
@@ -197,7 +208,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_github_latest_release_nonexistent_repo() {
         let result = github_latest_release("nonexistent-owner/nonexistent-repo-12345");
         assert!(result.is_err());
@@ -205,7 +215,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_github_latest_tag_real() {
         // Test with a repo that uses tags
         let result = github_latest_tag("torvalds/linux");
@@ -221,5 +230,271 @@ mod tests {
         // Timeout should be between 5 and 120 seconds
         assert!(HTTP_TIMEOUT_SECS >= 5);
         assert!(HTTP_TIMEOUT_SECS <= 120);
+    }
+
+    // ==================== Mocked HTTP tests ====================
+
+    mod mock_tests {
+        use super::*;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        #[tokio::test]
+        async fn test_http_get_success() {
+            let mock_server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/test"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("Hello, World!"))
+                .mount(&mock_server)
+                .await;
+
+            let url = format!("{}/test", mock_server.uri());
+            let result = http_get(&url);
+
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), "Hello, World!");
+        }
+
+        #[tokio::test]
+        async fn test_http_get_404() {
+            let mock_server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/missing"))
+                .respond_with(ResponseTemplate::new(404))
+                .mount(&mock_server)
+                .await;
+
+            let url = format!("{}/missing", mock_server.uri());
+            let result = http_get(&url);
+
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn test_http_get_500() {
+            let mock_server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/error"))
+                .respond_with(ResponseTemplate::new(500))
+                .mount(&mock_server)
+                .await;
+
+            let url = format!("{}/error", mock_server.uri());
+            let result = http_get(&url);
+
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("HTTP GET failed"));
+        }
+
+        #[tokio::test]
+        async fn test_github_latest_release_success() {
+            let mock_server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/repos/owner/repo/releases/latest"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({
+                            "tag_name": "v1.2.3",
+                            "name": "Release 1.2.3"
+                        })),
+                )
+                .mount(&mock_server)
+                .await;
+
+            let result = github_latest_release_with_base("owner/repo", &mock_server.uri());
+
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), "1.2.3"); // v prefix stripped
+        }
+
+        #[tokio::test]
+        async fn test_github_latest_release_no_v_prefix() {
+            let mock_server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/repos/owner/repo/releases/latest"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({
+                            "tag_name": "14.1.0"
+                        })),
+                )
+                .mount(&mock_server)
+                .await;
+
+            let result = github_latest_release_with_base("owner/repo", &mock_server.uri());
+
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), "14.1.0");
+        }
+
+        #[tokio::test]
+        async fn test_github_latest_release_404() {
+            let mock_server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/repos/nonexistent/repo/releases/latest"))
+                .respond_with(ResponseTemplate::new(404))
+                .mount(&mock_server)
+                .await;
+
+            let result = github_latest_release_with_base("nonexistent/repo", &mock_server.uri());
+
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("not found"));
+        }
+
+        #[tokio::test]
+        async fn test_github_latest_release_rate_limited() {
+            let mock_server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/repos/owner/repo/releases/latest"))
+                .respond_with(ResponseTemplate::new(403))
+                .mount(&mock_server)
+                .await;
+
+            let result = github_latest_release_with_base("owner/repo", &mock_server.uri());
+
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("rate limit"));
+        }
+
+        #[tokio::test]
+        async fn test_github_latest_release_no_tag_name() {
+            let mock_server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/repos/owner/repo/releases/latest"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({
+                            "name": "Some Release"
+                            // Missing tag_name
+                        })),
+                )
+                .mount(&mock_server)
+                .await;
+
+            let result = github_latest_release_with_base("owner/repo", &mock_server.uri());
+
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("No tag_name"));
+        }
+
+        #[tokio::test]
+        async fn test_github_latest_tag_success() {
+            let mock_server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/repos/torvalds/linux/tags"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!([
+                            {"name": "v6.7", "commit": {}},
+                            {"name": "v6.6", "commit": {}},
+                            {"name": "v6.5", "commit": {}}
+                        ])),
+                )
+                .mount(&mock_server)
+                .await;
+
+            let result = github_latest_tag_with_base("torvalds/linux", &mock_server.uri());
+
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), "6.7"); // v prefix stripped
+        }
+
+        #[tokio::test]
+        async fn test_github_latest_tag_empty() {
+            let mock_server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/repos/owner/empty-repo/tags"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+                .mount(&mock_server)
+                .await;
+
+            let result = github_latest_tag_with_base("owner/empty-repo", &mock_server.uri());
+
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("No tags found"));
+        }
+
+        #[tokio::test]
+        async fn test_github_latest_tag_404() {
+            let mock_server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/repos/nonexistent/repo/tags"))
+                .respond_with(ResponseTemplate::new(404))
+                .mount(&mock_server)
+                .await;
+
+            let result = github_latest_tag_with_base("nonexistent/repo", &mock_server.uri());
+
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("not found"));
+        }
+
+        #[tokio::test]
+        async fn test_github_latest_tag_rate_limited() {
+            let mock_server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/repos/owner/repo/tags"))
+                .respond_with(ResponseTemplate::new(403))
+                .mount(&mock_server)
+                .await;
+
+            let result = github_latest_tag_with_base("owner/repo", &mock_server.uri());
+
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("rate limit"));
+        }
+
+        #[tokio::test]
+        async fn test_http_get_json_response() {
+            let mock_server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/api/data"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({"version": "1.0", "status": "ok"})),
+                )
+                .mount(&mock_server)
+                .await;
+
+            let url = format!("{}/api/data", mock_server.uri());
+            let result = http_get(&url);
+
+            assert!(result.is_ok());
+            let body = result.unwrap();
+            assert!(body.contains("version"));
+            assert!(body.contains("1.0"));
+        }
+
+        #[tokio::test]
+        async fn test_http_get_large_response() {
+            let mock_server = MockServer::start().await;
+
+            let large_body = "x".repeat(10000);
+            Mock::given(method("GET"))
+                .and(path("/large"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(&large_body))
+                .mount(&mock_server)
+                .await;
+
+            let url = format!("{}/large", mock_server.uri());
+            let result = http_get(&url);
+
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap().len(), 10000);
+        }
     }
 }

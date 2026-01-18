@@ -1,167 +1,143 @@
-# levitate-recipe
+# recipe
 
-S-expression package recipe parser and executor for LevitateOS.
+Rhai-based package manager for LevitateOS.
 
-## Overview
+## Philosophy
 
-This crate provides a simple, Lisp-like syntax for defining package recipes that can be parsed and executed to acquire, build, install, and manage software packages.
+**recipe is not like other package managers.**
 
-## Recipe Format
+| Traditional PMs | recipe |
+|-----------------|--------|
+| Recipes are declarative specs | Recipes are **executable code** |
+| State lives in a database (`/var/lib/dpkg`, `/var/lib/pacman`) | State lives **in the recipe file itself** |
+| Package manager is complex, recipes are simple | Executor is minimal, **recipes do the work** |
+| Recipes are read-only | Recipes are **living data files** - the engine writes back to them |
 
-Recipes use S-expressions with a `package` root:
+### No Database
 
-```lisp
-(package "ripgrep" "14.1.0"
-  (description "Fast grep alternative written in Rust")
-  (license "MIT")
-  (homepage "https://github.com/BurntSushi/ripgrep")
+There is no `/var/lib/recipe/db`. To know what's installed:
 
-  (acquire
-    (binary
-      (x86_64 "https://github.com/BurntSushi/ripgrep/releases/download/14.1.0/ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz")
-      (aarch64 "https://github.com/BurntSushi/ripgrep/releases/download/14.1.0/ripgrep-14.1.0-aarch64-unknown-linux-gnu.tar.gz")))
-
-  (build (extract tar-gz))
-
-  (install
-    (to-bin "ripgrep-14.1.0-x86_64-unknown-linux-musl/rg")
-    (to-man "ripgrep-14.1.0-x86_64-unknown-linux-musl/doc/rg.1"))
-
-  (remove (rm-prefix)))
+```bash
+grep -l "installed = true" recipes/*.rhai
 ```
+
+The recipe file IS the database entry. When you install a package, the engine writes:
+
+```rhai
+let installed = true;
+let installed_version = "1.0.0";
+let installed_at = "2024-01-15T10:30:00Z";
+let installed_files = ["/usr/local/bin/ripgrep", "/usr/local/share/man/man1/rg.1"];
+```
+
+...directly into the .rhai file.
+
+### Recipes Are Code
+
+Recipes aren't YAML/TOML/JSON configs. They're Rhai scripts that **run**:
+
+```rhai
+let name = "ripgrep";
+let version = "14.1.0";
+
+fn acquire() {
+    let url = `https://github.com/BurntSushi/ripgrep/releases/download/${version}/ripgrep-${version}-x86_64-unknown-linux-musl.tar.gz`;
+    download(url);
+}
+
+fn build() {
+    extract("tar.gz");
+}
+
+fn install() {
+    install_bin(`ripgrep-${version}-x86_64-unknown-linux-musl/rg`);
+    install_man(`ripgrep-${version}-x86_64-unknown-linux-musl/doc/rg.1`);
+}
+```
+
+This means recipes can:
+- Use variables, conditionals, loops
+- Call helper functions
+- Compute URLs dynamically
+- Handle edge cases with real logic
+
+### Minimal Executor
+
+The Rust engine provides helpers, not policy:
+
+**Acquire phase:** `download()`, `copy()`, `verify_sha256()`
+**Build phase:** `extract()`, `cd()`, `run()`
+**Install phase:** `install_bin()`, `install_lib()`, `install_man()`, `rpm_install()`
+**Utilities:** `exists()`, `mkdir()`, `rm()`, `mv()`, `ln()`, `chmod()`
+**HTTP:** `http_get()`, `github_latest_release()`, `github_latest_tag()`
+
+Everything else happens in the recipe. The engine doesn't know about configure scripts, make, cmake, meson, cargo, or anything specific. Recipes encode that knowledge.
+
+### Everything Should Be Possible
+
+If a recipe needs to:
+- Download from a weird FTP server with custom auth
+- Patch source code before building
+- Install to non-standard locations
+- Run post-install scripts
+- Check if dependencies are met
+
+...it can. It's just code.
+
+## Lifecycle
+
+```
+acquire() → build() → install()
+```
+
+1. **acquire()** - Get source/binaries (download, copy, git clone)
+2. **build()** - Transform source (extract, configure, compile) - *optional*
+3. **install()** - Copy files to PREFIX
+
+Optional hooks:
+- **is_installed()** - Custom check beyond `installed` variable
+- **check_update()** - Return new version if available
+- **remove()** - Custom uninstall logic
 
 ## Usage
 
-### Parsing
-
-```rust
-use levitate_recipe::{parse, Recipe};
-
-let input = r#"(package "hello" "1.0.0" (deps))"#;
-let expr = parse(input)?;
-let recipe = Recipe::from_expr(&expr)?;
-
-assert_eq!(recipe.name, "hello");
-assert_eq!(recipe.version, "1.0.0");
+```bash
+recipe install ripgrep      # Run acquire → build → install
+recipe remove ripgrep       # Remove installed files
+recipe update ripgrep       # Check for updates
+recipe upgrade ripgrep      # Reinstall if newer version in recipe
+recipe list                 # Show all recipes and status
+recipe info ripgrep         # Show recipe details
+recipe search grep          # Find recipes by name/description
 ```
 
-### Executing
-
-```rust
-use levitate_recipe::{parse, Recipe, Context, Executor};
-
-let input = std::fs::read_to_string("ripgrep.recipe")?;
-let expr = parse(&input)?;
-let recipe = Recipe::from_expr(&expr)?;
-
-// Create execution context
-let ctx = Context::with_prefix("/opt/ripgrep")
-    .dry_run(true)  // Don't actually run commands
-    .verbose(true); // Print commands
-
-let executor = Executor::new(ctx);
-executor.execute(&recipe)?;
-```
-
-## Recipe Actions
-
-### acquire
-
-Download source code or binaries:
-
-```lisp
-; Download source tarball
-(acquire (source "https://example.com/foo-1.0.tar.gz"))
-
-; Download architecture-specific binary
-(acquire
-  (binary
-    (x86_64 "https://example.com/foo-1.0-x86_64.tar.gz")
-    (aarch64 "https://example.com/foo-1.0-aarch64.tar.gz")))
-
-; Clone git repository
-(acquire (git "https://github.com/example/foo.git"))
-```
-
-### build
-
-Build from source:
-
-```lisp
-; Just extract archive
-(build (extract tar-gz))
-
-; Skip build (for pre-built binaries)
-(build skip)
-
-; Custom build steps
-(build
-  (configure "./configure --prefix=$PREFIX")
-  (compile "make -j$NPROC")
-  (test "make test"))
-```
-
-### install
-
-Install files to the system:
-
-```lisp
-(install
-  (to-bin "src/myapp")              ; Install to $PREFIX/bin/myapp
-  (to-bin "src/app" "myapp")        ; Install with different name
-  (to-lib "libfoo.so")              ; Install to $PREFIX/lib/
-  (to-config "foo.conf" "/etc/foo.conf")
-  (to-man "doc/foo.1")              ; Install to $PREFIX/share/man/man1/
-  (to-share "data.txt" "foo/data.txt")
-  (link "$PREFIX/bin/foo" "$PREFIX/bin/foo-alias"))
-```
-
-### configure
-
-Post-install configuration:
-
-```lisp
-(configure
-  (create-user "myapp" system no-login)
-  (create-dir "/var/lib/myapp" "myapp")
-  (run "myapp --init"))
-```
-
-### start / stop
-
-Service management:
-
-```lisp
-(start (exec "myapp" "--daemon"))
-(start (service systemd "myapp"))
-
-(stop (service-stop "myapp"))
-(stop (pkill "myapp"))
-```
-
-### remove
-
-Uninstall:
-
-```lisp
-(remove
-  stop-first        ; Stop service before removing
-  (rm-prefix)       ; Remove $PREFIX entirely
-  (rm-bin "myapp")  ; Remove specific binary
-  (rm-config "/etc/myapp.conf" prompt))
-```
-
-## Variables
-
-The executor expands these variables in commands:
+## Variables Available in Recipes
 
 | Variable | Description |
 |----------|-------------|
-| `$PREFIX` | Installation prefix (e.g., `/usr/local`) |
-| `$NPROC` | Number of CPU cores for parallel builds |
-| `$ARCH` | Target architecture (e.g., `x86_64`) |
-| `$BUILD_DIR` | Temporary build directory |
+| `PREFIX` | Installation prefix (default: `/usr/local`) |
+| `BUILD_DIR` | Temporary build directory |
+| `ARCH` | Target architecture (`x86_64`, `aarch64`) |
+| `NPROC` | Number of CPU cores |
+
+## Why This Design?
+
+1. **Simplicity** - No database to corrupt, no complex state machine
+2. **Transparency** - `cat recipe.rhai` shows exactly what's installed and how
+3. **Flexibility** - Code can handle any edge case
+4. **Debuggability** - Recipe failing? Add `print()` statements
+5. **Version control** - Recipes are just files, track them in git
+
+## Comparison with Other Package Managers
+
+| Feature | apt/dnf | pacman | Homebrew | recipe |
+|---------|---------|--------|----------|--------|
+| State storage | `/var/lib/*` DB | `/var/lib/pacman` | SQLite + git | In recipe files |
+| Recipe format | Control files | PKGBUILD (bash) | Ruby DSL | Rhai scripts |
+| Recipe mutability | Read-only | Read-only | Read-only | **Read-write** |
+| Executor complexity | High | Medium | High | **Minimal** |
+| Remote repos | Required | Required | Required | **Optional** |
 
 ## License
 
-MIT - see [LICENSE](LICENSE) for details.
+MIT
