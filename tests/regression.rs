@@ -202,7 +202,7 @@ fn check_update() {
 
 #[test]
 fn test_regression_parse_version_order() {
-    use levitate_recipe::util::http::parse_version;
+    use levitate_recipe::helpers::http::parse_version;
 
     // "version-" prefix should be fully stripped
     assert_eq!(parse_version("version-1.0.0"), "1.0.0");
@@ -234,7 +234,7 @@ fn test_regression_parse_version_order() {
 fn test_regression_http_has_timeout() {
     // We can't easily test the actual timeout behavior without mocking,
     // but we can verify the code compiles with timeout and test error handling.
-    use levitate_recipe::util::http::http_get;
+    use levitate_recipe::helpers::http::http_get;
 
     // Invalid URL should fail quickly (not hang)
     let start = std::time::Instant::now();
@@ -247,13 +247,12 @@ fn test_regression_http_has_timeout() {
 }
 
 // =============================================================================
-// BUG: rpm_install Symlinks Lost (install.rs)
+// BUG: Symlinks Need Proper Tracking (general install logic)
 // =============================================================================
 // Issue: is_file() check skipped symlinks. Important symlinks like /bin/sh
-// were not tracked.
+// need to be tracked for proper removal.
 //
-// Fix: Changed to is_file() || is_symlink().
-// Note: Full test requires rpm2cpio, but we can test the symlink tracking logic.
+// Fix: Changed to is_file() || is_symlink() where symlink tracking is needed.
 
 #[test]
 #[cfg(unix)]

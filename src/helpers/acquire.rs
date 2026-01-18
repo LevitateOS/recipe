@@ -1,16 +1,38 @@
 //! Acquire phase helpers
 //!
-//! Get source materials: download, copy, verify
+//! Get source materials: download, copy, verify.
+//!
+//! ## Implicit State
+//!
+//! Both `download()` and `copy()` set `ctx.last_downloaded` to point to the
+//! acquired file. This is used by `verify_sha256()` to know which file to check.
+//!
+//! ## Example
+//!
+//! ```rhai
+//! fn acquire() {
+//!     download("https://example.com/foo-1.0.tar.gz");
+//!     verify_sha256("abc123...");  // Verifies the downloaded file
+//! }
+//! ```
 
-use crate::engine::context::with_context_mut;
-use crate::engine::output;
+use crate::core::{output, with_context, with_context_mut};
 use indicatif::{ProgressBar, ProgressStyle};
 use rhai::EvalAltResult;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::time::Duration;
 
-/// Download a file from a URL with progress bar
+/// Download a file from a URL with progress bar.
+///
+/// Downloads to `BUILD_DIR/{filename}` and sets `ctx.last_downloaded` for
+/// use with `verify_sha256()`.
+///
+/// # Example
+/// ```rhai
+/// download("https://example.com/foo-1.0.tar.gz");
+/// verify_sha256("abc123...");
+/// ```
 pub fn download(url: &str) -> Result<(), Box<EvalAltResult>> {
     with_context_mut(|ctx| {
         let filename = url.rsplit('/').next().unwrap_or("download");
@@ -110,7 +132,7 @@ pub fn copy_files(pattern: &str) -> Result<(), Box<EvalAltResult>> {
 
 /// Verify the SHA256 hash of the last downloaded/copied file
 pub fn verify_sha256(expected: &str) -> Result<(), Box<EvalAltResult>> {
-    crate::engine::context::with_context(|ctx| {
+    with_context(|ctx| {
         let file = ctx
             .last_downloaded
             .as_ref()

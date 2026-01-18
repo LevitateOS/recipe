@@ -92,7 +92,8 @@ fn build() {
 - `install_bin(pattern)` - Install to `PREFIX/bin` with 0755 permissions
 - `install_lib(pattern)` - Install to `PREFIX/lib` with 0644 permissions
 - `install_man(pattern)` - Install to `PREFIX/share/man/manN/`
-- `rpm_install()` - Extract RPM contents to PREFIX
+
+For anything more complex, use `run()` directly (e.g., `run("make install")`).
 
 **Example:**
 ```rhai
@@ -149,7 +150,7 @@ recipe/src/engine/
 ├── phases/
 │   ├── acquire.rs    # download, copy, verify_sha256
 │   ├── build.rs      # extract, cd, run
-│   └── install.rs    # install_bin, install_lib, install_man, rpm_install
+│   └── install.rs    # install_bin, install_lib, install_man
 ├── lifecycle.rs      # Orchestrates phase execution order
 └── context.rs        # Shared state (PREFIX, BUILD_DIR, current_dir, last_downloaded)
 ```

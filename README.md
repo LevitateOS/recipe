@@ -67,7 +67,7 @@ The Rust engine provides helpers, not policy:
 
 **Acquire phase:** `download()`, `copy()`, `verify_sha256()`
 **Build phase:** `extract()`, `cd()`, `run()`
-**Install phase:** `install_bin()`, `install_lib()`, `install_man()`, `rpm_install()`
+**Install phase:** `install_bin()`, `install_lib()`, `install_man()`
 **Utilities:** `exists()`, `mkdir()`, `rm()`, `mv()`, `ln()`, `chmod()`
 **HTTP:** `http_get()`, `github_latest_release()`, `github_latest_tag()`
 

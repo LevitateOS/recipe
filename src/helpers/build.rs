@@ -1,16 +1,35 @@
 //! Build phase helpers
 //!
-//! Compile/transform source: extract, cd, run
+//! Compile/transform source: extract, cd, run.
+//!
+//! ## Implicit State
+//!
+//! - `extract()` uses `ctx.last_downloaded` (set by download/copy)
+//! - `cd()` updates `ctx.current_dir` for subsequent commands
+//! - `run()` executes in `ctx.current_dir` with `PREFIX` and `BUILD_DIR` env vars
+//!
+//! ## Example
+//!
+//! ```rhai
+//! fn build() {
+//!     extract("tar.gz");           // Extracts last_downloaded to BUILD_DIR
+//!     cd("foo-1.0");               // Changes to extracted directory
+//!     run("./configure --prefix=$PREFIX");  // PREFIX env var is set
+//!     run("make -j4");
+//! }
+//! ```
 
-use crate::engine::context::{with_context, with_context_mut};
-use crate::engine::output;
+use crate::core::{output, with_context, with_context_mut};
 use indicatif::{ProgressBar, ProgressStyle};
 use rhai::EvalAltResult;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-/// Extract an archive with spinner
+/// Extract an archive with spinner.
+///
+/// Extracts `ctx.last_downloaded` (set by download/copy) to `BUILD_DIR`.
+/// Supports: tar.gz, tar.xz, tar.bz2, zip.
 pub fn extract(format: &str) -> Result<(), Box<EvalAltResult>> {
     with_context(|ctx| {
         let file = ctx
@@ -68,7 +87,16 @@ pub fn extract(format: &str) -> Result<(), Box<EvalAltResult>> {
     })
 }
 
-/// Change the current working directory
+/// Change the current working directory.
+///
+/// Updates `ctx.current_dir` which affects subsequent `run()` calls.
+/// Relative paths are resolved from `BUILD_DIR`.
+///
+/// # Example
+/// ```rhai
+/// cd("foo-1.0");  // Now in BUILD_DIR/foo-1.0
+/// run("make");    // Runs in that directory
+/// ```
 pub fn change_dir(dir: &str) -> Result<(), Box<EvalAltResult>> {
     with_context_mut(|ctx| {
         let new_dir = if Path::new(dir).is_absolute() {
@@ -87,7 +115,21 @@ pub fn change_dir(dir: &str) -> Result<(), Box<EvalAltResult>> {
     })
 }
 
-/// Run a shell command with spinner for long-running commands
+/// Run a shell command with spinner for long-running commands.
+///
+/// Executes in `ctx.current_dir` (set by `cd()`).
+///
+/// ## Environment Variables
+/// These are automatically set:
+/// - `PREFIX` - Installation prefix (e.g., `/usr/local`)
+/// - `BUILD_DIR` - Temporary build directory
+///
+/// # Example
+/// ```rhai
+/// run("./configure --prefix=$PREFIX");  // PREFIX is available
+/// run("make -j4");
+/// run("make install");
+/// ```
 pub fn run_cmd(cmd: &str) -> Result<(), Box<EvalAltResult>> {
     with_context(|ctx| {
         // Truncate long commands for display

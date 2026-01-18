@@ -15,5 +15,7 @@ fn build() {
 }
 
 fn install() {
-    rpm_install();
+    // Extract RPM contents to PREFIX
+    // Use run() for full control over the extraction process
+    run(`rpm2cpio *.rpm | cpio -idmv -D ${PREFIX}`);
 }

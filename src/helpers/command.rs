@@ -1,6 +1,6 @@
 //! Command execution helpers
 
-use crate::engine::context::{with_context, CONTEXT};
+use crate::core::{with_context, CONTEXT};
 use rhai::EvalAltResult;
 use std::process::Command;
 

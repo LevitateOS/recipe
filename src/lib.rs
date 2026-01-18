@@ -47,10 +47,11 @@
 //! - `run(cmd)` - Execute shell command
 //!
 //! ## Install Phase
-//! - `install_bin(pattern)` - Install to PREFIX/bin
-//! - `install_lib(pattern)` - Install to PREFIX/lib
+//! - `install_bin(pattern)` - Install to PREFIX/bin (0o755)
+//! - `install_lib(pattern)` - Install to PREFIX/lib (0o644)
 //! - `install_man(pattern)` - Install to PREFIX/share/man/man{N}
-//! - `rpm_install()` - Extract RPM contents to PREFIX
+//!
+//! For anything more complex (RPM extraction, custom paths), use `run()` directly.
 //!
 //! # Variables Available in Scripts
 //!
@@ -60,10 +61,124 @@
 //! - `NPROC` - Number of CPUs
 //! - `RPM_PATH` - Path to RPM repository (from environment)
 
-mod engine;
+mod core;
+pub mod helpers;
 
-pub use engine::deps;
-pub use engine::output;
-pub use engine::recipe_state;
-pub use engine::util;
-pub use engine::RecipeEngine;
+pub use core::deps;
+pub use core::output;
+pub use core::recipe_state;
+
+use anyhow::Result;
+use rhai::{module_resolvers::FileModuleResolver, Engine};
+use std::path::{Path, PathBuf};
+
+/// Recipe execution engine
+pub struct RecipeEngine {
+    engine: Engine,
+    prefix: PathBuf,
+    build_dir: PathBuf,
+    recipes_path: Option<PathBuf>,
+}
+
+impl RecipeEngine {
+    /// Create a new recipe engine
+    pub fn new(prefix: PathBuf, build_dir: PathBuf) -> Self {
+        let mut engine = Engine::new();
+
+        // Register all helper functions
+        helpers::register_all(&mut engine);
+
+        Self {
+            engine,
+            prefix,
+            build_dir,
+            recipes_path: None,
+        }
+    }
+
+    /// Set the recipes path for module resolution
+    pub fn with_recipes_path(mut self, path: PathBuf) -> Self {
+        let mut resolver = FileModuleResolver::new();
+        resolver.set_base_path(&path);
+        self.engine.set_module_resolver(resolver);
+        self.recipes_path = Some(path);
+        self
+    }
+
+    /// Execute a recipe script (install a package)
+    ///
+    /// Follows the package lifecycle:
+    /// 1. is_installed() - Check if already done (skip if true)
+    /// 2. acquire() - Get source materials
+    /// 3. build() - Compile/transform (optional)
+    /// 4. install() - Copy to PREFIX
+    pub fn execute(&self, recipe_path: &Path) -> Result<()> {
+        core::lifecycle::execute(&self.engine, &self.prefix, &self.build_dir, recipe_path)
+    }
+
+    /// Remove an installed package
+    pub fn remove(&self, recipe_path: &Path) -> Result<()> {
+        core::lifecycle::remove(&self.engine, &self.prefix, recipe_path)
+    }
+
+    /// Check for updates to a package
+    /// Returns Some(new_version) if update available
+    pub fn update(&self, recipe_path: &Path) -> Result<Option<String>> {
+        core::lifecycle::update(&self.engine, recipe_path)
+    }
+
+    /// Upgrade a package (reinstall if newer version in recipe)
+    /// Returns true if upgrade was performed
+    pub fn upgrade(&self, recipe_path: &Path) -> Result<bool> {
+        core::lifecycle::upgrade(&self.engine, &self.prefix, &self.build_dir, recipe_path)
+    }
+
+    /// Get the prefix path
+    pub fn prefix(&self) -> &Path {
+        &self.prefix
+    }
+
+    /// Get the recipes path
+    pub fn recipes_path(&self) -> Option<&Path> {
+        self.recipes_path.as_deref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_engine_creation() {
+        let prefix = TempDir::new().unwrap();
+        let build_dir = TempDir::new().unwrap();
+        let engine = RecipeEngine::new(prefix.path().to_path_buf(), build_dir.path().to_path_buf());
+        assert!(engine.recipes_path.is_none());
+    }
+
+    #[test]
+    fn test_empty_recipe() {
+        let prefix = TempDir::new().unwrap();
+        let build_dir = TempDir::new().unwrap();
+        let engine = RecipeEngine::new(prefix.path().to_path_buf(), build_dir.path().to_path_buf());
+
+        let recipe_dir = TempDir::new().unwrap();
+        let recipe_path = recipe_dir.path().join("test.rhai");
+        std::fs::write(
+            &recipe_path,
+            r#"
+            let name = "test";
+            let version = "1.0.0";
+
+            fn acquire() {}
+            fn build() {}
+            fn install() {}
+        "#,
+        )
+        .unwrap();
+
+        let result = engine.execute(&recipe_path);
+        assert!(result.is_ok(), "Failed: {:?}", result);
+    }
+}

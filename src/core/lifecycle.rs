@@ -6,9 +6,9 @@
 //! 3. build() - Compile/transform (optional)
 //! 4. install() - Copy to PREFIX
 
-use crate::engine::context::{get_installed_files, init_context_with_recipe, ContextGuard};
-use crate::engine::output;
-use crate::engine::recipe_state::{self, OptionalString};
+use super::context::{get_installed_files, init_context_with_recipe, ContextGuard};
+use super::output;
+use super::recipe_state::{self, OptionalString};
 use anyhow::{Context, Result};
 use fs2::FileExt;
 use rhai::{Engine, Scope, AST};
