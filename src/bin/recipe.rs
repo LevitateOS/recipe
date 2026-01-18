@@ -431,3 +431,249 @@ fn chrono_lite(timestamp: i64) -> String {
     let dt = UNIX_EPOCH + Duration::from_secs(timestamp as u64);
     format!("{:?}", dt)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    // ==================== Package Name Validation ====================
+
+    #[test]
+    fn test_valid_package_names() {
+        assert!(validate_package_name("ripgrep").is_ok());
+        assert!(validate_package_name("my-package").is_ok());
+        assert!(validate_package_name("my_package").is_ok());
+        assert!(validate_package_name("package123").is_ok());
+        assert!(validate_package_name("123package").is_ok());
+        assert!(validate_package_name("a").is_ok());
+        assert!(validate_package_name("A").is_ok());
+        assert!(validate_package_name("pkg-name_v2").is_ok());
+    }
+
+    #[test]
+    fn test_empty_package_name() {
+        let result = validate_package_name("");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn test_path_traversal_attacks() {
+        // These should all be rejected
+        assert!(validate_package_name("..").is_err());
+        assert!(validate_package_name("../etc/passwd").is_err());
+        assert!(validate_package_name("../../etc/passwd").is_err());
+        assert!(validate_package_name("foo/../bar").is_err());
+        assert!(validate_package_name("/etc/passwd").is_err());
+        assert!(validate_package_name("foo/bar").is_err());
+    }
+
+    #[test]
+    fn test_special_characters_rejected() {
+        assert!(validate_package_name("pkg!name").is_err());
+        assert!(validate_package_name("pkg@name").is_err());
+        assert!(validate_package_name("pkg#name").is_err());
+        assert!(validate_package_name("pkg$name").is_err());
+        assert!(validate_package_name("pkg%name").is_err());
+        assert!(validate_package_name("pkg^name").is_err());
+        assert!(validate_package_name("pkg&name").is_err());
+        assert!(validate_package_name("pkg*name").is_err());
+        assert!(validate_package_name("pkg(name").is_err());
+        assert!(validate_package_name("pkg)name").is_err());
+        assert!(validate_package_name("pkg+name").is_err());
+        assert!(validate_package_name("pkg=name").is_err());
+        assert!(validate_package_name("pkg[name").is_err());
+        assert!(validate_package_name("pkg]name").is_err());
+        assert!(validate_package_name("pkg{name").is_err());
+        assert!(validate_package_name("pkg}name").is_err());
+        assert!(validate_package_name("pkg|name").is_err());
+        assert!(validate_package_name("pkg\\name").is_err());
+        assert!(validate_package_name("pkg:name").is_err());
+        assert!(validate_package_name("pkg;name").is_err());
+        assert!(validate_package_name("pkg'name").is_err());
+        assert!(validate_package_name("pkg\"name").is_err());
+        assert!(validate_package_name("pkg<name").is_err());
+        assert!(validate_package_name("pkg>name").is_err());
+        assert!(validate_package_name("pkg,name").is_err());
+        assert!(validate_package_name("pkg?name").is_err());
+        assert!(validate_package_name("pkg`name").is_err());
+        assert!(validate_package_name("pkg~name").is_err());
+        assert!(validate_package_name("pkg name").is_err()); // space
+        assert!(validate_package_name("pkg\tname").is_err()); // tab
+        assert!(validate_package_name("pkg\nname").is_err()); // newline
+    }
+
+    #[test]
+    fn test_dots_rejected() {
+        // Single dot and double dot are dangerous
+        assert!(validate_package_name(".").is_err());
+        assert!(validate_package_name("..").is_err());
+        // Dots within names are also rejected (keep it simple)
+        assert!(validate_package_name("pkg.name").is_err());
+        assert!(validate_package_name(".hidden").is_err());
+    }
+
+    // ==================== Recipe Resolution ====================
+
+    fn create_test_recipes_dir() -> (TempDir, PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let recipes_path = dir.path().to_path_buf();
+        (dir, recipes_path)
+    }
+
+    fn write_recipe(recipes_path: &Path, name: &str, content: &str) -> PathBuf {
+        let path = recipes_path.join(format!("{}.rhai", name));
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn test_resolve_recipe_simple_name() {
+        let (_dir, recipes_path) = create_test_recipes_dir();
+        write_recipe(&recipes_path, "ripgrep", "let name = \"ripgrep\";");
+
+        let result = resolve_recipe("ripgrep", &recipes_path);
+        assert!(result.is_ok());
+        assert!(result.unwrap().ends_with("ripgrep.rhai"));
+    }
+
+    #[test]
+    fn test_resolve_recipe_with_hyphen() {
+        let (_dir, recipes_path) = create_test_recipes_dir();
+        write_recipe(&recipes_path, "my-package", "let name = \"my-package\";");
+
+        let result = resolve_recipe("my-package", &recipes_path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_resolve_recipe_not_found() {
+        let (_dir, recipes_path) = create_test_recipes_dir();
+        let result = resolve_recipe("nonexistent", &recipes_path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Recipe not found"));
+    }
+
+    #[test]
+    fn test_resolve_recipe_path_traversal_rejected() {
+        let (_dir, recipes_path) = create_test_recipes_dir();
+        // Paths with "/" are treated as explicit paths
+        let result = resolve_recipe("../../../etc/passwd", &recipes_path);
+        assert!(result.is_err());
+        // Explicit paths that don't exist return "not found"
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn test_validate_package_name_called_for_simple_names() {
+        // Package names without path separators go through validation
+        let (_dir, recipes_path) = create_test_recipes_dir();
+        // "pkg!name" has no "/" but has invalid char "!"
+        let result = resolve_recipe("pkg!name", &recipes_path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid package name"));
+    }
+
+    #[test]
+    fn test_resolve_recipe_explicit_path() {
+        let (_dir, recipes_path) = create_test_recipes_dir();
+        let recipe_path = write_recipe(&recipes_path, "test", "let name = \"test\";");
+
+        // Should accept explicit .rhai path
+        let result = resolve_recipe(recipe_path.to_str().unwrap(), &recipes_path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_resolve_recipe_subdir_style() {
+        let (_dir, recipes_path) = create_test_recipes_dir();
+
+        // Create ripgrep/ripgrep.rhai
+        let subdir = recipes_path.join("ripgrep");
+        std::fs::create_dir(&subdir).unwrap();
+        std::fs::write(subdir.join("ripgrep.rhai"), "let name = \"ripgrep\";").unwrap();
+
+        let result = resolve_recipe("ripgrep", &recipes_path);
+        assert!(result.is_ok());
+        assert!(result.unwrap().ends_with("ripgrep/ripgrep.rhai"));
+    }
+
+    #[test]
+    fn test_resolve_recipe_prefers_direct_file() {
+        let (_dir, recipes_path) = create_test_recipes_dir();
+
+        // Create both ripgrep.rhai and ripgrep/ripgrep.rhai
+        write_recipe(&recipes_path, "ripgrep", "let name = \"direct\";");
+        let subdir = recipes_path.join("ripgrep");
+        std::fs::create_dir(&subdir).unwrap();
+        std::fs::write(subdir.join("ripgrep.rhai"), "let name = \"subdir\";").unwrap();
+
+        // Should prefer the direct file
+        let result = resolve_recipe("ripgrep", &recipes_path);
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        assert!(!path.to_string_lossy().contains("ripgrep/ripgrep"));
+    }
+
+    // ==================== Find Installed Recipes ====================
+
+    #[test]
+    fn test_find_installed_recipes_empty() {
+        let (_dir, recipes_path) = create_test_recipes_dir();
+        let result = find_installed_recipes(&recipes_path);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_find_installed_recipes_finds_installed() {
+        let (_dir, recipes_path) = create_test_recipes_dir();
+        write_recipe(&recipes_path, "pkg1", "let installed = true;");
+        write_recipe(&recipes_path, "pkg2", "let installed = false;");
+        write_recipe(&recipes_path, "pkg3", "let installed = true;");
+
+        let result = find_installed_recipes(&recipes_path).unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_find_installed_recipes_nonexistent_dir() {
+        let recipes_path = PathBuf::from("/nonexistent/path");
+        let result = find_installed_recipes(&recipes_path);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    // ==================== Find Upgradable Recipes ====================
+
+    #[test]
+    fn test_find_upgradable_recipes() {
+        let (_dir, recipes_path) = create_test_recipes_dir();
+
+        // Installed but up to date
+        write_recipe(&recipes_path, "pkg1", r#"
+let version = "1.0";
+let installed = true;
+let installed_version = "1.0";
+"#);
+
+        // Installed with update available
+        write_recipe(&recipes_path, "pkg2", r#"
+let version = "2.0";
+let installed = true;
+let installed_version = "1.0";
+"#);
+
+        // Not installed
+        write_recipe(&recipes_path, "pkg3", r#"
+let version = "1.0";
+let installed = false;
+"#);
+
+        let result = find_upgradable_recipes(&recipes_path).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result[0].to_string_lossy().contains("pkg2"));
+    }
+}

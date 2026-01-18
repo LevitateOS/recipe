@@ -427,3 +427,357 @@ pub fn upgrade(
 
     Ok(true)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::RecipeEngine;
+    use tempfile::TempDir;
+
+    fn create_test_env() -> (TempDir, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let prefix = dir.path().join("prefix");
+        let build_dir = dir.path().join("build");
+        let recipes_dir = dir.path().join("recipes");
+        std::fs::create_dir_all(&prefix).unwrap();
+        std::fs::create_dir_all(&build_dir).unwrap();
+        std::fs::create_dir_all(&recipes_dir).unwrap();
+        (dir, prefix, build_dir, recipes_dir)
+    }
+
+    fn write_recipe(recipes_dir: &Path, name: &str, content: &str) -> std::path::PathBuf {
+        let path = recipes_dir.join(format!("{}.rhai", name));
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    // ==================== has_action tests ====================
+
+    #[test]
+    fn test_has_action_exists() {
+        let engine = rhai::Engine::new();
+        let ast = engine.compile("fn acquire() {} fn install() {}").unwrap();
+        assert!(has_action(&ast, "acquire"));
+        assert!(has_action(&ast, "install"));
+    }
+
+    #[test]
+    fn test_has_action_missing() {
+        let engine = rhai::Engine::new();
+        let ast = engine.compile("fn acquire() {}").unwrap();
+        assert!(!has_action(&ast, "install"));
+        assert!(!has_action(&ast, "build"));
+    }
+
+    #[test]
+    fn test_has_action_empty_script() {
+        let engine = rhai::Engine::new();
+        let ast = engine.compile("let x = 1;").unwrap();
+        assert!(!has_action(&ast, "acquire"));
+    }
+
+    // ==================== get_recipe_name tests ====================
+
+    #[test]
+    fn test_get_recipe_name_from_variable() {
+        let engine = rhai::Engine::new();
+        let ast = engine.compile(r#"let name = "my-package";"#).unwrap();
+        let mut scope = rhai::Scope::new();
+        let name = get_recipe_name(&engine, &mut scope, &ast, Path::new("/test/fallback.rhai"));
+        assert_eq!(name, "my-package");
+    }
+
+    #[test]
+    fn test_get_recipe_name_fallback_to_filename() {
+        let engine = rhai::Engine::new();
+        let ast = engine.compile("let version = \"1.0\";").unwrap();
+        let mut scope = rhai::Scope::new();
+        let name = get_recipe_name(&engine, &mut scope, &ast, Path::new("/test/fallback-pkg.rhai"));
+        assert_eq!(name, "fallback-pkg");
+    }
+
+    // ==================== call_action tests ====================
+
+    #[test]
+    fn test_call_action_success() {
+        let engine = rhai::Engine::new();
+        let ast = engine.compile("fn test_action() { let x = 1; }").unwrap();
+        let mut scope = rhai::Scope::new();
+        let result = call_action(&engine, &mut scope, &ast, "test_action");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_call_action_missing() {
+        let engine = rhai::Engine::new();
+        let ast = engine.compile("fn other() {}").unwrap();
+        let mut scope = rhai::Scope::new();
+        let result = call_action(&engine, &mut scope, &ast, "missing");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not defined"));
+    }
+
+    #[test]
+    fn test_call_action_runtime_error() {
+        let engine = rhai::Engine::new();
+        // This will cause a runtime error (undefined variable)
+        let ast = engine.compile("fn bad_action() { undefined_var }").unwrap();
+        let mut scope = rhai::Scope::new();
+        let result = call_action(&engine, &mut scope, &ast, "bad_action");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("failed"));
+    }
+
+    // ==================== remove tests ====================
+
+    #[test]
+    fn test_remove_not_installed() {
+        let (_dir, prefix, _build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(&recipes_dir, "test", r#"
+let name = "test";
+let installed = false;
+fn acquire() {}
+fn install() {}
+"#);
+        let engine = RecipeEngine::new(prefix.clone(), _build_dir);
+        let result = remove(&engine.engine, &prefix, &recipe_path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not installed"));
+    }
+
+    #[test]
+    fn test_remove_with_no_files() {
+        let (_dir, prefix, _build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(&recipes_dir, "test", r#"
+let name = "test";
+let installed = true;
+let installed_files = [];
+fn acquire() {}
+fn install() {}
+"#);
+        let engine = RecipeEngine::new(prefix.clone(), _build_dir);
+        let result = remove(&engine.engine, &prefix, &recipe_path);
+        assert!(result.is_ok());
+
+        // Verify state was updated
+        let installed: Option<bool> = recipe_state::get_var(&recipe_path, "installed").unwrap();
+        assert_eq!(installed, Some(false));
+    }
+
+    #[test]
+    fn test_remove_deletes_files() {
+        let (_dir, prefix, _build_dir, recipes_dir) = create_test_env();
+
+        // Create a file to be "installed"
+        let bin_dir = prefix.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let test_file = bin_dir.join("test-binary");
+        std::fs::write(&test_file, "binary content").unwrap();
+
+        let recipe_path = write_recipe(&recipes_dir, "test", &format!(r#"
+let name = "test";
+let installed = true;
+let installed_files = ["{}"];
+fn acquire() {{}}
+fn install() {{}}
+"#, test_file.display()));
+
+        let engine = RecipeEngine::new(prefix.clone(), _build_dir);
+        let result = remove(&engine.engine, &prefix, &recipe_path);
+        assert!(result.is_ok());
+
+        // File should be deleted
+        assert!(!test_file.exists());
+    }
+
+    #[test]
+    fn test_remove_partial_failure_preserves_state() {
+        let (_dir, prefix, _build_dir, recipes_dir) = create_test_env();
+
+        // Create a directory instead of a file (can't remove with remove_file)
+        let bin_dir = prefix.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let non_removable = bin_dir.join("subdir");
+        std::fs::create_dir(&non_removable).unwrap();
+        // Put a file inside so the directory isn't empty
+        std::fs::write(non_removable.join("file"), "content").unwrap();
+
+        let recipe_path = write_recipe(&recipes_dir, "test", &format!(r#"
+let name = "test";
+let installed = true;
+let installed_files = ["{}"];
+fn acquire() {{}}
+fn install() {{}}
+"#, non_removable.display()));
+
+        let engine = RecipeEngine::new(prefix.clone(), _build_dir);
+        let result = remove(&engine.engine, &prefix, &recipe_path);
+
+        // Should fail because we can't remove a directory with remove_file
+        assert!(result.is_err());
+
+        // State should be preserved (still installed)
+        let installed: Option<bool> = recipe_state::get_var(&recipe_path, "installed").unwrap();
+        assert_eq!(installed, Some(true));
+    }
+
+    // ==================== update tests ====================
+
+    #[test]
+    fn test_update_no_check_update_function() {
+        let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(&recipes_dir, "test", r#"
+let name = "test";
+let version = "1.0";
+fn acquire() {}
+fn install() {}
+"#);
+        let engine = RecipeEngine::new(prefix, build_dir);
+        let result = update(&engine.engine, &recipe_path);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None);
+    }
+
+    #[test]
+    fn test_update_returns_unit_no_update() {
+        let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(&recipes_dir, "test", r#"
+let name = "test";
+let version = "1.0";
+fn acquire() {}
+fn install() {}
+fn check_update() { () }
+"#);
+        let engine = RecipeEngine::new(prefix, build_dir);
+        let result = update(&engine.engine, &recipe_path);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None);
+    }
+
+    #[test]
+    fn test_update_returns_new_version() {
+        let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(&recipes_dir, "test", r#"
+let name = "test";
+let version = "1.0";
+fn acquire() {}
+fn install() {}
+fn check_update() { "2.0" }
+"#);
+        let engine = RecipeEngine::new(prefix, build_dir);
+        let result = update(&engine.engine, &recipe_path);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some("2.0".to_string()));
+
+        // Version should be updated in recipe
+        let version: Option<String> = recipe_state::get_var(&recipe_path, "version").unwrap();
+        assert_eq!(version, Some("2.0".to_string()));
+    }
+
+    #[test]
+    fn test_update_check_fails() {
+        let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(&recipes_dir, "test", r#"
+let name = "test";
+let version = "1.0";
+fn acquire() {}
+fn install() {}
+fn check_update() { undefined_var }
+"#);
+        let engine = RecipeEngine::new(prefix, build_dir);
+        let result = update(&engine.engine, &recipe_path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("update check failed"));
+    }
+
+    // ==================== upgrade tests ====================
+
+    #[test]
+    fn test_upgrade_not_installed() {
+        let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(&recipes_dir, "test", r#"
+let name = "test";
+let version = "1.0";
+let installed = false;
+fn acquire() {}
+fn install() {}
+"#);
+        let engine = RecipeEngine::new(prefix, build_dir);
+        let result = upgrade(&engine.engine, &engine.prefix, &engine.build_dir, &recipe_path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not installed"));
+    }
+
+    #[test]
+    fn test_upgrade_already_up_to_date() {
+        let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(&recipes_dir, "test", r#"
+let name = "test";
+let version = "1.0";
+let installed = true;
+let installed_version = "1.0";
+let installed_files = [];
+fn acquire() {}
+fn install() {}
+"#);
+        let engine = RecipeEngine::new(prefix, build_dir);
+        let result = upgrade(&engine.engine, &engine.prefix, &engine.build_dir, &recipe_path);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false); // No upgrade performed
+    }
+
+    // ==================== cleanup_empty_dirs tests ====================
+
+    #[test]
+    fn test_cleanup_empty_dirs_removes_empty() {
+        let (_dir, prefix, _build_dir, _recipes_dir) = create_test_env();
+
+        // Create nested empty directories
+        let nested = prefix.join("a/b/c");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let files = vec![nested.join("file.txt").to_string_lossy().to_string()];
+
+        cleanup_empty_dirs(&files, &prefix);
+
+        // All empty directories should be removed
+        assert!(!prefix.join("a/b/c").exists());
+        assert!(!prefix.join("a/b").exists());
+        assert!(!prefix.join("a").exists());
+    }
+
+    #[test]
+    fn test_cleanup_empty_dirs_preserves_nonempty() {
+        let (_dir, prefix, _build_dir, _recipes_dir) = create_test_env();
+
+        // Create directories with one containing a file
+        let a = prefix.join("a");
+        let b = a.join("b");
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("keep.txt"), "content").unwrap();
+
+        let files = vec![b.join("deleted.txt").to_string_lossy().to_string()];
+
+        cleanup_empty_dirs(&files, &prefix);
+
+        // "a" should still exist (has keep.txt), "b" should be removed
+        assert!(a.exists());
+        assert!(!b.exists());
+    }
+
+    #[test]
+    fn test_cleanup_empty_dirs_stops_at_prefix() {
+        let (_dir, prefix, _build_dir, _recipes_dir) = create_test_env();
+
+        let nested = prefix.join("a");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let files = vec![nested.join("file.txt").to_string_lossy().to_string()];
+
+        cleanup_empty_dirs(&files, &prefix);
+
+        // "a" removed but prefix itself should remain
+        assert!(!nested.exists());
+        assert!(prefix.exists());
+    }
+}

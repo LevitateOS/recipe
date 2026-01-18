@@ -166,3 +166,251 @@ pub fn rpm_install() -> Result<(), Box<EvalAltResult>> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::context::{clear_context, get_installed_files, init_context_with_recipe};
+    use tempfile::TempDir;
+
+    fn setup_context() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let prefix = dir.path().join("prefix");
+        let build_dir = dir.path().join("build");
+        std::fs::create_dir_all(&prefix).unwrap();
+        std::fs::create_dir_all(&build_dir).unwrap();
+        init_context_with_recipe(prefix.clone(), build_dir.clone(), None);
+        (dir, prefix, build_dir)
+    }
+
+    // ==================== install_to_dir tests ====================
+
+    #[test]
+    fn test_install_to_dir_no_context() {
+        clear_context();
+        let result = install_to_dir("*.txt", "bin", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No execution context"));
+    }
+
+    #[test]
+    fn test_install_to_dir_no_matching_files() {
+        let (_dir, _prefix, _build_dir) = setup_context();
+        let result = install_to_dir("nonexistent*.txt", "bin", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no files match"));
+        clear_context();
+    }
+
+    #[test]
+    fn test_install_to_dir_copies_file() {
+        let (_dir, prefix, build_dir) = setup_context();
+
+        // Create a file in build_dir
+        std::fs::write(build_dir.join("test-binary"), "binary content").unwrap();
+
+        let result = install_to_dir("test-binary", "bin", None);
+        assert!(result.is_ok());
+
+        // File should exist in prefix/bin
+        assert!(prefix.join("bin/test-binary").exists());
+
+        // Should be recorded in installed files
+        let files = get_installed_files();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("test-binary"));
+
+        clear_context();
+    }
+
+    #[test]
+    fn test_install_to_dir_with_glob_pattern() {
+        let (_dir, prefix, build_dir) = setup_context();
+
+        // Create multiple files
+        std::fs::write(build_dir.join("file1.txt"), "content1").unwrap();
+        std::fs::write(build_dir.join("file2.txt"), "content2").unwrap();
+        std::fs::write(build_dir.join("other.dat"), "other").unwrap();
+
+        let result = install_to_dir("*.txt", "data", None);
+        assert!(result.is_ok());
+
+        // Both .txt files should be installed
+        assert!(prefix.join("data/file1.txt").exists());
+        assert!(prefix.join("data/file2.txt").exists());
+        assert!(!prefix.join("data/other.dat").exists());
+
+        let files = get_installed_files();
+        assert_eq!(files.len(), 2);
+
+        clear_context();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_install_to_dir_sets_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_dir, prefix, build_dir) = setup_context();
+        std::fs::write(build_dir.join("script"), "#!/bin/bash").unwrap();
+
+        let result = install_to_dir("script", "bin", Some(0o755));
+        assert!(result.is_ok());
+
+        let dest = prefix.join("bin/script");
+        let perms = std::fs::metadata(&dest).unwrap().permissions();
+        assert_eq!(perms.mode() & 0o777, 0o755);
+
+        clear_context();
+    }
+
+    // ==================== install_bin tests ====================
+
+    #[test]
+    fn test_install_bin() {
+        let (_dir, prefix, build_dir) = setup_context();
+        std::fs::write(build_dir.join("mybin"), "binary").unwrap();
+
+        let result = install_bin("mybin");
+        assert!(result.is_ok());
+        assert!(prefix.join("bin/mybin").exists());
+
+        clear_context();
+    }
+
+    // ==================== install_lib tests ====================
+
+    #[test]
+    fn test_install_lib() {
+        let (_dir, prefix, build_dir) = setup_context();
+        std::fs::write(build_dir.join("libtest.so"), "library").unwrap();
+
+        let result = install_lib("libtest.so");
+        assert!(result.is_ok());
+        assert!(prefix.join("lib/libtest.so").exists());
+
+        clear_context();
+    }
+
+    // ==================== install_man tests ====================
+
+    #[test]
+    fn test_install_man_section_1() {
+        let (_dir, prefix, build_dir) = setup_context();
+        std::fs::write(build_dir.join("myapp.1"), "man page content").unwrap();
+
+        let result = install_man("myapp.1");
+        assert!(result.is_ok());
+        assert!(prefix.join("share/man/man1/myapp.1").exists());
+
+        clear_context();
+    }
+
+    #[test]
+    fn test_install_man_section_5() {
+        let (_dir, prefix, build_dir) = setup_context();
+        std::fs::write(build_dir.join("config.5"), "config man page").unwrap();
+
+        let result = install_man("config.5");
+        assert!(result.is_ok());
+        assert!(prefix.join("share/man/man5/config.5").exists());
+
+        clear_context();
+    }
+
+    #[test]
+    fn test_install_man_no_section_defaults_to_1() {
+        let (_dir, prefix, build_dir) = setup_context();
+        // File without numeric extension
+        std::fs::write(build_dir.join("weird.man"), "man content").unwrap();
+
+        let result = install_man("weird.man");
+        assert!(result.is_ok());
+        // Should default to man1
+        assert!(prefix.join("share/man/man1/weird.man").exists());
+
+        clear_context();
+    }
+
+    #[test]
+    fn test_install_man_multiple_files() {
+        let (_dir, prefix, build_dir) = setup_context();
+        std::fs::write(build_dir.join("cmd.1"), "cmd man").unwrap();
+        std::fs::write(build_dir.join("other.1"), "other man").unwrap();
+
+        let result = install_man("*.1");
+        assert!(result.is_ok());
+        assert!(prefix.join("share/man/man1/cmd.1").exists());
+        assert!(prefix.join("share/man/man1/other.1").exists());
+
+        clear_context();
+    }
+
+    // ==================== rpm_install tests ====================
+
+    #[test]
+    fn test_rpm_install_no_rpms() {
+        let (_dir, _prefix, _build_dir) = setup_context();
+        // No RPM files in build_dir
+        let result = rpm_install();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no RPM files"));
+        clear_context();
+    }
+
+    // Note: Full rpm_install testing requires rpm2cpio which may not be available
+    // in all test environments. Additional integration tests could be added
+    // in a separate test file that's conditionally compiled.
+
+    // ==================== Edge cases ====================
+
+    #[test]
+    fn test_install_creates_nested_directories() {
+        let (_dir, prefix, build_dir) = setup_context();
+        std::fs::write(build_dir.join("file"), "content").unwrap();
+
+        // Install to deeply nested path
+        let result = install_to_dir("file", "a/b/c/d", None);
+        assert!(result.is_ok());
+        assert!(prefix.join("a/b/c/d/file").exists());
+
+        clear_context();
+    }
+
+    #[test]
+    fn test_install_overwrites_existing_file() {
+        let (_dir, prefix, build_dir) = setup_context();
+
+        // Create existing file in prefix
+        std::fs::create_dir_all(prefix.join("bin")).unwrap();
+        std::fs::write(prefix.join("bin/file"), "old content").unwrap();
+
+        // Create new file in build_dir
+        std::fs::write(build_dir.join("file"), "new content").unwrap();
+
+        let result = install_to_dir("file", "bin", None);
+        assert!(result.is_ok());
+
+        // File should have new content
+        let content = std::fs::read_to_string(prefix.join("bin/file")).unwrap();
+        assert_eq!(content, "new content");
+
+        clear_context();
+    }
+
+    #[test]
+    fn test_install_preserves_file_content() {
+        let (_dir, prefix, build_dir) = setup_context();
+
+        let original = "This is the original content\nWith multiple lines\n";
+        std::fs::write(build_dir.join("file"), original).unwrap();
+
+        let result = install_to_dir("file", "data", None);
+        assert!(result.is_ok());
+
+        let copied = std::fs::read_to_string(prefix.join("data/file")).unwrap();
+        assert_eq!(copied, original);
+
+        clear_context();
+    }
+}

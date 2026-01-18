@@ -6,7 +6,7 @@ mod context;
 mod lifecycle;
 mod phases;
 pub mod recipe_state;
-mod util;
+pub mod util;
 
 use anyhow::Result;
 use rhai::{module_resolvers::FileModuleResolver, Engine};

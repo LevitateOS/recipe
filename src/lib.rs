@@ -56,4 +56,5 @@
 mod engine;
 
 pub use engine::recipe_state;
+pub use engine::util;
 pub use engine::RecipeEngine;
