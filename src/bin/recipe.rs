@@ -69,6 +69,12 @@ enum Commands {
         /// Package name
         package: String,
     },
+
+    /// Bootstrap a base system to target directory
+    Bootstrap {
+        /// Target directory (e.g., /mnt)
+        target: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -93,6 +99,9 @@ fn main() -> Result<()> {
         Commands::List => list_packages(&recipe_dir),
         Commands::Info { package } => show_info(&package, &recipe_dir),
         Commands::Deps { package } => show_deps(&package, &recipe_dir),
+        Commands::Bootstrap { target } => {
+            bootstrap_system(&target, &recipe_dir, cli.verbose, cli.dry_run)
+        }
     }
 }
 
@@ -410,6 +419,161 @@ fn show_deps_recursive(
             }
         };
         show_deps_recursive(dep_name, recipe_dir, depth + 1, visited)?;
+    }
+
+    Ok(())
+}
+
+/// Base packages required for a minimal LevitateOS installation
+const BASE_PACKAGES: &[&str] = &[
+    "base",
+    "linux",
+    "linux-firmware",
+    "systemd",
+    "networkmanager",
+    "bash",
+    "coreutils",
+    "util-linux",
+    "recipe",
+];
+
+/// Bootstrap a complete base system to a target directory
+fn bootstrap_system(
+    target: &std::path::Path,
+    recipe_dir: &PathBuf,
+    verbose: bool,
+    dry_run: bool,
+) -> Result<()> {
+    println!("Bootstrapping LevitateOS to {}...", target.display());
+
+    // 1. Verify all base recipes exist
+    let mut missing = Vec::new();
+    for pkg in BASE_PACKAGES {
+        let recipe_path = recipe_dir.join(format!("{}.recipe", pkg));
+        if !recipe_path.exists() {
+            missing.push(*pkg);
+        }
+    }
+    if !missing.is_empty() {
+        bail!(
+            "Missing required base recipes: {}\nEnsure recipe-dir contains all base packages.",
+            missing.join(", ")
+        );
+    }
+
+    // 2. Create filesystem hierarchy
+    let dirs = [
+        "bin", "boot", "dev", "etc", "home", "lib", "lib64",
+        "mnt", "opt", "proc", "root", "run", "sbin", "srv",
+        "sys", "tmp", "usr", "var",
+        "usr/bin", "usr/lib", "usr/lib64", "usr/share", "usr/local",
+        "usr/share/recipe/recipes",
+        "var/lib", "var/lib/recipe", "var/log", "var/tmp",
+        "etc/systemd/system",
+    ];
+    for dir in dirs {
+        let path = target.join(dir);
+        if verbose {
+            println!("mkdir -p {}", path.display());
+        }
+        if !dry_run {
+            fs::create_dir_all(&path)?;
+        }
+    }
+
+    // 3. Install base packages
+    let mut installed: HashSet<String> = HashSet::new();
+    for pkg in BASE_PACKAGES {
+        if verbose {
+            println!("\n==> Installing {}...", pkg);
+        }
+        install_with_deps_to_target(pkg, target, recipe_dir, &mut installed, verbose, dry_run)?;
+    }
+
+    // 4. Copy recipes to target for self-hosting
+    let target_recipes = target.join("usr/share/recipe/recipes");
+    if verbose {
+        println!("\nCopying recipes to {}...", target_recipes.display());
+    }
+    if !dry_run {
+        for entry in fs::read_dir(recipe_dir)? {
+            let entry = entry?;
+            if entry.path().extension().map(|e| e == "recipe").unwrap_or(false) {
+                fs::copy(entry.path(), target_recipes.join(entry.file_name()))?;
+            }
+        }
+    }
+
+    // 5. Save installed database to target
+    let db_path = target.join("var/lib/recipe/installed");
+    if !dry_run {
+        let contents: Vec<&str> = installed.iter().map(|s| s.as_str()).collect();
+        fs::write(&db_path, contents.join("\n"))?;
+    }
+
+    println!("\nBootstrap complete!");
+    println!("Installed {} packages to {}", BASE_PACKAGES.len(), target.display());
+    Ok(())
+}
+
+/// Install a package with dependencies to a specific target directory
+fn install_with_deps_to_target(
+    package: &str,
+    target: &std::path::Path,
+    recipe_dir: &PathBuf,
+    installed: &mut HashSet<String>,
+    verbose: bool,
+    dry_run: bool,
+) -> Result<()> {
+    // Skip if already installed
+    if installed.contains(package) {
+        if verbose {
+            println!("  [skip] {} (already installed)", package);
+        }
+        return Ok(());
+    }
+
+    // Find and parse the recipe
+    let (path, content) = find_recipe(package, recipe_dir)?;
+    let recipe = parse_recipe(&content, &path)?;
+
+    // Install build dependencies first
+    for dep in &recipe.build_deps {
+        let dep_name = match dep {
+            DepSpec::Always(d) => &d.name,
+            DepSpec::Conditional { .. } => continue,
+        };
+        install_with_deps_to_target(dep_name, target, recipe_dir, installed, verbose, dry_run)?;
+    }
+
+    // Install runtime dependencies
+    for dep in &recipe.deps {
+        let dep_name = match dep {
+            DepSpec::Always(d) => &d.name,
+            DepSpec::Conditional { .. } => continue,
+        };
+        install_with_deps_to_target(dep_name, target, recipe_dir, installed, verbose, dry_run)?;
+    }
+
+    // Execute recipe with target as prefix
+    println!("Installing {} {}...", recipe.name, recipe.version);
+
+    let ctx = ExecContext::with_prefix(target)
+        .verbose(verbose)
+        .dry_run(dry_run);
+
+    let executor = Executor::new(ctx);
+
+    executor
+        .execute(&recipe)
+        .map_err(|e| anyhow::anyhow!("Build failed for {}: {}", package, e))?;
+
+    installed.insert(package.to_string());
+
+    if !dry_run {
+        println!("Installed {} {}", recipe.name, recipe.version);
+    } else {
+        println!("[dry-run] Would install {} {}", recipe.name, recipe.version);
     }
 
     Ok(())
