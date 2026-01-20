@@ -426,12 +426,22 @@ pub fn find_orphans(recipes_path: &Path) -> Result<Vec<(String, PathBuf)>> {
     let graph = build_graph(recipes_path)?;
     let mut orphans = Vec::new();
 
+    // Pre-compute which packages are installed (avoids repeated file reads)
+    let mut installed_packages: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (name, _) in &graph.edges {
+        if let Some(path) = graph.get_path(name) {
+            let installed: Option<bool> =
+                recipe_state::get_var(path, "installed").unwrap_or(None);
+            if installed == Some(true) {
+                installed_packages.insert(name.clone());
+            }
+        }
+    }
+
     for (name, _) in &graph.edges {
         if let Some(path) = graph.get_path(name) {
             // Check if installed
-            let installed: Option<bool> =
-                recipe_state::get_var(path, "installed").unwrap_or(None);
-            if installed != Some(true) {
+            if !installed_packages.contains(name) {
                 continue;
             }
 
@@ -442,9 +452,13 @@ pub fn find_orphans(recipes_path: &Path) -> Result<Vec<(String, PathBuf)>> {
                 continue; // Explicitly installed, not an orphan candidate
             }
 
-            // Check if any installed packages depend on this one
-            let rdeps = reverse_deps_installed(name, recipes_path)?;
-            if rdeps.is_empty() {
+            // Check if any INSTALLED packages depend on this one
+            // Use the pre-built graph instead of calling reverse_deps_installed
+            let has_installed_dependents = graph.edges.iter().any(|(dep_name, deps)| {
+                deps.contains(name) && installed_packages.contains(dep_name)
+            });
+
+            if !has_installed_dependents {
                 orphans.push((name.clone(), path.clone()));
             }
         }

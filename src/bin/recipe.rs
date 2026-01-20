@@ -283,15 +283,16 @@ fn main() -> Result<()> {
                             create_engine(&cli.prefix, cli.build_dir.as_deref(), &recipes_path)?;
                         let total = uninstalled.len();
                         for (i, (name, path)) in uninstalled.into_iter().enumerate() {
-                            // Mark dependencies (not the target) as installed_as_dep
                             let is_dependency = name != package;
-                            if is_dependency {
-                                // Pre-mark as dependency (will be confirmed after successful install)
-                                let _ = recipe_state::set_var(&path, "installed_as_dep", &true);
-                            }
 
                             output::action_numbered(i + 1, total, &format!("Installing {}", name));
                             engine.execute(&path)?;
+
+                            // Mark as dependency AFTER successful install (not before)
+                            // This ensures we don't leave orphan markers on failed installs
+                            if is_dependency {
+                                let _ = recipe_state::set_var(&path, "installed_as_dep", &true);
+                            }
                         }
                     }
                 }
@@ -516,6 +517,18 @@ fn main() -> Result<()> {
             ) -> Result<()> {
                 let branch = if is_last { "└── " } else { "├── " };
                 let recipe_path = recipes_path.join(format!("{}.rhai", name));
+
+                // Check if recipe exists
+                if !recipe_path.exists() {
+                    // Show missing recipe with warning indicator
+                    println!(
+                        "{}{}{}",
+                        prefix,
+                        branch,
+                        format!("{} {}", name.red(), "(missing recipe)".red().dimmed())
+                    );
+                    return Ok(());
+                }
 
                 let installed: Option<bool> =
                     recipe_state::get_var(&recipe_path, "installed").unwrap_or(None);
@@ -1061,13 +1074,56 @@ fn show_info(recipe_path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-/// Simple timestamp to string conversion
+/// Simple timestamp to string conversion (ISO 8601 format)
 fn chrono_lite(timestamp: i64) -> String {
-    // Basic conversion without external dependency
-    use std::time::{Duration, UNIX_EPOCH};
+    // Convert Unix timestamp to human-readable ISO 8601 format
+    let unix_secs = timestamp as u64;
+    let days_since_1970 = unix_secs / 86400;
+    let secs_today = unix_secs % 86400;
 
-    let dt = UNIX_EPOCH + Duration::from_secs(timestamp as u64);
-    format!("{:?}", dt)
+    let hours = secs_today / 3600;
+    let minutes = (secs_today % 3600) / 60;
+    let seconds = secs_today % 60;
+
+    // Calculate year/month/day
+    let mut year: i64 = 1970;
+    let mut remaining_days = days_since_1970 as i64;
+
+    loop {
+        let days_in_year = if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) {
+            366
+        } else {
+            365
+        };
+        if remaining_days < days_in_year {
+            break;
+        }
+        remaining_days -= days_in_year;
+        year += 1;
+    }
+
+    let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+    let days_in_months: [i64; 12] = [
+        31,
+        if is_leap { 29 } else { 28 },
+        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+    ];
+
+    let mut month = 1;
+    for &days in &days_in_months {
+        if remaining_days < days {
+            break;
+        }
+        remaining_days -= days;
+        month += 1;
+    }
+
+    let day = remaining_days + 1;
+
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+        year, month, day, hours, minutes, seconds
+    )
 }
 
 #[cfg(test)]
@@ -1313,5 +1369,37 @@ let installed = false;
         let result = find_upgradable_recipes(&recipes_path).unwrap();
         assert_eq!(result.len(), 1);
         assert!(result[0].to_string_lossy().contains("pkg2"));
+    }
+
+    // ==================== Chrono Lite ====================
+
+    #[test]
+    fn test_chrono_lite_epoch() {
+        // Unix epoch should be 1970-01-01 00:00:00
+        let result = super::chrono_lite(0);
+        assert_eq!(result, "1970-01-01 00:00:00 UTC");
+    }
+
+    #[test]
+    fn test_chrono_lite_known_date() {
+        // 2024-01-15 12:40:45 UTC = 1705322445
+        // Calculation: 1705322445 % 86400 = 45645 secs into day
+        // 45645 / 3600 = 12 hours, (45645 % 3600) / 60 = 40 mins, 45645 % 60 = 45 secs
+        let result = super::chrono_lite(1705322445);
+        assert_eq!(result, "2024-01-15 12:40:45 UTC");
+    }
+
+    #[test]
+    fn test_chrono_lite_leap_year() {
+        // 2024-02-29 00:00:00 UTC = 1709164800 (2024 is a leap year)
+        let result = super::chrono_lite(1709164800);
+        assert_eq!(result, "2024-02-29 00:00:00 UTC");
+    }
+
+    #[test]
+    fn test_chrono_lite_year_boundary() {
+        // 2023-12-31 23:59:59 UTC = 1704067199
+        let result = super::chrono_lite(1704067199);
+        assert_eq!(result, "2023-12-31 23:59:59 UTC");
     }
 }

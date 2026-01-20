@@ -286,4 +286,81 @@ mod tests {
         assert_eq!(pad_version("1.2.3"), "1.2.3");
         assert_eq!(pad_version("1.2.3.4"), "1.2.3.4");
     }
+
+    // ==================== Non-Semver Version Edge Cases ====================
+
+    #[test]
+    fn test_non_semver_version_with_hyphen_suffix() {
+        // Versions like "5.2.26-1" (common in distro packages) are valid semver pre-release
+        // IMPORTANT: semver's VersionReq::matches() has strict pre-release matching rules.
+        // See: https://docs.rs/semver/latest/semver/struct.VersionReq.html#method.matches
+        //
+        // Key behavior: ">= 5.0.0" does NOT match "5.2.26-1" because:
+        // 1. Pre-release versions are only matched when the comparator targets the same X.Y.Z
+        // 2. This is intentional to prevent accidental use of pre-releases in production
+        //
+        // For distro-style versions like "5.2.26-1", users should:
+        // - Either use exact version constraints: "= 5.2.26-1"
+        // - Or strip the suffix before comparing
+        let dep = Dependency::parse("bash >= 5.0.0").unwrap();
+        assert!(dep.satisfied_by("5.2.26").unwrap());
+        // Pre-release versions DON'T satisfy non-pre-release constraints
+        assert!(!dep.satisfied_by("5.2.26-1").unwrap());
+    }
+
+    #[test]
+    fn test_non_semver_version_with_alpha() {
+        // Versions like "1.0-rc1" or "1.0.0-alpha"
+        let dep = Dependency::parse("pkg >= 1.0.0").unwrap();
+        // Pre-release versions are NOT matched by non-pre-release constraints in semver
+        // (semver crate behavior - designed to protect against accidental pre-release usage)
+        assert!(!dep.satisfied_by("1.0.0-alpha").unwrap());
+        assert!(!dep.satisfied_by("1.0.0-rc1").unwrap());
+        assert!(dep.satisfied_by("1.0.0").unwrap());
+        assert!(dep.satisfied_by("1.0.1").unwrap());
+    }
+
+    #[test]
+    fn test_completely_invalid_version_returns_false() {
+        // Versions that can't be parsed at all should return false, not error
+        let dep = Dependency::parse("pkg >= 1.0.0").unwrap();
+        // "invalid" can't be parsed as semver, so constraint is not satisfied
+        assert!(!dep.satisfied_by("invalid").unwrap());
+        assert!(!dep.satisfied_by("").unwrap());
+        assert!(!dep.satisfied_by("abc.def.ghi").unwrap());
+    }
+
+    #[test]
+    fn test_no_constraint_accepts_any_version() {
+        // No constraint means any version is accepted, even invalid ones
+        let dep = Dependency::parse("pkg").unwrap();
+        assert!(dep.satisfied_by("1.0.0").unwrap());
+        assert!(dep.satisfied_by("invalid").unwrap());
+        assert!(dep.satisfied_by("").unwrap());
+    }
+
+    #[test]
+    fn test_version_with_build_metadata() {
+        // semver supports build metadata like "1.0.0+build123"
+        let dep = Dependency::parse("pkg >= 1.0.0").unwrap();
+        assert!(dep.satisfied_by("1.0.0+build123").unwrap());
+        assert!(dep.satisfied_by("1.0.1+metadata").unwrap());
+    }
+
+    #[test]
+    fn test_version_with_v_prefix() {
+        // Some projects use "v1.0.0" format - semver doesn't accept this
+        let dep = Dependency::parse("pkg >= 1.0.0").unwrap();
+        // "v1.0.0" is not valid semver, will return false
+        assert!(!dep.satisfied_by("v1.0.0").unwrap());
+    }
+
+    #[test]
+    fn test_four_part_version() {
+        // Four-part versions like "1.2.3.4" are not valid semver
+        let dep = Dependency::parse("pkg >= 1.2.0").unwrap();
+        // pad_version doesn't help here - it's already 4 parts
+        // semver will fail to parse "1.2.3.4"
+        assert!(!dep.satisfied_by("1.2.3.4").unwrap());
+    }
 }

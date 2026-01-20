@@ -22,14 +22,18 @@ fn acquire_recipe_lock(recipe_path: &Path) -> Result<RecipeLock> {
     let lock_file = File::create(&lock_path)
         .with_context(|| format!("Failed to create lock file: {}", lock_path.display()))?;
 
-    lock_file.try_lock_exclusive().map_err(|_| {
-        anyhow::anyhow!(
+    if let Err(_) = lock_file.try_lock_exclusive() {
+        // Clean up the lock file we created before returning error
+        // (the file exists but we couldn't acquire the lock)
+        drop(lock_file); // Close the file handle first
+        let _ = std::fs::remove_file(&lock_path);
+        return Err(anyhow::anyhow!(
             "Recipe '{}' is already being executed by another process. \
              If this is incorrect, delete '{}'",
             recipe_path.display(),
             lock_path.display()
-        )
-    })?;
+        ));
+    }
 
     Ok(RecipeLock { _file: lock_file, path: lock_path })
 }

@@ -81,12 +81,18 @@ impl LockFile {
     /// Validate that resolved versions match locked versions
     ///
     /// Returns a list of mismatches: (package, locked_version, resolved_version)
+    /// - For version mismatches: both locked and resolved are the actual versions
+    /// - For packages missing from lock: locked_version is "(not in lock)"
+    /// - For packages missing from resolved: resolved_version is "(missing)"
     pub fn validate_against(
         &self,
         resolved: &[(String, String)],
     ) -> Vec<(String, String, String)> {
         let mut mismatches = Vec::new();
+        let resolved_map: std::collections::HashMap<&String, &String> =
+            resolved.iter().map(|(k, v)| (k, v)).collect();
 
+        // Check resolved packages against lock file
         for (name, version) in resolved {
             if let Some(locked_version) = self.packages.get(name) {
                 if locked_version != version {
@@ -96,6 +102,19 @@ impl LockFile {
                         version.clone(),
                     ));
                 }
+            }
+            // Note: packages in resolved but not in lock are OK (new packages)
+        }
+
+        // Check for packages in lock file that are missing from resolved
+        // This catches the case where a locked dependency was removed
+        for (locked_name, locked_version) in &self.packages {
+            if !resolved_map.contains_key(locked_name) {
+                mismatches.push((
+                    locked_name.clone(),
+                    locked_version.clone(),
+                    "(missing)".to_string(),
+                ));
             }
         }
 
@@ -242,6 +261,41 @@ mod tests {
         assert_eq!(mismatches[0].0, "openssl");
         assert_eq!(mismatches[0].1, "3.2.1"); // locked
         assert_eq!(mismatches[0].2, "3.3.0"); // resolved
+    }
+
+    #[test]
+    fn test_lockfile_validate_missing_from_resolved() {
+        // BUG FIX: Lock file should detect packages that are locked but missing from resolved
+        let mut lock = LockFile::new();
+        lock.add_package("openssl".to_string(), "3.2.1".to_string());
+        lock.add_package("zlib".to_string(), "1.3.1".to_string());
+
+        // Only openssl is in resolved, zlib is missing
+        let resolved = vec![("openssl".to_string(), "3.2.1".to_string())];
+        let mismatches = lock.validate_against(&resolved);
+
+        // Should detect that zlib is in lock but missing from resolved
+        assert_eq!(mismatches.len(), 1);
+        assert_eq!(mismatches[0].0, "zlib");
+        assert_eq!(mismatches[0].1, "1.3.1"); // locked version
+        assert_eq!(mismatches[0].2, "(missing)"); // marker for missing
+    }
+
+    #[test]
+    fn test_lockfile_validate_new_package_ok() {
+        // New packages in resolved but not in lock should be OK (not a mismatch)
+        let mut lock = LockFile::new();
+        lock.add_package("openssl".to_string(), "3.2.1".to_string());
+
+        // curl is new (not in lock)
+        let resolved = vec![
+            ("openssl".to_string(), "3.2.1".to_string()),
+            ("curl".to_string(), "8.5.0".to_string()),
+        ];
+        let mismatches = lock.validate_against(&resolved);
+
+        // No mismatches - new packages are allowed
+        assert!(mismatches.is_empty());
     }
 
     #[test]
