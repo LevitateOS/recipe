@@ -2,12 +2,24 @@
 //!
 //! Implements topological sort with cycle detection, inspired by pacman/libalpm.
 //! Uses iterative DFS with state tracking to avoid stack overflow on deep graphs.
+//!
+//! ## Version Constraints
+//!
+//! Dependencies can include version constraints:
+//! ```rhai
+//! let deps = [
+//!     "core",              // Any version
+//!     "openssl >= 3.0.0",  // Minimum version
+//!     "zlib >= 1.2, < 1.3", // Range
+//! ];
+//! ```
 
 use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::recipe_state;
+use super::version::Dependency;
 
 /// Node state for DFS traversal
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,10 +34,14 @@ enum NodeState {
 
 /// A dependency graph for topological sorting
 pub struct DepGraph {
-    /// Map from package name to its dependencies
+    /// Map from package name to its dependencies (name only, for sorting)
     edges: HashMap<String, Vec<String>>,
     /// Map from package name to recipe path
     paths: HashMap<String, PathBuf>,
+    /// Map from package name to its version
+    versions: HashMap<String, String>,
+    /// Map from package name to its parsed dependency constraints
+    constraints: HashMap<String, Vec<Dependency>>,
 }
 
 impl DepGraph {
@@ -34,6 +50,8 @@ impl DepGraph {
         Self {
             edges: HashMap::new(),
             paths: HashMap::new(),
+            versions: HashMap::new(),
+            constraints: HashMap::new(),
         }
     }
 
@@ -43,14 +61,74 @@ impl DepGraph {
         self.paths.insert(name, path);
     }
 
+    /// Add a package with version and parsed constraints
+    pub fn add_package_with_version(
+        &mut self,
+        name: String,
+        version: String,
+        deps: Vec<Dependency>,
+        path: PathBuf,
+    ) {
+        // Extract just package names for topological sort
+        let dep_names: Vec<String> = deps.iter().map(|d| d.name.clone()).collect();
+        self.edges.insert(name.clone(), dep_names);
+        self.paths.insert(name.clone(), path);
+        self.versions.insert(name.clone(), version);
+        self.constraints.insert(name, deps);
+    }
+
     /// Get the recipe path for a package
     pub fn get_path(&self, name: &str) -> Option<&PathBuf> {
         self.paths.get(name)
     }
 
+    /// Get the version for a package
+    pub fn get_version(&self, name: &str) -> Option<&String> {
+        self.versions.get(name)
+    }
+
     /// Check if a package exists in the graph
     pub fn contains(&self, name: &str) -> bool {
         self.edges.contains_key(name)
+    }
+
+    /// Validate version constraints after topological sort
+    ///
+    /// Returns Ok(()) if all constraints are satisfied, or an error describing conflicts.
+    pub fn validate_constraints(&self) -> Result<()> {
+        let mut errors = Vec::new();
+
+        for (package, deps) in &self.constraints {
+            for dep in deps {
+                if dep.constraint.is_some() {
+                    // Get the version of the dependency package
+                    if let Some(dep_version) = self.versions.get(&dep.name) {
+                        match dep.satisfied_by(dep_version) {
+                            Ok(true) => {} // Constraint satisfied
+                            Ok(false) => {
+                                errors.push(format!(
+                                    "'{}' requires '{}' but found version '{}'",
+                                    package, dep, dep_version
+                                ));
+                            }
+                            Err(e) => {
+                                errors.push(format!(
+                                    "Cannot check constraint for '{}' on '{}': {}",
+                                    package, dep.name, e
+                                ));
+                            }
+                        }
+                    }
+                    // If dep not in graph, validate_dependencies will catch it
+                }
+            }
+        }
+
+        if !errors.is_empty() {
+            bail!("Version constraint violations:\n  {}", errors.join("\n  "));
+        }
+
+        Ok(())
     }
 
     /// Perform topological sort using iterative DFS
@@ -178,6 +256,11 @@ impl Default for DepGraph {
 
 /// Build a dependency graph from all recipes in a directory
 pub fn build_graph(recipes_path: &Path) -> Result<DepGraph> {
+    build_graph_with_constraints(recipes_path, true)
+}
+
+/// Build a dependency graph, optionally parsing version constraints
+fn build_graph_with_constraints(recipes_path: &Path, parse_constraints: bool) -> Result<DepGraph> {
     let mut graph = DepGraph::new();
 
     if !recipes_path.exists() {
@@ -202,12 +285,41 @@ pub fn build_graph(recipes_path: &Path) -> Result<DepGraph> {
                 continue;
             }
 
+            // Get version from recipe
+            let version: String = recipe_state::get_var(&path, "version")
+                .unwrap_or(None)
+                .unwrap_or_else(|| "0.0.0".to_string());
+
             // Get dependencies from recipe
-            let deps: Vec<String> = recipe_state::get_var(&path, "deps")
+            let deps_raw: Vec<String> = recipe_state::get_var(&path, "deps")
                 .unwrap_or(None)
                 .unwrap_or_default();
 
-            graph.add_package(name, deps, path);
+            if parse_constraints {
+                // Parse version constraints from dependency strings
+                let mut parsed_deps = Vec::new();
+                for dep_str in &deps_raw {
+                    match Dependency::parse(dep_str) {
+                        Ok(dep) => parsed_deps.push(dep),
+                        Err(e) => {
+                            // Log warning but continue - treat as simple dependency
+                            eprintln!(
+                                "Warning: Could not parse dependency '{}' in {}: {}",
+                                dep_str, name, e
+                            );
+                            parsed_deps.push(Dependency {
+                                name: dep_str.clone(),
+                                constraint: None,
+                                constraint_str: None,
+                            });
+                        }
+                    }
+                }
+                graph.add_package_with_version(name, version, parsed_deps, path);
+            } else {
+                // Simple mode - just package names
+                graph.add_package(name, deps_raw, path);
+            }
         }
     }
 
@@ -218,6 +330,8 @@ pub fn build_graph(recipes_path: &Path) -> Result<DepGraph> {
 ///
 /// Returns a list of (package_name, recipe_path) in the order they should be installed.
 /// The target package is last in the list.
+///
+/// Also validates version constraints - returns an error if any constraints are violated.
 pub fn resolve_deps(
     target: &str,
     recipes_path: &Path,
@@ -229,6 +343,9 @@ pub fn resolve_deps(
     }
 
     let order = graph.topological_sort(&[target.to_string()])?;
+
+    // Validate version constraints after sorting
+    graph.validate_constraints()?;
 
     // Map names to paths
     let mut result = Vec::new();
@@ -255,6 +372,85 @@ pub fn filter_uninstalled(deps: Vec<(String, PathBuf)>) -> Result<Vec<(String, P
     }
 
     Ok(uninstalled)
+}
+
+/// Find all packages that depend on the given package (reverse dependencies)
+///
+/// Returns a list of package names that have `package` in their `deps` array.
+/// This is useful for checking if it's safe to remove a package.
+pub fn reverse_deps(package: &str, recipes_path: &Path) -> Result<Vec<String>> {
+    let graph = build_graph(recipes_path)?;
+
+    Ok(graph
+        .edges
+        .iter()
+        .filter(|(_, deps)| deps.contains(&package.to_string()))
+        .map(|(name, _)| name.clone())
+        .collect())
+}
+
+/// Find installed packages that depend on the given package
+///
+/// Returns a list of (package_name, recipe_path) for installed packages
+/// that have `package` in their `deps` array.
+pub fn reverse_deps_installed(
+    package: &str,
+    recipes_path: &Path,
+) -> Result<Vec<(String, PathBuf)>> {
+    let graph = build_graph(recipes_path)?;
+
+    let mut result = Vec::new();
+    for (name, deps) in &graph.edges {
+        if deps.contains(&package.to_string()) {
+            if let Some(path) = graph.get_path(name) {
+                let installed: Option<bool> =
+                    recipe_state::get_var(path, "installed").unwrap_or(None);
+                if installed == Some(true) {
+                    result.push((name.clone(), path.clone()));
+                }
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+/// Find orphan packages (installed as dependencies but no longer needed)
+///
+/// An orphan is a package that:
+/// 1. Was installed as a dependency (`installed_as_dep = true`)
+/// 2. Has no installed packages depending on it
+///
+/// Returns a list of (package_name, recipe_path) for orphaned packages.
+pub fn find_orphans(recipes_path: &Path) -> Result<Vec<(String, PathBuf)>> {
+    let graph = build_graph(recipes_path)?;
+    let mut orphans = Vec::new();
+
+    for (name, _) in &graph.edges {
+        if let Some(path) = graph.get_path(name) {
+            // Check if installed
+            let installed: Option<bool> =
+                recipe_state::get_var(path, "installed").unwrap_or(None);
+            if installed != Some(true) {
+                continue;
+            }
+
+            // Check if installed as dependency
+            let installed_as_dep: Option<bool> =
+                recipe_state::get_var(path, "installed_as_dep").unwrap_or(None);
+            if installed_as_dep != Some(true) {
+                continue; // Explicitly installed, not an orphan candidate
+            }
+
+            // Check if any installed packages depend on this one
+            let rdeps = reverse_deps_installed(name, recipes_path)?;
+            if rdeps.is_empty() {
+                orphans.push((name.clone(), path.clone()));
+            }
+        }
+    }
+
+    Ok(orphans)
 }
 
 #[cfg(test)]
@@ -1028,5 +1224,214 @@ let installed = false;
         // Verify paths are correct
         assert!(result[0].1.ends_with("b.rhai"));
         assert!(result[1].1.ends_with("a.rhai"));
+    }
+
+    // ==================== Reverse Dependency Tests ====================
+
+    #[test]
+    fn test_reverse_deps_no_dependents() {
+        let dir = TempDir::new().unwrap();
+        write_recipe(dir.path(), "standalone", &[]);
+
+        let rdeps = reverse_deps("standalone", dir.path()).unwrap();
+        assert!(rdeps.is_empty());
+    }
+
+    #[test]
+    fn test_reverse_deps_single_dependent() {
+        let dir = TempDir::new().unwrap();
+        write_recipe(dir.path(), "lib", &[]);
+        write_recipe(dir.path(), "app", &["lib"]);
+
+        let rdeps = reverse_deps("lib", dir.path()).unwrap();
+        assert_eq!(rdeps.len(), 1);
+        assert!(rdeps.contains(&"app".to_string()));
+    }
+
+    #[test]
+    fn test_reverse_deps_multiple_dependents() {
+        let dir = TempDir::new().unwrap();
+        write_recipe(dir.path(), "core", &[]);
+        write_recipe(dir.path(), "app1", &["core"]);
+        write_recipe(dir.path(), "app2", &["core"]);
+        write_recipe(dir.path(), "app3", &["core"]);
+
+        let rdeps = reverse_deps("core", dir.path()).unwrap();
+        assert_eq!(rdeps.len(), 3);
+        assert!(rdeps.contains(&"app1".to_string()));
+        assert!(rdeps.contains(&"app2".to_string()));
+        assert!(rdeps.contains(&"app3".to_string()));
+    }
+
+    #[test]
+    fn test_reverse_deps_nonexistent_package() {
+        let dir = TempDir::new().unwrap();
+        write_recipe(dir.path(), "a", &[]);
+
+        // Searching for reverse deps of nonexistent package returns empty
+        let rdeps = reverse_deps("nonexistent", dir.path()).unwrap();
+        assert!(rdeps.is_empty());
+    }
+
+    #[test]
+    fn test_reverse_deps_installed_only_installed() {
+        let dir = TempDir::new().unwrap();
+
+        // Create base library
+        std::fs::write(
+            dir.path().join("lib.rhai"),
+            r#"let name = "lib";
+let version = "1.0";
+let deps = [];
+let installed = true;
+"#,
+        )
+        .unwrap();
+
+        // Create installed dependent
+        std::fs::write(
+            dir.path().join("app-installed.rhai"),
+            r#"let name = "app-installed";
+let version = "1.0";
+let deps = ["lib"];
+let installed = true;
+"#,
+        )
+        .unwrap();
+
+        // Create uninstalled dependent
+        std::fs::write(
+            dir.path().join("app-not-installed.rhai"),
+            r#"let name = "app-not-installed";
+let version = "1.0";
+let deps = ["lib"];
+let installed = false;
+"#,
+        )
+        .unwrap();
+
+        let rdeps = reverse_deps_installed("lib", dir.path()).unwrap();
+        assert_eq!(rdeps.len(), 1);
+        assert_eq!(rdeps[0].0, "app-installed");
+    }
+
+    #[test]
+    fn test_reverse_deps_installed_empty_when_none_installed() {
+        let dir = TempDir::new().unwrap();
+        write_recipe(dir.path(), "lib", &[]);
+        write_recipe(dir.path(), "app", &["lib"]);
+
+        // Neither is installed
+        let rdeps = reverse_deps_installed("lib", dir.path()).unwrap();
+        assert!(rdeps.is_empty());
+    }
+
+    // ==================== Version Constraint Tests ====================
+
+    fn write_recipe_with_version(dir: &Path, name: &str, version: &str, deps: &[&str]) {
+        let deps_str = deps
+            .iter()
+            .map(|d| format!("\"{}\"", d))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let content = format!(
+            r#"let name = "{}";
+let version = "{}";
+let deps = [{}];
+"#,
+            name, version, deps_str
+        );
+        std::fs::write(dir.join(format!("{}.rhai", name)), content).unwrap();
+    }
+
+    #[test]
+    fn test_version_constraint_satisfied() {
+        let dir = TempDir::new().unwrap();
+        write_recipe_with_version(dir.path(), "openssl", "3.2.0", &[]);
+        write_recipe_with_version(dir.path(), "curl", "8.0.0", &["openssl >= 3.0.0"]);
+
+        // Should succeed - openssl 3.2.0 satisfies >= 3.0.0
+        let result = resolve_deps("curl", dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_version_constraint_violated() {
+        let dir = TempDir::new().unwrap();
+        write_recipe_with_version(dir.path(), "openssl", "2.9.0", &[]);
+        write_recipe_with_version(dir.path(), "curl", "8.0.0", &["openssl >= 3.0.0"]);
+
+        // Should fail - openssl 2.9.0 doesn't satisfy >= 3.0.0
+        let result = resolve_deps("curl", dir.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("constraint"), "Expected constraint error, got: {}", err);
+    }
+
+    #[test]
+    fn test_version_constraint_range() {
+        let dir = TempDir::new().unwrap();
+        write_recipe_with_version(dir.path(), "lib", "1.5.0", &[]);
+        write_recipe_with_version(dir.path(), "app", "1.0.0", &["lib >= 1.0, < 2.0"]);
+
+        // 1.5.0 is in range [1.0, 2.0)
+        let result = resolve_deps("app", dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_version_constraint_range_upper_violated() {
+        let dir = TempDir::new().unwrap();
+        write_recipe_with_version(dir.path(), "lib", "2.0.0", &[]);
+        write_recipe_with_version(dir.path(), "app", "1.0.0", &["lib >= 1.0, < 2.0"]);
+
+        // 2.0.0 is NOT in range [1.0, 2.0)
+        let result = resolve_deps("app", dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_no_version_constraint_accepts_any() {
+        let dir = TempDir::new().unwrap();
+        write_recipe_with_version(dir.path(), "lib", "999.0.0", &[]);
+        write_recipe_with_version(dir.path(), "app", "1.0.0", &["lib"]); // No constraint
+
+        // Any version should work
+        let result = resolve_deps("app", dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_multiple_constraints_all_satisfied() {
+        let dir = TempDir::new().unwrap();
+        write_recipe_with_version(dir.path(), "core", "1.0.0", &[]);
+        write_recipe_with_version(dir.path(), "openssl", "3.0.0", &["core"]);
+        write_recipe_with_version(dir.path(), "zlib", "1.2.0", &["core"]);
+        write_recipe_with_version(
+            dir.path(),
+            "curl",
+            "8.0.0",
+            &["openssl >= 3.0", "zlib >= 1.0"],
+        );
+
+        let result = resolve_deps("curl", dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_diamond_with_version_constraints() {
+        let dir = TempDir::new().unwrap();
+        //     app
+        //    /   \
+        //   A     B
+        //    \   /
+        //     C (both need C >= 1.0)
+        write_recipe_with_version(dir.path(), "c", "1.5.0", &[]);
+        write_recipe_with_version(dir.path(), "a", "1.0.0", &["c >= 1.0"]);
+        write_recipe_with_version(dir.path(), "b", "1.0.0", &["c >= 1.0"]);
+        write_recipe_with_version(dir.path(), "app", "1.0.0", &["a", "b"]);
+
+        let result = resolve_deps("app", dir.path());
+        assert!(result.is_ok());
     }
 }

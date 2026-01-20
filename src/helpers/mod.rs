@@ -5,7 +5,7 @@
 //!
 //! ## Categories
 //!
-//! - **acquire**: download, copy, verify_sha256
+//! - **acquire**: download, copy, verify_sha256, verify_sha512, verify_blake3
 //! - **build**: extract, cd, run
 //! - **install**: install_bin, install_lib, install_man
 //! - **filesystem**: mkdir, rm, mv, ln, chmod, exists, file_exists, dir_exists
@@ -33,6 +33,8 @@ pub fn register_all(engine: &mut Engine) {
     engine.register_fn("download", acquire::download);
     engine.register_fn("copy", acquire::copy_files);
     engine.register_fn("verify_sha256", acquire::verify_sha256);
+    engine.register_fn("verify_sha512", acquire::verify_sha512);
+    engine.register_fn("verify_blake3", acquire::verify_blake3);
 
     // Build phase helpers
     engine.register_fn("extract", build::extract);

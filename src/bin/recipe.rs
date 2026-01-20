@@ -63,12 +63,24 @@ enum Commands {
         /// Also install dependencies
         #[arg(short = 'd', long = "deps")]
         with_deps: bool,
+
+        /// Show what would be installed without actually installing
+        #[arg(short = 'n', long = "dry-run")]
+        dry_run: bool,
+
+        /// Fail if resolved versions don't match recipe.lock
+        #[arg(long)]
+        locked: bool,
     },
 
     /// Remove an installed package
     Remove {
         /// Package name
         package: String,
+
+        /// Force removal even if other packages depend on this one
+        #[arg(short, long)]
+        force: bool,
     },
 
     /// Check for available updates
@@ -107,6 +119,58 @@ enum Commands {
         #[arg(long)]
         resolve: bool,
     },
+
+    /// Compute hashes for a file
+    Hash {
+        /// Path to file
+        file: PathBuf,
+    },
+
+    /// List orphaned packages (dependencies no longer needed)
+    Orphans,
+
+    /// Remove orphaned packages
+    Autoremove {
+        /// Actually remove (without this, just shows what would be removed)
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Show dependency tree for a package
+    Tree {
+        /// Package name
+        package: String,
+    },
+
+    /// Show why a package is installed (what depends on it)
+    Why {
+        /// Package name
+        package: String,
+    },
+
+    /// Show impact of removing a package (what would break)
+    Impact {
+        /// Package name
+        package: String,
+    },
+
+    /// Lock file management
+    Lock {
+        #[command(subcommand)]
+        action: LockAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum LockAction {
+    /// Generate/update lock file from current resolved versions
+    Update,
+
+    /// Show lock file contents
+    Show,
+
+    /// Verify current recipes match lock file
+    Verify,
 }
 
 fn main() -> Result<()> {
@@ -121,34 +185,149 @@ fn main() -> Result<()> {
     }
 
     match cli.command {
-        Commands::Install { package, with_deps } => {
-            let engine = create_engine(&cli.prefix, cli.build_dir.as_deref(), &recipes_path)?;
+        Commands::Install {
+            package,
+            with_deps,
+            dry_run,
+            locked,
+        } => {
+            use levitate_recipe::lockfile::LockFile;
+            use owo_colors::OwoColorize;
 
-            if with_deps {
-                // Resolve dependencies and install in order
+            if with_deps || dry_run || locked {
+                // Resolve dependencies
                 let install_order = deps::resolve_deps(&package, &recipes_path)?;
-                let uninstalled = deps::filter_uninstalled(install_order)?;
 
-                if uninstalled.is_empty() {
-                    output::skip(&format!("{} and all dependencies already installed", package));
+                // Validate against lock file if --locked flag is used
+                if locked {
+                    let lock_path = recipes_path.join("recipe.lock");
+                    if !lock_path.exists() {
+                        anyhow::bail!("Lock file not found: {}. Run 'recipe lock update' first.", lock_path.display());
+                    }
+                    let lock = LockFile::read(&lock_path)?;
+
+                    // Build resolved versions list
+                    let resolved: Vec<(String, String)> = install_order
+                        .iter()
+                        .filter_map(|(name, path)| {
+                            let version: Option<String> =
+                                recipe_state::get_var(path, "version").unwrap_or(None);
+                            version.map(|v| (name.clone(), v))
+                        })
+                        .collect();
+
+                    let mismatches = lock.validate_against(&resolved);
+                    if !mismatches.is_empty() {
+                        eprintln!("{}", "Lock file mismatch:".red().bold());
+                        for (name, locked_ver, resolved_ver) in &mismatches {
+                            eprintln!("  {} locked: {}, resolved: {}", name, locked_ver, resolved_ver);
+                        }
+                        anyhow::bail!("Version mismatch with lock file. Update lock file or use without --locked.");
+                    }
+                    output::info("Lock file validated successfully");
+                }
+
+                if dry_run {
+                    // Dry run mode: show what would happen
+                    output::info(&format!("Would install (in order) for {}:", package.bold()));
+                    println!();
+
+                    let mut to_install = 0;
+                    let mut already_installed = 0;
+
+                    for (i, (name, path)) in install_order.iter().enumerate() {
+                        let installed: Option<bool> =
+                            recipe_state::get_var(path, "installed").unwrap_or(None);
+                        let version: Option<String> =
+                            recipe_state::get_var(path, "version").unwrap_or(None);
+                        let ver = version.as_deref().unwrap_or("?");
+
+                        if installed == Some(true) {
+                            println!(
+                                "  {}. {} {} {}",
+                                i + 1,
+                                name.green(),
+                                ver.dimmed(),
+                                "(already installed)".green()
+                            );
+                            already_installed += 1;
+                        } else {
+                            println!("  {}. {} {}", i + 1, name.bold(), ver.cyan());
+                            to_install += 1;
+                        }
+                    }
+
+                    println!();
+                    output::info(&format!(
+                        "Total: {} package(s) to install, {} already satisfied",
+                        to_install, already_installed
+                    ));
                 } else {
-                    let names: Vec<_> = uninstalled.iter().map(|(n, _)| n.as_str()).collect();
-                    output::info(&format!("Installing {} package(s): {}", names.len(), names.join(", ")));
+                    // Actually install
+                    let uninstalled = deps::filter_uninstalled(install_order)?;
 
-                    let total = uninstalled.len();
-                    for (i, (name, path)) in uninstalled.into_iter().enumerate() {
-                        output::action_numbered(i + 1, total, &format!("Installing {}", name));
-                        engine.execute(&path)?;
+                    if uninstalled.is_empty() {
+                        output::skip(&format!(
+                            "{} and all dependencies already installed",
+                            package
+                        ));
+                    } else {
+                        let names: Vec<_> = uninstalled.iter().map(|(n, _)| n.as_str()).collect();
+                        output::info(&format!(
+                            "Installing {} package(s): {}",
+                            names.len(),
+                            names.join(", ")
+                        ));
+
+                        let engine =
+                            create_engine(&cli.prefix, cli.build_dir.as_deref(), &recipes_path)?;
+                        let total = uninstalled.len();
+                        for (i, (name, path)) in uninstalled.into_iter().enumerate() {
+                            // Mark dependencies (not the target) as installed_as_dep
+                            let is_dependency = name != package;
+                            if is_dependency {
+                                // Pre-mark as dependency (will be confirmed after successful install)
+                                let _ = recipe_state::set_var(&path, "installed_as_dep", &true);
+                            }
+
+                            output::action_numbered(i + 1, total, &format!("Installing {}", name));
+                            engine.execute(&path)?;
+                        }
                     }
                 }
             } else {
                 let recipe_path = resolve_recipe(&package, &recipes_path)?;
+                let engine = create_engine(&cli.prefix, cli.build_dir.as_deref(), &recipes_path)?;
                 engine.execute(&recipe_path)?;
             }
         }
 
-        Commands::Remove { package } => {
+        Commands::Remove { package, force } => {
+            use owo_colors::OwoColorize;
+
             let recipe_path = resolve_recipe(&package, &recipes_path)?;
+
+            // Check for reverse dependencies (packages that depend on this one)
+            let rdeps = deps::reverse_deps_installed(&package, &recipes_path)?;
+
+            if !rdeps.is_empty() && !force {
+                output::error(&format!("Cannot remove '{}' - required by:", package.bold()));
+                for (name, _) in &rdeps {
+                    eprintln!("  {} {}", "-".red(), name);
+                }
+                eprintln!();
+                eprintln!("{}", "Use --force to remove anyway (will break dependents)".yellow());
+                anyhow::bail!("Package has dependents");
+            }
+
+            if !rdeps.is_empty() && force {
+                output::warning(&format!(
+                    "Force removing '{}' - this may break {} dependent package(s)",
+                    package.bold(),
+                    rdeps.len()
+                ));
+            }
+
             let engine = create_engine(&cli.prefix, cli.build_dir.as_deref(), &recipes_path)?;
             engine.remove(&recipe_path)?;
         }
@@ -233,6 +412,377 @@ fn main() -> Result<()> {
                     }
                     _ => {
                         println!("  {}", "(none)".dimmed());
+                    }
+                }
+            }
+        }
+
+        Commands::Hash { file } => {
+            use levitate_recipe::helpers::acquire::compute_hashes;
+            use owo_colors::OwoColorize;
+
+            if !file.exists() {
+                anyhow::bail!("File not found: {}", file.display());
+            }
+
+            output::info(&format!("Computing hashes for {}...", file.display()));
+
+            let hashes = compute_hashes(&file)
+                .with_context(|| format!("Failed to compute hashes for {}", file.display()))?;
+
+            println!();
+            println!("{:<10} {}", "sha256:".bold(), hashes.sha256.cyan());
+            println!("{:<10} {}", "sha512:".bold(), hashes.sha512.cyan());
+            println!("{:<10} {}", "blake3:".bold(), hashes.blake3.cyan());
+            println!();
+            println!("{}", "Copy one of these into your recipe's acquire() function:".dimmed());
+            println!("  {}", format!("verify_sha256(\"{}\");", hashes.sha256).green());
+        }
+
+        Commands::Orphans => {
+            use owo_colors::OwoColorize;
+
+            let orphans = deps::find_orphans(&recipes_path)?;
+
+            if orphans.is_empty() {
+                output::info("No orphaned packages found");
+            } else {
+                output::info(&format!("Found {} orphaned package(s):", orphans.len()));
+                for (name, path) in &orphans {
+                    let version: Option<String> =
+                        recipe_state::get_var(path, "installed_version").unwrap_or(None);
+                    println!(
+                        "  {} {}",
+                        name.yellow(),
+                        version.as_deref().unwrap_or("").dimmed()
+                    );
+                }
+                println!();
+                println!("{}", "Run 'recipe autoremove --yes' to remove these packages".dimmed());
+            }
+        }
+
+        Commands::Autoremove { yes } => {
+            use owo_colors::OwoColorize;
+
+            let orphans = deps::find_orphans(&recipes_path)?;
+
+            if orphans.is_empty() {
+                output::info("No orphaned packages to remove");
+                return Ok(());
+            }
+
+            output::info(&format!("Found {} orphaned package(s):", orphans.len()));
+            for (name, path) in &orphans {
+                let version: Option<String> =
+                    recipe_state::get_var(path, "installed_version").unwrap_or(None);
+                println!(
+                    "  {} {}",
+                    name.yellow(),
+                    version.as_deref().unwrap_or("").dimmed()
+                );
+            }
+
+            if !yes {
+                println!();
+                println!("{}", "Run with --yes to actually remove these packages".cyan());
+                return Ok(());
+            }
+
+            println!();
+            let engine = create_engine(&cli.prefix, cli.build_dir.as_deref(), &recipes_path)?;
+            let mut removed = 0;
+
+            for (name, path) in orphans {
+                output::action(&format!("Removing orphan: {}", name));
+                match engine.remove(&path) {
+                    Ok(()) => removed += 1,
+                    Err(e) => output::warning(&format!("Failed to remove {}: {}", name, e)),
+                }
+            }
+
+            output::success(&format!("Removed {} orphaned package(s)", removed));
+        }
+
+        Commands::Tree { package } => {
+            use owo_colors::OwoColorize;
+
+            fn print_tree(
+                name: &str,
+                recipes_path: &std::path::Path,
+                prefix: &str,
+                is_last: bool,
+                visited: &mut std::collections::HashSet<String>,
+            ) -> Result<()> {
+                let branch = if is_last { "└── " } else { "├── " };
+                let recipe_path = recipes_path.join(format!("{}.rhai", name));
+
+                let installed: Option<bool> =
+                    recipe_state::get_var(&recipe_path, "installed").unwrap_or(None);
+                let version: Option<String> =
+                    recipe_state::get_var(&recipe_path, "version").unwrap_or(None);
+
+                let name_colored = if installed == Some(true) {
+                    name.green().to_string()
+                } else {
+                    name.to_string()
+                };
+
+                println!(
+                    "{}{}{}{}",
+                    prefix,
+                    branch,
+                    name_colored,
+                    version.map(|v| format!(" {}", v.dimmed())).unwrap_or_default()
+                );
+
+                // Prevent cycles
+                if visited.contains(name) {
+                    return Ok(());
+                }
+                visited.insert(name.to_string());
+
+                // Get dependencies
+                let deps: Vec<String> = recipe_state::get_var(&recipe_path, "deps")
+                    .unwrap_or(None)
+                    .unwrap_or_default();
+
+                let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
+
+                for (i, dep) in deps.iter().enumerate() {
+                    // Extract package name from dependency spec (remove version constraint)
+                    let dep_name = dep.split_whitespace().next().unwrap_or(dep);
+                    let is_last_dep = i == deps.len() - 1;
+                    print_tree(dep_name, recipes_path, &new_prefix, is_last_dep, visited)?;
+                }
+
+                Ok(())
+            }
+
+            let recipe_path = resolve_recipe(&package, &recipes_path)?;
+            let installed: Option<bool> =
+                recipe_state::get_var(&recipe_path, "installed").unwrap_or(None);
+            let version: Option<String> =
+                recipe_state::get_var(&recipe_path, "version").unwrap_or(None);
+
+            let name_colored = if installed == Some(true) {
+                package.green().to_string()
+            } else {
+                package.clone()
+            };
+
+            println!(
+                "{}{}",
+                name_colored,
+                version.map(|v| format!(" {}", v.dimmed())).unwrap_or_default()
+            );
+
+            let deps: Vec<String> = recipe_state::get_var(&recipe_path, "deps")
+                .unwrap_or(None)
+                .unwrap_or_default();
+
+            let mut visited = std::collections::HashSet::new();
+            visited.insert(package.clone());
+
+            for (i, dep) in deps.iter().enumerate() {
+                let dep_name = dep.split_whitespace().next().unwrap_or(dep);
+                let is_last = i == deps.len() - 1;
+                print_tree(dep_name, &recipes_path, "", is_last, &mut visited)?;
+            }
+        }
+
+        Commands::Why { package } => {
+            use owo_colors::OwoColorize;
+
+            let rdeps = deps::reverse_deps(&package, &recipes_path)?;
+
+            if rdeps.is_empty() {
+                output::info(&format!(
+                    "'{}' is not required by any other package",
+                    package.bold()
+                ));
+            } else {
+                output::info(&format!(
+                    "'{}' is required by {} package(s):",
+                    package.bold(),
+                    rdeps.len()
+                ));
+                for name in &rdeps {
+                    let recipe_path = recipes_path.join(format!("{}.rhai", name));
+                    let installed: Option<bool> =
+                        recipe_state::get_var(&recipe_path, "installed").unwrap_or(None);
+                    if installed == Some(true) {
+                        println!("  {} {}", name.green(), "(installed)".dimmed());
+                    } else {
+                        println!("  {}", name);
+                    }
+                }
+            }
+        }
+
+        Commands::Impact { package } => {
+            use owo_colors::OwoColorize;
+
+            // Recursively find all packages that would be affected
+            fn find_all_impacted(
+                pkg: &str,
+                recipes_path: &std::path::Path,
+                impacted: &mut std::collections::HashSet<String>,
+            ) -> Result<()> {
+                let rdeps = deps::reverse_deps(pkg, recipes_path)?;
+                for rdep in rdeps {
+                    if impacted.insert(rdep.clone()) {
+                        find_all_impacted(&rdep, recipes_path, impacted)?;
+                    }
+                }
+                Ok(())
+            }
+
+            let mut impacted = std::collections::HashSet::new();
+            find_all_impacted(&package, &recipes_path, &mut impacted)?;
+
+            if impacted.is_empty() {
+                output::info(&format!(
+                    "Removing '{}' would not affect any other packages",
+                    package.bold()
+                ));
+            } else {
+                // Filter to only installed packages
+                let mut installed_impacted = Vec::new();
+                for name in &impacted {
+                    let recipe_path = recipes_path.join(format!("{}.rhai", name));
+                    let installed: Option<bool> =
+                        recipe_state::get_var(&recipe_path, "installed").unwrap_or(None);
+                    if installed == Some(true) {
+                        installed_impacted.push(name.clone());
+                    }
+                }
+
+                if installed_impacted.is_empty() {
+                    output::info(&format!(
+                        "Removing '{}' would not affect any installed packages",
+                        package.bold()
+                    ));
+                } else {
+                    output::warning(&format!(
+                        "Removing '{}' would break {} installed package(s):",
+                        package.bold(),
+                        installed_impacted.len()
+                    ));
+                    for name in &installed_impacted {
+                        println!("  {} {}", name.red(), "(installed)".dimmed());
+                    }
+                }
+            }
+        }
+
+        Commands::Lock { action } => {
+            use levitate_recipe::lockfile::LockFile;
+            use owo_colors::OwoColorize;
+
+            let lock_path = recipes_path.join("recipe.lock");
+
+            match action {
+                LockAction::Update => {
+                    // Scan all recipes and build lock file
+                    let mut lock = LockFile::new();
+
+                    for entry in std::fs::read_dir(&recipes_path)? {
+                        let entry = entry?;
+                        let path = entry.path();
+                        if path.extension().map(|e| e == "rhai").unwrap_or(false) {
+                            let name = path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .map(|s| s.to_string())
+                                .unwrap_or_default();
+
+                            if name.is_empty() {
+                                continue;
+                            }
+
+                            let version: Option<String> =
+                                recipe_state::get_var(&path, "version").unwrap_or(None);
+
+                            if let Some(ver) = version {
+                                lock.add_package(name, ver);
+                            }
+                        }
+                    }
+
+                    lock.update_metadata();
+                    lock.write(&lock_path)?;
+
+                    output::success(&format!(
+                        "Updated lock file with {} package(s): {}",
+                        lock.packages.len(),
+                        lock_path.display()
+                    ));
+                }
+
+                LockAction::Show => {
+                    if !lock_path.exists() {
+                        anyhow::bail!("Lock file not found: {}", lock_path.display());
+                    }
+
+                    let lock = LockFile::read(&lock_path)?;
+
+                    if lock.packages.is_empty() {
+                        output::info("Lock file is empty");
+                    } else {
+                        output::info(&format!("Lock file ({} packages):", lock.packages.len()));
+                        for (name, version) in &lock.packages {
+                            println!("  {} {}", name.bold(), version.cyan());
+                        }
+                        if let Some(generated) = &lock.metadata.generated {
+                            println!();
+                            println!("{}", format!("Generated: {}", generated).dimmed());
+                        }
+                    }
+                }
+
+                LockAction::Verify => {
+                    if !lock_path.exists() {
+                        anyhow::bail!("Lock file not found: {}", lock_path.display());
+                    }
+
+                    let lock = LockFile::read(&lock_path)?;
+                    let mut mismatches = Vec::new();
+                    let mut matches = 0;
+
+                    for (name, locked_version) in &lock.packages {
+                        let recipe_path = recipes_path.join(format!("{}.rhai", name));
+                        if !recipe_path.exists() {
+                            mismatches.push((name.clone(), locked_version.clone(), "missing".to_string()));
+                            continue;
+                        }
+
+                        let current_version: Option<String> =
+                            recipe_state::get_var(&recipe_path, "version").unwrap_or(None);
+
+                        match current_version {
+                            Some(v) if &v == locked_version => matches += 1,
+                            Some(v) => mismatches.push((name.clone(), locked_version.clone(), v)),
+                            None => mismatches.push((name.clone(), locked_version.clone(), "unknown".to_string())),
+                        }
+                    }
+
+                    if mismatches.is_empty() {
+                        output::success(&format!(
+                            "Lock file verified: {} package(s) match",
+                            matches
+                        ));
+                    } else {
+                        output::error("Lock file verification failed:");
+                        for (name, locked, current) in &mismatches {
+                            eprintln!(
+                                "  {} locked: {}, current: {}",
+                                name.red(),
+                                locked,
+                                current
+                            );
+                        }
+                        anyhow::bail!("{} package(s) do not match lock file", mismatches.len());
                     }
                 }
             }

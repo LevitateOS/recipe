@@ -265,23 +265,122 @@ pub fn execute(
     }
 
     // PHASE 4: Install to PREFIX
+    // Execute install phase - helpers track installed files in context
     output::sub_action("install");
-    call_action(engine, &mut scope, &ast, "install")?;
+    let install_result = call_action(engine, &mut scope, &ast, "install");
+
+    // Get installed files regardless of success/failure (for cleanup on failure)
+    let installed_files = get_installed_files();
+
+    // Handle install failure - clean up any partially installed files
+    if let Err(e) = install_result {
+        output::warning("Install failed, cleaning up partially installed files...");
+        for file in &installed_files {
+            if file.exists() {
+                let _ = std::fs::remove_file(file);
+                output::detail(&format!("rm {}", file.display()));
+            }
+        }
+        return Err(e);
+    }
 
     // POST-INSTALL HOOK (if defined)
     if has_action(&ast, "post_install") {
         output::sub_action("post_install");
-        call_action(engine, &mut scope, &ast, "post_install")?;
+        if let Err(e) = call_action(engine, &mut scope, &ast, "post_install") {
+            // Rollback installed files on post_install failure
+            output::warning("Post-install failed, cleaning up...");
+            for file in &installed_files {
+                if file.exists() {
+                    let _ = std::fs::remove_file(file);
+                }
+            }
+            return Err(e);
+        }
     }
 
     // Record installed state in recipe
-    let installed_files = get_installed_files();
     update_recipe_state(&recipe_path_canonical, &version, &installed_files)?;
 
     // Context cleanup handled by _context_guard Drop
 
     output::success(&format!("{} installed", name));
     Ok(())
+}
+
+/// Commit staged files to the final prefix atomically
+///
+/// This moves files from a staging area to the real prefix.
+/// If any move fails, we attempt to roll back all previously moved files.
+fn commit_staged_files(
+    staged_files: &[(std::path::PathBuf, std::path::PathBuf)], // (staged_path, final_path)
+    backup_dir: &Path,
+) -> Result<Vec<std::path::PathBuf>> {
+    let mut committed: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new(); // (final_path, backup_path)
+    let mut final_paths: Vec<std::path::PathBuf> = Vec::new();
+
+    for (staged, final_path) in staged_files {
+        // Create parent directories
+        if let Some(parent) = final_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
+        }
+
+        // Back up existing file if it exists
+        let backup_path = if final_path.exists() {
+            let rel = final_path
+                .strip_prefix("/")
+                .unwrap_or(final_path);
+            let backup = backup_dir.join(rel);
+            if let Some(parent) = backup.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::rename(final_path, &backup)
+                .with_context(|| format!("Failed to backup {}", final_path.display()))?;
+            Some(backup)
+        } else {
+            None
+        };
+
+        // Move staged file to final location
+        match std::fs::rename(staged, final_path) {
+            Ok(()) => {
+                committed.push((final_path.clone(), backup_path.unwrap_or_default()));
+                final_paths.push(final_path.clone());
+            }
+            Err(e) => {
+                // Rename failed (possibly cross-device), try copy + delete
+                match std::fs::copy(staged, final_path) {
+                    Ok(_) => {
+                        let _ = std::fs::remove_file(staged);
+                        committed.push((final_path.clone(), backup_path.unwrap_or_default()));
+                        final_paths.push(final_path.clone());
+                    }
+                    Err(copy_err) => {
+                        // Rollback all committed files
+                        for (committed_path, backup_path) in committed.iter().rev() {
+                            if backup_path.exists() {
+                                // Restore from backup
+                                let _ = std::fs::rename(backup_path, committed_path);
+                            } else {
+                                // Remove the new file
+                                let _ = std::fs::remove_file(committed_path);
+                            }
+                        }
+                        return Err(anyhow::anyhow!(
+                            "Failed to install {} (tried rename: {}, copy: {}). Rolled back {} files.",
+                            final_path.display(),
+                            e,
+                            copy_err,
+                            committed.len()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(final_paths)
 }
 
 /// Update recipe state variables after successful install

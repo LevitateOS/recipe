@@ -65,6 +65,7 @@ mod core;
 pub mod helpers;
 
 pub use core::deps;
+pub use core::lockfile;
 pub use core::output;
 pub use core::recipe_state;
 

@@ -5,7 +5,7 @@
 //! ## Implicit State
 //!
 //! Both `download()` and `copy()` set `ctx.last_downloaded` to point to the
-//! acquired file. This is used by `verify_sha256()` to know which file to check.
+//! acquired file. This is used by verification functions to know which file to check.
 //!
 //! ## Example
 //!
@@ -15,12 +15,19 @@
 //!     verify_sha256("abc123...");  // Verifies the downloaded file
 //! }
 //! ```
+//!
+//! ## Supported Hash Algorithms
+//!
+//! - `verify_sha256(expected)` - SHA-256 (recommended)
+//! - `verify_sha512(expected)` - SHA-512 (stronger)
+//! - `verify_blake3(expected)` - BLAKE3 (fastest)
 
 use crate::core::{output, with_context, with_context_mut};
 use indicatif::{ProgressBar, ProgressStyle};
 use rhai::EvalAltResult;
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 use std::io::{Read, Write};
+use std::path::Path;
 use std::time::Duration;
 
 /// Download a file from a URL with progress bar.
@@ -139,23 +146,146 @@ pub fn verify_sha256(expected: &str) -> Result<(), Box<EvalAltResult>> {
             .ok_or("No file to verify - call download() or copy() first")?;
 
         output::detail("verifying sha256");
-
-        let mut f = std::fs::File::open(file).map_err(|e| format!("cannot open file: {}", e))?;
-        let mut hasher = Sha256::new();
-        let mut buffer = [0; 8192];
-        loop {
-            let n = f.read(&mut buffer).map_err(|e| format!("read error: {}", e))?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buffer[..n]);
-        }
-        let hash = hex::encode(hasher.finalize());
-
-        if hash != expected.to_lowercase() {
-            return Err(format!("sha256 mismatch: expected {}, got {}", expected, hash).into());
-        }
-
-        Ok(())
+        verify_hash_sha256(file, expected)
     })
+}
+
+/// Verify the SHA512 hash of the last downloaded/copied file
+pub fn verify_sha512(expected: &str) -> Result<(), Box<EvalAltResult>> {
+    with_context(|ctx| {
+        let file = ctx
+            .last_downloaded
+            .as_ref()
+            .ok_or("No file to verify - call download() or copy() first")?;
+
+        output::detail("verifying sha512");
+        verify_hash_sha512(file, expected)
+    })
+}
+
+/// Verify the BLAKE3 hash of the last downloaded/copied file
+pub fn verify_blake3(expected: &str) -> Result<(), Box<EvalAltResult>> {
+    with_context(|ctx| {
+        let file = ctx
+            .last_downloaded
+            .as_ref()
+            .ok_or("No file to verify - call download() or copy() first")?;
+
+        output::detail("verifying blake3");
+        verify_hash_blake3(file, expected)
+    })
+}
+
+/// Internal: Verify SHA256 hash of a specific file
+pub fn verify_hash_sha256(file: &Path, expected: &str) -> Result<(), Box<EvalAltResult>> {
+    let mut f = std::fs::File::open(file).map_err(|e| format!("cannot open file: {}", e))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0; 8192];
+    loop {
+        let n = f.read(&mut buffer).map_err(|e| format!("read error: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    let hash = hex::encode(hasher.finalize());
+
+    if hash != expected.to_lowercase() {
+        return Err(format!(
+            "SHA256 integrity check failed for '{}'\n  expected: {}\n  got:      {}",
+            file.display(),
+            expected.to_lowercase(),
+            hash
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+/// Internal: Verify SHA512 hash of a specific file
+pub fn verify_hash_sha512(file: &Path, expected: &str) -> Result<(), Box<EvalAltResult>> {
+    let mut f = std::fs::File::open(file).map_err(|e| format!("cannot open file: {}", e))?;
+    let mut hasher = Sha512::new();
+    let mut buffer = [0; 8192];
+    loop {
+        let n = f.read(&mut buffer).map_err(|e| format!("read error: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    let hash = hex::encode(hasher.finalize());
+
+    if hash != expected.to_lowercase() {
+        return Err(format!(
+            "SHA512 integrity check failed for '{}'\n  expected: {}\n  got:      {}",
+            file.display(),
+            expected.to_lowercase(),
+            hash
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+/// Internal: Verify BLAKE3 hash of a specific file
+pub fn verify_hash_blake3(file: &Path, expected: &str) -> Result<(), Box<EvalAltResult>> {
+    let mut f = std::fs::File::open(file).map_err(|e| format!("cannot open file: {}", e))?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0; 8192];
+    loop {
+        let n = f.read(&mut buffer).map_err(|e| format!("read error: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    let hash = hasher.finalize().to_hex().to_string();
+
+    if hash != expected.to_lowercase() {
+        return Err(format!(
+            "BLAKE3 integrity check failed for '{}'\n  expected: {}\n  got:      {}",
+            file.display(),
+            expected.to_lowercase(),
+            hash
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+/// Compute all hashes for a file (used by `recipe hash` command)
+pub fn compute_hashes(file: &Path) -> Result<FileHashes, std::io::Error> {
+    let mut f = std::fs::File::open(file)?;
+    let mut sha256_hasher = Sha256::new();
+    let mut sha512_hasher = Sha512::new();
+    let mut blake3_hasher = blake3::Hasher::new();
+    let mut buffer = [0; 8192];
+
+    loop {
+        let n = f.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        sha256_hasher.update(&buffer[..n]);
+        sha512_hasher.update(&buffer[..n]);
+        blake3_hasher.update(&buffer[..n]);
+    }
+
+    Ok(FileHashes {
+        sha256: hex::encode(sha256_hasher.finalize()),
+        sha512: hex::encode(sha512_hasher.finalize()),
+        blake3: blake3_hasher.finalize().to_hex().to_string(),
+    })
+}
+
+/// Container for computed file hashes
+#[derive(Debug, Clone)]
+pub struct FileHashes {
+    pub sha256: String,
+    pub sha512: String,
+    pub blake3: String,
 }
