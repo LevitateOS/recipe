@@ -1110,11 +1110,13 @@ fn chrono_lite(timestamp: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cheat_test::{cheat_aware, cheat_reviewed};
     use std::path::Path;
     use tempfile::TempDir;
 
     // ==================== Package Name Validation ====================
 
+    #[cheat_reviewed("Validation test - valid package name patterns accepted")]
     #[test]
     fn test_valid_package_names() {
         assert!(validate_package_name("ripgrep").is_ok());
@@ -1127,6 +1129,7 @@ mod tests {
         assert!(validate_package_name("pkg-name_v2").is_ok());
     }
 
+    #[cheat_reviewed("Validation test - empty package name rejected")]
     #[test]
     fn test_empty_package_name() {
         let result = validate_package_name("");
@@ -1134,6 +1137,17 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
     }
 
+    #[cheat_aware(
+        protects = "User's system is protected from path traversal attacks",
+        severity = "CRITICAL",
+        ease = "EASY",
+        cheats = [
+            "Skip package name validation entirely",
+            "Allow '.' and '/' in package names",
+            "Validate after path resolution instead of before"
+        ],
+        consequence = "Attacker runs 'recipe install ../../../etc/passwd' - reads/overwrites system files"
+    )]
     #[test]
     fn test_path_traversal_attacks() {
         // These should all be rejected
@@ -1145,6 +1159,17 @@ mod tests {
         assert!(validate_package_name("foo/bar").is_err());
     }
 
+    #[cheat_aware(
+        protects = "User's system is protected from shell injection via package names",
+        severity = "CRITICAL",
+        ease = "EASY",
+        cheats = [
+            "Only check for path separators, not other special chars",
+            "Escape special chars instead of rejecting",
+            "Allow some special chars 'for flexibility'"
+        ],
+        consequence = "Attacker runs 'recipe install pkg;rm -rf /' - shell injection"
+    )]
     #[test]
     fn test_special_characters_rejected() {
         assert!(validate_package_name("pkg!name").is_err());
@@ -1180,6 +1205,17 @@ mod tests {
         assert!(validate_package_name("pkg\nname").is_err()); // newline
     }
 
+    #[cheat_aware(
+        protects = "User is protected from dot-based path traversal",
+        severity = "CRITICAL",
+        ease = "EASY",
+        cheats = [
+            "Only check for '..' at start, not in middle",
+            "Allow single dots",
+            "Check for dots after other validation"
+        ],
+        consequence = "Attacker uses '.hidden' or 'pkg.name' for path traversal"
+    )]
     #[test]
     fn test_dots_rejected() {
         // Single dot and double dot are dangerous
@@ -1204,6 +1240,7 @@ mod tests {
         path
     }
 
+    #[cheat_reviewed("Resolution test - simple package name resolves to .rhai file")]
     #[test]
     fn test_resolve_recipe_simple_name() {
         let (_dir, recipes_path) = create_test_recipes_dir();
@@ -1214,6 +1251,7 @@ mod tests {
         assert!(result.unwrap().ends_with("ripgrep.rhai"));
     }
 
+    #[cheat_reviewed("Resolution test - hyphenated package names work")]
     #[test]
     fn test_resolve_recipe_with_hyphen() {
         let (_dir, recipes_path) = create_test_recipes_dir();
@@ -1223,6 +1261,17 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[cheat_aware(
+        protects = "User gets clear error when package not found",
+        severity = "MEDIUM",
+        ease = "EASY",
+        cheats = [
+            "Return empty path instead of error",
+            "Create empty recipe on the fly",
+            "Return success with null path"
+        ],
+        consequence = "User typos package name - confusing behavior instead of clear error"
+    )]
     #[test]
     fn test_resolve_recipe_not_found() {
         let (_dir, recipes_path) = create_test_recipes_dir();
@@ -1231,6 +1280,17 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("Recipe not found"));
     }
 
+    #[cheat_aware(
+        protects = "Path traversal in resolve_recipe is blocked",
+        severity = "CRITICAL",
+        ease = "EASY",
+        cheats = [
+            "Only validate in validate_package_name, skip in resolve_recipe",
+            "Treat path separators as valid package name chars",
+            "Resolve path before validation"
+        ],
+        consequence = "Attacker bypasses validate_package_name by going through resolve_recipe"
+    )]
     #[test]
     fn test_resolve_recipe_path_traversal_rejected() {
         let (_dir, recipes_path) = create_test_recipes_dir();
@@ -1241,6 +1301,17 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
 
+    #[cheat_aware(
+        protects = "Package names with invalid chars are rejected at resolution time",
+        severity = "HIGH",
+        ease = "EASY",
+        cheats = [
+            "Skip validation for names that look like packages",
+            "Only validate names with path separators",
+            "Call validation after file lookup"
+        ],
+        consequence = "User bypasses validation - 'pkg!name' gets through"
+    )]
     #[test]
     fn test_validate_package_name_called_for_simple_names() {
         // Package names without path separators go through validation
@@ -1251,6 +1322,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("Invalid package name"));
     }
 
+    #[cheat_reviewed("Resolution test - explicit .rhai paths accepted")]
     #[test]
     fn test_resolve_recipe_explicit_path() {
         let (_dir, recipes_path) = create_test_recipes_dir();
@@ -1261,6 +1333,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[cheat_reviewed("Resolution test - subdirectory style recipes found")]
     #[test]
     fn test_resolve_recipe_subdir_style() {
         let (_dir, recipes_path) = create_test_recipes_dir();
@@ -1275,6 +1348,7 @@ mod tests {
         assert!(result.unwrap().ends_with("ripgrep/ripgrep.rhai"));
     }
 
+    #[cheat_reviewed("Resolution test - direct file preferred over subdirectory")]
     #[test]
     fn test_resolve_recipe_prefers_direct_file() {
         let (_dir, recipes_path) = create_test_recipes_dir();
@@ -1294,6 +1368,7 @@ mod tests {
 
     // ==================== Find Installed Recipes ====================
 
+    #[cheat_reviewed("Query test - empty directory returns empty list")]
     #[test]
     fn test_find_installed_recipes_empty() {
         let (_dir, recipes_path) = create_test_recipes_dir();
@@ -1301,6 +1376,17 @@ mod tests {
         assert!(result.is_empty());
     }
 
+    #[cheat_aware(
+        protects = "User gets accurate list of installed packages",
+        severity = "MEDIUM",
+        ease = "EASY",
+        cheats = [
+            "Return all recipes regardless of installed state",
+            "Only check if file exists, not installed flag",
+            "Return empty list always"
+        ],
+        consequence = "User runs 'recipe list' - sees wrong installed status"
+    )]
     #[test]
     fn test_find_installed_recipes_finds_installed() {
         let (_dir, recipes_path) = create_test_recipes_dir();
@@ -1312,6 +1398,7 @@ mod tests {
         assert_eq!(result.len(), 2);
     }
 
+    #[cheat_reviewed("Edge case - nonexistent directory returns empty list")]
     #[test]
     fn test_find_installed_recipes_nonexistent_dir() {
         let recipes_path = PathBuf::from("/nonexistent/path");
@@ -1321,6 +1408,17 @@ mod tests {
 
     // ==================== Find Upgradable Recipes ====================
 
+    #[cheat_aware(
+        protects = "User sees accurate upgrade availability",
+        severity = "HIGH",
+        ease = "MEDIUM",
+        cheats = [
+            "Don't compare versions, mark all as upgradable",
+            "Only check installed flag, not version mismatch",
+            "Ignore installed_version field"
+        ],
+        consequence = "User runs 'recipe upgrade' - reinstalls everything or misses real updates"
+    )]
     #[test]
     fn test_find_upgradable_recipes() {
         let (_dir, recipes_path) = create_test_recipes_dir();
@@ -1352,6 +1450,7 @@ let installed = false;
 
     // ==================== Chrono Lite ====================
 
+    #[cheat_reviewed("Timestamp test - Unix epoch")]
     #[test]
     fn test_chrono_lite_epoch() {
         // Unix epoch should be 1970-01-01 00:00:00
@@ -1359,6 +1458,7 @@ let installed = false;
         assert_eq!(result, "1970-01-01 00:00:00 UTC");
     }
 
+    #[cheat_reviewed("Timestamp test - known date calculation")]
     #[test]
     fn test_chrono_lite_known_date() {
         // 2024-01-15 12:40:45 UTC = 1705322445
@@ -1368,6 +1468,7 @@ let installed = false;
         assert_eq!(result, "2024-01-15 12:40:45 UTC");
     }
 
+    #[cheat_reviewed("Timestamp test - leap year handling")]
     #[test]
     fn test_chrono_lite_leap_year() {
         // 2024-02-29 00:00:00 UTC = 1709164800 (2024 is a leap year)
@@ -1375,6 +1476,7 @@ let installed = false;
         assert_eq!(result, "2024-02-29 00:00:00 UTC");
     }
 
+    #[cheat_reviewed("Timestamp test - year boundary")]
     #[test]
     fn test_chrono_lite_year_boundary() {
         // 2023-12-31 23:59:59 UTC = 1704067199

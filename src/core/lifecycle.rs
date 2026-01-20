@@ -720,6 +720,7 @@ pub fn upgrade(
 mod tests {
     use super::*;
     use crate::RecipeEngine;
+    use cheat_test::{cheat_aware, cheat_reviewed};
     use tempfile::TempDir;
 
     fn create_test_env() -> (TempDir, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
@@ -741,6 +742,17 @@ mod tests {
 
     // ==================== validate_recipe tests ====================
 
+    #[cheat_aware(
+        protects = "User is warned when recipe missing required 'name' field",
+        severity = "HIGH",
+        ease = "EASY",
+        cheats = [
+            "Skip name validation entirely",
+            "Use filename as name without warning",
+            "Accept empty string as valid name"
+        ],
+        consequence = "User installs package with no name - can't remove, list, or manage it"
+    )]
     #[test]
     fn test_validate_recipe_missing_name() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
@@ -758,6 +770,17 @@ fn install() {}
         assert!(err.contains("name"));
     }
 
+    #[cheat_aware(
+        protects = "User is warned when recipe missing required 'version' field",
+        severity = "HIGH",
+        ease = "EASY",
+        cheats = [
+            "Skip version validation",
+            "Use default version like '0.0.0'",
+            "Accept missing version silently"
+        ],
+        consequence = "User installs package with no version - upgrades and rollbacks impossible"
+    )]
     #[test]
     fn test_validate_recipe_missing_version() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
@@ -775,6 +798,17 @@ fn install() {}
         assert!(err.contains("version"));
     }
 
+    #[cheat_aware(
+        protects = "User is warned when recipe missing required 'acquire' function",
+        severity = "HIGH",
+        ease = "EASY",
+        cheats = [
+            "Skip acquire validation",
+            "Create empty acquire function automatically",
+            "Accept recipes without acquire"
+        ],
+        consequence = "User installs package but nothing is downloaded - install fails silently"
+    )]
     #[test]
     fn test_validate_recipe_missing_acquire() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
@@ -792,6 +826,17 @@ fn install() {}
         assert!(err.contains("acquire"));
     }
 
+    #[cheat_aware(
+        protects = "User is warned when recipe missing required 'install' function",
+        severity = "HIGH",
+        ease = "EASY",
+        cheats = [
+            "Skip install validation",
+            "Create empty install function automatically",
+            "Accept recipes without install"
+        ],
+        consequence = "User installs package - acquire succeeds but nothing gets installed"
+    )]
     #[test]
     fn test_validate_recipe_missing_install() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
@@ -809,6 +854,7 @@ fn acquire() {}
         assert!(err.contains("install"));
     }
 
+    #[cheat_reviewed("Validation test - multiple errors reported at once")]
     #[test]
     fn test_validate_recipe_multiple_errors() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
@@ -829,6 +875,7 @@ let x = 1;
         assert!(err.contains("install"));
     }
 
+    #[cheat_reviewed("Validation test - empty name string rejected")]
     #[test]
     fn test_validate_recipe_empty_name() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
@@ -847,6 +894,7 @@ fn install() {}
         assert!(err.contains("cannot be empty"));
     }
 
+    #[cheat_reviewed("Validation test - name must be string type")]
     #[test]
     fn test_validate_recipe_wrong_type_name() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
@@ -865,6 +913,7 @@ fn install() {}
         assert!(err.contains("must be a string"));
     }
 
+    #[cheat_reviewed("Validation test - installed field required")]
     #[test]
     fn test_validate_recipe_missing_installed() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
@@ -882,6 +931,7 @@ fn install() {}
         assert!(err.contains("installed"));
     }
 
+    #[cheat_reviewed("Validation test - installed must be boolean")]
     #[test]
     fn test_validate_recipe_installed_wrong_type() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
@@ -900,6 +950,7 @@ fn install() {}
         assert!(err.contains("must be a boolean"));
     }
 
+    #[cheat_reviewed("Validation test - installed=true requires installed_version")]
     #[test]
     fn test_validate_recipe_installed_true_missing_version() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
@@ -920,6 +971,7 @@ fn install() {}
         assert!(err.contains("required when installed = true"));
     }
 
+    #[cheat_reviewed("Validation test - installed=true requires installed_files")]
     #[test]
     fn test_validate_recipe_installed_true_missing_files() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
@@ -940,6 +992,7 @@ fn install() {}
         assert!(err.contains("required when installed = true"));
     }
 
+    #[cheat_reviewed("Validation test - installed=true with all required fields passes")]
     #[test]
     fn test_validate_recipe_installed_true_valid() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
@@ -958,6 +1011,7 @@ fn install() {}
         assert!(result.is_ok());
     }
 
+    #[cheat_reviewed("Validation test - complete valid recipe passes")]
     #[test]
     fn test_validate_recipe_valid() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
@@ -977,6 +1031,7 @@ fn install() {}
 
     // ==================== has_action tests ====================
 
+    #[cheat_reviewed("API test - has_action detects existing functions")]
     #[test]
     fn test_has_action_exists() {
         let engine = rhai::Engine::new();
@@ -985,6 +1040,7 @@ fn install() {}
         assert!(has_action(&ast, "install"));
     }
 
+    #[cheat_reviewed("API test - has_action returns false for missing functions")]
     #[test]
     fn test_has_action_missing() {
         let engine = rhai::Engine::new();
@@ -993,6 +1049,7 @@ fn install() {}
         assert!(!has_action(&ast, "build"));
     }
 
+    #[cheat_reviewed("API test - has_action on script with no functions")]
     #[test]
     fn test_has_action_empty_script() {
         let engine = rhai::Engine::new();
@@ -1002,6 +1059,7 @@ fn install() {}
 
     // ==================== get_recipe_name tests ====================
 
+    #[cheat_reviewed("API test - recipe name extracted from variable")]
     #[test]
     fn test_get_recipe_name_from_variable() {
         let engine = rhai::Engine::new();
@@ -1011,6 +1069,7 @@ fn install() {}
         assert_eq!(name, "my-package");
     }
 
+    #[cheat_reviewed("API test - recipe name falls back to filename")]
     #[test]
     fn test_get_recipe_name_fallback_to_filename() {
         let engine = rhai::Engine::new();
@@ -1022,6 +1081,7 @@ fn install() {}
 
     // ==================== call_action tests ====================
 
+    #[cheat_reviewed("API test - call_action succeeds on valid function")]
     #[test]
     fn test_call_action_success() {
         let engine = rhai::Engine::new();
@@ -1031,6 +1091,7 @@ fn install() {}
         assert!(result.is_ok());
     }
 
+    #[cheat_reviewed("API test - call_action fails on missing function")]
     #[test]
     fn test_call_action_missing() {
         let engine = rhai::Engine::new();
@@ -1041,6 +1102,7 @@ fn install() {}
         assert!(result.unwrap_err().to_string().contains("not defined"));
     }
 
+    #[cheat_reviewed("API test - call_action propagates runtime errors")]
     #[test]
     fn test_call_action_runtime_error() {
         let engine = rhai::Engine::new();
@@ -1054,6 +1116,17 @@ fn install() {}
 
     // ==================== remove tests ====================
 
+    #[cheat_aware(
+        protects = "User is warned when trying to remove uninstalled package",
+        severity = "MEDIUM",
+        ease = "EASY",
+        cheats = [
+            "Don't check installed state before remove",
+            "Return success even if not installed",
+            "Silently skip uninstalled packages"
+        ],
+        consequence = "User runs 'recipe remove pkg' on uninstalled package - confusing success message"
+    )]
     #[test]
     fn test_remove_not_installed() {
         let (_dir, prefix, _build_dir, recipes_dir) = create_test_env();
@@ -1069,6 +1142,7 @@ fn install() {}
         assert!(result.unwrap_err().to_string().contains("not installed"));
     }
 
+    #[cheat_reviewed("Remove test - empty installed_files list handled")]
     #[test]
     fn test_remove_with_no_files() {
         let (_dir, prefix, _build_dir, recipes_dir) = create_test_env();
@@ -1088,6 +1162,17 @@ fn install() {}
         assert_eq!(installed, Some(false));
     }
 
+    #[cheat_aware(
+        protects = "User's installed files are actually deleted on remove",
+        severity = "HIGH",
+        ease = "EASY",
+        cheats = [
+            "Mark as uninstalled but don't delete files",
+            "Delete from list but not from filesystem",
+            "Silently skip files that don't exist"
+        ],
+        consequence = "User removes package - files remain on disk, wasting space and causing conflicts"
+    )]
     #[test]
     fn test_remove_deletes_files() {
         let (_dir, prefix, _build_dir, recipes_dir) = create_test_env();
@@ -1114,6 +1199,7 @@ fn install() {{}}
         assert!(!test_file.exists());
     }
 
+    #[cheat_reviewed("Remove test - partial failure preserves installed state")]
     #[test]
     fn test_remove_partial_failure_preserves_state() {
         let (_dir, prefix, _build_dir, recipes_dir) = create_test_env();
@@ -1147,6 +1233,7 @@ fn install() {{}}
 
     // ==================== update tests ====================
 
+    #[cheat_reviewed("Update test - no check_update function returns None")]
     #[test]
     fn test_update_no_check_update_function() {
         let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -1162,6 +1249,7 @@ fn install() {}
         assert_eq!(result.unwrap(), None);
     }
 
+    #[cheat_reviewed("Update test - check_update returning unit means no update")]
     #[test]
     fn test_update_returns_unit_no_update() {
         let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -1178,6 +1266,17 @@ fn check_update() { () }
         assert_eq!(result.unwrap(), None);
     }
 
+    #[cheat_aware(
+        protects = "User gets correct new version when update available",
+        severity = "HIGH",
+        ease = "MEDIUM",
+        cheats = [
+            "Return check_update result but don't update version variable",
+            "Update version variable but don't return it",
+            "Silently ignore check_update return value"
+        ],
+        consequence = "User runs 'recipe update pkg' - sees new version but install uses old version"
+    )]
     #[test]
     fn test_update_returns_new_version() {
         let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -1198,6 +1297,7 @@ fn check_update() { "2.0" }
         assert_eq!(version, Some("2.0".to_string()));
     }
 
+    #[cheat_reviewed("Update test - check_update errors propagated")]
     #[test]
     fn test_update_check_fails() {
         let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -1216,6 +1316,17 @@ fn check_update() { undefined_var }
 
     // ==================== upgrade tests ====================
 
+    #[cheat_aware(
+        protects = "User is warned when trying to upgrade uninstalled package",
+        severity = "MEDIUM",
+        ease = "EASY",
+        cheats = [
+            "Skip installed check and run upgrade anyway",
+            "Return success without doing anything",
+            "Install instead of upgrade without warning"
+        ],
+        consequence = "User runs 'recipe upgrade pkg' on uninstalled package - confusing behavior"
+    )]
     #[test]
     fn test_upgrade_not_installed() {
         let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -1232,6 +1343,7 @@ fn install() {}
         assert!(result.unwrap_err().to_string().contains("not installed"));
     }
 
+    #[cheat_reviewed("Upgrade test - up-to-date package returns false")]
     #[test]
     fn test_upgrade_already_up_to_date() {
         let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -1252,6 +1364,7 @@ fn install() {}
 
     // ==================== cleanup_empty_dirs tests ====================
 
+    #[cheat_reviewed("Cleanup test - empty directories removed")]
     #[test]
     fn test_cleanup_empty_dirs_removes_empty() {
         let (_dir, prefix, _build_dir, _recipes_dir) = create_test_env();
@@ -1270,6 +1383,7 @@ fn install() {}
         assert!(!prefix.join("a").exists());
     }
 
+    #[cheat_reviewed("Cleanup test - non-empty directories preserved")]
     #[test]
     fn test_cleanup_empty_dirs_preserves_nonempty() {
         let (_dir, prefix, _build_dir, _recipes_dir) = create_test_env();
@@ -1289,6 +1403,7 @@ fn install() {}
         assert!(!b.exists());
     }
 
+    #[cheat_reviewed("Cleanup test - stops at prefix directory, doesn't delete it")]
     #[test]
     fn test_cleanup_empty_dirs_stops_at_prefix() {
         let (_dir, prefix, _build_dir, _recipes_dir) = create_test_env();

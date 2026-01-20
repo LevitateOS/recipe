@@ -158,7 +158,9 @@ impl fmt::Display for VersionConflict {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cheat_test::{cheat_aware, cheat_reviewed};
 
+    #[cheat_reviewed("Parsing test - simple package name")]
     #[test]
     fn test_parse_simple_name() {
         let dep = Dependency::parse("openssl").unwrap();
@@ -166,18 +168,31 @@ mod tests {
         assert!(dep.constraint.is_none());
     }
 
+    #[cheat_reviewed("Parsing test - package name with hyphen")]
     #[test]
     fn test_parse_with_hyphen() {
         let dep = Dependency::parse("my-package").unwrap();
         assert_eq!(dep.name, "my-package");
     }
 
+    #[cheat_reviewed("Parsing test - package name with underscore")]
     #[test]
     fn test_parse_with_underscore() {
         let dep = Dependency::parse("my_package").unwrap();
         assert_eq!(dep.name, "my_package");
     }
 
+    #[cheat_aware(
+        protects = "User gets correct minimum version enforcement",
+        severity = "HIGH",
+        ease = "MEDIUM",
+        cheats = [
+            "Always return true for version check",
+            "Ignore constraint and install any version",
+            "Parse constraint but don't enforce it"
+        ],
+        consequence = "User requires openssl >= 3.0 but gets 2.x - crypto functions fail or have vulnerabilities"
+    )]
     #[test]
     fn test_parse_minimum_version() {
         let dep = Dependency::parse("openssl >= 3.0.0").unwrap();
@@ -188,6 +203,17 @@ mod tests {
         assert!(!dep.satisfied_by("2.9.0").unwrap());
     }
 
+    #[cheat_aware(
+        protects = "User gets correct maximum version enforcement",
+        severity = "HIGH",
+        ease = "MEDIUM",
+        cheats = [
+            "Only check minimum, ignore maximum",
+            "Flip comparison operators",
+            "Ignore < constraint entirely"
+        ],
+        consequence = "User requires zlib < 2.0 but gets 2.x - API breakage crashes application"
+    )]
     #[test]
     fn test_parse_maximum_version() {
         let dep = Dependency::parse("zlib < 2.0.0").unwrap();
@@ -196,6 +222,17 @@ mod tests {
         assert!(!dep.satisfied_by("2.0.0").unwrap());
     }
 
+    #[cheat_aware(
+        protects = "User gets correct range version enforcement",
+        severity = "HIGH",
+        ease = "MEDIUM",
+        cheats = [
+            "Only check one bound of range",
+            "OR the constraints instead of AND",
+            "Ignore second constraint in range"
+        ],
+        consequence = "User requires ncurses 6.x but gets 7.x - terminal rendering broken"
+    )]
     #[test]
     fn test_parse_range() {
         let dep = Dependency::parse("ncurses >= 6.0, < 7.0").unwrap();
@@ -206,6 +243,7 @@ mod tests {
         assert!(!dep.satisfied_by("7.0.0").unwrap());
     }
 
+    #[cheat_reviewed("Parsing test - caret (^) version operator")]
     #[test]
     fn test_parse_caret() {
         // ^1.2.3 means >=1.2.3, <2.0.0
@@ -216,6 +254,7 @@ mod tests {
         assert!(!dep.satisfied_by("9.0.0").unwrap());
     }
 
+    #[cheat_reviewed("Parsing test - tilde (~) version operator")]
     #[test]
     fn test_parse_tilde() {
         // ~1.2.3 means >=1.2.3, <1.3.0
@@ -226,6 +265,17 @@ mod tests {
         assert!(!dep.satisfied_by("6.5.0").unwrap());
     }
 
+    #[cheat_aware(
+        protects = "User gets exactly the version they specified",
+        severity = "HIGH",
+        ease = "MEDIUM",
+        cheats = [
+            "Treat = as >= (minimum)",
+            "Ignore patch version in comparison",
+            "Allow any version matching major.minor"
+        ],
+        consequence = "User pins exact = 1.2.3 but gets 1.2.4 - subtle behavior changes cause bugs"
+    )]
     #[test]
     fn test_parse_exact() {
         // Use = for exact version (semver syntax)
@@ -236,22 +286,36 @@ mod tests {
         assert!(!dep.satisfied_by("1.2.2").unwrap());
     }
 
+    #[cheat_reviewed("Parsing test - equals operator alternative syntax")]
     #[test]
     fn test_parse_equals_works() {
         let dep = Dependency::parse("pkg = 1.0.0").unwrap();
         assert!(dep.satisfied_by("1.0.0").unwrap());
     }
 
+    #[cheat_aware(
+        protects = "User is warned about empty dependency specification",
+        severity = "MEDIUM",
+        ease = "EASY",
+        cheats = [
+            "Return default dependency for empty input",
+            "Silently ignore empty deps",
+            "Treat empty as 'any package'"
+        ],
+        consequence = "User has typo (empty dep) - silently ignored, missing dependency at runtime"
+    )]
     #[test]
     fn test_parse_empty_error() {
         assert!(Dependency::parse("").is_err());
     }
 
+    #[cheat_reviewed("Error handling - whitespace-only input rejected")]
     #[test]
     fn test_parse_whitespace_only_error() {
         assert!(Dependency::parse("   ").is_err());
     }
 
+    #[cheat_reviewed("Error handling - invalid constraint syntax rejected")]
     #[test]
     fn test_parse_invalid_constraint() {
         // Invalid operator
@@ -259,6 +323,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[cheat_reviewed("Parsing test - partial versions padded to semver")]
     #[test]
     fn test_satisfied_by_partial_version() {
         let dep = Dependency::parse("pkg >= 1.0").unwrap();
@@ -267,18 +332,21 @@ mod tests {
         assert!(dep.satisfied_by("1").unwrap());
     }
 
+    #[cheat_reviewed("Display test - constraint shown in output")]
     #[test]
     fn test_display_with_constraint() {
         let dep = Dependency::parse("openssl >= 3.0.0").unwrap();
         assert_eq!(format!("{}", dep), "openssl >= 3.0.0");
     }
 
+    #[cheat_reviewed("Display test - no constraint case")]
     #[test]
     fn test_display_without_constraint() {
         let dep = Dependency::parse("openssl").unwrap();
         assert_eq!(format!("{}", dep), "openssl");
     }
 
+    #[cheat_reviewed("Unit test - version padding algorithm")]
     #[test]
     fn test_pad_version() {
         assert_eq!(pad_version("1"), "1.0.0");
@@ -289,6 +357,17 @@ mod tests {
 
     // ==================== Non-Semver Version Edge Cases ====================
 
+    #[cheat_aware(
+        protects = "User understands distro-style version behavior",
+        severity = "MEDIUM",
+        ease = "HARD",
+        cheats = [
+            "Treat pre-release as regular release",
+            "Strip pre-release suffix silently",
+            "Change semver pre-release behavior"
+        ],
+        consequence = "User expects bash 5.2.26-1 to satisfy >= 5.0.0 - it doesn't due to semver rules"
+    )]
     #[test]
     fn test_non_semver_version_with_hyphen_suffix() {
         // Versions like "5.2.26-1" (common in distro packages) are valid semver pre-release
@@ -308,6 +387,7 @@ mod tests {
         assert!(!dep.satisfied_by("5.2.26-1").unwrap());
     }
 
+    #[cheat_reviewed("Edge case - alpha/rc pre-release versions")]
     #[test]
     fn test_non_semver_version_with_alpha() {
         // Versions like "1.0-rc1" or "1.0.0-alpha"
@@ -320,6 +400,17 @@ mod tests {
         assert!(dep.satisfied_by("1.0.1").unwrap());
     }
 
+    #[cheat_aware(
+        protects = "Invalid versions fail constraint check, not crash",
+        severity = "MEDIUM",
+        ease = "EASY",
+        cheats = [
+            "Panic on unparseable version",
+            "Return true for unparseable versions",
+            "Throw error instead of returning false"
+        ],
+        consequence = "User's recipe has invalid version string - recipe crashes instead of failing gracefully"
+    )]
     #[test]
     fn test_completely_invalid_version_returns_false() {
         // Versions that can't be parsed at all should return false, not error
@@ -330,6 +421,7 @@ mod tests {
         assert!(!dep.satisfied_by("abc.def.ghi").unwrap());
     }
 
+    #[cheat_reviewed("Behavior test - no constraint accepts anything")]
     #[test]
     fn test_no_constraint_accepts_any_version() {
         // No constraint means any version is accepted, even invalid ones
@@ -339,6 +431,7 @@ mod tests {
         assert!(dep.satisfied_by("").unwrap());
     }
 
+    #[cheat_reviewed("Edge case - build metadata in versions")]
     #[test]
     fn test_version_with_build_metadata() {
         // semver supports build metadata like "1.0.0+build123"
@@ -347,6 +440,7 @@ mod tests {
         assert!(dep.satisfied_by("1.0.1+metadata").unwrap());
     }
 
+    #[cheat_reviewed("Edge case - v prefix not supported")]
     #[test]
     fn test_version_with_v_prefix() {
         // Some projects use "v1.0.0" format - semver doesn't accept this
@@ -355,6 +449,7 @@ mod tests {
         assert!(!dep.satisfied_by("v1.0.0").unwrap());
     }
 
+    #[cheat_reviewed("Edge case - four-part versions not supported")]
     #[test]
     fn test_four_part_version() {
         // Four-part versions like "1.2.3.4" are not valid semver

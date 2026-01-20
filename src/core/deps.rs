@@ -470,6 +470,7 @@ pub fn find_orphans(recipes_path: &Path) -> Result<Vec<(String, PathBuf)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cheat_test::{cheat_aware, cheat_reviewed};
     use tempfile::TempDir;
 
     fn write_recipe(dir: &Path, name: &str, deps: &[&str]) {
@@ -488,6 +489,7 @@ let deps = [{}];
         std::fs::write(dir.join(format!("{}.rhai", name)), content).unwrap();
     }
 
+    #[cheat_reviewed("Pure algorithm test - empty graph edge case")]
     #[test]
     fn test_empty_graph() {
         let graph = DepGraph::new();
@@ -495,6 +497,7 @@ let deps = [{}];
         assert!(result.unwrap().is_empty());
     }
 
+    #[cheat_reviewed("Pure algorithm test - single package with no dependencies")]
     #[test]
     fn test_single_package_no_deps() {
         let mut graph = DepGraph::new();
@@ -504,6 +507,7 @@ let deps = [{}];
         assert_eq!(order, vec!["foo"]);
     }
 
+    #[cheat_reviewed("Pure algorithm test - linear dependency chain")]
     #[test]
     fn test_linear_deps() {
         // c -> b -> a (c depends on b, b depends on a)
@@ -517,6 +521,7 @@ let deps = [{}];
         assert_eq!(order, vec!["a", "b", "c"]);
     }
 
+    #[cheat_reviewed("Pure algorithm test - diamond dependency pattern")]
     #[test]
     fn test_diamond_deps() {
         //     d
@@ -547,6 +552,17 @@ let deps = [{}];
         assert!(c_pos < d_pos);
     }
 
+    #[cheat_aware(
+        protects = "User is warned about circular dependencies that would cause infinite loops",
+        severity = "HIGH",
+        ease = "MEDIUM",
+        cheats = [
+            "Remove cycle detection from topological_sort",
+            "Return success with partial/wrong order when cycle detected",
+            "Only check for self-cycles, miss longer cycles"
+        ],
+        consequence = "User runs 'recipe install pkg' with circular deps - infinite loop or crash"
+    )]
     #[test]
     fn test_cycle_detection() {
         // a -> b -> c -> a (cycle)
@@ -560,6 +576,17 @@ let deps = [{}];
         assert!(result.unwrap_err().to_string().contains("cycle"));
     }
 
+    #[cheat_aware(
+        protects = "User is warned about self-referential dependencies",
+        severity = "HIGH",
+        ease = "EASY",
+        cheats = [
+            "Skip self-cycle check in topological_sort",
+            "Only check for multi-node cycles",
+            "Silently ignore self-dependencies"
+        ],
+        consequence = "User creates recipe with 'deps = [\"self\"]' - infinite recursion/stack overflow"
+    )]
     #[test]
     fn test_self_cycle() {
         // a -> a (self-cycle)
@@ -571,6 +598,17 @@ let deps = [{}];
         assert!(result.unwrap_err().to_string().contains("cycle"));
     }
 
+    #[cheat_aware(
+        protects = "User gets clear error when trying to install non-existent package",
+        severity = "MEDIUM",
+        ease = "EASY",
+        cheats = [
+            "Return empty list instead of error for missing package",
+            "Silently skip missing packages",
+            "Check only that package name is valid string, not that it exists"
+        ],
+        consequence = "User runs 'recipe install typo-pkg' - silent success, nothing installed"
+    )]
     #[test]
     fn test_missing_package() {
         let graph = DepGraph::new();
@@ -579,6 +617,17 @@ let deps = [{}];
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
 
+    #[cheat_aware(
+        protects = "User's dependency tree is correctly parsed from recipe files",
+        severity = "HIGH",
+        ease = "MEDIUM",
+        cheats = [
+            "Only read first recipe file, ignore others",
+            "Parse deps array but use wrong package names",
+            "Skip recipes with parse errors instead of failing"
+        ],
+        consequence = "User's app missing dependencies - 'recipe install app' succeeds but app crashes"
+    )]
     #[test]
     fn test_build_graph_from_recipes() {
         let dir = TempDir::new().unwrap();
@@ -609,6 +658,17 @@ let deps = [{}];
         assert!(lib2_pos < app_pos);
     }
 
+    #[cheat_aware(
+        protects = "User gets all dependencies resolved in correct order for installation",
+        severity = "CRITICAL",
+        ease = "MEDIUM",
+        cheats = [
+            "Return only direct dependencies, skip transitive ones",
+            "Return dependencies in wrong order (app before lib)",
+            "Return duplicate dependencies causing re-installation"
+        ],
+        consequence = "User runs 'recipe install app' - lib not installed, app fails to run"
+    )]
     #[test]
     fn test_resolve_deps() {
         let dir = TempDir::new().unwrap();
@@ -623,6 +683,17 @@ let deps = [{}];
         assert_eq!(result[1].0, "app");
     }
 
+    #[cheat_aware(
+        protects = "User doesn't reinstall already-installed packages",
+        severity = "MEDIUM",
+        ease = "EASY",
+        cheats = [
+            "Always return all packages regardless of installed state",
+            "Check wrong field for installed status",
+            "Return installed=true packages anyway"
+        ],
+        consequence = "User runs 'recipe install app' - reinstalls lib that's already installed, wastes time"
+    )]
     #[test]
     fn test_filter_uninstalled() {
         let dir = TempDir::new().unwrap();
@@ -660,6 +731,7 @@ let installed = false;
         assert_eq!(uninstalled[0].0, "notinstalled");
     }
 
+    #[cheat_reviewed("Pure algorithm test - multiple installation targets")]
     #[test]
     fn test_multiple_targets() {
         let mut graph = DepGraph::new();
@@ -682,6 +754,7 @@ let installed = false;
 
     // ==================== Deep Dependency Chains ====================
 
+    #[cheat_reviewed("Algorithm stress test - 5-level deep dependency chain")]
     #[test]
     fn test_deep_chain_5_levels() {
         // e -> d -> c -> b -> a
@@ -696,6 +769,7 @@ let installed = false;
         assert_eq!(order, vec!["a", "b", "c", "d", "e"]);
     }
 
+    #[cheat_reviewed("Algorithm stress test - 10-level deep dependency chain")]
     #[test]
     fn test_deep_chain_10_levels() {
         let mut graph = DepGraph::new();
@@ -721,6 +795,7 @@ let installed = false;
 
     // ==================== Wide Dependency Graphs ====================
 
+    #[cheat_reviewed("Algorithm stress test - many sibling dependencies")]
     #[test]
     fn test_wide_deps_many_siblings() {
         // app depends on lib1, lib2, lib3, lib4, lib5
@@ -743,6 +818,7 @@ let installed = false;
         }
     }
 
+    #[cheat_reviewed("Algorithm stress test - 10 sibling dependencies")]
     #[test]
     fn test_wide_deps_10_siblings() {
         let mut graph = DepGraph::new();
@@ -760,6 +836,7 @@ let installed = false;
 
     // ==================== Complex Graph Patterns ====================
 
+    #[cheat_reviewed("Algorithm test - realistic multi-layer dependency tree")]
     #[test]
     fn test_complex_real_world_scenario() {
         // Simulates a realistic dependency tree:
@@ -810,6 +887,7 @@ let installed = false;
         assert_eq!(pos("myapp"), 7);
     }
 
+    #[cheat_reviewed("Algorithm test - independent dependency trees")]
     #[test]
     fn test_two_independent_trees() {
         //   tree1     tree2
@@ -832,6 +910,7 @@ let installed = false;
         assert!(pos("leaf2") < pos("tree2"));
     }
 
+    #[cheat_reviewed("Algorithm test - shared deep transitive dependency")]
     #[test]
     fn test_shared_deep_dependency() {
         //    a       b
@@ -864,6 +943,17 @@ let installed = false;
 
     // ==================== Cycle Detection Edge Cases ====================
 
+    #[cheat_aware(
+        protects = "User is warned about cycles hidden in middle of dependency chain",
+        severity = "HIGH",
+        ease = "MEDIUM",
+        cheats = [
+            "Only check for cycles at start of chain",
+            "Stop cycle detection after first package",
+            "Ignore back-edges that don't lead to root"
+        ],
+        consequence = "User installs app with hidden cycle - stack overflow during install"
+    )]
     #[test]
     fn test_cycle_in_middle_of_chain() {
         // a -> b -> c -> d -> b (cycle at b)
@@ -879,6 +969,7 @@ let installed = false;
         assert!(err.contains("cycle"), "Expected cycle error, got: {}", err);
     }
 
+    #[cheat_reviewed("Algorithm test - two-node mutual dependency cycle")]
     #[test]
     fn test_two_node_cycle() {
         // a <-> b
@@ -891,6 +982,7 @@ let installed = false;
         assert!(result.unwrap_err().to_string().contains("cycle"));
     }
 
+    #[cheat_reviewed("Algorithm test - unreachable cycles should not block installation")]
     #[test]
     fn test_cycle_not_involving_target() {
         // target -> a, but b <-> c form a cycle (not reachable from target)
@@ -907,6 +999,17 @@ let installed = false;
 
     // ==================== Missing Dependencies ====================
 
+    #[cheat_aware(
+        protects = "User is warned about missing transitive dependencies",
+        severity = "CRITICAL",
+        ease = "EASY",
+        cheats = [
+            "Only check direct dependencies exist",
+            "Silently skip missing transitive deps",
+            "Return partial order with missing packages"
+        ],
+        consequence = "User installs app - transitive dep missing, app crashes at runtime"
+    )]
     #[test]
     fn test_missing_dependency_in_chain() {
         // a -> b -> missing
@@ -923,6 +1026,17 @@ let installed = false;
         assert!(err.contains("'b' depends on missing package 'missing'"), "Expected specific error message, got: {}", err);
     }
 
+    #[cheat_aware(
+        protects = "User gets clear error when recipe file doesn't exist",
+        severity = "MEDIUM",
+        ease = "EASY",
+        cheats = [
+            "Return empty list for missing recipe",
+            "Create dummy recipe on the fly",
+            "Silently skip missing recipes"
+        ],
+        consequence = "User runs 'recipe install missing-pkg' - silent success, nothing installed"
+    )]
     #[test]
     fn test_resolve_deps_missing_recipe() {
         let dir = TempDir::new().unwrap();
@@ -933,6 +1047,7 @@ let installed = false;
 
     // ==================== Duplicate Dependencies ====================
 
+    #[cheat_reviewed("Algorithm test - duplicate dependencies in array")]
     #[test]
     fn test_duplicate_deps_in_array() {
         // a depends on [b, b, b] (duplicates)
@@ -950,6 +1065,7 @@ let installed = false;
         assert_eq!(order, vec!["b", "a"]);
     }
 
+    #[cheat_reviewed("Algorithm test - same dependency via multiple paths")]
     #[test]
     fn test_same_dep_multiple_paths() {
         //      root
@@ -979,6 +1095,7 @@ let installed = false;
 
     // ==================== Graph Building Edge Cases ====================
 
+    #[cheat_reviewed("Edge case - empty recipes directory")]
     #[test]
     fn test_build_graph_empty_directory() {
         let dir = TempDir::new().unwrap();
@@ -986,6 +1103,7 @@ let installed = false;
         assert!(!graph.contains("anything"));
     }
 
+    #[cheat_reviewed("Edge case - only .rhai files are recipes")]
     #[test]
     fn test_build_graph_ignores_non_rhai_files() {
         let dir = TempDir::new().unwrap();
@@ -999,12 +1117,14 @@ let installed = false;
         assert!(!graph.contains("config"));
     }
 
+    #[cheat_reviewed("Edge case - nonexistent recipes directory")]
     #[test]
     fn test_build_graph_nonexistent_directory() {
         let graph = build_graph(Path::new("/nonexistent/path")).unwrap();
         assert!(!graph.contains("anything"));
     }
 
+    #[cheat_reviewed("Edge case - recipe without deps field")]
     #[test]
     fn test_build_graph_recipe_without_deps() {
         let dir = TempDir::new().unwrap();
@@ -1026,6 +1146,7 @@ let version = "1.0";
 
     // ==================== Filter Uninstalled Edge Cases ====================
 
+    #[cheat_reviewed("Edge case - missing installed field means not installed")]
     #[test]
     fn test_filter_uninstalled_no_installed_field() {
         let dir = TempDir::new().unwrap();
@@ -1044,6 +1165,7 @@ let version = "1.0";
         assert_eq!(uninstalled.len(), 1);
     }
 
+    #[cheat_reviewed("Edge case - all packages already installed")]
     #[test]
     fn test_filter_uninstalled_all_installed() {
         let dir = TempDir::new().unwrap();
@@ -1069,6 +1191,7 @@ let installed = true;
         assert!(uninstalled.is_empty());
     }
 
+    #[cheat_reviewed("Edge case - mix of installed and not installed")]
     #[test]
     fn test_filter_uninstalled_mixed() {
         let dir = TempDir::new().unwrap();
@@ -1105,6 +1228,7 @@ let installed = true;
 
     // ==================== Package Name Edge Cases ====================
 
+    #[cheat_reviewed("Edge case - package names with hyphens")]
     #[test]
     fn test_package_names_with_hyphens() {
         let mut graph = DepGraph::new();
@@ -1115,6 +1239,7 @@ let installed = true;
         assert_eq!(order, vec!["my-lib", "my-app"]);
     }
 
+    #[cheat_reviewed("Edge case - package names with numbers")]
     #[test]
     fn test_package_names_with_numbers() {
         let mut graph = DepGraph::new();
@@ -1125,6 +1250,7 @@ let installed = true;
         assert_eq!(order, vec!["lib1", "lib2"]);
     }
 
+    #[cheat_reviewed("Edge case - very long package names")]
     #[test]
     fn test_long_package_names() {
         let long_name = "a".repeat(100);
@@ -1137,12 +1263,14 @@ let installed = true;
 
     // ==================== DepGraph API Tests ====================
 
+    #[cheat_reviewed("API test - default graph is empty")]
     #[test]
     fn test_depgraph_default() {
         let graph = DepGraph::default();
         assert!(!graph.contains("anything"));
     }
 
+    #[cheat_reviewed("API test - get_path returns correct path")]
     #[test]
     fn test_depgraph_get_path() {
         let mut graph = DepGraph::new();
@@ -1155,6 +1283,7 @@ let installed = true;
         assert_eq!(graph.get_path("nonexistent"), None);
     }
 
+    #[cheat_reviewed("API test - contains checks package existence")]
     #[test]
     fn test_depgraph_contains() {
         let mut graph = DepGraph::new();
@@ -1165,6 +1294,7 @@ let installed = true;
         assert!(!graph.contains("other"));
     }
 
+    #[cheat_reviewed("API test - add_package overwrites existing")]
     #[test]
     fn test_depgraph_add_package_overwrites() {
         let mut graph = DepGraph::new();
@@ -1177,6 +1307,7 @@ let installed = true;
 
     // ==================== Integration Tests ====================
 
+    #[cheat_reviewed("Integration test - full workflow from recipe files")]
     #[test]
     fn test_full_workflow_from_recipes() {
         let dir = TempDir::new().unwrap();
@@ -1227,6 +1358,7 @@ let installed = false;
         assert!(!to_install.iter().any(|(n, _)| n == "openssl"));
     }
 
+    #[cheat_reviewed("Integration test - resolve_deps returns correct file paths")]
     #[test]
     fn test_resolve_deps_returns_correct_paths() {
         let dir = TempDir::new().unwrap();
@@ -1242,6 +1374,7 @@ let installed = false;
 
     // ==================== Reverse Dependency Tests ====================
 
+    #[cheat_reviewed("Reverse deps - package with no dependents")]
     #[test]
     fn test_reverse_deps_no_dependents() {
         let dir = TempDir::new().unwrap();
@@ -1251,6 +1384,7 @@ let installed = false;
         assert!(rdeps.is_empty());
     }
 
+    #[cheat_reviewed("Reverse deps - single dependent")]
     #[test]
     fn test_reverse_deps_single_dependent() {
         let dir = TempDir::new().unwrap();
@@ -1262,6 +1396,7 @@ let installed = false;
         assert!(rdeps.contains(&"app".to_string()));
     }
 
+    #[cheat_reviewed("Reverse deps - multiple dependents")]
     #[test]
     fn test_reverse_deps_multiple_dependents() {
         let dir = TempDir::new().unwrap();
@@ -1277,6 +1412,7 @@ let installed = false;
         assert!(rdeps.contains(&"app3".to_string()));
     }
 
+    #[cheat_reviewed("Reverse deps - nonexistent package returns empty")]
     #[test]
     fn test_reverse_deps_nonexistent_package() {
         let dir = TempDir::new().unwrap();
@@ -1287,6 +1423,7 @@ let installed = false;
         assert!(rdeps.is_empty());
     }
 
+    #[cheat_reviewed("Reverse deps - only returns installed dependents")]
     #[test]
     fn test_reverse_deps_installed_only_installed() {
         let dir = TempDir::new().unwrap();
@@ -1329,6 +1466,7 @@ let installed = false;
         assert_eq!(rdeps[0].0, "app-installed");
     }
 
+    #[cheat_reviewed("Reverse deps - empty when no installed dependents")]
     #[test]
     fn test_reverse_deps_installed_empty_when_none_installed() {
         let dir = TempDir::new().unwrap();
@@ -1358,6 +1496,17 @@ let deps = [{}];
         std::fs::write(dir.join(format!("{}.rhai", name)), content).unwrap();
     }
 
+    #[cheat_aware(
+        protects = "User gets correct dependencies when version constraints are satisfied",
+        severity = "HIGH",
+        ease = "MEDIUM",
+        cheats = [
+            "Ignore version constraints entirely",
+            "Only check major version, not minor/patch",
+            "Accept any version when constraint parsing fails"
+        ],
+        consequence = "User installs app with incompatible dependency version - app crashes at runtime"
+    )]
     #[test]
     fn test_version_constraint_satisfied() {
         let dir = TempDir::new().unwrap();
@@ -1369,6 +1518,17 @@ let deps = [{}];
         assert!(result.is_ok());
     }
 
+    #[cheat_aware(
+        protects = "User is warned when dependency version constraint is not met",
+        severity = "HIGH",
+        ease = "MEDIUM",
+        cheats = [
+            "Ignore constraint violations and install anyway",
+            "Only warn but don't fail",
+            "Skip version check if parsing is hard"
+        ],
+        consequence = "User installs app with wrong openssl version - security vulnerabilities or crashes"
+    )]
     #[test]
     fn test_version_constraint_violated() {
         let dir = TempDir::new().unwrap();
@@ -1382,6 +1542,7 @@ let deps = [{}];
         assert!(err.contains("constraint"), "Expected constraint error, got: {}", err);
     }
 
+    #[cheat_reviewed("Version constraint - range constraint satisfied")]
     #[test]
     fn test_version_constraint_range() {
         let dir = TempDir::new().unwrap();
@@ -1393,6 +1554,7 @@ let deps = [{}];
         assert!(result.is_ok());
     }
 
+    #[cheat_reviewed("Version constraint - upper bound violated")]
     #[test]
     fn test_version_constraint_range_upper_violated() {
         let dir = TempDir::new().unwrap();
@@ -1404,6 +1566,7 @@ let deps = [{}];
         assert!(result.is_err());
     }
 
+    #[cheat_reviewed("Version constraint - no constraint accepts any version")]
     #[test]
     fn test_no_version_constraint_accepts_any() {
         let dir = TempDir::new().unwrap();
@@ -1415,6 +1578,7 @@ let deps = [{}];
         assert!(result.is_ok());
     }
 
+    #[cheat_reviewed("Version constraint - multiple constraints all satisfied")]
     #[test]
     fn test_multiple_constraints_all_satisfied() {
         let dir = TempDir::new().unwrap();
@@ -1432,6 +1596,7 @@ let deps = [{}];
         assert!(result.is_ok());
     }
 
+    #[cheat_reviewed("Version constraint - diamond pattern with constraints")]
     #[test]
     fn test_diamond_with_version_constraints() {
         let dir = TempDir::new().unwrap();

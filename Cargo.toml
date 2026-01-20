@@ -40,3 +40,4 @@ indicatif = "0.17"
 tempfile = "3"
 wiremock = "0.6"
 tokio = { version = "1", features = ["rt", "macros"] }
+cheat-test = { path = "../cheat-test" }

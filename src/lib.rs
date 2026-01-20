@@ -148,8 +148,10 @@ impl RecipeEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cheat_test::{cheat_aware, cheat_reviewed};
     use tempfile::TempDir;
 
+    #[cheat_reviewed("API test - engine creation with paths")]
     #[test]
     fn test_engine_creation() {
         let prefix = TempDir::new().unwrap();
@@ -158,6 +160,17 @@ mod tests {
         assert!(engine.recipes_path.is_none());
     }
 
+    #[cheat_aware(
+        protects = "User can execute minimal valid recipe",
+        severity = "HIGH",
+        ease = "MEDIUM",
+        cheats = [
+            "Skip recipe execution entirely",
+            "Return success without running functions",
+            "Ignore validation errors"
+        ],
+        consequence = "User's recipe appears to succeed but nothing is installed"
+    )]
     #[test]
     fn test_empty_recipe() {
         let prefix = TempDir::new().unwrap();

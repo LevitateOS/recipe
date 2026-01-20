@@ -129,13 +129,16 @@ pub fn progress_done(pb: ProgressBar) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cheat_test::cheat_reviewed;
 
+    #[cheat_reviewed("API test - progress bar can be created")]
     #[test]
     fn test_progress_bar_creation() {
         let pb = download_progress(1000);
         pb.finish_and_clear();
     }
 
+    #[cheat_reviewed("API test - spinner can be created")]
     #[test]
     fn test_spinner_creation() {
         let pb = build_spinner("Building");

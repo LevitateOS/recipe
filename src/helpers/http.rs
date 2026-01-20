@@ -134,43 +134,51 @@ pub fn parse_version(version_str: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cheat_test::cheat_reviewed;
 
     // ==================== parse_version tests ====================
 
+    #[cheat_reviewed("Parsing test - strips v prefix")]
     #[test]
     fn test_parse_version_strips_v_prefix() {
         assert_eq!(parse_version("v1.0.0"), "1.0.0");
         assert_eq!(parse_version("v14.1.0"), "14.1.0");
     }
 
+    #[cheat_reviewed("Parsing test - strips release- prefix")]
     #[test]
     fn test_parse_version_strips_release_prefix() {
         assert_eq!(parse_version("release-1.0.0"), "1.0.0");
         assert_eq!(parse_version("release-2.5.3"), "2.5.3");
     }
 
+    #[cheat_reviewed("Parsing test - strips version- prefix")]
     #[test]
     fn test_parse_version_strips_version_prefix() {
         assert_eq!(parse_version("version-1.0.0"), "1.0.0");
         assert_eq!(parse_version("version-3.2.1"), "3.2.1");
     }
 
+    #[cheat_reviewed("Parsing test - preserves versions without prefix")]
     #[test]
     fn test_parse_version_no_prefix() {
         assert_eq!(parse_version("1.0.0"), "1.0.0");
         assert_eq!(parse_version("14.1.0"), "14.1.0");
     }
 
+    #[cheat_reviewed("Edge case - empty version string")]
     #[test]
     fn test_parse_version_empty() {
         assert_eq!(parse_version(""), "");
     }
 
+    #[cheat_reviewed("Edge case - version is just 'v'")]
     #[test]
     fn test_parse_version_only_v() {
         assert_eq!(parse_version("v"), "");
     }
 
+    #[cheat_reviewed("Parsing test - preserves semver suffix")]
     #[test]
     fn test_parse_version_preserves_suffix() {
         assert_eq!(parse_version("v1.0.0-beta"), "1.0.0-beta");
@@ -178,6 +186,7 @@ mod tests {
         assert_eq!(parse_version("v1.0.0+build.123"), "1.0.0+build.123");
     }
 
+    #[cheat_reviewed("Parsing test - handles nested prefixes")]
     #[test]
     fn test_parse_version_multiple_prefixes() {
         // Strips prefixes in order: release-, version-, then v
@@ -189,12 +198,14 @@ mod tests {
 
     // ==================== http_get tests ====================
 
+    #[cheat_reviewed("Error handling - invalid URL format rejected")]
     #[test]
     fn test_http_get_invalid_url() {
         let result = http_get("not-a-valid-url");
         assert!(result.is_err());
     }
 
+    #[cheat_reviewed("Error handling - nonexistent domain fails")]
     #[test]
     fn test_http_get_nonexistent_domain() {
         let result = http_get("https://this-domain-does-not-exist-12345.com/");
@@ -203,6 +214,7 @@ mod tests {
 
     // Integration tests - hit real network endpoints
 
+    #[cheat_reviewed("Integration test - real HTTP request works")]
     #[test]
     fn test_http_get_real_url() {
         // Test with a known stable URL
@@ -211,6 +223,7 @@ mod tests {
         assert!(result.unwrap().contains("httpbin"));
     }
 
+    #[cheat_reviewed("Integration test - real GitHub API works")]
     #[test]
     fn test_github_latest_release_real() {
         // Test with a well-known repo
@@ -222,6 +235,7 @@ mod tests {
         assert!(version.chars().next().unwrap().is_ascii_digit());
     }
 
+    #[cheat_reviewed("Error handling - nonexistent repo returns not found")]
     #[test]
     fn test_github_latest_release_nonexistent_repo() {
         let result = github_latest_release("nonexistent-owner/nonexistent-repo-12345");
@@ -229,6 +243,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
 
+    #[cheat_reviewed("Integration test - GitHub tags API works")]
     #[test]
     fn test_github_latest_tag_real() {
         // Test with a repo that uses tags
@@ -240,6 +255,7 @@ mod tests {
 
     // ==================== Timeout constant ====================
 
+    #[cheat_reviewed("Constant validation - timeout in reasonable range")]
     #[test]
     fn test_timeout_is_reasonable() {
         // Default timeout should be between 5 and 120 seconds
@@ -247,6 +263,7 @@ mod tests {
         assert!(DEFAULT_HTTP_TIMEOUT_SECS <= 120);
     }
 
+    #[cheat_reviewed("API test - get_http_timeout returns valid Duration")]
     #[test]
     fn test_get_http_timeout_returns_duration() {
         // Should return a valid Duration
@@ -259,9 +276,14 @@ mod tests {
 
     mod mock_tests {
         use super::*;
+        use cheat_test::{cheat_aware, cheat_reviewed};
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
+        // CHEAT WARNING: Protects "User can download packages from HTTP URLs"
+        // Severity: HIGH | Ease: MEDIUM
+        // Cheats: Return hardcoded success, ignore response body, accept any status code
+        // Consequence: User's package download appears to succeed but file is empty or corrupt
         #[tokio::test]
         async fn test_http_get_success() {
             let mock_server = MockServer::start().await;
@@ -279,6 +301,7 @@ mod tests {
             assert_eq!(result.unwrap(), "Hello, World!");
         }
 
+        #[cheat_reviewed("Error handling - 404 response returns error")]
         #[tokio::test]
         async fn test_http_get_404() {
             let mock_server = MockServer::start().await;
@@ -295,6 +318,7 @@ mod tests {
             assert!(result.is_err());
         }
 
+        #[cheat_reviewed("Error handling - 500 response returns descriptive error")]
         #[tokio::test]
         async fn test_http_get_500() {
             let mock_server = MockServer::start().await;
@@ -312,6 +336,10 @@ mod tests {
             assert!(result.unwrap_err().to_string().contains("HTTP GET failed"));
         }
 
+        // CHEAT WARNING: Protects "User can check for package updates from GitHub releases"
+        // Severity: HIGH | Ease: MEDIUM
+        // Cheats: Return hardcoded version, skip v prefix stripping, ignore API errors
+        // Consequence: User thinks they have latest version but are running outdated vulnerable package
         #[tokio::test]
         async fn test_github_latest_release_success() {
             let mock_server = MockServer::start().await;
@@ -334,6 +362,7 @@ mod tests {
             assert_eq!(result.unwrap(), "1.2.3"); // v prefix stripped
         }
 
+        #[cheat_reviewed("Parsing test - versions without v prefix preserved")]
         #[tokio::test]
         async fn test_github_latest_release_no_v_prefix() {
             let mock_server = MockServer::start().await;
@@ -355,6 +384,7 @@ mod tests {
             assert_eq!(result.unwrap(), "14.1.0");
         }
 
+        #[cheat_reviewed("Error handling - 404 includes 'not found' message")]
         #[tokio::test]
         async fn test_github_latest_release_404() {
             let mock_server = MockServer::start().await;
@@ -371,6 +401,17 @@ mod tests {
             assert!(result.unwrap_err().to_string().contains("not found"));
         }
 
+        #[cheat_aware(
+            protects = "User is informed about GitHub rate limiting",
+            severity = "MEDIUM",
+            ease = "EASY",
+            cheats = [
+                "Treat 403 as generic error",
+                "Retry infinitely without informing user",
+                "Return stale cached result on rate limit"
+            ],
+            consequence = "User's update checks silently fail without actionable error message"
+        )]
         #[tokio::test]
         async fn test_github_latest_release_rate_limited() {
             let mock_server = MockServer::start().await;
@@ -387,6 +428,7 @@ mod tests {
             assert!(result.unwrap_err().to_string().contains("rate limit"));
         }
 
+        #[cheat_reviewed("Error handling - missing tag_name in response detected")]
         #[tokio::test]
         async fn test_github_latest_release_no_tag_name() {
             let mock_server = MockServer::start().await;
@@ -409,6 +451,17 @@ mod tests {
             assert!(result.unwrap_err().to_string().contains("No tag_name"));
         }
 
+        #[cheat_aware(
+            protects = "User can check updates for repos that use tags instead of releases",
+            severity = "HIGH",
+            ease = "MEDIUM",
+            cheats = [
+                "Fall back to release API when tags fail",
+                "Return first tag without checking it's actually the latest",
+                "Skip v prefix stripping for tags"
+            ],
+            consequence = "User checks kernel version and gets wrong/outdated version"
+        )]
         #[tokio::test]
         async fn test_github_latest_tag_success() {
             let mock_server = MockServer::start().await;
@@ -432,6 +485,7 @@ mod tests {
             assert_eq!(result.unwrap(), "6.7"); // v prefix stripped
         }
 
+        #[cheat_reviewed("Error handling - empty tags array returns error")]
         #[tokio::test]
         async fn test_github_latest_tag_empty() {
             let mock_server = MockServer::start().await;
@@ -448,6 +502,7 @@ mod tests {
             assert!(result.unwrap_err().to_string().contains("No tags found"));
         }
 
+        #[cheat_reviewed("Error handling - tags 404 includes 'not found' message")]
         #[tokio::test]
         async fn test_github_latest_tag_404() {
             let mock_server = MockServer::start().await;
@@ -464,6 +519,7 @@ mod tests {
             assert!(result.unwrap_err().to_string().contains("not found"));
         }
 
+        #[cheat_reviewed("Error handling - tags rate limiting detected")]
         #[tokio::test]
         async fn test_github_latest_tag_rate_limited() {
             let mock_server = MockServer::start().await;
@@ -480,6 +536,7 @@ mod tests {
             assert!(result.unwrap_err().to_string().contains("rate limit"));
         }
 
+        #[cheat_reviewed("Parsing test - JSON response body readable as string")]
         #[tokio::test]
         async fn test_http_get_json_response() {
             let mock_server = MockServer::start().await;
@@ -502,6 +559,7 @@ mod tests {
             assert!(body.contains("1.0"));
         }
 
+        #[cheat_reviewed("Robustness test - large response handled")]
         #[tokio::test]
         async fn test_http_get_large_response() {
             let mock_server = MockServer::start().await;

@@ -3,6 +3,7 @@
 //! Each test documents a bug that was fixed and ensures it doesn't recur.
 //! Tests are named with the pattern: test_regression_<brief_description>
 
+use cheat_test::cheat_aware;
 use levitate_recipe::{recipe_state, RecipeEngine};
 use std::path::Path;
 use tempfile::TempDir;
@@ -32,6 +33,17 @@ fn write_recipe(recipes_dir: &Path, name: &str, content: &str) -> std::path::Pat
 //
 // Fix: Added word boundary check after variable name.
 
+#[cheat_aware(
+    protects = "Variable names are correctly distinguished (installed vs installed_files)",
+    severity = "CRITICAL",
+    ease = "EASY",
+    cheats = [
+        "Test only single variable without similar names",
+        "Use completely different variable names",
+        "Skip testing get_var for variables with common prefixes"
+    ],
+    consequence = "get_var('installed') returns installed_files value, state corruption"
+)]
 #[test]
 fn test_regression_var_substring_matching_get() {
     let dir = TempDir::new().unwrap();
@@ -53,6 +65,17 @@ let installed_version = "1.0.0";
     assert_eq!(files, Some(vec!["/usr/bin/foo".to_string(), "/usr/lib/bar".to_string()]));
 }
 
+#[cheat_aware(
+    protects = "Setting one variable doesn't corrupt similar-named variables",
+    severity = "CRITICAL",
+    ease = "EASY",
+    cheats = [
+        "Test set_var with unique variable names only",
+        "Skip testing file content after set_var",
+        "Use variables without common prefixes"
+    ],
+    consequence = "set_var('installed', true) corrupts installed_files value"
+)]
 #[test]
 fn test_regression_var_substring_matching_set() {
     let dir = TempDir::new().unwrap();
@@ -83,6 +106,17 @@ let installed_files = ["/usr/bin/foo"];
 //
 // Fix: Properly handle escape sequences, preserve unknown escapes.
 
+#[cheat_aware(
+    protects = "Backslash escapes in arrays are preserved correctly",
+    severity = "HIGH",
+    ease = "MEDIUM",
+    cheats = [
+        "Test only arrays without escape characters",
+        "Use forward slashes in all test data",
+        "Skip Windows-style path testing"
+    ],
+    consequence = "Windows paths in installed_files corrupted: C:\\Program Files -> C:Program Files"
+)]
 #[test]
 fn test_regression_array_escape_backslash() {
     let dir = TempDir::new().unwrap();
@@ -95,6 +129,17 @@ fn test_regression_array_escape_backslash() {
     assert_eq!(paths, Some(vec!["C:\\Users\\test".to_string()]));
 }
 
+#[cheat_aware(
+    protects = "Escaped quotes in array strings are preserved",
+    severity = "MEDIUM",
+    ease = "MEDIUM",
+    cheats = [
+        "Test only arrays without quotes in values",
+        "Use simple strings in test data",
+        "Skip strings containing escaped quotes"
+    ],
+    consequence = "Array values with quotes corrupted or cause parse failure"
+)]
 #[test]
 fn test_regression_array_escape_quotes() {
     let dir = TempDir::new().unwrap();
@@ -107,6 +152,17 @@ fn test_regression_array_escape_quotes() {
     assert_eq!(strs, Some(vec!["say \"hello\"".to_string()]));
 }
 
+#[cheat_aware(
+    protects = "Unknown escape sequences preserved for regex patterns etc.",
+    severity = "MEDIUM",
+    ease = "MEDIUM",
+    cheats = [
+        "Test only known escape sequences",
+        "Skip regex pattern storage",
+        "Use pre-escaped strings"
+    ],
+    consequence = "Regex patterns like \\d+ stored in recipes get corrupted to d+"
+)]
 #[test]
 fn test_regression_array_unknown_escape_preserved() {
     let dir = TempDir::new().unwrap();
@@ -128,6 +184,17 @@ fn test_regression_array_unknown_escape_preserved() {
 //
 // Fix: Fail if any file deletion fails, preserve state.
 
+#[cheat_aware(
+    protects = "Partial file deletion failures don't corrupt state",
+    severity = "CRITICAL",
+    ease = "MEDIUM",
+    cheats = [
+        "Test only removable files",
+        "Skip testing removal failure cases",
+        "Use empty installed_files list"
+    ],
+    consequence = "Remove fails partway through, installed=false but some files remain orphaned"
+)]
 #[test]
 fn test_regression_partial_removal_state_preserved() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -169,6 +236,17 @@ fn install() {{}}
 //
 // Fix: Return error so caller knows update check failed.
 
+#[cheat_aware(
+    protects = "Update check errors are propagated, not silently ignored",
+    severity = "HIGH",
+    ease = "EASY",
+    cheats = [
+        "Use check_update that always succeeds",
+        "Skip testing network error handling",
+        "Accept Ok(None) as valid for error case"
+    ],
+    consequence = "Network error during update check returns 'no update available' instead of error"
+)]
 #[test]
 fn test_regression_update_error_propagated() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -202,6 +280,17 @@ fn check_update() {
 //
 // Fix: Check longer prefixes first using strip_prefix.
 
+#[cheat_aware(
+    protects = "Version parsing handles all common prefix formats",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Test only simple version formats",
+        "Use pre-cleaned version strings",
+        "Skip testing version- and release- prefixes"
+    ],
+    consequence = "version-1.0.0 parsed as ersion-1.0.0, version comparison fails"
+)]
 #[test]
 fn test_regression_parse_version_order() {
     use levitate_recipe::helpers::http::parse_version;
@@ -232,6 +321,17 @@ fn test_regression_parse_version_order() {
 // Note: This is difficult to test without mocking, but we verify the
 // timeout constant exists and is reasonable.
 
+#[cheat_aware(
+    protects = "HTTP requests fail fast instead of hanging forever",
+    severity = "HIGH",
+    ease = "HARD",
+    cheats = [
+        "Skip network timeout testing",
+        "Use mocked HTTP that always responds",
+        "Accept any timeout value"
+    ],
+    consequence = "Recipe download hangs forever on unresponsive server, no feedback to user"
+)]
 #[test]
 fn test_regression_http_has_timeout() {
     // We can't easily test the actual timeout behavior without mocking,
@@ -256,6 +356,17 @@ fn test_regression_http_has_timeout() {
 //
 // Fix: Changed to is_file() || is_symlink() where symlink tracking is needed.
 
+#[cheat_aware(
+    protects = "Symlinks are tracked for proper removal",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Skip symlink testing on non-Unix",
+        "Test only regular files",
+        "Use broken symlink detection only"
+    ],
+    consequence = "Package creates /bin/sh symlink, removal doesn't track it, orphaned symlink remains"
+)]
 #[test]
 #[cfg(unix)]
 fn test_regression_symlink_tracking() {
@@ -284,6 +395,17 @@ fn test_regression_symlink_tracking() {
 //
 // Fix: Validate package names are simple identifiers.
 
+#[cheat_aware(
+    protects = "Path traversal attacks via package names are blocked",
+    severity = "CRITICAL",
+    ease = "HARD",
+    cheats = [
+        "Test only one traversal pattern",
+        "Skip package name validation",
+        "Use whitelist approach that misses edge cases"
+    ],
+    consequence = "Attacker supplies ../../etc/passwd as package name, reads/writes system files"
+)]
 #[test]
 fn test_regression_path_traversal_blocked() {
     // These should all be invalid package names
@@ -326,6 +448,17 @@ fn test_regression_path_traversal_blocked() {
 // Comprehensive State Corruption Prevention
 // =============================================================================
 
+#[cheat_aware(
+    protects = "Install failure doesn't corrupt state to installed=true",
+    severity = "CRITICAL",
+    ease = "MEDIUM",
+    cheats = [
+        "Use install that always succeeds",
+        "Check only error return, not state",
+        "Skip state verification on failure"
+    ],
+    consequence = "Install throws error but installed=true, user thinks broken package works"
+)]
 #[test]
 fn test_regression_state_not_corrupted_on_install_failure() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -354,6 +487,17 @@ fn install() {
     assert_eq!(installed, Some(false), "State was corrupted despite install failure");
 }
 
+#[cheat_aware(
+    protects = "Acquire failure doesn't corrupt state to installed=true",
+    severity = "CRITICAL",
+    ease = "MEDIUM",
+    cheats = [
+        "Use acquire that always succeeds",
+        "Check only error return, not state",
+        "Skip state verification on failure"
+    ],
+    consequence = "Acquire throws error but installed=true, binaries never downloaded but marked installed"
+)]
 #[test]
 fn test_regression_state_not_corrupted_on_acquire_failure() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -379,6 +523,17 @@ fn install() {}
     assert_ne!(installed, Some(true), "State was set despite acquire failure");
 }
 
+#[cheat_aware(
+    protects = "Build failure doesn't corrupt state to installed=true",
+    severity = "CRITICAL",
+    ease = "MEDIUM",
+    cheats = [
+        "Use build that always succeeds",
+        "Check only error return, not state",
+        "Skip state verification on failure"
+    ],
+    consequence = "Build throws error but installed=true, uncompiled source marked as installed"
+)]
 #[test]
 fn test_regression_state_not_corrupted_on_build_failure() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -408,6 +563,17 @@ fn install() {}
 // Edge Cases That Could Regress
 // =============================================================================
 
+#[cheat_aware(
+    protects = "Empty installed_files list is handled correctly during remove",
+    severity = "LOW",
+    ease = "EASY",
+    cheats = [
+        "Always include files in installed_files",
+        "Skip testing empty file list",
+        "Require at least one file"
+    ],
+    consequence = "Package with no files to remove crashes or hangs during removal"
+)]
 #[test]
 fn test_regression_empty_installed_files_handled() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -429,6 +595,17 @@ fn install() {}
     assert!(result.is_ok());
 }
 
+#[cheat_aware(
+    protects = "Unicode content in recipes is preserved",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Test only ASCII content",
+        "Skip Unicode preservation testing",
+        "Use ASCII-only package names"
+    ],
+    consequence = "Japanese package name or emoji description gets corrupted to garbage"
+)]
 #[test]
 fn test_regression_unicode_in_recipe_preserved() {
     let dir = TempDir::new().unwrap();
@@ -450,6 +627,17 @@ let installed = false;
     assert!(content.contains("📦"));
 }
 
+#[cheat_aware(
+    protects = "Comments in recipe files are preserved during state updates",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Test only recipes without comments",
+        "Skip comment preservation testing",
+        "Overwrite entire file on state update"
+    ],
+    consequence = "Developer's helpful comments in recipe get deleted on first install"
+)]
 #[test]
 fn test_regression_comments_preserved() {
     let dir = TempDir::new().unwrap();

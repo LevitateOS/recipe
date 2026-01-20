@@ -2,6 +2,7 @@
 //!
 //! These tests verify that multiple components work together correctly.
 
+use cheat_test::cheat_aware;
 use levitate_recipe::{recipe_state, RecipeEngine};
 use std::path::Path;
 use tempfile::TempDir;
@@ -29,6 +30,17 @@ fn write_recipe(recipes_dir: &Path, name: &str, content: &str) -> std::path::Pat
 // Full Lifecycle Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "User can install a package and have it tracked correctly",
+    severity = "CRITICAL",
+    ease = "MEDIUM",
+    cheats = [
+        "Return Ok without actually running acquire/install functions",
+        "Check only for execute success, not state persistence",
+        "Use recipe that doesn't actually install anything"
+    ],
+    consequence = "User installs package, state says installed but nothing actually happened"
+)]
 #[test]
 fn test_full_install_lifecycle() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -68,6 +80,17 @@ fn install() {{
     assert!(matches!(installed_version, Some(recipe_state::OptionalString::Some(ref v)) if v == "1.0.0"));
 }
 
+#[cheat_aware(
+    protects = "User can remove installed packages and files are actually deleted",
+    severity = "CRITICAL",
+    ease = "MEDIUM",
+    cheats = [
+        "Mark installed=false without actually deleting files",
+        "Skip installed_files tracking to avoid deletion",
+        "Check only for state update, not file deletion"
+    ],
+    consequence = "User removes package, state says removed but files still consuming disk space"
+)]
 #[test]
 fn test_install_then_remove_lifecycle() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -106,6 +129,17 @@ fn install() {{}}
     assert_eq!(installed, Some(false));
 }
 
+#[cheat_aware(
+    protects = "User can reinstall a previously removed package",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Keep installed=true after simulated remove",
+        "Skip testing actual reinstall functionality",
+        "Test only fresh install, not reinstall path"
+    ],
+    consequence = "User tries to reinstall removed package, gets 'already installed' error"
+)]
 #[test]
 fn test_reinstall_after_remove() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -140,6 +174,17 @@ fn install() {}
     assert_eq!(installed, Some(true));
 }
 
+#[cheat_aware(
+    protects = "Already-installed packages are skipped efficiently",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Run acquire/install anyway but still return success",
+        "Check only for success, not that functions weren't called",
+        "Use installed=false in test to avoid testing this path"
+    ],
+    consequence = "User runs install on existing package, wastes time re-downloading and reinstalling"
+)]
 #[test]
 fn test_skip_already_installed() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -172,6 +217,17 @@ fn install() {
 // Update/Upgrade Lifecycle Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "User can check for new versions of packages",
+    severity = "HIGH",
+    ease = "MEDIUM",
+    cheats = [
+        "Return hardcoded version without calling check_update",
+        "Check only that update returns something, not correct version",
+        "Skip verification that version field was updated"
+    ],
+    consequence = "User checks for updates, gets wrong version or misses critical update"
+)]
 #[test]
 fn test_update_finds_new_version() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -199,6 +255,17 @@ fn check_update() {
     assert_eq!(version, Some("2.0.0".to_string()));
 }
 
+#[cheat_aware(
+    protects = "User gets accurate 'no update' when package is current",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Always return Some version from update",
+        "Skip checking return value for None case",
+        "Use check_update that always returns version"
+    ],
+    consequence = "User thinks update is available when package is already current"
+)]
 #[test]
 fn test_update_no_new_version() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -222,6 +289,17 @@ fn check_update() {
     assert_eq!(result.unwrap(), None);
 }
 
+#[cheat_aware(
+    protects = "User can upgrade packages to new versions",
+    severity = "CRITICAL",
+    ease = "MEDIUM",
+    cheats = [
+        "Mark version as upgraded without running install",
+        "Check only for return value, not actual upgrade",
+        "Use same version in test to avoid upgrade path"
+    ],
+    consequence = "User runs upgrade, version bumped in state but old binary still installed"
+)]
 #[test]
 fn test_upgrade_when_version_differs() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -249,6 +327,17 @@ fn install() {}
     assert!(matches!(installed_version, Some(recipe_state::OptionalString::Some(ref v)) if v == "2.0.0"));
 }
 
+#[cheat_aware(
+    protects = "User doesn't waste time upgrading already-current packages",
+    severity = "LOW",
+    ease = "EASY",
+    cheats = [
+        "Always run upgrade regardless of version match",
+        "Return false but still run upgrade",
+        "Use different versions in test to avoid this path"
+    ],
+    consequence = "User runs upgrade on current package, wastes time reinstalling same version"
+)]
 #[test]
 fn test_upgrade_skipped_when_up_to_date() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -275,6 +364,17 @@ fn install() {}
 // State Persistence Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "Installation state persists correctly to recipe file",
+    severity = "CRITICAL",
+    ease = "MEDIUM",
+    cheats = [
+        "Keep state in memory only, don't write to file",
+        "Check in-memory state, not file contents",
+        "Read state from same engine instance"
+    ],
+    consequence = "User installs package, restarts, state is lost - installed=false again"
+)]
 #[test]
 fn test_state_persists_after_install() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -301,6 +401,17 @@ fn install() {}
     assert!(content.contains("let installed_files = "));
 }
 
+#[cheat_aware(
+    protects = "Original recipe content is preserved during state updates",
+    severity = "HIGH",
+    ease = "MEDIUM",
+    cheats = [
+        "Overwrite entire file with minimal state",
+        "Check only for state variables, not original content",
+        "Use recipe with no special content to preserve"
+    ],
+    consequence = "User installs package, comments/descriptions/custom fields are lost"
+)]
 #[test]
 fn test_state_preserves_original_content() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -337,6 +448,17 @@ fn install() {
 // Error Handling Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "Missing acquire function is detected and reported",
+    severity = "HIGH",
+    ease = "EASY",
+    cheats = [
+        "Skip function validation entirely",
+        "Accept empty acquire as valid",
+        "Check only for any error, not specific message"
+    ],
+    consequence = "Recipe without acquire passes validation, fails mysteriously during install"
+)]
 #[test]
 fn test_execute_missing_acquire() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -356,6 +478,17 @@ fn install() {}
     assert!(result.unwrap_err().to_string().contains("acquire"));
 }
 
+#[cheat_aware(
+    protects = "Missing install function is detected and reported",
+    severity = "HIGH",
+    ease = "EASY",
+    cheats = [
+        "Skip function validation entirely",
+        "Accept empty install as valid",
+        "Check only for any error, not specific message"
+    ],
+    consequence = "Recipe without install passes validation, nothing gets installed"
+)]
 #[test]
 fn test_execute_missing_install() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -375,6 +508,17 @@ fn acquire() {}
     assert!(result.unwrap_err().to_string().contains("install"));
 }
 
+#[cheat_aware(
+    protects = "Acquire failures are caught and state is not corrupted",
+    severity = "CRITICAL",
+    ease = "MEDIUM",
+    cheats = [
+        "Catch error but still update state to installed=true",
+        "Check only that error is returned, not state",
+        "Use acquire that succeeds to avoid error path"
+    ],
+    consequence = "Acquire fails but installed=true, user thinks package works but binaries missing"
+)]
 #[test]
 fn test_execute_acquire_failure() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -402,6 +546,17 @@ fn install() {}
     assert_ne!(installed, Some(true));
 }
 
+#[cheat_aware(
+    protects = "Install failures are caught and state is not corrupted",
+    severity = "CRITICAL",
+    ease = "MEDIUM",
+    cheats = [
+        "Catch error but still update state to installed=true",
+        "Check only that error is returned, not state",
+        "Use install that succeeds to avoid error path"
+    ],
+    consequence = "Install fails but installed=true, user thinks package works but it's broken"
+)]
 #[test]
 fn test_execute_install_failure() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -433,6 +588,17 @@ fn install() {
 // Build Phase Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "Recipes without build phase still work correctly",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Require build phase for all recipes",
+        "Use recipe with build phase in test",
+        "Skip testing optional-build path"
+    ],
+    consequence = "Simple recipes without build phase fail to install"
+)]
 #[test]
 fn test_optional_build_phase() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -454,6 +620,17 @@ fn install() {}
     assert!(result.is_ok());
 }
 
+#[cheat_aware(
+    protects = "Build phase is executed when present",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Skip build phase entirely",
+        "Check only for success, not that build ran",
+        "Use empty build that does nothing"
+    ],
+    consequence = "User's build phase is skipped, package installs uncompiled source"
+)]
 #[test]
 fn test_with_build_phase() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -476,6 +653,17 @@ fn install() {}
     assert!(result.is_ok());
 }
 
+#[cheat_aware(
+    protects = "Build failures prevent install from running",
+    severity = "HIGH",
+    ease = "MEDIUM",
+    cheats = [
+        "Continue to install after build fails",
+        "Check only for error, not that install was skipped",
+        "Use build that succeeds"
+    ],
+    consequence = "Build fails but install runs anyway, user gets broken/uncompiled package"
+)]
 #[test]
 fn test_build_failure_prevents_install() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -505,6 +693,17 @@ fn install() {
 // is_installed() Function Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "is_installed() function can override state for verification",
+    severity = "HIGH",
+    ease = "MEDIUM",
+    cheats = [
+        "Ignore is_installed() return value",
+        "Check only installed variable, not function",
+        "Test without is_installed() function"
+    ],
+    consequence = "Package marked installed but binaries deleted, is_installed() ignored, user confused"
+)]
 #[test]
 fn test_is_installed_function_overrides_state() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
@@ -536,6 +735,17 @@ fn install() {}
 // Concurrent Operations Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "Multiple packages can be installed independently",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Use same state for all packages",
+        "Test only single package",
+        "Skip verification of independent state"
+    ],
+    consequence = "Installing pkg2 corrupts pkg1 state, or vice versa"
+)]
 #[test]
 fn test_multiple_recipes_independent() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();

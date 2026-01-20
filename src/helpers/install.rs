@@ -345,6 +345,7 @@ fn do_install(pattern: &str, subdir: &str, mode: Option<u32>) -> Result<(), Box<
 mod tests {
     use super::*;
     use crate::core::{clear_context, get_installed_files, init_context_with_recipe};
+    use cheat_test::{cheat_aware, cheat_reviewed};
     use tempfile::TempDir;
 
     fn setup_context() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
@@ -359,6 +360,17 @@ mod tests {
 
     // ==================== install_bin tests ====================
 
+    #[cheat_aware(
+        protects = "User's compiled binaries are installed to bin directory",
+        severity = "HIGH",
+        ease = "MEDIUM",
+        cheats = [
+            "Skip the copy operation entirely",
+            "Copy to wrong directory",
+            "Report success without checking destination"
+        ],
+        consequence = "User runs 'recipe install myapp' but binary is not in PATH - command not found"
+    )]
     #[test]
     fn test_install_bin() {
         let (_dir, prefix, build_dir) = setup_context();
@@ -371,6 +383,7 @@ mod tests {
         clear_context();
     }
 
+    #[cheat_reviewed("Error handling - no context returns error")]
     #[test]
     fn test_install_bin_no_context() {
         clear_context();
@@ -379,6 +392,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("No execution context"));
     }
 
+    #[cheat_reviewed("Error handling - nonexistent files return error")]
     #[test]
     fn test_install_bin_no_matching_files() {
         let (_dir, _prefix, _build_dir) = setup_context();
@@ -388,6 +402,17 @@ mod tests {
         clear_context();
     }
 
+    #[cheat_aware(
+        protects = "User's installed files are tracked for removal",
+        severity = "HIGH",
+        ease = "EASY",
+        cheats = [
+            "Copy file but don't record it",
+            "Record wrong path",
+            "Record before copy (might fail)"
+        ],
+        consequence = "User runs 'recipe remove myapp' but files remain on disk"
+    )]
     #[test]
     fn test_install_bin_copies_file() {
         let (_dir, prefix, build_dir) = setup_context();
@@ -404,6 +429,17 @@ mod tests {
         clear_context();
     }
 
+    #[cheat_aware(
+        protects = "User can install multiple binaries with glob pattern",
+        severity = "MEDIUM",
+        ease = "MEDIUM",
+        cheats = [
+            "Only install first match",
+            "Skip glob expansion and require exact name",
+            "Install all files instead of just matching"
+        ],
+        consequence = "User runs 'install_bin(\"cmd*\")' expecting 5 tools but only gets 1"
+    )]
     #[test]
     fn test_install_bin_with_glob_pattern() {
         let (_dir, prefix, build_dir) = setup_context();
@@ -425,6 +461,17 @@ mod tests {
         clear_context();
     }
 
+    #[cheat_aware(
+        protects = "User's binaries are executable after installation",
+        severity = "CRITICAL",
+        ease = "EASY",
+        cheats = [
+            "Copy file but skip chmod",
+            "Set wrong permissions (644 instead of 755)",
+            "Check mode but not actually set it"
+        ],
+        consequence = "User runs './myapp' but gets 'Permission denied'"
+    )]
     #[test]
     #[cfg(unix)]
     fn test_install_bin_sets_permissions() {
@@ -445,6 +492,17 @@ mod tests {
 
     // ==================== install_lib tests ====================
 
+    #[cheat_aware(
+        protects = "User's libraries are installed to lib directory",
+        severity = "HIGH",
+        ease = "MEDIUM",
+        cheats = [
+            "Install to bin instead of lib",
+            "Skip library installation entirely",
+            "Install but with wrong permissions"
+        ],
+        consequence = "User's application fails to start: 'libfoo.so: cannot open shared object file'"
+    )]
     #[test]
     fn test_install_lib() {
         let (_dir, prefix, build_dir) = setup_context();
@@ -459,6 +517,17 @@ mod tests {
 
     // ==================== install_man tests ====================
 
+    #[cheat_aware(
+        protects = "User can read man pages for installed commands",
+        severity = "MEDIUM",
+        ease = "MEDIUM",
+        cheats = [
+            "Install to wrong man section",
+            "Skip man page installation",
+            "Install but don't follow FHS structure"
+        ],
+        consequence = "User runs 'man myapp' but gets 'No manual entry for myapp'"
+    )]
     #[test]
     fn test_install_man_section_1() {
         let (_dir, prefix, build_dir) = setup_context();
@@ -471,6 +540,7 @@ mod tests {
         clear_context();
     }
 
+    #[cheat_reviewed("Man section detection - section 5 config pages")]
     #[test]
     fn test_install_man_section_5() {
         let (_dir, prefix, build_dir) = setup_context();
@@ -483,6 +553,7 @@ mod tests {
         clear_context();
     }
 
+    #[cheat_reviewed("Man section fallback - unknown extension defaults to man1")]
     #[test]
     fn test_install_man_no_section_defaults_to_1() {
         let (_dir, prefix, build_dir) = setup_context();
@@ -495,6 +566,7 @@ mod tests {
         clear_context();
     }
 
+    #[cheat_reviewed("Glob pattern support for man pages")]
     #[test]
     fn test_install_man_multiple_files() {
         let (_dir, prefix, build_dir) = setup_context();
@@ -511,6 +583,17 @@ mod tests {
 
     // ==================== Edge cases ====================
 
+    #[cheat_aware(
+        protects = "User's package upgrades replace old version",
+        severity = "HIGH",
+        ease = "EASY",
+        cheats = [
+            "Fail silently when file exists",
+            "Skip overwrite and keep old version",
+            "Append instead of replace"
+        ],
+        consequence = "User upgrades package but keeps running old buggy version"
+    )]
     #[test]
     fn test_install_overwrites_existing_file() {
         let (_dir, prefix, build_dir) = setup_context();
@@ -528,6 +611,17 @@ mod tests {
         clear_context();
     }
 
+    #[cheat_aware(
+        protects = "User's installed files are byte-for-byte identical to source",
+        severity = "HIGH",
+        ease = "MEDIUM",
+        cheats = [
+            "Truncate file during copy",
+            "Transform content during copy",
+            "Write placeholder instead of actual content"
+        ],
+        consequence = "User's binary is corrupt and crashes on launch"
+    )]
     #[test]
     fn test_install_preserves_file_content() {
         let (_dir, prefix, build_dir) = setup_context();
@@ -546,6 +640,7 @@ mod tests {
 
     // ==================== install_to_dir tests ====================
 
+    #[cheat_reviewed("Nested directory creation - creates parent dirs")]
     #[test]
     fn test_install_creates_nested_directories() {
         let (_dir, prefix, build_dir) = setup_context();
@@ -561,6 +656,7 @@ mod tests {
 
     // ==================== rpm_install tests ====================
 
+    #[cheat_reviewed("Error handling - no RPMs returns error")]
     #[test]
     fn test_rpm_install_no_rpms() {
         let (_dir, _prefix, _build_dir) = setup_context();

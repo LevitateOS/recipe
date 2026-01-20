@@ -199,14 +199,17 @@ fn is_leap_year(year: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cheat_test::{cheat_aware, cheat_reviewed};
     use tempfile::TempDir;
 
+    #[cheat_reviewed("API test - new lockfile is empty")]
     #[test]
     fn test_lockfile_new() {
         let lock = LockFile::new();
         assert!(lock.packages.is_empty());
     }
 
+    #[cheat_reviewed("API test - add_package stores version")]
     #[test]
     fn test_lockfile_add_package() {
         let mut lock = LockFile::new();
@@ -214,6 +217,7 @@ mod tests {
         assert_eq!(lock.get_version("openssl"), Some(&"3.2.1".to_string()));
     }
 
+    #[cheat_reviewed("API test - contains method")]
     #[test]
     fn test_lockfile_contains() {
         let mut lock = LockFile::new();
@@ -222,6 +226,17 @@ mod tests {
         assert!(!lock.contains("curl"));
     }
 
+    #[cheat_aware(
+        protects = "User's lock file survives write-read cycle",
+        severity = "HIGH",
+        ease = "MEDIUM",
+        cheats = [
+            "Write but don't actually persist",
+            "Read wrong format silently",
+            "Lose packages during serialization"
+        ],
+        consequence = "User's lock file corrupted - reproducible builds broken"
+    )]
     #[test]
     fn test_lockfile_write_read() {
         let dir = TempDir::new().unwrap();
@@ -240,6 +255,7 @@ mod tests {
         assert_eq!(loaded.get_version("zlib"), Some(&"1.3.1".to_string()));
     }
 
+    #[cheat_reviewed("Validation test - matching versions pass")]
     #[test]
     fn test_lockfile_validate_match() {
         let mut lock = LockFile::new();
@@ -250,6 +266,17 @@ mod tests {
         assert!(mismatches.is_empty());
     }
 
+    #[cheat_aware(
+        protects = "User is warned when resolved version doesn't match locked version",
+        severity = "HIGH",
+        ease = "EASY",
+        cheats = [
+            "Skip version comparison entirely",
+            "Only compare package names",
+            "Accept any version as matching"
+        ],
+        consequence = "User's CI passes with different versions than production - subtle bugs"
+    )]
     #[test]
     fn test_lockfile_validate_mismatch() {
         let mut lock = LockFile::new();
@@ -263,6 +290,17 @@ mod tests {
         assert_eq!(mismatches[0].2, "3.3.0"); // resolved
     }
 
+    #[cheat_aware(
+        protects = "User is warned when locked package is missing from resolution",
+        severity = "HIGH",
+        ease = "MEDIUM",
+        cheats = [
+            "Only check resolved packages, ignore missing locked ones",
+            "Treat missing as matching",
+            "Skip missing package detection"
+        ],
+        consequence = "User's dependency removed silently - runtime crash"
+    )]
     #[test]
     fn test_lockfile_validate_missing_from_resolved() {
         // BUG FIX: Lock file should detect packages that are locked but missing from resolved
@@ -281,6 +319,7 @@ mod tests {
         assert_eq!(mismatches[0].2, "(missing)"); // marker for missing
     }
 
+    #[cheat_reviewed("Validation test - new packages don't cause mismatch")]
     #[test]
     fn test_lockfile_validate_new_package_ok() {
         // New packages in resolved but not in lock should be OK (not a mismatch)
@@ -298,6 +337,7 @@ mod tests {
         assert!(mismatches.is_empty());
     }
 
+    #[cheat_reviewed("Utility test - timestamp formatting")]
     #[test]
     fn test_chrono_lite_format() {
         // 2024-01-15 10:30:00 UTC

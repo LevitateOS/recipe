@@ -2,6 +2,7 @@
 //!
 //! These tests run the actual CLI binary and verify behavior.
 
+use cheat_test::cheat_aware;
 use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
@@ -46,6 +47,17 @@ fn run_recipe(args: &[&str], prefix: &Path, recipes: &Path) -> std::process::Out
 // CLI Help and Version Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "User can discover CLI commands and usage",
+    severity = "LOW",
+    ease = "HARD",
+    cheats = [
+        "Hardcode expected output strings in test instead of parsing actual output",
+        "Check only for binary existence, not help functionality",
+        "Match partial strings that could pass even with broken help"
+    ],
+    consequence = "User runs 'recipe --help' and gets no output or an error"
+)]
 #[test]
 fn test_cli_help() {
     let output = Command::new(recipe_bin())
@@ -60,6 +72,17 @@ fn test_cli_help() {
     assert!(stdout.contains("remove"));
 }
 
+#[cheat_aware(
+    protects = "User can check what version of recipe is installed",
+    severity = "LOW",
+    ease = "HARD",
+    cheats = [
+        "Check only for success status, not actual version output",
+        "Match any string containing 'recipe', not a version number",
+        "Hardcode expected version in test"
+    ],
+    consequence = "User runs 'recipe --version' and gets no output or wrong version"
+)]
 #[test]
 fn test_cli_version() {
     let output = Command::new(recipe_bin())
@@ -76,6 +99,17 @@ fn test_cli_version() {
 // Install Command Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "User gets clear error when trying to install non-existent package",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Remove the assertion for error message content",
+        "Accept any non-success status without checking error message",
+        "Create fake package so test passes without testing error path"
+    ],
+    consequence = "User tries to install missing package, gets cryptic error or silent failure"
+)]
 #[test]
 fn test_cli_install_nonexistent_package() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -87,6 +121,17 @@ fn test_cli_install_nonexistent_package() {
     assert!(stderr.contains("not found") || stderr.contains("Recipe not found"));
 }
 
+#[cheat_aware(
+    protects = "User can install a valid package",
+    severity = "CRITICAL",
+    ease = "MEDIUM",
+    cheats = [
+        "Create recipe that does nothing but returns success",
+        "Check only for success status, not that package was actually installed",
+        "Skip verification that acquire/install functions were actually called"
+    ],
+    consequence = "User runs 'recipe install pkg' - command succeeds but nothing is installed"
+)]
 #[test]
 fn test_cli_install_success() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -106,6 +151,17 @@ fn install() {}
     assert!(stdout.contains("Installing simple") || stdout.contains("installed"));
 }
 
+#[cheat_aware(
+    protects = "User doesn't waste time reinstalling already-installed packages",
+    severity = "LOW",
+    ease = "EASY",
+    cheats = [
+        "Always reinstall regardless of installed state",
+        "Check output message but allow reinstall to happen",
+        "Skip the installed state check entirely"
+    ],
+    consequence = "User runs install on existing package, wastes time and potentially corrupts state"
+)]
 #[test]
 fn test_cli_install_already_installed() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -131,6 +187,17 @@ fn install() {}
 // Remove Command Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "User gets clear error when removing non-installed package",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Accept any non-success status without checking message",
+        "Mark package as installed in test setup to avoid error path",
+        "Remove the stderr assertion entirely"
+    ],
+    consequence = "User tries to remove non-installed package, gets confusing error or silent failure"
+)]
 #[test]
 fn test_cli_remove_not_installed() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -150,6 +217,17 @@ fn install() {}
     assert!(stderr.contains("not installed"));
 }
 
+#[cheat_aware(
+    protects = "User can remove installed packages and reclaim disk space",
+    severity = "HIGH",
+    ease = "MEDIUM",
+    cheats = [
+        "Mark installed=false without actually deleting files",
+        "Check only for success status, not file deletion",
+        "Create test with no installed_files to avoid deletion testing"
+    ],
+    consequence = "User removes package - recipe says removed but files still on disk, wasting space"
+)]
 #[test]
 fn test_cli_remove_success() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -175,6 +253,17 @@ fn install() {}
 // List Command Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "User can see they have no recipes when directory is empty",
+    severity = "LOW",
+    ease = "EASY",
+    cheats = [
+        "Accept any output as valid for empty list",
+        "Create test recipes to avoid empty case",
+        "Skip output content verification entirely"
+    ],
+    consequence = "User runs 'recipe list' with no packages, gets confusing output"
+)]
 #[test]
 fn test_cli_list_empty() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -186,6 +275,17 @@ fn test_cli_list_empty() {
     assert!(stdout.contains("No recipes") || stdout.is_empty() || !stdout.contains("[installed"));
 }
 
+#[cheat_aware(
+    protects = "User can see all available packages in list view",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Check for any package name, not all expected packages",
+        "Accept partial matches that could miss packages",
+        "Hardcode expected output format instead of parsing"
+    ],
+    consequence = "User runs 'recipe list', some packages are missing from output"
+)]
 #[test]
 fn test_cli_list_shows_packages() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -220,6 +320,17 @@ fn install() {}
 // Info Command Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "User can view detailed package information",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Check for package name only, not all metadata fields",
+        "Accept any output as valid without verifying content",
+        "Test with minimal recipe that has few fields to verify"
+    ],
+    consequence = "User runs 'recipe info pkg', gets incomplete or wrong information"
+)]
 #[test]
 fn test_cli_info_shows_details() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -244,6 +355,17 @@ fn install() {}
     assert!(stdout.contains("A detailed package") || stdout.contains("Installed"));
 }
 
+#[cheat_aware(
+    protects = "User gets error when requesting info on non-existent package",
+    severity = "LOW",
+    ease = "EASY",
+    cheats = [
+        "Accept any non-success status without verifying error type",
+        "Create package to avoid testing error path",
+        "Remove assertion entirely"
+    ],
+    consequence = "User requests info on non-existent package, gets confusing error"
+)]
 #[test]
 fn test_cli_info_nonexistent() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -257,6 +379,17 @@ fn test_cli_info_nonexistent() {
 // Search Command Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "User can search for packages by name/description",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Accept any search result without verifying relevance",
+        "Check that output contains something, not the expected match",
+        "Use search term that matches all packages"
+    ],
+    consequence = "User searches for 'rip', gets unrelated results or misses ripgrep"
+)]
 #[test]
 fn test_cli_search_finds_matches() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -287,6 +420,17 @@ fn install() {}
     assert!(!stdout.contains("fd") || stdout.contains("No packages"));
 }
 
+#[cheat_aware(
+    protects = "User gets helpful message when search finds nothing",
+    severity = "LOW",
+    ease = "EASY",
+    cheats = [
+        "Accept empty output as valid 'no matches' result",
+        "Check only for success status, not output content",
+        "Create package that matches to avoid testing empty case"
+    ],
+    consequence = "User searches for non-existent term, gets no feedback or confusing output"
+)]
 #[test]
 fn test_cli_search_no_matches() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -310,6 +454,17 @@ fn install() {}
 // Update Command Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "User gets clear message when package has no update checker",
+    severity = "LOW",
+    ease = "EASY",
+    cheats = [
+        "Accept any output without verifying message content",
+        "Add check_update to recipe to avoid testing this path",
+        "Skip output verification entirely"
+    ],
+    consequence = "User runs update on package without checker, gets confusing output"
+)]
 #[test]
 fn test_cli_update_no_checker() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -331,6 +486,17 @@ fn install() {}
     assert!(stdout.contains("no update checker") || stdout.contains("has no update"));
 }
 
+#[cheat_aware(
+    protects = "User can check for and see available updates",
+    severity = "HIGH",
+    ease = "MEDIUM",
+    cheats = [
+        "Hardcode version in check_update that equals current version",
+        "Check only for success, not that new version is displayed",
+        "Accept any version number as 'update available'"
+    ],
+    consequence = "User runs update check, misses critical security update because check is broken"
+)]
 #[test]
 fn test_cli_update_with_checker() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -359,6 +525,17 @@ fn check_update() {
 // Upgrade Command Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "User gets clear error when upgrading non-installed package",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Accept any failure without verifying error message",
+        "Mark package as installed to avoid error path",
+        "Remove stderr assertion"
+    ],
+    consequence = "User tries to upgrade non-installed package, gets cryptic error"
+)]
 #[test]
 fn test_cli_upgrade_not_installed() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -378,6 +555,17 @@ fn install() {}
     assert!(stderr.contains("not installed"));
 }
 
+#[cheat_aware(
+    protects = "User gets confirmation when package is already up to date",
+    severity = "LOW",
+    ease = "EASY",
+    cheats = [
+        "Accept any output as valid 'up to date' message",
+        "Check only for success status",
+        "Use different versions to avoid testing this path"
+    ],
+    consequence = "User upgrades already-current package, gets confusing feedback"
+)]
 #[test]
 fn test_cli_upgrade_up_to_date() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -403,6 +591,17 @@ fn install() {}
 // Path Validation Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "System is protected from path traversal attacks via package names",
+    severity = "CRITICAL",
+    ease = "HARD",
+    cheats = [
+        "Accept any failure status without verifying security check",
+        "Test only one path traversal pattern, miss others",
+        "Remove assertion for error message"
+    ],
+    consequence = "Attacker crafts malicious package name, reads/writes files outside recipe dir"
+)]
 #[test]
 fn test_cli_rejects_path_traversal() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -419,6 +618,17 @@ fn test_cli_rejects_path_traversal() {
 // Explicit Path Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "User can install recipes by explicit file path",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Test only with simple paths, miss edge cases",
+        "Accept any success without verifying install happened",
+        "Use relative path that relies on working directory"
+    ],
+    consequence = "User tries to install recipe by path, gets error or wrong recipe installed"
+)]
 #[test]
 fn test_cli_accepts_explicit_rhai_path() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -445,6 +655,17 @@ fn install() {}
 // Error Output Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "Errors go to stderr for proper scripting integration",
+    severity = "LOW",
+    ease = "EASY",
+    cheats = [
+        "Check only that command fails, not where error goes",
+        "Accept errors in stdout as valid",
+        "Skip stderr content verification"
+    ],
+    consequence = "Errors go to stdout, breaks shell pipelines and log parsing"
+)]
 #[test]
 fn test_cli_error_output_to_stderr() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -461,6 +682,17 @@ fn test_cli_error_output_to_stderr() {
 // Deps Command Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "User can see direct dependencies of a package",
+    severity = "HIGH",
+    ease = "MEDIUM",
+    cheats = [
+        "Check for any output, not actual dependency names",
+        "Test with package that has no deps to avoid verification",
+        "Accept partial matches that miss some dependencies"
+    ],
+    consequence = "User checks deps, misses critical dependency, install fails mysteriously later"
+)]
 #[test]
 fn test_cli_deps_shows_direct_dependencies() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -490,6 +722,17 @@ fn install() {}
     assert!(stdout.contains("mylib"), "Expected 'mylib' in output: {}", stdout);
 }
 
+#[cheat_aware(
+    protects = "User gets clear feedback when package has no dependencies",
+    severity = "LOW",
+    ease = "EASY",
+    cheats = [
+        "Accept any output as valid for no-deps case",
+        "Add fake deps to avoid testing empty case",
+        "Skip output verification"
+    ],
+    consequence = "User checks deps on standalone package, gets confusing output"
+)]
 #[test]
 fn test_cli_deps_no_dependencies() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -510,6 +753,17 @@ fn install() {}
     assert!(stdout.contains("(none)") || stdout.contains("standalone"));
 }
 
+#[cheat_aware(
+    protects = "User can see correct install order for dependencies",
+    severity = "CRITICAL",
+    ease = "MEDIUM",
+    cheats = [
+        "Accept any order of packages as valid",
+        "Test with linear chain only, miss complex graphs",
+        "Check for presence of packages but not order"
+    ],
+    consequence = "Install order is wrong, deps fail to build because their deps aren't installed first"
+)]
 #[test]
 fn test_cli_deps_resolve_shows_install_order() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -553,6 +807,17 @@ fn install() {}
     assert!(stdout.contains("3. app"), "Missing '3. app' in output: {}", stdout);
 }
 
+#[cheat_aware(
+    protects = "User can see which dependencies are already installed",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Skip checking for [installed] marker",
+        "Mark all packages as not installed in test",
+        "Accept any output format"
+    ],
+    consequence = "User can't tell which deps need installing, wastes time or misses packages"
+)]
 #[test]
 fn test_cli_deps_resolve_shows_installed_status() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -584,6 +849,17 @@ fn install() {}
     assert!(stdout.contains("[installed]"), "Expected '[installed]' marker in output: {}", stdout);
 }
 
+#[cheat_aware(
+    protects = "User gets correct resolution for diamond dependency patterns",
+    severity = "HIGH",
+    ease = "MEDIUM",
+    cheats = [
+        "Test only linear chains, miss diamond patterns",
+        "Accept duplicate entries in output",
+        "Skip verification of correct ordering"
+    ],
+    consequence = "Diamond deps resolved incorrectly, shared dep installed twice or in wrong order"
+)]
 #[test]
 fn test_cli_deps_diamond_pattern() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -644,6 +920,17 @@ fn install() {}
     assert!(has_right, "Missing right in positions 2 or 3: {}", stdout);
 }
 
+#[cheat_aware(
+    protects = "User gets clear error for deps on non-existent package",
+    severity = "LOW",
+    ease = "EASY",
+    cheats = [
+        "Accept any failure without checking message",
+        "Create package to avoid testing error path",
+        "Remove assertion"
+    ],
+    consequence = "User checks deps of missing package, gets cryptic error"
+)]
 #[test]
 fn test_cli_deps_nonexistent_package() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -659,6 +946,17 @@ fn test_cli_deps_nonexistent_package() {
 // Install with Dependencies Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "User can install package with all dependencies in correct order",
+    severity = "CRITICAL",
+    ease = "MEDIUM",
+    cheats = [
+        "Install only the requested package, skip deps",
+        "Accept any success without verifying all packages installed",
+        "Test with no-dep packages to avoid real test"
+    ],
+    consequence = "User runs 'install --deps pkg', deps not installed, pkg fails at runtime"
+)]
 #[test]
 fn test_cli_install_deps_installs_in_order() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -691,6 +989,17 @@ fn install() {}
     assert!(stdout.contains("app"), "Expected app mention: {}", stdout);
 }
 
+#[cheat_aware(
+    protects = "Already-installed dependencies are skipped, saving time",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Reinstall all deps regardless of state",
+        "Accept any package count in output",
+        "Mark all deps as not installed in test"
+    ],
+    consequence = "User reinstalls package, all deps reinstalled wastefully, possible breakage"
+)]
 #[test]
 fn test_cli_install_deps_skips_installed() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -724,6 +1033,17 @@ fn install() {}
     assert!(stdout.contains("1 package") || stdout.contains("needs-it"), "Output: {}", stdout);
 }
 
+#[cheat_aware(
+    protects = "User gets feedback when all packages are already installed",
+    severity = "LOW",
+    ease = "EASY",
+    cheats = [
+        "Accept any output as valid",
+        "Mark some packages as not installed",
+        "Skip output verification"
+    ],
+    consequence = "User runs install --deps when all installed, gets confusing feedback"
+)]
 #[test]
 fn test_cli_install_deps_all_already_installed() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -757,6 +1077,17 @@ fn install() {}
     assert!(stdout.contains("already installed"), "Expected 'already installed' message: {}", stdout);
 }
 
+#[cheat_aware(
+    protects = "Deep dependency chains are fully resolved and installed",
+    severity = "HIGH",
+    ease = "MEDIUM",
+    cheats = [
+        "Test only shallow dep trees",
+        "Accept partial installation as success",
+        "Limit recursion depth silently"
+    ],
+    consequence = "Deep dep chain only partially installed, package fails with missing libs"
+)]
 #[test]
 fn test_cli_install_deps_deep_chain() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -789,6 +1120,17 @@ fn install() {{}}
 // Info Command with Dependencies
 // =============================================================================
 
+#[cheat_aware(
+    protects = "User can see package dependencies in info output",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Check for any dependency field, not actual dep names",
+        "Test with empty deps to avoid verification",
+        "Accept missing deps field as valid"
+    ],
+    consequence = "User runs 'recipe info pkg', can't see what deps are needed"
+)]
 #[test]
 fn test_cli_info_shows_dependencies() {
     let (_dir, prefix, recipes) = create_test_env();
@@ -811,6 +1153,17 @@ fn install() {}
     assert!(stdout.contains("lib2"));
 }
 
+#[cheat_aware(
+    protects = "Info command works for packages without deps field",
+    severity = "LOW",
+    ease = "EASY",
+    cheats = [
+        "Always include deps field in test recipes",
+        "Skip testing optional fields",
+        "Accept crash as failure instead of graceful handling"
+    ],
+    consequence = "User runs info on package without deps field, gets crash or error"
+)]
 #[test]
 fn test_cli_info_no_deps_field() {
     let (_dir, prefix, recipes) = create_test_env();

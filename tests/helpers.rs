@@ -4,6 +4,7 @@
 //! Network-dependent tests are marked with #[ignore] and can be run with:
 //!   cargo test -- --ignored
 
+use cheat_test::cheat_aware;
 use levitate_recipe::RecipeEngine;
 use std::path::Path;
 use tempfile::TempDir;
@@ -92,6 +93,17 @@ fn strip_installed_state(content: &str) -> String {
 // Filesystem Helper Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "Filesystem helpers (mkdir, copy, exists) work correctly in recipes",
+    severity = "HIGH",
+    ease = "MEDIUM",
+    cheats = [
+        "Skip test if example file missing",
+        "Use simpler recipe that doesn't test all helpers",
+        "Accept any success without verifying installed files"
+    ],
+    consequence = "mkdir/copy/exists helpers broken, recipes can't manipulate files"
+)]
 #[test]
 fn test_filesystem_helpers() {
     let (_dir, prefix, build_dir) = create_test_env();
@@ -119,6 +131,17 @@ fn test_filesystem_helpers() {
 // IO and Environment Helper Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "IO and environment helpers (read_file, env, set_env) work correctly",
+    severity = "HIGH",
+    ease = "MEDIUM",
+    cheats = [
+        "Skip test if example file missing",
+        "Test helpers individually, miss integration",
+        "Accept any success without verifying results"
+    ],
+    consequence = "read_file/env helpers broken, recipes can't read files or environment"
+)]
 #[test]
 fn test_io_env_helpers() {
     let (_dir, prefix, build_dir) = create_test_env();
@@ -144,6 +167,17 @@ fn test_io_env_helpers() {
 // Command and Process Helper Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "Command helpers (run, run_output, exec) work correctly",
+    severity = "HIGH",
+    ease = "MEDIUM",
+    cheats = [
+        "Skip test if example file missing",
+        "Use trivial commands that always succeed",
+        "Accept any success without verifying command ran"
+    ],
+    consequence = "run/exec helpers broken, recipes can't execute build commands"
+)]
 #[test]
 fn test_command_helpers() {
     let (_dir, prefix, build_dir) = create_test_env();
@@ -169,6 +203,17 @@ fn test_command_helpers() {
 // Install Helper Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "Install helpers (install_bin, install_lib, install_man) work correctly",
+    severity = "CRITICAL",
+    ease = "MEDIUM",
+    cheats = [
+        "Skip test if example file missing",
+        "Test only one install helper",
+        "Accept any file in prefix as success"
+    ],
+    consequence = "install_bin/lib/man helpers broken, files installed to wrong locations"
+)]
 #[test]
 fn test_install_helpers() {
     let (_dir, prefix, build_dir) = create_test_env();
@@ -204,6 +249,17 @@ fn test_install_helpers() {
 // HTTP Helper Tests (Network Required)
 // =============================================================================
 
+#[cheat_aware(
+    protects = "HTTP helpers (http_get, download) work correctly",
+    severity = "HIGH",
+    ease = "HARD",
+    cheats = [
+        "Skip test entirely (ignore attribute)",
+        "Use mocked HTTP responses",
+        "Accept any success without verifying content"
+    ],
+    consequence = "HTTP helpers broken, recipes can't download source tarballs"
+)]
 #[test]
 #[ignore] // Requires network access
 fn test_http_helpers() {
@@ -230,6 +286,17 @@ fn test_http_helpers() {
 // Acquire Helper Tests (Network Required)
 // =============================================================================
 
+#[cheat_aware(
+    protects = "Acquire helpers (download, copy, verify_sha256) work correctly",
+    severity = "CRITICAL",
+    ease = "HARD",
+    cheats = [
+        "Skip test entirely (ignore attribute)",
+        "Use local files instead of downloading",
+        "Skip SHA256 verification"
+    ],
+    consequence = "Acquire helpers broken, recipes can't download or verify sources"
+)]
 #[test]
 #[ignore] // Requires network access
 fn test_acquire_helpers() {
@@ -256,6 +323,17 @@ fn test_acquire_helpers() {
 // Comprehensive Helper Tests (Network Required)
 // =============================================================================
 
+#[cheat_aware(
+    protects = "All helpers work together in a complete recipe",
+    severity = "CRITICAL",
+    ease = "HARD",
+    cheats = [
+        "Skip test entirely (ignore attribute)",
+        "Test helpers individually, miss integration issues",
+        "Use minimal recipe that doesn't exercise all paths"
+    ],
+    consequence = "Individual helpers work but fail when combined in real recipe"
+)]
 #[test]
 #[ignore] // Requires network access
 fn test_all_helpers() {
@@ -287,6 +365,17 @@ fn test_all_helpers() {
 // Individual Helper Unit Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "parse_version helper strips common prefixes correctly",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Test only simple version formats",
+        "Skip testing in recipe context",
+        "Use pre-cleaned versions"
+    ],
+    consequence = "parse_version('v1.2.3') returns 'v1.2.3' instead of '1.2.3'"
+)]
 #[test]
 fn test_parse_version_helper() {
     let (_dir, prefix, build_dir) = create_test_env();
@@ -330,6 +419,17 @@ fn install() {}
     assert!(result.is_ok(), "parse_version test failed: {:?}", result.err());
 }
 
+#[cheat_aware(
+    protects = "mkdir helper creates nested directories",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Test only single-level directories",
+        "Use pre-existing parent directories",
+        "Skip testing recursive creation"
+    ],
+    consequence = "mkdir('a/b/c/d') fails when intermediate directories don't exist"
+)]
 #[test]
 fn test_mkdir_recursive() {
     let (_dir, prefix, build_dir) = create_test_env();
@@ -371,6 +471,17 @@ fn install() {}
     assert!(result.is_ok(), "mkdir recursive test failed: {:?}", result.err());
 }
 
+#[cheat_aware(
+    protects = "glob_list helper returns matching files",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Test only with exactly matching files",
+        "Use simple patterns that match everything",
+        "Skip testing wildcard patterns"
+    ],
+    consequence = "glob_list('*.txt') returns empty array or wrong files"
+)]
 #[test]
 fn test_glob_list_helper() {
     let (_dir, prefix, build_dir) = create_test_env();
@@ -423,6 +534,17 @@ fn install() {}
     assert!(result.is_ok(), "glob_list test failed: {:?}", result.err());
 }
 
+#[cheat_aware(
+    protects = "mv and ln helpers work correctly",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Test mv/ln with simple cases only",
+        "Skip testing symlink target resolution",
+        "Use files in same directory only"
+    ],
+    consequence = "mv doesn't remove source, ln creates broken symlink"
+)]
 #[test]
 fn test_mv_and_ln_helpers() {
     let (_dir, prefix, build_dir) = create_test_env();
@@ -481,6 +603,17 @@ fn install() {}
     assert!(result.is_ok(), "mv/ln test failed: {:?}", result.err());
 }
 
+#[cheat_aware(
+    protects = "run_output and run_status helpers capture command results",
+    severity = "HIGH",
+    ease = "EASY",
+    cheats = [
+        "Test only commands that always succeed",
+        "Skip testing command output content",
+        "Use trivial commands"
+    ],
+    consequence = "run_output returns empty string, run_status returns wrong exit code"
+)]
 #[test]
 fn test_run_output_and_status() {
     let (_dir, prefix, build_dir) = create_test_env();
@@ -527,6 +660,17 @@ fn install() {}
     assert!(result.is_ok(), "run_output/run_status test failed: {:?}", result.err());
 }
 
+#[cheat_aware(
+    protects = "exec and exec_output helpers run commands with arguments",
+    severity = "HIGH",
+    ease = "EASY",
+    cheats = [
+        "Test only simple commands",
+        "Skip testing argument passing",
+        "Use shell commands instead"
+    ],
+    consequence = "exec fails to pass arguments correctly, builds break"
+)]
 #[test]
 fn test_exec_helpers() {
     let (_dir, prefix, build_dir) = create_test_env();
@@ -567,6 +711,17 @@ fn install() {}
     assert!(result.is_ok(), "exec/exec_output test failed: {:?}", result.err());
 }
 
+#[cheat_aware(
+    protects = "env and set_env helpers read and write environment variables",
+    severity = "MEDIUM",
+    ease = "EASY",
+    cheats = [
+        "Test only PATH which always exists",
+        "Skip testing set_env persistence",
+        "Use hardcoded values"
+    ],
+    consequence = "Recipes can't read/set environment, build flags not passed correctly"
+)]
 #[test]
 fn test_env_helpers() {
     let (_dir, prefix, build_dir) = create_test_env();
@@ -608,6 +763,17 @@ fn install() {}
     assert!(result.is_ok(), "env/set_env test failed: {:?}", result.err());
 }
 
+#[cheat_aware(
+    protects = "extract helper unpacks tarballs correctly",
+    severity = "CRITICAL",
+    ease = "MEDIUM",
+    cheats = [
+        "Use pre-extracted files",
+        "Skip testing actual extraction",
+        "Test only tar.gz, miss other formats"
+    ],
+    consequence = "extract('tar.gz') fails to unpack source, builds can't proceed"
+)]
 #[test]
 fn test_extract_tarball() {
     let (_dir, prefix, build_dir) = create_test_env();
