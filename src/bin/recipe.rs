@@ -12,7 +12,76 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use levitate_recipe::{deps, output, recipe_state, RecipeEngine};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Recipe metadata loaded from state - bundles common queries into one struct
+#[derive(Debug, Default)]
+struct RecipeMetadata {
+    pub name: String,
+    #[allow(dead_code)] // Retained for future use
+    pub path: PathBuf,
+    pub installed: bool,
+    pub version: Option<String>,
+    pub installed_version: Option<String>,
+    pub description: Option<String>,
+    pub deps: Vec<String>,
+    pub installed_at: Option<i64>,
+    pub installed_files: Option<Vec<String>>,
+    #[allow(dead_code)] // Retained for future use
+    pub installed_as_dep: bool,
+}
+
+impl RecipeMetadata {
+    /// Load metadata for a recipe from its state file
+    fn load(path: &Path) -> Self {
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+
+        let installed: Option<bool> = recipe_state::get_var(path, "installed").unwrap_or(None);
+        let version: Option<String> = recipe_state::get_var(path, "version").unwrap_or(None);
+        let installed_version: Option<recipe_state::OptionalString> =
+            recipe_state::get_var(path, "installed_version").unwrap_or(None);
+        let description: Option<String> =
+            recipe_state::get_var(path, "description").unwrap_or(None);
+        let deps: Option<Vec<String>> = recipe_state::get_var(path, "deps").unwrap_or(None);
+        let installed_at: Option<i64> = recipe_state::get_var(path, "installed_at").unwrap_or(None);
+        let installed_files: Option<Vec<String>> =
+            recipe_state::get_var(path, "installed_files").unwrap_or(None);
+        let installed_as_dep: Option<bool> =
+            recipe_state::get_var(path, "installed_as_dep").unwrap_or(None);
+
+        Self {
+            name,
+            path: path.to_path_buf(),
+            installed: installed == Some(true),
+            version,
+            installed_version: installed_version.and_then(|v| v.into()),
+            description,
+            deps: deps.unwrap_or_default(),
+            installed_at,
+            installed_files,
+            installed_as_dep: installed_as_dep == Some(true),
+        }
+    }
+
+    /// Check if an upgrade is available
+    fn has_upgrade(&self) -> bool {
+        self.installed && self.version != self.installed_version
+    }
+}
+
+/// Iterator over recipe files in a directory
+fn enumerate_recipes(recipes_path: &Path) -> impl Iterator<Item = PathBuf> + '_ {
+    std::fs::read_dir(recipes_path)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|e| e == "rhai"))
+}
 
 /// Default recipes directory (XDG compliant)
 fn default_recipes_path() -> PathBuf {
@@ -210,9 +279,8 @@ fn main() -> Result<()> {
                     let resolved: Vec<(String, String)> = install_order
                         .iter()
                         .filter_map(|(name, path)| {
-                            let version: Option<String> =
-                                recipe_state::get_var(path, "version").unwrap_or(None);
-                            version.map(|v| (name.clone(), v))
+                            let meta = RecipeMetadata::load(path);
+                            meta.version.map(|v| (name.clone(), v))
                         })
                         .collect();
 
@@ -236,13 +304,10 @@ fn main() -> Result<()> {
                     let mut already_installed = 0;
 
                     for (i, (name, path)) in install_order.iter().enumerate() {
-                        let installed: Option<bool> =
-                            recipe_state::get_var(path, "installed").unwrap_or(None);
-                        let version: Option<String> =
-                            recipe_state::get_var(path, "version").unwrap_or(None);
-                        let ver = version.as_deref().unwrap_or("?");
+                        let meta = RecipeMetadata::load(path);
+                        let ver = meta.version.as_deref().unwrap_or("?");
 
-                        if installed == Some(true) {
+                        if meta.installed {
                             println!(
                                 "  {}. {} {} {}",
                                 i + 1,
@@ -342,8 +407,7 @@ fn main() -> Result<()> {
             } else {
                 // Update all installed packages
                 output::action("Checking for updates...");
-                let recipes = find_installed_recipes(&recipes_path)?;
-                for recipe_path in recipes {
+                for recipe_path in find_installed_recipes(&recipes_path) {
                     engine.update(&recipe_path)?;
                 }
             }
@@ -358,7 +422,7 @@ fn main() -> Result<()> {
             } else {
                 // Upgrade all packages with pending updates
                 output::action("Upgrading packages...");
-                let recipes = find_upgradable_recipes(&recipes_path)?;
+                let recipes = find_upgradable_recipes(&recipes_path);
                 if recipes.is_empty() {
                     output::info("All packages are up to date");
                 } else {
@@ -390,9 +454,8 @@ fn main() -> Result<()> {
                 let install_order = deps::resolve_deps(&package, &recipes_path)?;
                 output::info(&format!("Install order for {}:", package.bold()));
                 for (i, (name, path)) in install_order.iter().enumerate() {
-                    let installed: Option<bool> =
-                        recipe_state::get_var(path, "installed").unwrap_or(None);
-                    if installed == Some(true) {
+                    let meta = RecipeMetadata::load(path);
+                    if meta.installed {
                         println!("  {}. {} {}", i + 1, name.green(), "[installed]".dimmed());
                     } else {
                         println!("  {}. {}", i + 1, name);
@@ -401,18 +464,14 @@ fn main() -> Result<()> {
             } else {
                 // Show direct dependencies only
                 let recipe_path = resolve_recipe(&package, &recipes_path)?;
-                let pkg_deps: Option<Vec<String>> =
-                    recipe_state::get_var(&recipe_path, "deps").unwrap_or(None);
+                let meta = RecipeMetadata::load(&recipe_path);
 
                 output::info(&format!("Dependencies for {}:", package.bold()));
-                match pkg_deps {
-                    Some(ref d) if !d.is_empty() => {
-                        for dep in d {
-                            println!("  {} {}", "-".cyan(), dep);
-                        }
-                    }
-                    _ => {
-                        println!("  {}", "(none)".dimmed());
+                if meta.deps.is_empty() {
+                    println!("  {}", "(none)".dimmed());
+                } else {
+                    for dep in &meta.deps {
+                        println!("  {} {}", "-".cyan(), dep);
                     }
                 }
             }
@@ -450,12 +509,11 @@ fn main() -> Result<()> {
             } else {
                 output::info(&format!("Found {} orphaned package(s):", orphans.len()));
                 for (name, path) in &orphans {
-                    let version: Option<String> =
-                        recipe_state::get_var(path, "installed_version").unwrap_or(None);
+                    let meta = RecipeMetadata::load(path);
                     println!(
                         "  {} {}",
                         name.yellow(),
-                        version.as_deref().unwrap_or("").dimmed()
+                        meta.installed_version.as_deref().unwrap_or("").dimmed()
                     );
                 }
                 println!();
@@ -475,12 +533,11 @@ fn main() -> Result<()> {
 
             output::info(&format!("Found {} orphaned package(s):", orphans.len()));
             for (name, path) in &orphans {
-                let version: Option<String> =
-                    recipe_state::get_var(path, "installed_version").unwrap_or(None);
+                let meta = RecipeMetadata::load(path);
                 println!(
                     "  {} {}",
                     name.yellow(),
-                    version.as_deref().unwrap_or("").dimmed()
+                    meta.installed_version.as_deref().unwrap_or("").dimmed()
                 );
             }
 
@@ -510,7 +567,7 @@ fn main() -> Result<()> {
 
             fn print_tree(
                 name: &str,
-                recipes_path: &std::path::Path,
+                recipes_path: &Path,
                 prefix: &str,
                 is_last: bool,
                 visited: &mut std::collections::HashSet<String>,
@@ -520,7 +577,6 @@ fn main() -> Result<()> {
 
                 // Check if recipe exists
                 if !recipe_path.exists() {
-                    // Show missing recipe with warning indicator
                     println!(
                         "{}{}{}",
                         prefix,
@@ -530,12 +586,8 @@ fn main() -> Result<()> {
                     return Ok(());
                 }
 
-                let installed: Option<bool> =
-                    recipe_state::get_var(&recipe_path, "installed").unwrap_or(None);
-                let version: Option<String> =
-                    recipe_state::get_var(&recipe_path, "version").unwrap_or(None);
-
-                let name_colored = if installed == Some(true) {
+                let meta = RecipeMetadata::load(&recipe_path);
+                let name_colored = if meta.installed {
                     name.green().to_string()
                 } else {
                     name.to_string()
@@ -546,7 +598,10 @@ fn main() -> Result<()> {
                     prefix,
                     branch,
                     name_colored,
-                    version.map(|v| format!(" {}", v.dimmed())).unwrap_or_default()
+                    meta.version
+                        .as_ref()
+                        .map(|v| format!(" {}", v.dimmed()))
+                        .unwrap_or_default()
                 );
 
                 // Prevent cycles
@@ -555,17 +610,11 @@ fn main() -> Result<()> {
                 }
                 visited.insert(name.to_string());
 
-                // Get dependencies
-                let deps: Vec<String> = recipe_state::get_var(&recipe_path, "deps")
-                    .unwrap_or(None)
-                    .unwrap_or_default();
-
                 let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
 
-                for (i, dep) in deps.iter().enumerate() {
-                    // Extract package name from dependency spec (remove version constraint)
+                for (i, dep) in meta.deps.iter().enumerate() {
                     let dep_name = dep.split_whitespace().next().unwrap_or(dep);
-                    let is_last_dep = i == deps.len() - 1;
+                    let is_last_dep = i == meta.deps.len() - 1;
                     print_tree(dep_name, recipes_path, &new_prefix, is_last_dep, visited)?;
                 }
 
@@ -573,12 +622,9 @@ fn main() -> Result<()> {
             }
 
             let recipe_path = resolve_recipe(&package, &recipes_path)?;
-            let installed: Option<bool> =
-                recipe_state::get_var(&recipe_path, "installed").unwrap_or(None);
-            let version: Option<String> =
-                recipe_state::get_var(&recipe_path, "version").unwrap_or(None);
+            let meta = RecipeMetadata::load(&recipe_path);
 
-            let name_colored = if installed == Some(true) {
+            let name_colored = if meta.installed {
                 package.green().to_string()
             } else {
                 package.clone()
@@ -587,19 +633,18 @@ fn main() -> Result<()> {
             println!(
                 "{}{}",
                 name_colored,
-                version.map(|v| format!(" {}", v.dimmed())).unwrap_or_default()
+                meta.version
+                    .as_ref()
+                    .map(|v| format!(" {}", v.dimmed()))
+                    .unwrap_or_default()
             );
-
-            let deps: Vec<String> = recipe_state::get_var(&recipe_path, "deps")
-                .unwrap_or(None)
-                .unwrap_or_default();
 
             let mut visited = std::collections::HashSet::new();
             visited.insert(package.clone());
 
-            for (i, dep) in deps.iter().enumerate() {
+            for (i, dep) in meta.deps.iter().enumerate() {
                 let dep_name = dep.split_whitespace().next().unwrap_or(dep);
-                let is_last = i == deps.len() - 1;
+                let is_last = i == meta.deps.len() - 1;
                 print_tree(dep_name, &recipes_path, "", is_last, &mut visited)?;
             }
         }
@@ -622,9 +667,8 @@ fn main() -> Result<()> {
                 ));
                 for name in &rdeps {
                     let recipe_path = recipes_path.join(format!("{}.rhai", name));
-                    let installed: Option<bool> =
-                        recipe_state::get_var(&recipe_path, "installed").unwrap_or(None);
-                    if installed == Some(true) {
+                    let meta = RecipeMetadata::load(&recipe_path);
+                    if meta.installed {
                         println!("  {} {}", name.green(), "(installed)".dimmed());
                     } else {
                         println!("  {}", name);
@@ -639,7 +683,7 @@ fn main() -> Result<()> {
             // Recursively find all packages that would be affected
             fn find_all_impacted(
                 pkg: &str,
-                recipes_path: &std::path::Path,
+                recipes_path: &Path,
                 impacted: &mut std::collections::HashSet<String>,
             ) -> Result<()> {
                 let rdeps = deps::reverse_deps(pkg, recipes_path)?;
@@ -661,15 +705,13 @@ fn main() -> Result<()> {
                 ));
             } else {
                 // Filter to only installed packages
-                let mut installed_impacted = Vec::new();
-                for name in &impacted {
-                    let recipe_path = recipes_path.join(format!("{}.rhai", name));
-                    let installed: Option<bool> =
-                        recipe_state::get_var(&recipe_path, "installed").unwrap_or(None);
-                    if installed == Some(true) {
-                        installed_impacted.push(name.clone());
-                    }
-                }
+                let installed_impacted: Vec<_> = impacted
+                    .iter()
+                    .filter(|name| {
+                        let recipe_path = recipes_path.join(format!("{}.rhai", name));
+                        RecipeMetadata::load(&recipe_path).installed
+                    })
+                    .collect();
 
                 if installed_impacted.is_empty() {
                     output::info(&format!(
@@ -700,25 +742,11 @@ fn main() -> Result<()> {
                     // Scan all recipes and build lock file
                     let mut lock = LockFile::new();
 
-                    for entry in std::fs::read_dir(&recipes_path)? {
-                        let entry = entry?;
-                        let path = entry.path();
-                        if path.extension().map(|e| e == "rhai").unwrap_or(false) {
-                            let name = path
-                                .file_stem()
-                                .and_then(|s| s.to_str())
-                                .map(|s| s.to_string())
-                                .unwrap_or_default();
-
-                            if name.is_empty() {
-                                continue;
-                            }
-
-                            let version: Option<String> =
-                                recipe_state::get_var(&path, "version").unwrap_or(None);
-
-                            if let Some(ver) = version {
-                                lock.add_package(name, ver);
+                    for path in enumerate_recipes(&recipes_path) {
+                        let meta = RecipeMetadata::load(&path);
+                        if !meta.name.is_empty() {
+                            if let Some(ver) = meta.version {
+                                lock.add_package(meta.name, ver);
                             }
                         }
                     }
@@ -770,10 +798,8 @@ fn main() -> Result<()> {
                             continue;
                         }
 
-                        let current_version: Option<String> =
-                            recipe_state::get_var(&recipe_path, "version").unwrap_or(None);
-
-                        match current_version {
+                        let meta = RecipeMetadata::load(&recipe_path);
+                        match meta.version {
                             Some(v) if &v == locked_version => matches += 1,
                             Some(v) => mismatches.push((name.clone(), locked_version.clone(), v)),
                             None => mismatches.push((name.clone(), locked_version.clone(), "unknown".to_string())),
@@ -886,47 +912,26 @@ fn resolve_recipe(package: &str, recipes_path: &PathBuf) -> Result<PathBuf> {
 }
 
 /// Find all installed recipes
-fn find_installed_recipes(recipes_path: &PathBuf) -> Result<Vec<PathBuf>> {
-    let mut installed = Vec::new();
-
+fn find_installed_recipes(recipes_path: &Path) -> Vec<PathBuf> {
     if !recipes_path.exists() {
-        return Ok(installed);
+        return Vec::new();
     }
 
-    for entry in std::fs::read_dir(recipes_path)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.extension().map(|e| e == "rhai").unwrap_or(false) {
-            if let Ok(Some(true)) = recipe_state::get_var::<bool>(&path, "installed") {
-                installed.push(path);
-            }
-        }
-    }
-
-    Ok(installed)
+    enumerate_recipes(recipes_path)
+        .filter(|path| RecipeMetadata::load(path).installed)
+        .collect()
 }
 
 /// Find recipes with pending upgrades (version != installed_version)
-fn find_upgradable_recipes(recipes_path: &PathBuf) -> Result<Vec<PathBuf>> {
-    let mut upgradable = Vec::new();
-
-    for path in find_installed_recipes(recipes_path)? {
-        let version: Option<String> = recipe_state::get_var(&path, "version").unwrap_or(None);
-        let installed_version: Option<recipe_state::OptionalString> =
-            recipe_state::get_var(&path, "installed_version").unwrap_or(None);
-        let installed_version: Option<String> = installed_version.and_then(|v| v.into());
-
-        if version != installed_version {
-            upgradable.push(path);
-        }
-    }
-
-    Ok(upgradable)
+fn find_upgradable_recipes(recipes_path: &Path) -> Vec<PathBuf> {
+    find_installed_recipes(recipes_path)
+        .into_iter()
+        .filter(|path| RecipeMetadata::load(path).has_upgrade())
+        .collect()
 }
 
 /// List all packages
-fn list_packages(recipes_path: &PathBuf) -> Result<()> {
+fn list_packages(recipes_path: &Path) -> Result<()> {
     use owo_colors::OwoColorize;
 
     if !recipes_path.exists() {
@@ -935,34 +940,25 @@ fn list_packages(recipes_path: &PathBuf) -> Result<()> {
     }
 
     let mut found = false;
-    for entry in std::fs::read_dir(recipes_path)? {
-        let entry = entry?;
-        let path = entry.path();
+    for path in enumerate_recipes(recipes_path) {
+        let meta = RecipeMetadata::load(&path);
 
-        if path.extension().map(|e| e == "rhai").unwrap_or(false) {
-            let name = path.file_stem().unwrap().to_string_lossy();
-            let installed: Option<bool> = recipe_state::get_var(&path, "installed").unwrap_or(None);
-            let version: Option<String> = recipe_state::get_var(&path, "version").unwrap_or(None);
-            let installed_version: Option<recipe_state::OptionalString> =
-                recipe_state::get_var(&path, "installed_version").unwrap_or(None);
-            let installed_version: Option<String> = installed_version.and_then(|v| v.into());
-
-            let is_installed = installed == Some(true);
-            let status = if is_installed {
-                if version != installed_version {
-                    format!("[installed: {}, {} available]",
-                        installed_version.as_deref().unwrap_or("?"),
-                        version.as_deref().unwrap_or("?").yellow())
-                } else {
-                    format!("[installed: {}]", installed_version.as_deref().unwrap_or("?"))
-                }
+        let status = if meta.installed {
+            if meta.has_upgrade() {
+                format!(
+                    "[installed: {}, {} available]",
+                    meta.installed_version.as_deref().unwrap_or("?"),
+                    meta.version.as_deref().unwrap_or("?").yellow()
+                )
             } else {
-                format!("[available: {}]", version.as_deref().unwrap_or("?"))
-            };
+                format!("[installed: {}]", meta.installed_version.as_deref().unwrap_or("?"))
+            }
+        } else {
+            format!("[available: {}]", meta.version.as_deref().unwrap_or("?"))
+        };
 
-            output::list_item(&name, &status, is_installed);
-            found = true;
-        }
+        output::list_item(&meta.name, &status, meta.installed);
+        found = true;
     }
 
     if !found {
@@ -973,7 +969,7 @@ fn list_packages(recipes_path: &PathBuf) -> Result<()> {
 }
 
 /// Search for packages
-fn search_packages(pattern: &str, recipes_path: &PathBuf) -> Result<()> {
+fn search_packages(pattern: &str, recipes_path: &Path) -> Result<()> {
     use owo_colors::OwoColorize;
 
     if !recipes_path.exists() {
@@ -984,25 +980,17 @@ fn search_packages(pattern: &str, recipes_path: &PathBuf) -> Result<()> {
     let pattern_lower = pattern.to_lowercase();
     let mut found = false;
 
-    for entry in std::fs::read_dir(recipes_path)? {
-        let entry = entry?;
-        let path = entry.path();
+    for path in enumerate_recipes(recipes_path) {
+        let meta = RecipeMetadata::load(&path);
 
-        if path.extension().map(|e| e == "rhai").unwrap_or(false) {
-            let name = path.file_stem().unwrap().to_string_lossy();
-
-            // Match against name
-            if name.to_lowercase().contains(&pattern_lower) {
-                let version: Option<String> = recipe_state::get_var(&path, "version").unwrap_or(None);
-                let description: Option<String> = recipe_state::get_var(&path, "description").unwrap_or(None);
-
-                println!("  {} {} {}",
-                    name.bold(),
-                    version.as_deref().unwrap_or("?").cyan(),
-                    description.as_deref().unwrap_or("").dimmed()
-                );
-                found = true;
-            }
+        if meta.name.to_lowercase().contains(&pattern_lower) {
+            println!(
+                "  {} {} {}",
+                meta.name.bold(),
+                meta.version.as_deref().unwrap_or("?").cyan(),
+                meta.description.as_deref().unwrap_or("").dimmed()
+            );
+            found = true;
         }
     }
 
@@ -1014,50 +1002,43 @@ fn search_packages(pattern: &str, recipes_path: &PathBuf) -> Result<()> {
 }
 
 /// Show package info
-fn show_info(recipe_path: &PathBuf) -> Result<()> {
+fn show_info(recipe_path: &Path) -> Result<()> {
     use owo_colors::OwoColorize;
 
-    let name = recipe_path.file_stem().unwrap().to_string_lossy();
+    let meta = RecipeMetadata::load(recipe_path);
 
-    let version: Option<String> = recipe_state::get_var(recipe_path, "version").unwrap_or(None);
-    let description: Option<String> = recipe_state::get_var(recipe_path, "description").unwrap_or(None);
-    let pkg_deps: Option<Vec<String>> = recipe_state::get_var(recipe_path, "deps").unwrap_or(None);
-    let installed: Option<bool> = recipe_state::get_var(recipe_path, "installed").unwrap_or(None);
-    let installed_version: Option<recipe_state::OptionalString> =
-        recipe_state::get_var(recipe_path, "installed_version").unwrap_or(None);
-    let installed_version: Option<String> = installed_version.and_then(|v| v.into());
-    let installed_at: Option<i64> = recipe_state::get_var(recipe_path, "installed_at").unwrap_or(None);
-    let installed_files: Option<Vec<String>> =
-        recipe_state::get_var(recipe_path, "installed_files").unwrap_or(None);
-
-    println!("{:<12} {}", "Name:".bold(), name.bold().cyan());
-    println!("{:<12} {}", "Version:".bold(), version.as_deref().unwrap_or("?").green());
-    if let Some(desc) = description {
+    println!("{:<12} {}", "Name:".bold(), meta.name.bold().cyan());
+    println!(
+        "{:<12} {}",
+        "Version:".bold(),
+        meta.version.as_deref().unwrap_or("?").green()
+    );
+    if let Some(desc) = &meta.description {
         println!("{:<12} {}", "Description:".bold(), desc);
     }
-    match pkg_deps {
-        Some(ref deps) if !deps.is_empty() => {
-            println!("{:<12} {}", "Depends:".bold(), deps.join(", "));
-        }
-        _ => {}
+    if !meta.deps.is_empty() {
+        println!("{:<12} {}", "Depends:".bold(), meta.deps.join(", "));
     }
-    println!("{:<12} {}", "Recipe:".bold(), recipe_path.display().to_string().dimmed());
+    println!(
+        "{:<12} {}",
+        "Recipe:".bold(),
+        recipe_path.display().to_string().dimmed()
+    );
     println!();
 
-    if installed == Some(true) {
+    if meta.installed {
         println!("{:<12} {}", "Status:".bold(), "Installed".green());
-        if let Some(ver) = installed_version {
+        if let Some(ver) = &meta.installed_version {
             println!("{:<12} {}", "Installed:".bold(), ver);
         }
-        if let Some(ts) = installed_at {
-            // Convert timestamp to human readable
+        if let Some(ts) = meta.installed_at {
             let datetime = chrono_lite(ts);
             println!("{:<12} {}", "Installed at:".bold(), datetime.dimmed());
         }
-        if let Some(files) = installed_files {
+        if let Some(ref files) = meta.installed_files {
             println!("{:<12} {} files", "Files:".bold(), files.len());
             if files.len() <= 10 {
-                for f in &files {
+                for f in files {
                     println!("             {}", f.dimmed());
                 }
             } else {
@@ -1317,8 +1298,7 @@ mod tests {
     fn test_find_installed_recipes_empty() {
         let (_dir, recipes_path) = create_test_recipes_dir();
         let result = find_installed_recipes(&recipes_path);
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_empty());
+        assert!(result.is_empty());
     }
 
     #[test]
@@ -1328,7 +1308,7 @@ mod tests {
         write_recipe(&recipes_path, "pkg2", "let installed = false;");
         write_recipe(&recipes_path, "pkg3", "let installed = true;");
 
-        let result = find_installed_recipes(&recipes_path).unwrap();
+        let result = find_installed_recipes(&recipes_path);
         assert_eq!(result.len(), 2);
     }
 
@@ -1336,8 +1316,7 @@ mod tests {
     fn test_find_installed_recipes_nonexistent_dir() {
         let recipes_path = PathBuf::from("/nonexistent/path");
         let result = find_installed_recipes(&recipes_path);
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_empty());
+        assert!(result.is_empty());
     }
 
     // ==================== Find Upgradable Recipes ====================
@@ -1366,7 +1345,7 @@ let version = "1.0";
 let installed = false;
 "#);
 
-        let result = find_upgradable_recipes(&recipes_path).unwrap();
+        let result = find_upgradable_recipes(&recipes_path);
         assert_eq!(result.len(), 1);
         assert!(result[0].to_string_lossy().contains("pkg2"));
     }
