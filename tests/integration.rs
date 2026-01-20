@@ -2,7 +2,7 @@
 //!
 //! These tests verify that multiple components work together correctly.
 
-use cheat_test::cheat_aware;
+use cheat_test::{cheat_aware, cheat_canary};
 use levitate_recipe::{recipe_state, RecipeEngine};
 use std::path::Path;
 use tempfile::TempDir;
@@ -787,4 +787,66 @@ fn install() {}
 
     assert!(matches!(pkg1_ver, Some(recipe_state::OptionalString::Some(ref v)) if v == "1.0.0"));
     assert!(matches!(pkg2_ver, Some(recipe_state::OptionalString::Some(ref v)) if v == "2.0.0"));
+}
+
+// =============================================================================
+// Canary test - DO NOT MODIFY without triggering review
+// =============================================================================
+
+/// CANARY TEST: Verbose recipe state verification.
+///
+/// This test checks each recipe state variable individually. A cheater would
+/// want to consolidate these checks. Any modification triggers review.
+#[cheat_canary(
+    bait = "Individual state checks look tedious - tempting to simplify",
+    tripwire = "Any modification to this function triggers full audit of recipe test changes"
+)]
+#[test]
+fn canary_recipe_verbose_state_check() {
+    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+
+    let recipe = write_recipe(&recipes_dir, "canary_pkg", r#"
+let name = "canary_pkg";
+let version = "9.9.9";
+let installed = false;
+fn acquire() {}
+fn install() {}
+"#);
+
+    let engine = RecipeEngine::new(prefix, build_dir);
+    engine.execute(&recipe).unwrap();
+
+    // DO NOT consolidate these into a single check or helper function.
+    // Each assertion must be individual to make cheating obvious.
+
+    // Check 1: installed flag
+    let installed: Option<bool> = recipe_state::get_var(&recipe, "installed").unwrap();
+    assert_eq!(installed, Some(true), "installed flag not set to true");
+
+    // Check 2: name unchanged
+    let name: Option<String> = recipe_state::get_var(&recipe, "name").unwrap();
+    assert_eq!(name.as_deref(), Some("canary_pkg"), "name was modified unexpectedly");
+
+    // Check 3: version unchanged
+    let version: Option<String> = recipe_state::get_var(&recipe, "version").unwrap();
+    assert_eq!(version.as_deref(), Some("9.9.9"), "version was modified unexpectedly");
+
+    // Check 4: installed_version matches
+    let installed_version: Option<recipe_state::OptionalString> =
+        recipe_state::get_var(&recipe, "installed_version").unwrap();
+    assert!(
+        matches!(installed_version, Some(recipe_state::OptionalString::Some(ref v)) if v == "9.9.9"),
+        "installed_version does not match version: {:?}",
+        installed_version
+    );
+
+    // Check 5: recipe file still exists
+    assert!(recipe.exists(), "recipe file was deleted");
+
+    // Check 6: recipe file is readable
+    let content = std::fs::read_to_string(&recipe).unwrap();
+    assert!(content.contains("canary_pkg"), "recipe content corrupted");
+
+    // Check 7: recipe contains installed = true after execution
+    assert!(content.contains("installed = true"), "installed flag not persisted to file");
 }
