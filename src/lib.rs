@@ -4,6 +4,13 @@
 //! The engine provides helper functions and executes the `acquire()`, `build()`, and
 //! `install()` functions defined in each recipe.
 //!
+//! # STOP. READ. THEN ACT.
+//!
+//! Before modifying this crate:
+//! 1. Read `core/` - lifecycle, context, recipe_state, deps
+//! 2. Read `helpers/` - all the recipe-facing functions
+//! 3. Understand how state flows through the system
+//!
 //! # Example Recipe
 //!
 //! ```rhai

@@ -1,5 +1,7 @@
 # recipe
 
+> **STOP. READ. THEN ACT.** Before writing code, read the existing modules. Before deleting anything, read it first. See `STOP_READ_THEN_ACT.md` in project root.
+
 Rhai-based package manager for LevitateOS.
 
 ## Philosophy
