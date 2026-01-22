@@ -275,14 +275,16 @@ recipe deps myapp           # Show dependencies
 src/
 ├── bin/recipe.rs       # CLI entry point
 ├── lib.rs              # Public API, RecipeEngine struct
-├── core/               # Infrastructure (~600 LOC)
+├── core/               # Infrastructure
 │   ├── mod.rs          # Exports
 │   ├── lifecycle.rs    # execute, remove, update, upgrade state machines
 │   ├── context.rs      # Thread-local execution state
 │   ├── recipe_state.rs # Persistent variables (installed, version, etc.)
 │   ├── deps.rs         # Dependency resolution (topological sort)
+│   ├── lockfile.rs     # Lock file for concurrent access
+│   ├── version.rs      # Version parsing and comparison
 │   └── output.rs       # Terminal formatting, progress bars
-└── helpers/            # Recipe-facing functions (~35 functions, ~1200 LOC)
+└── helpers/            # Recipe-facing functions (~35 functions)
     ├── mod.rs          # Register all helpers with Rhai engine
     ├── acquire.rs      # download, copy, verify_sha256
     ├── build.rs        # extract, cd, run
