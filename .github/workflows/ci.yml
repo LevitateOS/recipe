@@ -5,33 +5,34 @@ on:
     branches: [master, main]
   pull_request:
     branches: [master, main]
-
-env:
-  CARGO_TERM_COLOR: always
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: 'Version bump type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+  ci:
+    uses: LevitateOS/LevitateOS/.github/workflows/rust-ci.yml@master
+    with:
+      msrv: '1.93'
 
-      - name: Install Rust
-        uses: dtolnay/rust-action@stable
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Build
-        run: cargo build --verbose
-
-      - name: Run tests
-        run: cargo test --verbose
-
-      - name: Clippy
-        run: cargo clippy -- -D warnings
+  release:
+    needs: [ci]
+    if: |
+      (github.event_name == 'push' &&
+       (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') &&
+       !startsWith(github.event.head_commit.message, 'chore: Bump version')) ||
+      github.event_name == 'workflow_dispatch'
+    uses: LevitateOS/LevitateOS/.github/workflows/rust-release.yml@master
+    with:
+      create-binary-artifact: true
+      binary-name: 'recipe'
+    secrets:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
