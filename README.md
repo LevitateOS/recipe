@@ -4,6 +4,43 @@
 
 Rhai-based package manager for LevitateOS.
 
+## Status
+
+| Metric | Value |
+|--------|-------|
+| Stage | Alpha |
+| Target | x86_64 Linux |
+| Last verified | 2026-01-23 |
+
+### Works
+
+- Recipe parsing and validation
+- Lifecycle execution (acquire → build → install)
+- Dependency resolution (topological sort)
+- State persistence in recipe files
+- ~35 helper functions for recipes
+
+### Incomplete / Stubbed
+
+- Recipe repository/index system
+- Parallel installation
+
+### Known Issues
+
+- See [GitHub Issues](https://github.com/LevitateOS/recipe/issues)
+
+---
+
+## Author
+
+<!-- HUMAN WRITTEN - DO NOT MODIFY -->
+
+[Waiting for human input]
+
+<!-- END HUMAN WRITTEN -->
+
+---
+
 ## Philosophy
 
 **recipe is not like other package managers.**
@@ -12,7 +49,7 @@ Rhai-based package manager for LevitateOS.
 |-----------------|--------|
 | Recipes are declarative specs | Recipes are **executable code** |
 | State lives in a database (`/var/lib/dpkg`, `/var/lib/pacman`) | State lives **in the recipe file itself** |
-| Package manager is complex, recipes are simple | Executor is minimal, **recipes do the work** |
+| Package manager is complex, recipes are simple | Executor is simple, **recipes do the work** |
 | Recipes are read-only | Recipes are **living data files** - the engine writes back to them |
 
 ### No Database
@@ -64,7 +101,7 @@ This means recipes can:
 - Compute URLs dynamically
 - Handle edge cases with real logic
 
-### Minimal Executor
+### Simple Executor
 
 The Rust engine provides helpers, not policy:
 
@@ -317,7 +354,7 @@ src/
 | State storage | `/var/lib/*` DB | `/var/lib/pacman` | SQLite + git | In recipe files |
 | Recipe format | Control files | PKGBUILD (bash) | Ruby DSL | Rhai scripts |
 | Recipe mutability | Read-only | Read-only | Read-only | **Read-write** |
-| Executor complexity | High | Medium | High | **Minimal** |
+| Executor complexity | High | Medium | High | **Simple** |
 | Remote repos | Required | Required | Required | **Optional** |
 | Validation | Limited | Limited | Limited | **Strict** |
 
