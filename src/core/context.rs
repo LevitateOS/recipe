@@ -15,9 +15,6 @@ pub struct ExecutionContext {
     pub last_downloaded: Option<PathBuf>,
     /// Files installed during this execution (for state tracking)
     pub installed_files: Vec<PathBuf>,
-    /// Path to the recipe file being executed (available for helper functions)
-    #[allow(dead_code)]
-    pub recipe_path: Option<PathBuf>,
 }
 
 thread_local! {
@@ -25,15 +22,14 @@ thread_local! {
     pub static CONTEXT: RefCell<Option<ExecutionContext>> = const { RefCell::new(None) };
 }
 
-/// Initialize the execution context with recipe path
-pub fn init_context_with_recipe(prefix: PathBuf, build_dir: PathBuf, recipe_path: Option<PathBuf>) {
+/// Initialize the execution context
+pub fn init_context(prefix: PathBuf, build_dir: PathBuf) {
     let ctx = ExecutionContext {
         prefix,
         build_dir: build_dir.clone(),
         current_dir: build_dir,
         last_downloaded: None,
         installed_files: Vec::new(),
-        recipe_path,
     };
     CONTEXT.with(|c| *c.borrow_mut() = Some(ctx));
 }

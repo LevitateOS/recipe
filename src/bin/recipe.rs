@@ -18,8 +18,6 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Default)]
 struct RecipeMetadata {
     pub name: String,
-    #[allow(dead_code)] // Retained for future use
-    pub path: PathBuf,
     pub installed: bool,
     pub version: Option<String>,
     pub installed_version: Option<String>,
@@ -27,8 +25,6 @@ struct RecipeMetadata {
     pub deps: Vec<String>,
     pub installed_at: Option<i64>,
     pub installed_files: Option<Vec<String>>,
-    #[allow(dead_code)] // Retained for future use
-    pub installed_as_dep: bool,
 }
 
 impl RecipeMetadata {
@@ -50,12 +46,9 @@ impl RecipeMetadata {
         let installed_at: Option<i64> = recipe_state::get_var(path, "installed_at").unwrap_or(None);
         let installed_files: Option<Vec<String>> =
             recipe_state::get_var(path, "installed_files").unwrap_or(None);
-        let installed_as_dep: Option<bool> =
-            recipe_state::get_var(path, "installed_as_dep").unwrap_or(None);
 
         Self {
             name,
-            path: path.to_path_buf(),
             installed: installed == Some(true),
             version,
             installed_version: installed_version.and_then(|v| v.into()),
@@ -63,7 +56,6 @@ impl RecipeMetadata {
             deps: deps.unwrap_or_default(),
             installed_at,
             installed_files,
-            installed_as_dep: installed_as_dep == Some(true),
         }
     }
 

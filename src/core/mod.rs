@@ -19,6 +19,6 @@ pub mod version;
 // These are used by lifecycle.rs directly and by test code in helpers/install.rs
 #[allow(unused_imports)]
 pub(crate) use context::{
-    clear_context, get_installed_files, init_context_with_recipe, record_installed_file,
+    clear_context, get_installed_files, init_context, record_installed_file,
     with_context, with_context_mut, ContextGuard, CONTEXT,
 };

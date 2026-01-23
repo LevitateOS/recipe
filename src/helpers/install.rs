@@ -344,7 +344,7 @@ fn do_install(pattern: &str, subdir: &str, mode: Option<u32>) -> Result<(), Box<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{clear_context, get_installed_files, init_context_with_recipe};
+    use crate::core::{clear_context, get_installed_files, init_context};
     use leviso_cheat_test::{cheat_aware, cheat_reviewed};
     use tempfile::TempDir;
 
@@ -354,7 +354,7 @@ mod tests {
         let build_dir = dir.path().join("build");
         std::fs::create_dir_all(&prefix).unwrap();
         std::fs::create_dir_all(&build_dir).unwrap();
-        init_context_with_recipe(prefix.clone(), build_dir.clone(), None);
+        init_context(prefix.clone(), build_dir.clone());
         (dir, prefix, build_dir)
     }
 

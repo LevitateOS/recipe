@@ -133,28 +133,6 @@ fn pad_version(version: &str) -> String {
     }
 }
 
-/// Version conflict information
-#[derive(Debug)]
-pub struct VersionConflict {
-    /// Package that has the conflict
-    pub package: String,
-    /// Packages requesting different versions: (requester, constraint)
-    pub requesters: Vec<(String, String)>,
-    /// Actually available version
-    pub available: String,
-}
-
-impl fmt::Display for VersionConflict {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Version conflict for '{}':", self.package)?;
-        writeln!(f, "  Available: {}", self.available)?;
-        for (requester, req) in &self.requesters {
-            writeln!(f, "  {} requires {}", requester, req)?;
-        }
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
