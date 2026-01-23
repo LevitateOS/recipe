@@ -129,7 +129,7 @@ pub fn progress_done(pb: ProgressBar) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cheat_test::cheat_reviewed;
+    use leviso_cheat_test::cheat_reviewed;
 
     #[cheat_reviewed("API test - progress bar can be created")]
     #[test]

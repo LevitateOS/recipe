@@ -3,7 +3,7 @@
 //! Each test documents a bug that was fixed and ensures it doesn't recur.
 //! Tests are named with the pattern: test_regression_<brief_description>
 
-use cheat_test::cheat_aware;
+use leviso_cheat_test::cheat_aware;
 use levitate_recipe::{recipe_state, RecipeEngine};
 use std::path::Path;
 use tempfile::TempDir;

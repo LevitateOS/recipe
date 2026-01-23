@@ -4,7 +4,7 @@
 //! Network-dependent tests are marked with #[ignore] and can be run with:
 //!   cargo test -- --ignored
 
-use cheat_test::cheat_aware;
+use leviso_cheat_test::cheat_aware;
 use levitate_recipe::RecipeEngine;
 use std::path::Path;
 use tempfile::TempDir;

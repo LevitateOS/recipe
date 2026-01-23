@@ -199,7 +199,7 @@ fn is_leap_year(year: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cheat_test::{cheat_aware, cheat_reviewed};
+    use leviso_cheat_test::{cheat_aware, cheat_reviewed};
     use tempfile::TempDir;
 
     #[cheat_reviewed("API test - new lockfile is empty")]

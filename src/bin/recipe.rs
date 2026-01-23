@@ -1110,7 +1110,7 @@ fn chrono_lite(timestamp: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cheat_test::{cheat_aware, cheat_reviewed};
+    use leviso_cheat_test::{cheat_aware, cheat_reviewed};
     use std::path::Path;
     use tempfile::TempDir;
 

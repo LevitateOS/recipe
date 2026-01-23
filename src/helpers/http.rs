@@ -134,7 +134,7 @@ pub fn parse_version(version_str: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cheat_test::cheat_reviewed;
+    use leviso_cheat_test::cheat_reviewed;
 
     // ==================== parse_version tests ====================
 
@@ -276,7 +276,7 @@ mod tests {
 
     mod mock_tests {
         use super::*;
-        use cheat_test::{cheat_aware, cheat_reviewed};
+        use leviso_cheat_test::{cheat_aware, cheat_reviewed};
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 

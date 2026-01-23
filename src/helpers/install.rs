@@ -345,7 +345,7 @@ fn do_install(pattern: &str, subdir: &str, mode: Option<u32>) -> Result<(), Box<
 mod tests {
     use super::*;
     use crate::core::{clear_context, get_installed_files, init_context_with_recipe};
-    use cheat_test::{cheat_aware, cheat_reviewed};
+    use leviso_cheat_test::{cheat_aware, cheat_reviewed};
     use tempfile::TempDir;
 
     fn setup_context() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {

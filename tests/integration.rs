@@ -2,7 +2,7 @@
 //!
 //! These tests verify that multiple components work together correctly.
 
-use cheat_test::{cheat_aware, cheat_canary};
+use leviso_cheat_test::{cheat_aware, cheat_canary};
 use levitate_recipe::{recipe_state, RecipeEngine};
 use std::path::Path;
 use tempfile::TempDir;

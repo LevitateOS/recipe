@@ -155,7 +155,7 @@ impl RecipeEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cheat_test::{cheat_aware, cheat_reviewed};
+    use leviso_cheat_test::{cheat_aware, cheat_reviewed};
     use tempfile::TempDir;
 
     #[cheat_reviewed("API test - engine creation with paths")]

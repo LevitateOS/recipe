@@ -720,7 +720,7 @@ pub fn upgrade(
 mod tests {
     use super::*;
     use crate::RecipeEngine;
-    use cheat_test::{cheat_aware, cheat_reviewed};
+    use leviso_cheat_test::{cheat_aware, cheat_reviewed};
     use tempfile::TempDir;
 
     fn create_test_env() -> (TempDir, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {

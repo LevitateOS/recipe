@@ -389,7 +389,7 @@ impl From<OptionalString> for Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cheat_test::{cheat_aware, cheat_reviewed};
+    use leviso_cheat_test::{cheat_aware, cheat_reviewed};
     use tempfile::TempDir;
 
     fn write_test_recipe(content: &str) -> (TempDir, std::path::PathBuf) {

@@ -2,7 +2,7 @@
 //!
 //! These tests run the actual CLI binary and verify behavior.
 
-use cheat_test::cheat_aware;
+use leviso_cheat_test::cheat_aware;
 use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
