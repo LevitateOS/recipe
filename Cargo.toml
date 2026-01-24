@@ -1,6 +1,6 @@
 [package]
 name = "levitate-recipe"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Rhai-based package recipe executor for LevitateOS"
 license = "MIT"
