@@ -6,12 +6,12 @@
 //! 3. build() - Compile/transform (optional)
 //! 4. install() - Copy to PREFIX
 
-use super::context::{get_installed_files, init_context, ContextGuard};
+use super::context::{ContextGuard, get_installed_files, init_context};
 use super::output;
 use super::recipe_state::{self, OptionalString};
 use anyhow::{Context, Result};
 use fs2::FileExt;
-use rhai::{Engine, Scope, AST};
+use rhai::{AST, Engine, Scope};
 use std::fs::File;
 use std::path::Path;
 
@@ -22,7 +22,7 @@ fn acquire_recipe_lock(recipe_path: &Path) -> Result<RecipeLock> {
     let lock_file = File::create(&lock_path)
         .with_context(|| format!("Failed to create lock file: {}", lock_path.display()))?;
 
-    if let Err(_) = lock_file.try_lock_exclusive() {
+    if lock_file.try_lock_exclusive().is_err() {
         // Clean up the lock file we created before returning error
         // (the file exists but we couldn't acquire the lock)
         drop(lock_file); // Close the file handle first
@@ -35,7 +35,10 @@ fn acquire_recipe_lock(recipe_path: &Path) -> Result<RecipeLock> {
         ));
     }
 
-    Ok(RecipeLock { _file: lock_file, path: lock_path })
+    Ok(RecipeLock {
+        _file: lock_file,
+        path: lock_path,
+    })
 }
 
 /// RAII guard for recipe lock - releases lock and deletes lock file when dropped
@@ -87,7 +90,12 @@ fn validate_recipe(engine: &Engine, ast: &AST, recipe_path: &Path) -> Result<()>
                 "`name` must be a string, got: {}",
                 name.type_name()
             ));
-        } else if name.clone().into_string().map(|s| s.is_empty()).unwrap_or(true) {
+        } else if name
+            .clone()
+            .into_string()
+            .map(|s| s.is_empty())
+            .unwrap_or(true)
+        {
             errors.push("`name` cannot be empty".to_string());
         }
     }
@@ -98,7 +106,12 @@ fn validate_recipe(engine: &Engine, ast: &AST, recipe_path: &Path) -> Result<()>
                 "`version` must be a string, got: {}",
                 version.type_name()
             ));
-        } else if version.clone().into_string().map(|s| s.is_empty()).unwrap_or(true) {
+        } else if version
+            .clone()
+            .into_string()
+            .map(|s| s.is_empty())
+            .unwrap_or(true)
+        {
             errors.push("`version` cannot be empty".to_string());
         }
     }
@@ -112,11 +125,20 @@ fn validate_recipe(engine: &Engine, ast: &AST, recipe_path: &Path) -> Result<()>
             ));
         } else if installed.as_bool().unwrap_or(false) {
             // If installed = true, then installed_version and installed_files are REQUIRED
-            if scope.get_value::<rhai::Dynamic>("installed_version").is_none() {
-                errors.push("missing `installed_version` (required when installed = true)".to_string());
+            if scope
+                .get_value::<rhai::Dynamic>("installed_version")
+                .is_none()
+            {
+                errors.push(
+                    "missing `installed_version` (required when installed = true)".to_string(),
+                );
             }
-            if scope.get_value::<rhai::Dynamic>("installed_files").is_none() {
-                errors.push("missing `installed_files` (required when installed = true)".to_string());
+            if scope
+                .get_value::<rhai::Dynamic>("installed_files")
+                .is_none()
+            {
+                errors
+                    .push("missing `installed_files` (required when installed = true)".to_string());
             }
         }
     }
@@ -124,7 +146,10 @@ fn validate_recipe(engine: &Engine, ast: &AST, recipe_path: &Path) -> Result<()>
     // Check required functions
     for func in REQUIRED_FUNCTIONS {
         if !has_action(ast, func) {
-            errors.push(format!("missing required function: `fn {}() {{ ... }}`", func));
+            errors.push(format!(
+                "missing required function: `fn {}() {{ ... }}`",
+                func
+            ));
         }
     }
 
@@ -171,17 +196,13 @@ fn version_is_up_to_date(installed: Option<&str>, current: Option<&str>) -> bool
 }
 
 /// Execute a recipe following the lifecycle phases
-pub fn execute(
-    engine: &Engine,
-    prefix: &Path,
-    build_dir: &Path,
-    recipe_path: &Path,
-) -> Result<()> {
+pub fn execute(engine: &Engine, prefix: &Path, build_dir: &Path, recipe_path: &Path) -> Result<()> {
     let script = std::fs::read_to_string(recipe_path)
         .with_context(|| format!("Failed to read recipe: {}", recipe_path.display()))?;
 
     // Canonicalize recipe path for state tracking
-    let recipe_path_canonical = recipe_path.canonicalize()
+    let recipe_path_canonical = recipe_path
+        .canonicalize()
         .unwrap_or_else(|_| recipe_path.to_path_buf());
 
     // Acquire exclusive lock to prevent concurrent execution
@@ -214,8 +235,8 @@ pub fn execute(
 
     // PHASE 1: Check if already installed
     // First check the recipe's `installed` state variable
-    let installed_state: Option<bool> = recipe_state::get_var(&recipe_path_canonical, "installed")
-        .unwrap_or(None);
+    let installed_state: Option<bool> =
+        recipe_state::get_var(&recipe_path_canonical, "installed").unwrap_or(None);
 
     if installed_state == Some(true) {
         // Already installed according to state, but check is_installed() if defined
@@ -308,15 +329,23 @@ pub fn execute(
     Ok(())
 }
 /// Update recipe state variables after successful install
-fn update_recipe_state(recipe_path: &Path, version: &Option<String>, installed_files: &[std::path::PathBuf]) -> Result<()> {
+fn update_recipe_state(
+    recipe_path: &Path,
+    version: &Option<String>,
+    installed_files: &[std::path::PathBuf],
+) -> Result<()> {
     // Set installed = true
     recipe_state::set_var(recipe_path, "installed", &true)
         .with_context(|| "Failed to set installed state")?;
 
     // Set installed_version
     if let Some(ver) = version {
-        recipe_state::set_var(recipe_path, "installed_version", &OptionalString::Some(ver.clone()))
-            .with_context(|| "Failed to set installed_version")?;
+        recipe_state::set_var(
+            recipe_path,
+            "installed_version",
+            &OptionalString::Some(ver.clone()),
+        )
+        .with_context(|| "Failed to set installed_version")?;
     }
 
     // Set installed_at (Unix timestamp)
@@ -385,20 +414,17 @@ fn call_action(engine: &Engine, scope: &mut Scope, ast: &AST, action: &str) -> R
 }
 
 /// Remove a package by deleting its installed files
-pub fn remove(
-    engine: &Engine,
-    prefix: &Path,
-    recipe_path: &Path,
-) -> Result<()> {
-    let recipe_path_canonical = recipe_path.canonicalize()
+pub fn remove(engine: &Engine, prefix: &Path, recipe_path: &Path) -> Result<()> {
+    let recipe_path_canonical = recipe_path
+        .canonicalize()
         .unwrap_or_else(|_| recipe_path.to_path_buf());
 
     // Acquire exclusive lock to prevent concurrent operations
     let _lock = acquire_recipe_lock(&recipe_path_canonical)?;
 
     // Check if package is installed
-    let installed: Option<bool> = recipe_state::get_var(&recipe_path_canonical, "installed")
-        .unwrap_or(None);
+    let installed: Option<bool> =
+        recipe_state::get_var(&recipe_path_canonical, "installed").unwrap_or(None);
 
     if installed != Some(true) {
         anyhow::bail!("Package is not installed");
@@ -426,8 +452,8 @@ pub fn remove(
     }
 
     // Get installed files list
-    let installed_files: Option<Vec<String>> = recipe_state::get_var(&recipe_path_canonical, "installed_files")
-        .unwrap_or(None);
+    let installed_files: Option<Vec<String>> =
+        recipe_state::get_var(&recipe_path_canonical, "installed_files").unwrap_or(None);
 
     let files = installed_files.unwrap_or_default();
 
@@ -461,7 +487,9 @@ pub fn remove(
         anyhow::bail!(
             "Failed to remove {} of {} files for {}. Package state unchanged. \
              Fix permissions or run with sudo, then try again.",
-            failed, files.len(), name
+            failed,
+            files.len(),
+            name
         );
     }
 
@@ -471,12 +499,24 @@ pub fn remove(
     // Only update recipe state if ALL files were removed successfully
     recipe_state::set_var(&recipe_path_canonical, "installed", &false)
         .with_context(|| "Failed to update installed state")?;
-    recipe_state::set_var(&recipe_path_canonical, "installed_version", &OptionalString::None)
-        .with_context(|| "Failed to clear installed_version")?;
-    recipe_state::set_var(&recipe_path_canonical, "installed_at", &OptionalString::None)
-        .with_context(|| "Failed to clear installed_at")?;
-    recipe_state::set_var(&recipe_path_canonical, "installed_files", &Vec::<String>::new())
-        .with_context(|| "Failed to clear installed_files")?;
+    recipe_state::set_var(
+        &recipe_path_canonical,
+        "installed_version",
+        &OptionalString::None,
+    )
+    .with_context(|| "Failed to clear installed_version")?;
+    recipe_state::set_var(
+        &recipe_path_canonical,
+        "installed_at",
+        &OptionalString::None,
+    )
+    .with_context(|| "Failed to clear installed_at")?;
+    recipe_state::set_var(
+        &recipe_path_canonical,
+        "installed_files",
+        &Vec::<String>::new(),
+    )
+    .with_context(|| "Failed to clear installed_files")?;
 
     // POST-REMOVE HOOK (if defined) - runs after all files are deleted
     if has_action(&ast, "post_remove") {
@@ -508,25 +548,22 @@ fn cleanup_empty_dirs(files: &[String], prefix: &Path) {
 
     // Sort by depth (deepest first) and try to remove empty ones
     let mut dirs: Vec<_> = dirs.into_iter().collect();
-    dirs.sort_by(|a, b| b.components().count().cmp(&a.components().count()));
+    dirs.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
 
     for dir in dirs {
-        if dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                if entries.count() == 0 {
-                    let _ = std::fs::remove_dir(&dir);
-                }
-            }
+        if dir.exists()
+            && let Ok(entries) = std::fs::read_dir(&dir)
+            && entries.count() == 0
+        {
+            let _ = std::fs::remove_dir(&dir);
         }
     }
 }
 
 /// Update a package (check for new versions)
-pub fn update(
-    engine: &Engine,
-    recipe_path: &Path,
-) -> Result<Option<String>> {
-    let recipe_path_canonical = recipe_path.canonicalize()
+pub fn update(engine: &Engine, recipe_path: &Path) -> Result<Option<String>> {
+    let recipe_path_canonical = recipe_path
+        .canonicalize()
         .unwrap_or_else(|_| recipe_path.to_path_buf());
 
     let script = std::fs::read_to_string(&recipe_path_canonical)
@@ -558,25 +595,26 @@ pub fn update(
                 return Ok(None);
             }
 
-            if let Some(ver_str) = new_version.clone().try_cast::<String>() {
-                if Some(&ver_str) != current_version.as_ref() {
-                    output::info(&format!("{} {} -> {} available", name,
-                        current_version.as_deref().unwrap_or("?"),
-                        ver_str));
+            if let Some(ver_str) = new_version.clone().try_cast::<String>()
+                && Some(&ver_str) != current_version.as_ref()
+            {
+                output::info(&format!(
+                    "{} {} -> {} available",
+                    name,
+                    current_version.as_deref().unwrap_or("?"),
+                    ver_str
+                ));
 
-                    // Update the version variable in the recipe
-                    recipe_state::set_var(&recipe_path_canonical, "version", &ver_str)
-                        .with_context(|| "Failed to update version")?;
+                // Update the version variable in the recipe
+                recipe_state::set_var(&recipe_path_canonical, "version", &ver_str)
+                    .with_context(|| "Failed to update version")?;
 
-                    return Ok(Some(ver_str));
-                }
+                return Ok(Some(ver_str));
             }
 
             Ok(None)
         }
-        Err(e) => {
-            Err(anyhow::anyhow!("{} update check failed: {}", name, e))
-        }
+        Err(e) => Err(anyhow::anyhow!("{} update check failed: {}", name, e)),
     }
 }
 
@@ -587,12 +625,13 @@ pub fn upgrade(
     build_dir: &Path,
     recipe_path: &Path,
 ) -> Result<bool> {
-    let recipe_path_canonical = recipe_path.canonicalize()
+    let recipe_path_canonical = recipe_path
+        .canonicalize()
         .unwrap_or_else(|_| recipe_path.to_path_buf());
 
     // Check if installed
-    let installed: Option<bool> = recipe_state::get_var(&recipe_path_canonical, "installed")
-        .unwrap_or(None);
+    let installed: Option<bool> =
+        recipe_state::get_var(&recipe_path_canonical, "installed").unwrap_or(None);
 
     if installed != Some(true) {
         anyhow::bail!("Package is not installed");
@@ -610,20 +649,26 @@ pub fn upgrade(
     let name = get_recipe_name(engine, &mut scope, &ast, recipe_path);
     let recipe_version = get_recipe_var(engine, &mut scope, &ast, "version");
 
-    let installed_version: Option<OptionalString> = recipe_state::get_var(&recipe_path_canonical, "installed_version")
-        .unwrap_or(None);
+    let installed_version: Option<OptionalString> =
+        recipe_state::get_var(&recipe_path_canonical, "installed_version").unwrap_or(None);
     let installed_version: Option<String> = installed_version.and_then(|v| v.into());
 
     // Compare versions semantically
     if version_is_up_to_date(installed_version.as_deref(), recipe_version.as_deref()) {
-        output::skip(&format!("{} is up to date ({})", name, recipe_version.as_deref().unwrap_or("?")));
+        output::skip(&format!(
+            "{} is up to date ({})",
+            name,
+            recipe_version.as_deref().unwrap_or("?")
+        ));
         return Ok(false);
     }
 
-    output::action(&format!("Upgrading {} ({} -> {})",
+    output::action(&format!(
+        "Upgrading {} ({} -> {})",
         name,
         installed_version.as_deref().unwrap_or("?"),
-        recipe_version.as_deref().unwrap_or("?")));
+        recipe_version.as_deref().unwrap_or("?")
+    ));
 
     // Remove old version
     remove(engine, prefix, recipe_path)?;
@@ -643,7 +688,12 @@ mod tests {
     use leviso_cheat_test::{cheat_aware, cheat_reviewed};
     use tempfile::TempDir;
 
-    fn create_test_env() -> (TempDir, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    fn create_test_env() -> (
+        TempDir,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
         let dir = TempDir::new().unwrap();
         let prefix = dir.path().join("prefix");
         let build_dir = dir.path().join("build");
@@ -676,13 +726,19 @@ mod tests {
     #[test]
     fn test_validate_recipe_missing_name() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
-        let recipe_path = write_recipe(&recipes_dir, "no-name", r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "no-name",
+            r#"
 let version = "1.0";
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+        );
         let engine = rhai::Engine::new();
-        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let ast = engine
+            .compile(&std::fs::read_to_string(&recipe_path).unwrap())
+            .unwrap();
         let result = validate_recipe(&engine, &ast, &recipe_path);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -704,13 +760,19 @@ fn install() {}
     #[test]
     fn test_validate_recipe_missing_version() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
-        let recipe_path = write_recipe(&recipes_dir, "no-version", r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "no-version",
+            r#"
 let name = "test";
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+        );
         let engine = rhai::Engine::new();
-        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let ast = engine
+            .compile(&std::fs::read_to_string(&recipe_path).unwrap())
+            .unwrap();
         let result = validate_recipe(&engine, &ast, &recipe_path);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -732,13 +794,19 @@ fn install() {}
     #[test]
     fn test_validate_recipe_missing_acquire() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
-        let recipe_path = write_recipe(&recipes_dir, "no-acquire", r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "no-acquire",
+            r#"
 let name = "test";
 let version = "1.0";
 fn install() {}
-"#);
+"#,
+        );
         let engine = rhai::Engine::new();
-        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let ast = engine
+            .compile(&std::fs::read_to_string(&recipe_path).unwrap())
+            .unwrap();
         let result = validate_recipe(&engine, &ast, &recipe_path);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -760,13 +828,19 @@ fn install() {}
     #[test]
     fn test_validate_recipe_missing_install() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
-        let recipe_path = write_recipe(&recipes_dir, "no-install", r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "no-install",
+            r#"
 let name = "test";
 let version = "1.0";
 fn acquire() {}
-"#);
+"#,
+        );
         let engine = rhai::Engine::new();
-        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let ast = engine
+            .compile(&std::fs::read_to_string(&recipe_path).unwrap())
+            .unwrap();
         let result = validate_recipe(&engine, &ast, &recipe_path);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -778,12 +852,18 @@ fn acquire() {}
     #[test]
     fn test_validate_recipe_multiple_errors() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
-        let recipe_path = write_recipe(&recipes_dir, "many-errors", r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "many-errors",
+            r#"
 // Completely empty recipe - missing everything
 let x = 1;
-"#);
+"#,
+        );
         let engine = rhai::Engine::new();
-        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let ast = engine
+            .compile(&std::fs::read_to_string(&recipe_path).unwrap())
+            .unwrap();
         let result = validate_recipe(&engine, &ast, &recipe_path);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -799,15 +879,21 @@ let x = 1;
     #[test]
     fn test_validate_recipe_empty_name() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
-        let recipe_path = write_recipe(&recipes_dir, "empty-name", r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "empty-name",
+            r#"
 let name = "";
 let version = "1.0";
 let installed = false;
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+        );
         let engine = rhai::Engine::new();
-        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let ast = engine
+            .compile(&std::fs::read_to_string(&recipe_path).unwrap())
+            .unwrap();
         let result = validate_recipe(&engine, &ast, &recipe_path);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -818,15 +904,21 @@ fn install() {}
     #[test]
     fn test_validate_recipe_wrong_type_name() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
-        let recipe_path = write_recipe(&recipes_dir, "wrong-type", r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "wrong-type",
+            r#"
 let name = 123;  // Should be string
 let version = "1.0";
 let installed = false;
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+        );
         let engine = rhai::Engine::new();
-        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let ast = engine
+            .compile(&std::fs::read_to_string(&recipe_path).unwrap())
+            .unwrap();
         let result = validate_recipe(&engine, &ast, &recipe_path);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -837,14 +929,20 @@ fn install() {}
     #[test]
     fn test_validate_recipe_missing_installed() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
-        let recipe_path = write_recipe(&recipes_dir, "no-installed", r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "no-installed",
+            r#"
 let name = "test";
 let version = "1.0";
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+        );
         let engine = rhai::Engine::new();
-        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let ast = engine
+            .compile(&std::fs::read_to_string(&recipe_path).unwrap())
+            .unwrap();
         let result = validate_recipe(&engine, &ast, &recipe_path);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -855,15 +953,21 @@ fn install() {}
     #[test]
     fn test_validate_recipe_installed_wrong_type() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
-        let recipe_path = write_recipe(&recipes_dir, "installed-wrong-type", r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "installed-wrong-type",
+            r#"
 let name = "test";
 let version = "1.0";
 let installed = "yes";  // Should be boolean
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+        );
         let engine = rhai::Engine::new();
-        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let ast = engine
+            .compile(&std::fs::read_to_string(&recipe_path).unwrap())
+            .unwrap();
         let result = validate_recipe(&engine, &ast, &recipe_path);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -874,16 +978,22 @@ fn install() {}
     #[test]
     fn test_validate_recipe_installed_true_missing_version() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
-        let recipe_path = write_recipe(&recipes_dir, "installed-no-version", r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "installed-no-version",
+            r#"
 let name = "test";
 let version = "1.0";
 let installed = true;
 let installed_files = [];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+        );
         let engine = rhai::Engine::new();
-        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let ast = engine
+            .compile(&std::fs::read_to_string(&recipe_path).unwrap())
+            .unwrap();
         let result = validate_recipe(&engine, &ast, &recipe_path);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -895,16 +1005,22 @@ fn install() {}
     #[test]
     fn test_validate_recipe_installed_true_missing_files() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
-        let recipe_path = write_recipe(&recipes_dir, "installed-no-files", r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "installed-no-files",
+            r#"
 let name = "test";
 let version = "1.0";
 let installed = true;
 let installed_version = "1.0";
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+        );
         let engine = rhai::Engine::new();
-        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let ast = engine
+            .compile(&std::fs::read_to_string(&recipe_path).unwrap())
+            .unwrap();
         let result = validate_recipe(&engine, &ast, &recipe_path);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -916,7 +1032,10 @@ fn install() {}
     #[test]
     fn test_validate_recipe_installed_true_valid() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
-        let recipe_path = write_recipe(&recipes_dir, "installed-valid", r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "installed-valid",
+            r#"
 let name = "test";
 let version = "1.0";
 let installed = true;
@@ -924,9 +1043,12 @@ let installed_version = "1.0";
 let installed_files = ["/usr/bin/test"];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+        );
         let engine = rhai::Engine::new();
-        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let ast = engine
+            .compile(&std::fs::read_to_string(&recipe_path).unwrap())
+            .unwrap();
         let result = validate_recipe(&engine, &ast, &recipe_path);
         assert!(result.is_ok());
     }
@@ -935,16 +1057,22 @@ fn install() {}
     #[test]
     fn test_validate_recipe_valid() {
         let (_dir, _prefix, _build_dir, recipes_dir) = create_test_env();
-        let recipe_path = write_recipe(&recipes_dir, "valid", r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "valid",
+            r#"
 let name = "test-package";
 let version = "1.0.0";
 let installed = false;
 let description = "A test package";  // Optional
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+        );
         let engine = rhai::Engine::new();
-        let ast = engine.compile(&std::fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let ast = engine
+            .compile(&std::fs::read_to_string(&recipe_path).unwrap())
+            .unwrap();
         let result = validate_recipe(&engine, &ast, &recipe_path);
         assert!(result.is_ok());
     }
@@ -995,7 +1123,12 @@ fn install() {}
         let engine = rhai::Engine::new();
         let ast = engine.compile("let version = \"1.0\";").unwrap();
         let mut scope = rhai::Scope::new();
-        let name = get_recipe_name(&engine, &mut scope, &ast, Path::new("/test/fallback-pkg.rhai"));
+        let name = get_recipe_name(
+            &engine,
+            &mut scope,
+            &ast,
+            Path::new("/test/fallback-pkg.rhai"),
+        );
         assert_eq!(name, "fallback-pkg");
     }
 
@@ -1050,12 +1183,16 @@ fn install() {}
     #[test]
     fn test_remove_not_installed() {
         let (_dir, prefix, _build_dir, recipes_dir) = create_test_env();
-        let recipe_path = write_recipe(&recipes_dir, "test", r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "test",
+            r#"
 let name = "test";
 let installed = false;
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+        );
         let engine = RecipeEngine::new(prefix.clone(), _build_dir);
         let result = remove(&engine.engine, &prefix, &recipe_path);
         assert!(result.is_err());
@@ -1066,13 +1203,17 @@ fn install() {}
     #[test]
     fn test_remove_with_no_files() {
         let (_dir, prefix, _build_dir, recipes_dir) = create_test_env();
-        let recipe_path = write_recipe(&recipes_dir, "test", r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "test",
+            r#"
 let name = "test";
 let installed = true;
 let installed_files = [];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+        );
         let engine = RecipeEngine::new(prefix.clone(), _build_dir);
         let result = remove(&engine.engine, &prefix, &recipe_path);
         assert!(result.is_ok());
@@ -1103,13 +1244,20 @@ fn install() {}
         let test_file = bin_dir.join("test-binary");
         std::fs::write(&test_file, "binary content").unwrap();
 
-        let recipe_path = write_recipe(&recipes_dir, "test", &format!(r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "test",
+            &format!(
+                r#"
 let name = "test";
 let installed = true;
 let installed_files = ["{}"];
 fn acquire() {{}}
 fn install() {{}}
-"#, test_file.display()));
+"#,
+                test_file.display()
+            ),
+        );
 
         let engine = RecipeEngine::new(prefix.clone(), _build_dir);
         let result = remove(&engine.engine, &prefix, &recipe_path);
@@ -1132,13 +1280,20 @@ fn install() {{}}
         // Put a file inside so the directory isn't empty
         std::fs::write(non_removable.join("file"), "content").unwrap();
 
-        let recipe_path = write_recipe(&recipes_dir, "test", &format!(r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "test",
+            &format!(
+                r#"
 let name = "test";
 let installed = true;
 let installed_files = ["{}"];
 fn acquire() {{}}
 fn install() {{}}
-"#, non_removable.display()));
+"#,
+                non_removable.display()
+            ),
+        );
 
         let engine = RecipeEngine::new(prefix.clone(), _build_dir);
         let result = remove(&engine.engine, &prefix, &recipe_path);
@@ -1157,12 +1312,16 @@ fn install() {{}}
     #[test]
     fn test_update_no_check_update_function() {
         let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
-        let recipe_path = write_recipe(&recipes_dir, "test", r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "test",
+            r#"
 let name = "test";
 let version = "1.0";
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+        );
         let engine = RecipeEngine::new(prefix, build_dir);
         let result = update(&engine.engine, &recipe_path);
         assert!(result.is_ok());
@@ -1173,13 +1332,17 @@ fn install() {}
     #[test]
     fn test_update_returns_unit_no_update() {
         let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
-        let recipe_path = write_recipe(&recipes_dir, "test", r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "test",
+            r#"
 let name = "test";
 let version = "1.0";
 fn acquire() {}
 fn install() {}
 fn check_update() { () }
-"#);
+"#,
+        );
         let engine = RecipeEngine::new(prefix, build_dir);
         let result = update(&engine.engine, &recipe_path);
         assert!(result.is_ok());
@@ -1200,13 +1363,17 @@ fn check_update() { () }
     #[test]
     fn test_update_returns_new_version() {
         let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
-        let recipe_path = write_recipe(&recipes_dir, "test", r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "test",
+            r#"
 let name = "test";
 let version = "1.0";
 fn acquire() {}
 fn install() {}
 fn check_update() { "2.0" }
-"#);
+"#,
+        );
         let engine = RecipeEngine::new(prefix, build_dir);
         let result = update(&engine.engine, &recipe_path);
         assert!(result.is_ok());
@@ -1221,17 +1388,26 @@ fn check_update() { "2.0" }
     #[test]
     fn test_update_check_fails() {
         let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
-        let recipe_path = write_recipe(&recipes_dir, "test", r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "test",
+            r#"
 let name = "test";
 let version = "1.0";
 fn acquire() {}
 fn install() {}
 fn check_update() { undefined_var }
-"#);
+"#,
+        );
         let engine = RecipeEngine::new(prefix, build_dir);
         let result = update(&engine.engine, &recipe_path);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("update check failed"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("update check failed")
+        );
     }
 
     // ==================== upgrade tests ====================
@@ -1250,15 +1426,24 @@ fn check_update() { undefined_var }
     #[test]
     fn test_upgrade_not_installed() {
         let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
-        let recipe_path = write_recipe(&recipes_dir, "test", r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "test",
+            r#"
 let name = "test";
 let version = "1.0";
 let installed = false;
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+        );
         let engine = RecipeEngine::new(prefix, build_dir);
-        let result = upgrade(&engine.engine, &engine.prefix, &engine.build_dir, &recipe_path);
+        let result = upgrade(
+            &engine.engine,
+            &engine.prefix,
+            &engine.build_dir,
+            &recipe_path,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not installed"));
     }
@@ -1267,7 +1452,10 @@ fn install() {}
     #[test]
     fn test_upgrade_already_up_to_date() {
         let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
-        let recipe_path = write_recipe(&recipes_dir, "test", r#"
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "test",
+            r#"
 let name = "test";
 let version = "1.0";
 let installed = true;
@@ -1275,9 +1463,15 @@ let installed_version = "1.0";
 let installed_files = [];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+        );
         let engine = RecipeEngine::new(prefix, build_dir);
-        let result = upgrade(&engine.engine, &engine.prefix, &engine.build_dir, &recipe_path);
+        let result = upgrade(
+            &engine.engine,
+            &engine.prefix,
+            &engine.build_dir,
+            &recipe_path,
+        );
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), false); // No upgrade performed
     }

@@ -56,8 +56,7 @@ impl LockFile {
 
     /// Write lock file to path
     pub fn write(&self, path: &Path) -> Result<()> {
-        let content = toml::to_string_pretty(self)
-            .context("Failed to serialize lock file")?;
+        let content = toml::to_string_pretty(self).context("Failed to serialize lock file")?;
         let header = "# recipe.lock - Auto-generated, do not edit manually\n\n";
         std::fs::write(path, format!("{}{}", header, content))
             .with_context(|| format!("Failed to write lock file: {}", path.display()))
@@ -84,24 +83,17 @@ impl LockFile {
     /// - For version mismatches: both locked and resolved are the actual versions
     /// - For packages missing from lock: locked_version is "(not in lock)"
     /// - For packages missing from resolved: resolved_version is "(missing)"
-    pub fn validate_against(
-        &self,
-        resolved: &[(String, String)],
-    ) -> Vec<(String, String, String)> {
+    pub fn validate_against(&self, resolved: &[(String, String)]) -> Vec<(String, String, String)> {
         let mut mismatches = Vec::new();
         let resolved_map: std::collections::HashMap<&String, &String> =
             resolved.iter().map(|(k, v)| (k, v)).collect();
 
         // Check resolved packages against lock file
         for (name, version) in resolved {
-            if let Some(locked_version) = self.packages.get(name) {
-                if locked_version != version {
-                    mismatches.push((
-                        name.clone(),
-                        locked_version.clone(),
-                        version.clone(),
-                    ));
-                }
+            if let Some(locked_version) = self.packages.get(name)
+                && locked_version != version
+            {
+                mismatches.push((name.clone(), locked_version.clone(), version.clone()));
             }
             // Note: packages in resolved but not in lock are OK (new packages)
         }

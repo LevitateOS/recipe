@@ -14,10 +14,7 @@ use std::process::Command;
 /// # Returns
 /// Exit code of the command
 pub fn exec(cmd: &str, args: rhai::Array) -> Result<i64, Box<EvalAltResult>> {
-    let args: Vec<String> = args
-        .into_iter()
-        .map(|v| v.to_string())
-        .collect();
+    let args: Vec<String> = args.into_iter().map(|v| v.to_string()).collect();
 
     let status = Command::new(cmd)
         .args(&args)
@@ -36,10 +33,7 @@ pub fn exec(cmd: &str, args: rhai::Array) -> Result<i64, Box<EvalAltResult>> {
 /// # Returns
 /// stdout of the command as a string
 pub fn exec_output(cmd: &str, args: rhai::Array) -> Result<String, Box<EvalAltResult>> {
-    let args: Vec<String> = args
-        .into_iter()
-        .map(|v| v.to_string())
-        .collect();
+    let args: Vec<String> = args.into_iter().map(|v| v.to_string()).collect();
 
     let output = Command::new(cmd)
         .args(&args)

@@ -11,7 +11,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use levitate_recipe::{deps, output, recipe_state, RecipeEngine};
+use levitate_recipe::{RecipeEngine, deps, output, recipe_state};
 use std::path::{Path, PathBuf};
 
 /// Recipe metadata loaded from state - bundles common queries into one struct
@@ -241,8 +241,12 @@ fn main() -> Result<()> {
 
     // Ensure recipes directory exists
     if !recipes_path.exists() {
-        std::fs::create_dir_all(&recipes_path)
-            .with_context(|| format!("Failed to create recipes directory: {}", recipes_path.display()))?;
+        std::fs::create_dir_all(&recipes_path).with_context(|| {
+            format!(
+                "Failed to create recipes directory: {}",
+                recipes_path.display()
+            )
+        })?;
     }
 
     match cli.command {
@@ -263,7 +267,10 @@ fn main() -> Result<()> {
                 if locked {
                     let lock_path = recipes_path.join("recipe.lock");
                     if !lock_path.exists() {
-                        anyhow::bail!("Lock file not found: {}. Run 'recipe lock update' first.", lock_path.display());
+                        anyhow::bail!(
+                            "Lock file not found: {}. Run 'recipe lock update' first.",
+                            lock_path.display()
+                        );
                     }
                     let lock = LockFile::read(&lock_path)?;
 
@@ -280,9 +287,14 @@ fn main() -> Result<()> {
                     if !mismatches.is_empty() {
                         eprintln!("{}", "Lock file mismatch:".red().bold());
                         for (name, locked_ver, resolved_ver) in &mismatches {
-                            eprintln!("  {} locked: {}, resolved: {}", name, locked_ver, resolved_ver);
+                            eprintln!(
+                                "  {} locked: {}, resolved: {}",
+                                name, locked_ver, resolved_ver
+                            );
                         }
-                        anyhow::bail!("Version mismatch with lock file. Update lock file or use without --locked.");
+                        anyhow::bail!(
+                            "Version mismatch with lock file. Update lock file or use without --locked."
+                        );
                     }
                     output::info("Lock file validated successfully");
                 }
@@ -369,12 +381,18 @@ fn main() -> Result<()> {
             let rdeps = deps::reverse_deps_installed(&package, &recipes_path)?;
 
             if !rdeps.is_empty() && !force {
-                output::error(&format!("Cannot remove '{}' - required by:", package.bold()));
+                output::error(&format!(
+                    "Cannot remove '{}' - required by:",
+                    package.bold()
+                ));
                 for (name, _) in &rdeps {
                     eprintln!("  {} {}", "-".red(), name);
                 }
                 eprintln!();
-                eprintln!("{}", "Use --force to remove anyway (will break dependents)".yellow());
+                eprintln!(
+                    "{}",
+                    "Use --force to remove anyway (will break dependents)".yellow()
+                );
                 anyhow::bail!("Package has dependents");
             }
 
@@ -487,8 +505,14 @@ fn main() -> Result<()> {
             println!("{:<10} {}", "sha512:".bold(), hashes.sha512.cyan());
             println!("{:<10} {}", "blake3:".bold(), hashes.blake3.cyan());
             println!();
-            println!("{}", "Copy one of these into your recipe's acquire() function:".dimmed());
-            println!("  {}", format!("verify_sha256(\"{}\");", hashes.sha256).green());
+            println!(
+                "{}",
+                "Copy one of these into your recipe's acquire() function:".dimmed()
+            );
+            println!(
+                "  {}",
+                format!("verify_sha256(\"{}\");", hashes.sha256).green()
+            );
         }
 
         Commands::Orphans => {
@@ -509,7 +533,10 @@ fn main() -> Result<()> {
                     );
                 }
                 println!();
-                println!("{}", "Run 'recipe autoremove --yes' to remove these packages".dimmed());
+                println!(
+                    "{}",
+                    "Run 'recipe autoremove --yes' to remove these packages".dimmed()
+                );
             }
         }
 
@@ -535,7 +562,10 @@ fn main() -> Result<()> {
 
             if !yes {
                 println!();
-                println!("{}", "Run with --yes to actually remove these packages".cyan());
+                println!(
+                    "{}",
+                    "Run with --yes to actually remove these packages".cyan()
+                );
                 return Ok(());
             }
 
@@ -570,10 +600,11 @@ fn main() -> Result<()> {
                 // Check if recipe exists
                 if !recipe_path.exists() {
                     println!(
-                        "{}{}{}",
+                        "{}{}{} {}",
                         prefix,
                         branch,
-                        format!("{} {}", name.red(), "(missing recipe)".red().dimmed())
+                        name.red(),
+                        "(missing recipe)".red().dimmed()
                     );
                     return Ok(());
                 }
@@ -736,10 +767,10 @@ fn main() -> Result<()> {
 
                     for path in enumerate_recipes(&recipes_path) {
                         let meta = RecipeMetadata::load(&path);
-                        if !meta.name.is_empty() {
-                            if let Some(ver) = meta.version {
-                                lock.add_package(meta.name, ver);
-                            }
+                        if !meta.name.is_empty()
+                            && let Some(ver) = meta.version
+                        {
+                            lock.add_package(meta.name, ver);
                         }
                     }
 
@@ -786,7 +817,11 @@ fn main() -> Result<()> {
                     for (name, locked_version) in &lock.packages {
                         let recipe_path = recipes_path.join(format!("{}.rhai", name));
                         if !recipe_path.exists() {
-                            mismatches.push((name.clone(), locked_version.clone(), "missing".to_string()));
+                            mismatches.push((
+                                name.clone(),
+                                locked_version.clone(),
+                                "missing".to_string(),
+                            ));
                             continue;
                         }
 
@@ -794,7 +829,11 @@ fn main() -> Result<()> {
                         match meta.version {
                             Some(v) if &v == locked_version => matches += 1,
                             Some(v) => mismatches.push((name.clone(), locked_version.clone(), v)),
-                            None => mismatches.push((name.clone(), locked_version.clone(), "unknown".to_string())),
+                            None => mismatches.push((
+                                name.clone(),
+                                locked_version.clone(),
+                                "unknown".to_string(),
+                            )),
                         }
                     }
 
@@ -806,12 +845,7 @@ fn main() -> Result<()> {
                     } else {
                         output::error("Lock file verification failed:");
                         for (name, locked, current) in &mismatches {
-                            eprintln!(
-                                "  {} locked: {}, current: {}",
-                                name.red(),
-                                locked,
-                                current
-                            );
+                            eprintln!("  {} locked: {}, current: {}", name.red(), locked, current);
                         }
                         anyhow::bail!("{} package(s) do not match lock file", mismatches.len());
                     }
@@ -824,7 +858,11 @@ fn main() -> Result<()> {
 }
 
 /// Create a recipe engine with proper configuration
-fn create_engine(prefix: &PathBuf, build_dir: Option<&std::path::Path>, recipes_path: &PathBuf) -> Result<RecipeEngine> {
+fn create_engine(
+    prefix: &Path,
+    build_dir: Option<&std::path::Path>,
+    recipes_path: &Path,
+) -> Result<RecipeEngine> {
     // Create or use provided build directory
     let build_dir = match build_dir {
         Some(dir) => {
@@ -833,8 +871,7 @@ fn create_engine(prefix: &PathBuf, build_dir: Option<&std::path::Path>, recipes_
             dir.to_path_buf()
         }
         None => {
-            let temp = tempfile::tempdir()
-                .context("Failed to create temporary build directory")?;
+            let temp = tempfile::tempdir().context("Failed to create temporary build directory")?;
             temp.keep()
         }
     };
@@ -843,8 +880,8 @@ fn create_engine(prefix: &PathBuf, build_dir: Option<&std::path::Path>, recipes_
     std::fs::create_dir_all(prefix)
         .with_context(|| format!("Failed to create prefix directory: {}", prefix.display()))?;
 
-    let engine = RecipeEngine::new(prefix.clone(), build_dir)
-        .with_recipes_path(recipes_path.clone());
+    let engine = RecipeEngine::new(prefix.to_path_buf(), build_dir)
+        .with_recipes_path(recipes_path.to_path_buf());
 
     Ok(engine)
 }
@@ -857,7 +894,10 @@ fn validate_package_name(package: &str) -> Result<()> {
 
     // Package names must be simple identifiers (alphanumeric, underscore, hyphen)
     // This prevents path traversal attacks like "../../../etc/passwd"
-    if !package.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+    if !package
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
         anyhow::bail!(
             "Invalid package name '{}': only alphanumeric characters, underscores, and hyphens are allowed",
             package
@@ -868,9 +908,10 @@ fn validate_package_name(package: &str) -> Result<()> {
 }
 
 /// Resolve a package name to a recipe path
-fn resolve_recipe(package: &str, recipes_path: &PathBuf) -> Result<PathBuf> {
+fn resolve_recipe(package: &str, recipes_path: &Path) -> Result<PathBuf> {
     // If it's already a path (contains path separators or ends with .rhai), handle specially
-    let is_explicit_path = package.contains('/') || package.contains('\\') || package.ends_with(".rhai");
+    let is_explicit_path =
+        package.contains('/') || package.contains('\\') || package.ends_with(".rhai");
 
     if is_explicit_path {
         // For explicit paths, verify they exist
@@ -943,7 +984,10 @@ fn list_packages(recipes_path: &Path) -> Result<()> {
                     meta.version.as_deref().unwrap_or("?").yellow()
                 )
             } else {
-                format!("[installed: {}]", meta.installed_version.as_deref().unwrap_or("?"))
+                format!(
+                    "[installed: {}]",
+                    meta.installed_version.as_deref().unwrap_or("?")
+                )
             }
         } else {
             format!("[available: {}]", meta.version.as_deref().unwrap_or("?"))
@@ -1037,7 +1081,11 @@ fn show_info(recipe_path: &Path) -> Result<()> {
                 for f in files.iter().take(5) {
                     println!("             {}", f.dimmed());
                 }
-                println!("             {} and {} more", "...".dimmed(), files.len() - 5);
+                println!(
+                    "             {} and {} more",
+                    "...".dimmed(),
+                    files.len() - 5
+                );
             }
         }
     } else {
@@ -1079,7 +1127,16 @@ fn chrono_lite(timestamp: i64) -> String {
     let days_in_months: [i64; 12] = [
         31,
         if is_leap { 29 } else { 28 },
-        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
     ];
 
     let mut month = 1;
@@ -1311,7 +1368,12 @@ mod tests {
         // "pkg!name" has no "/" but has invalid char "!"
         let result = resolve_recipe("pkg!name", &recipes_path);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid package name"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid package name")
+        );
     }
 
     #[cheat_reviewed("Resolution test - explicit .rhai paths accepted")]
@@ -1416,24 +1478,36 @@ mod tests {
         let (_dir, recipes_path) = create_test_recipes_dir();
 
         // Installed but up to date
-        write_recipe(&recipes_path, "pkg1", r#"
+        write_recipe(
+            &recipes_path,
+            "pkg1",
+            r#"
 let version = "1.0";
 let installed = true;
 let installed_version = "1.0";
-"#);
+"#,
+        );
 
         // Installed with update available
-        write_recipe(&recipes_path, "pkg2", r#"
+        write_recipe(
+            &recipes_path,
+            "pkg2",
+            r#"
 let version = "2.0";
 let installed = true;
 let installed_version = "1.0";
-"#);
+"#,
+        );
 
         // Not installed
-        write_recipe(&recipes_path, "pkg3", r#"
+        write_recipe(
+            &recipes_path,
+            "pkg3",
+            r#"
 let version = "1.0";
 let installed = false;
-"#);
+"#,
+        );
 
         let result = find_upgradable_recipes(&recipes_path);
         assert_eq!(result.len(), 1);

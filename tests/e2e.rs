@@ -136,17 +136,25 @@ fn test_cli_install_nonexistent_package() {
 fn test_cli_install_success() {
     let (_dir, prefix, recipes) = create_test_env();
 
-    write_recipe(&recipes, "simple", r#"
+    write_recipe(
+        &recipes,
+        "simple",
+        r#"
 let name = "simple";
 let version = "1.0.0";
 let installed = false;
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let output = run_recipe(&["install", "simple"], &prefix, &recipes);
 
-    assert!(output.status.success(), "Install failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "Install failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Installing simple") || stdout.contains("installed"));
 }
@@ -166,7 +174,10 @@ fn install() {}
 fn test_cli_install_already_installed() {
     let (_dir, prefix, recipes) = create_test_env();
 
-    write_recipe(&recipes, "already", r#"
+    write_recipe(
+        &recipes,
+        "already",
+        r#"
 let name = "already";
 let version = "1.0.0";
 let installed = true;
@@ -174,7 +185,8 @@ let installed_version = "1.0.0";
 let installed_files = [];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let output = run_recipe(&["install", "already"], &prefix, &recipes);
 
@@ -202,13 +214,17 @@ fn install() {}
 fn test_cli_remove_not_installed() {
     let (_dir, prefix, recipes) = create_test_env();
 
-    write_recipe(&recipes, "not-installed", r#"
+    write_recipe(
+        &recipes,
+        "not-installed",
+        r#"
 let name = "not-installed";
 let version = "1.0.0";
 let installed = false;
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let output = run_recipe(&["remove", "not-installed"], &prefix, &recipes);
 
@@ -232,7 +248,10 @@ fn install() {}
 fn test_cli_remove_success() {
     let (_dir, prefix, recipes) = create_test_env();
 
-    write_recipe(&recipes, "removable", r#"
+    write_recipe(
+        &recipes,
+        "removable",
+        r#"
 let name = "removable";
 let version = "1.0.0";
 let installed = true;
@@ -240,11 +259,16 @@ let installed_version = "1.0.0";
 let installed_files = [];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let output = run_recipe(&["remove", "removable"], &prefix, &recipes);
 
-    assert!(output.status.success(), "Remove failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "Remove failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Removing") || stdout.contains("removed"));
 }
@@ -290,7 +314,10 @@ fn test_cli_list_empty() {
 fn test_cli_list_shows_packages() {
     let (_dir, prefix, recipes) = create_test_env();
 
-    write_recipe(&recipes, "pkg1", r#"
+    write_recipe(
+        &recipes,
+        "pkg1",
+        r#"
 let name = "pkg1";
 let version = "1.0.0";
 let installed = true;
@@ -298,15 +325,20 @@ let installed_version = "1.0.0";
 let installed_files = [];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
-    write_recipe(&recipes, "pkg2", r#"
+    write_recipe(
+        &recipes,
+        "pkg2",
+        r#"
 let name = "pkg2";
 let version = "2.0.0";
 let installed = false;
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let output = run_recipe(&["list"], &prefix, &recipes);
 
@@ -335,7 +367,10 @@ fn install() {}
 fn test_cli_info_shows_details() {
     let (_dir, prefix, recipes) = create_test_env();
 
-    write_recipe(&recipes, "detailed", r#"
+    write_recipe(
+        &recipes,
+        "detailed",
+        r#"
 let name = "detailed";
 let version = "1.5.0";
 let description = "A detailed package";
@@ -344,7 +379,8 @@ let installed_version = "1.5.0";
 let installed_files = [];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let output = run_recipe(&["info", "detailed"], &prefix, &recipes);
 
@@ -394,23 +430,31 @@ fn test_cli_info_nonexistent() {
 fn test_cli_search_finds_matches() {
     let (_dir, prefix, recipes) = create_test_env();
 
-    write_recipe(&recipes, "ripgrep", r#"
+    write_recipe(
+        &recipes,
+        "ripgrep",
+        r#"
 let name = "ripgrep";
 let version = "14.0.0";
 let installed = false;
 let description = "Fast grep replacement";
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
-    write_recipe(&recipes, "fd", r#"
+    write_recipe(
+        &recipes,
+        "fd",
+        r#"
 let name = "fd";
 let version = "9.0.0";
 let installed = false;
 let description = "Fast find replacement";
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let output = run_recipe(&["search", "rip"], &prefix, &recipes);
 
@@ -435,13 +479,17 @@ fn install() {}
 fn test_cli_search_no_matches() {
     let (_dir, prefix, recipes) = create_test_env();
 
-    write_recipe(&recipes, "pkg", r#"
+    write_recipe(
+        &recipes,
+        "pkg",
+        r#"
 let name = "pkg";
 let version = "1.0.0";
 let installed = false;
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let output = run_recipe(&["search", "xyz123"], &prefix, &recipes);
 
@@ -469,7 +517,10 @@ fn install() {}
 fn test_cli_update_no_checker() {
     let (_dir, prefix, recipes) = create_test_env();
 
-    write_recipe(&recipes, "no-checker", r#"
+    write_recipe(
+        &recipes,
+        "no-checker",
+        r#"
 let name = "no-checker";
 let version = "1.0.0";
 let installed = true;
@@ -477,7 +528,8 @@ let installed_version = "1.0.0";
 let installed_files = [];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let output = run_recipe(&["update", "no-checker"], &prefix, &recipes);
 
@@ -501,7 +553,10 @@ fn install() {}
 fn test_cli_update_with_checker() {
     let (_dir, prefix, recipes) = create_test_env();
 
-    write_recipe(&recipes, "updatable", r#"
+    write_recipe(
+        &recipes,
+        "updatable",
+        r#"
 let name = "updatable";
 let version = "1.0.0";
 let installed = true;
@@ -512,7 +567,8 @@ fn install() {}
 fn check_update() {
     "2.0.0"
 }
-"#);
+"#,
+    );
 
     let output = run_recipe(&["update", "updatable"], &prefix, &recipes);
 
@@ -540,13 +596,17 @@ fn check_update() {
 fn test_cli_upgrade_not_installed() {
     let (_dir, prefix, recipes) = create_test_env();
 
-    write_recipe(&recipes, "not-installed", r#"
+    write_recipe(
+        &recipes,
+        "not-installed",
+        r#"
 let name = "not-installed";
 let version = "1.0.0";
 let installed = false;
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let output = run_recipe(&["upgrade", "not-installed"], &prefix, &recipes);
 
@@ -570,7 +630,10 @@ fn install() {}
 fn test_cli_upgrade_up_to_date() {
     let (_dir, prefix, recipes) = create_test_env();
 
-    write_recipe(&recipes, "up-to-date", r#"
+    write_recipe(
+        &recipes,
+        "up-to-date",
+        r#"
 let name = "up-to-date";
 let version = "1.0.0";
 let installed = true;
@@ -578,7 +641,8 @@ let installed_version = "1.0.0";
 let installed_files = [];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let output = run_recipe(&["upgrade", "up-to-date"], &prefix, &recipes);
 
@@ -634,13 +698,17 @@ fn test_cli_accepts_explicit_rhai_path() {
     let (_dir, prefix, recipes) = create_test_env();
 
     let recipe_path = recipes.join("explicit.rhai");
-    std::fs::write(&recipe_path, r#"
+    std::fs::write(
+        &recipe_path,
+        r#"
 let name = "explicit";
 let version = "1.0.0";
 let installed = false;
 fn acquire() {}
 fn install() {}
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     let output = Command::new(recipe_bin())
         .args(["install", recipe_path.to_str().unwrap()])
@@ -648,7 +716,11 @@ fn install() {}
         .output()
         .expect("Failed to execute");
 
-    assert!(output.status.success(), "Failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "Failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 // =============================================================================
@@ -697,29 +769,45 @@ fn test_cli_error_output_to_stderr() {
 fn test_cli_deps_shows_direct_dependencies() {
     let (_dir, prefix, recipes) = create_test_env();
 
-    write_recipe(&recipes, "mylib", r#"
+    write_recipe(
+        &recipes,
+        "mylib",
+        r#"
 let name = "mylib";
 let version = "1.0.0";
 let installed = false;
 let deps = [];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
-    write_recipe(&recipes, "myapp", r#"
+    write_recipe(
+        &recipes,
+        "myapp",
+        r#"
 let name = "myapp";
 let version = "2.0.0";
 let installed = false;
 let deps = ["mylib"];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let output = run_recipe(&["deps", "myapp"], &prefix, &recipes);
 
-    assert!(output.status.success(), "deps failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "deps failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("mylib"), "Expected 'mylib' in output: {}", stdout);
+    assert!(
+        stdout.contains("mylib"),
+        "Expected 'mylib' in output: {}",
+        stdout
+    );
 }
 
 #[cheat_aware(
@@ -737,14 +825,18 @@ fn install() {}
 fn test_cli_deps_no_dependencies() {
     let (_dir, prefix, recipes) = create_test_env();
 
-    write_recipe(&recipes, "standalone", r#"
+    write_recipe(
+        &recipes,
+        "standalone",
+        r#"
 let name = "standalone";
 let version = "1.0.0";
 let installed = false;
 let deps = [];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let output = run_recipe(&["deps", "standalone"], &prefix, &recipes);
 
@@ -769,42 +861,70 @@ fn test_cli_deps_resolve_shows_install_order() {
     let (_dir, prefix, recipes) = create_test_env();
 
     // Create chain: app -> lib -> core
-    write_recipe(&recipes, "core", r#"
+    write_recipe(
+        &recipes,
+        "core",
+        r#"
 let name = "core";
 let version = "1.0.0";
 let installed = false;
 let deps = [];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
-    write_recipe(&recipes, "lib", r#"
+    write_recipe(
+        &recipes,
+        "lib",
+        r#"
 let name = "lib";
 let version = "1.0.0";
 let installed = false;
 let deps = ["core"];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
-    write_recipe(&recipes, "app", r#"
+    write_recipe(
+        &recipes,
+        "app",
+        r#"
 let name = "app";
 let version = "1.0.0";
 let installed = false;
 let deps = ["lib"];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let output = run_recipe(&["deps", "app", "--resolve"], &prefix, &recipes);
 
-    assert!(output.status.success(), "deps --resolve failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "deps --resolve failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Should show correct install order (numbered format: "1. core", "2. lib", "3. app")
-    assert!(stdout.contains("1. core"), "Missing '1. core' in output: {}", stdout);
-    assert!(stdout.contains("2. lib"), "Missing '2. lib' in output: {}", stdout);
-    assert!(stdout.contains("3. app"), "Missing '3. app' in output: {}", stdout);
+    assert!(
+        stdout.contains("1. core"),
+        "Missing '1. core' in output: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("2. lib"),
+        "Missing '2. lib' in output: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("3. app"),
+        "Missing '3. app' in output: {}",
+        stdout
+    );
 }
 
 #[cheat_aware(
@@ -822,7 +942,10 @@ fn install() {}
 fn test_cli_deps_resolve_shows_installed_status() {
     let (_dir, prefix, recipes) = create_test_env();
 
-    write_recipe(&recipes, "installed-lib", r#"
+    write_recipe(
+        &recipes,
+        "installed-lib",
+        r#"
 let name = "installed-lib";
 let version = "1.0.0";
 let deps = [];
@@ -831,22 +954,31 @@ let installed_version = "1.0.0";
 let installed_files = [];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
-    write_recipe(&recipes, "new-app", r#"
+    write_recipe(
+        &recipes,
+        "new-app",
+        r#"
 let name = "new-app";
 let version = "1.0.0";
 let installed = false;
 let deps = ["installed-lib"];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let output = run_recipe(&["deps", "new-app", "--resolve"], &prefix, &recipes);
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("[installed]"), "Expected '[installed]' marker in output: {}", stdout);
+    assert!(
+        stdout.contains("[installed]"),
+        "Expected '[installed]' marker in output: {}",
+        stdout
+    );
 }
 
 #[cheat_aware(
@@ -865,53 +997,81 @@ fn test_cli_deps_diamond_pattern() {
     let (_dir, prefix, recipes) = create_test_env();
 
     // Diamond: top -> left, right; left -> bottom; right -> bottom
-    write_recipe(&recipes, "bottom", r#"
+    write_recipe(
+        &recipes,
+        "bottom",
+        r#"
 let name = "bottom";
 let version = "1.0.0";
 let installed = false;
 let deps = [];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
-    write_recipe(&recipes, "left", r#"
+    write_recipe(
+        &recipes,
+        "left",
+        r#"
 let name = "left";
 let version = "1.0.0";
 let installed = false;
 let deps = ["bottom"];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
-    write_recipe(&recipes, "right", r#"
+    write_recipe(
+        &recipes,
+        "right",
+        r#"
 let name = "right";
 let version = "1.0.0";
 let installed = false;
 let deps = ["bottom"];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
-    write_recipe(&recipes, "top", r#"
+    write_recipe(
+        &recipes,
+        "top",
+        r#"
 let name = "top";
 let version = "1.0.0";
 let installed = false;
 let deps = ["left", "right"];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let output = run_recipe(&["deps", "top", "--resolve"], &prefix, &recipes);
 
-    assert!(output.status.success(), "deps --resolve failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "deps --resolve failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // All 4 packages should appear in output (numbered format)
-    assert!(stdout.contains("1. bottom"), "Missing '1. bottom' in output: {}", stdout);
+    assert!(
+        stdout.contains("1. bottom"),
+        "Missing '1. bottom' in output: {}",
+        stdout
+    );
 
     // The exact positions of left/right depend on traversal order, but both should be before top
     // And top should be position 4
-    assert!(stdout.contains("4. top"), "Missing '4. top' in output: {}", stdout);
+    assert!(
+        stdout.contains("4. top"),
+        "Missing '4. top' in output: {}",
+        stdout
+    );
 
     // Verify left and right are in positions 2 or 3
     let has_left = stdout.contains("2. left") || stdout.contains("3. left");
@@ -961,31 +1121,47 @@ fn test_cli_deps_nonexistent_package() {
 fn test_cli_install_deps_installs_in_order() {
     let (_dir, prefix, recipes) = create_test_env();
 
-    write_recipe(&recipes, "dep1", r#"
+    write_recipe(
+        &recipes,
+        "dep1",
+        r#"
 let name = "dep1";
 let version = "1.0.0";
 let installed = false;
 let deps = [];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
-    write_recipe(&recipes, "app", r#"
+    write_recipe(
+        &recipes,
+        "app",
+        r#"
 let name = "app";
 let version = "1.0.0";
 let installed = false;
 let deps = ["dep1"];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let output = run_recipe(&["install", "--deps", "app"], &prefix, &recipes);
 
-    assert!(output.status.success(), "install --deps failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "install --deps failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Should show both packages being installed
-    assert!(stdout.contains("dep1") || stdout.contains("2 package"), "Expected dep1 mention: {}", stdout);
+    assert!(
+        stdout.contains("dep1") || stdout.contains("2 package"),
+        "Expected dep1 mention: {}",
+        stdout
+    );
     assert!(stdout.contains("app"), "Expected app mention: {}", stdout);
 }
 
@@ -1004,7 +1180,10 @@ fn install() {}
 fn test_cli_install_deps_skips_installed() {
     let (_dir, prefix, recipes) = create_test_env();
 
-    write_recipe(&recipes, "already-installed", r#"
+    write_recipe(
+        &recipes,
+        "already-installed",
+        r#"
 let name = "already-installed";
 let version = "1.0.0";
 let deps = [];
@@ -1013,24 +1192,37 @@ let installed_version = "1.0.0";
 let installed_files = [];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
-    write_recipe(&recipes, "needs-it", r#"
+    write_recipe(
+        &recipes,
+        "needs-it",
+        r#"
 let name = "needs-it";
 let version = "1.0.0";
 let installed = false;
 let deps = ["already-installed"];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let output = run_recipe(&["install", "--deps", "needs-it"], &prefix, &recipes);
 
-    assert!(output.status.success(), "install --deps failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "install --deps failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Should only install needs-it (1 package), not already-installed
-    assert!(stdout.contains("1 package") || stdout.contains("needs-it"), "Output: {}", stdout);
+    assert!(
+        stdout.contains("1 package") || stdout.contains("needs-it"),
+        "Output: {}",
+        stdout
+    );
 }
 
 #[cheat_aware(
@@ -1048,7 +1240,10 @@ fn install() {}
 fn test_cli_install_deps_all_already_installed() {
     let (_dir, prefix, recipes) = create_test_env();
 
-    write_recipe(&recipes, "dep-installed", r#"
+    write_recipe(
+        &recipes,
+        "dep-installed",
+        r#"
 let name = "dep-installed";
 let version = "1.0.0";
 let deps = [];
@@ -1057,9 +1252,13 @@ let installed_version = "1.0.0";
 let installed_files = [];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
-    write_recipe(&recipes, "app-installed", r#"
+    write_recipe(
+        &recipes,
+        "app-installed",
+        r#"
 let name = "app-installed";
 let version = "1.0.0";
 let deps = ["dep-installed"];
@@ -1068,13 +1267,18 @@ let installed_version = "1.0.0";
 let installed_files = [];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let output = run_recipe(&["install", "--deps", "app-installed"], &prefix, &recipes);
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("already installed"), "Expected 'already installed' message: {}", stdout);
+    assert!(
+        stdout.contains("already installed"),
+        "Expected 'already installed' message: {}",
+        stdout
+    );
 }
 
 #[cheat_aware(
@@ -1093,27 +1297,50 @@ fn test_cli_install_deps_deep_chain() {
     let (_dir, prefix, recipes) = create_test_env();
 
     // Create: d -> c -> b -> a
-    for (name, dep) in [("a", None), ("b", Some("a")), ("c", Some("b")), ("d", Some("c"))] {
+    for (name, dep) in [
+        ("a", None),
+        ("b", Some("a")),
+        ("c", Some("b")),
+        ("d", Some("c")),
+    ] {
         let deps_line = match dep {
             Some(d) => format!("let deps = [\"{}\"];", d),
             None => "let deps = [];".to_string(),
         };
-        write_recipe(&recipes, name, &format!(r#"
+        write_recipe(
+            &recipes,
+            name,
+            &format!(
+                r#"
 let name = "{}";
 let version = "1.0.0";
 let installed = false;
 {}
 fn acquire() {{}}
 fn install() {{}}
-"#, name, deps_line));
+"#,
+                name, deps_line
+            ),
+        );
     }
 
     let output = run_recipe(&["install", "--deps", "d"], &prefix, &recipes);
 
-    assert!(output.status.success(), "install --deps failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "install --deps failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("4 package") || (stdout.contains("a") && stdout.contains("b") && stdout.contains("c") && stdout.contains("d")),
-        "Expected all 4 packages: {}", stdout);
+    assert!(
+        stdout.contains("4 package")
+            || (stdout.contains("a")
+                && stdout.contains("b")
+                && stdout.contains("c")
+                && stdout.contains("d")),
+        "Expected all 4 packages: {}",
+        stdout
+    );
 }
 
 // =============================================================================
@@ -1135,20 +1362,28 @@ fn install() {{}}
 fn test_cli_info_shows_dependencies() {
     let (_dir, prefix, recipes) = create_test_env();
 
-    write_recipe(&recipes, "with-deps", r#"
+    write_recipe(
+        &recipes,
+        "with-deps",
+        r#"
 let name = "with-deps";
 let version = "1.0.0";
 let installed = false;
 let deps = ["lib1", "lib2"];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let output = run_recipe(&["info", "with-deps"], &prefix, &recipes);
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Depends:") || stdout.contains("lib1"), "Expected dependencies in output: {}", stdout);
+    assert!(
+        stdout.contains("Depends:") || stdout.contains("lib1"),
+        "Expected dependencies in output: {}",
+        stdout
+    );
     assert!(stdout.contains("lib1"));
     assert!(stdout.contains("lib2"));
 }
@@ -1168,13 +1403,17 @@ fn install() {}
 fn test_cli_info_no_deps_field() {
     let (_dir, prefix, recipes) = create_test_env();
 
-    write_recipe(&recipes, "no-deps-field", r#"
+    write_recipe(
+        &recipes,
+        "no-deps-field",
+        r#"
 let name = "no-deps-field";
 let version = "1.0.0";
 let installed = false;
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let output = run_recipe(&["info", "no-deps-field"], &prefix, &recipes);
 

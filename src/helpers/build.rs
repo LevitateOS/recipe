@@ -37,7 +37,8 @@ pub fn extract(format: &str) -> Result<(), Box<EvalAltResult>> {
             .as_ref()
             .ok_or("No file to extract - call download() or copy() first")?;
 
-        let filename = file.file_name()
+        let filename = file
+            .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "archive".to_string());
 

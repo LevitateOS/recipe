@@ -124,7 +124,11 @@ pub fn install_to_dir(pattern: &str, subdir: &str) -> Result<(), Box<EvalAltResu
 /// ```rhai
 /// install_to_dir("scripts/*", "libexec", 0o755);  // Executable
 /// ```
-pub fn install_to_dir_with_mode(pattern: &str, subdir: &str, mode: Option<u32>) -> Result<(), Box<EvalAltResult>> {
+pub fn install_to_dir_with_mode(
+    pattern: &str,
+    subdir: &str,
+    mode: Option<u32>,
+) -> Result<(), Box<EvalAltResult>> {
     let installed_paths = with_context(|ctx| {
         let full_pattern = ctx.current_dir.join(pattern);
         let matches: Vec<_> = glob::glob(&full_pattern.to_string_lossy())
@@ -177,7 +181,11 @@ pub fn install_to_dir_with_mode(pattern: &str, subdir: &str, mode: Option<u32>) 
 /// Install files to a custom subdirectory of PREFIX with mode (Rhai i64 wrapper).
 ///
 /// This is an overload for Rhai's i64 integer type.
-pub fn install_to_dir_i64(pattern: &str, subdir: &str, mode: i64) -> Result<(), Box<EvalAltResult>> {
+pub fn install_to_dir_i64(
+    pattern: &str,
+    subdir: &str,
+    mode: i64,
+) -> Result<(), Box<EvalAltResult>> {
     install_to_dir_with_mode(pattern, subdir, Some(mode as u32))
 }
 
@@ -266,8 +274,13 @@ pub fn rpm_install() -> Result<(), Box<EvalAltResult>> {
 /// Prevents path traversal attacks via symlinks or .. components.
 fn validate_path_within_prefix(path: &Path, prefix: &Path) -> Result<(), String> {
     // Canonicalize both paths to resolve symlinks and .. components
-    let canonical_prefix = prefix.canonicalize()
-        .map_err(|e| format!("Failed to canonicalize prefix '{}': {}", prefix.display(), e))?;
+    let canonical_prefix = prefix.canonicalize().map_err(|e| {
+        format!(
+            "Failed to canonicalize prefix '{}': {}",
+            prefix.display(),
+            e
+        )
+    })?;
 
     // For the target path, we need to handle the case where it doesn't exist yet
     // We canonicalize the parent directory and append the filename
@@ -276,10 +289,19 @@ fn validate_path_within_prefix(path: &Path, prefix: &Path) -> Result<(), String>
             .map_err(|e| format!("Failed to canonicalize path '{}': {}", path.display(), e))?
     } else {
         // Path doesn't exist yet - canonicalize parent and append filename
-        let parent = path.parent().ok_or_else(|| "Path has no parent".to_string())?;
-        let filename = path.file_name().ok_or_else(|| "Path has no filename".to_string())?;
-        let canonical_parent = parent.canonicalize()
-            .map_err(|e| format!("Failed to canonicalize parent '{}': {}", parent.display(), e))?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| "Path has no parent".to_string())?;
+        let filename = path
+            .file_name()
+            .ok_or_else(|| "Path has no filename".to_string())?;
+        let canonical_parent = parent.canonicalize().map_err(|e| {
+            format!(
+                "Failed to canonicalize parent '{}': {}",
+                parent.display(),
+                e
+            )
+        })?;
         canonical_parent.join(filename)
     };
 
@@ -389,7 +411,12 @@ mod tests {
         clear_context();
         let result = install_bin("*.txt");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No execution context"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No execution context")
+        );
     }
 
     #[cheat_reviewed("Error handling - nonexistent files return error")]

@@ -27,10 +27,7 @@ fn example_path(name: &str) -> std::path::PathBuf {
 
 /// Copy an example recipe to a temp directory and return the path.
 /// This prevents modifying the original example files.
-fn copy_example_to_temp(
-    example_name: &str,
-    recipes_dir: &Path,
-) -> Option<std::path::PathBuf> {
+fn copy_example_to_temp(example_name: &str, recipes_dir: &Path) -> Option<std::path::PathBuf> {
     let example = example_path(example_name);
     if !example.exists() {
         return None;
@@ -121,10 +118,17 @@ fn test_filesystem_helpers() {
     let engine = RecipeEngine::new(prefix.clone(), build_dir);
     let result = engine.execute(&recipe_path);
 
-    assert!(result.is_ok(), "Filesystem helpers test failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Filesystem helpers test failed: {:?}",
+        result.err()
+    );
 
     // Verify installed binary works
-    assert!(prefix.join("bin/test-bin").exists(), "test-bin should be installed");
+    assert!(
+        prefix.join("bin/test-bin").exists(),
+        "test-bin should be installed"
+    );
 }
 
 // =============================================================================
@@ -159,8 +163,15 @@ fn test_io_env_helpers() {
     let engine = RecipeEngine::new(prefix.clone(), build_dir);
     let result = engine.execute(&recipe_path);
 
-    assert!(result.is_ok(), "IO/Env helpers test failed: {:?}", result.err());
-    assert!(prefix.join("bin/test-bin").exists(), "test-bin should be installed");
+    assert!(
+        result.is_ok(),
+        "IO/Env helpers test failed: {:?}",
+        result.err()
+    );
+    assert!(
+        prefix.join("bin/test-bin").exists(),
+        "test-bin should be installed"
+    );
 }
 
 // =============================================================================
@@ -195,8 +206,15 @@ fn test_command_helpers() {
     let engine = RecipeEngine::new(prefix.clone(), build_dir);
     let result = engine.execute(&recipe_path);
 
-    assert!(result.is_ok(), "Command helpers test failed: {:?}", result.err());
-    assert!(prefix.join("bin/test-bin").exists(), "test-bin should be installed");
+    assert!(
+        result.is_ok(),
+        "Command helpers test failed: {:?}",
+        result.err()
+    );
+    assert!(
+        prefix.join("bin/test-bin").exists(),
+        "test-bin should be installed"
+    );
 }
 
 // =============================================================================
@@ -231,18 +249,49 @@ fn test_install_helpers() {
     let engine = RecipeEngine::new(prefix.clone(), build_dir);
     let result = engine.execute(&recipe_path);
 
-    assert!(result.is_ok(), "Install helpers test failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Install helpers test failed: {:?}",
+        result.err()
+    );
 
     // Verify installed files
-    assert!(prefix.join("bin/mybin1").exists(), "mybin1 should be installed");
-    assert!(prefix.join("bin/mybin2").exists(), "mybin2 should be installed");
-    assert!(prefix.join("lib/libtest1.so").exists(), "libtest1.so should be installed");
-    assert!(prefix.join("lib/libtest2.a").exists(), "libtest2.a should be installed");
-    assert!(prefix.join("share/man/man1/mybin1.1").exists(), "mybin1.1 man page should be installed");
-    assert!(prefix.join("share/man/man1/mybin2.1").exists(), "mybin2.1 man page should be installed");
-    assert!(prefix.join("share/man/man5/myconfig.5").exists(), "myconfig.5 man page should be installed");
-    assert!(prefix.join("share/doc/test-install/README").exists(), "README doc should be installed");
-    assert!(prefix.join("share/doc/test-install/LICENSE").exists(), "LICENSE doc should be installed");
+    assert!(
+        prefix.join("bin/mybin1").exists(),
+        "mybin1 should be installed"
+    );
+    assert!(
+        prefix.join("bin/mybin2").exists(),
+        "mybin2 should be installed"
+    );
+    assert!(
+        prefix.join("lib/libtest1.so").exists(),
+        "libtest1.so should be installed"
+    );
+    assert!(
+        prefix.join("lib/libtest2.a").exists(),
+        "libtest2.a should be installed"
+    );
+    assert!(
+        prefix.join("share/man/man1/mybin1.1").exists(),
+        "mybin1.1 man page should be installed"
+    );
+    assert!(
+        prefix.join("share/man/man1/mybin2.1").exists(),
+        "mybin2.1 man page should be installed"
+    );
+    assert!(
+        prefix.join("share/man/man5/myconfig.5").exists(),
+        "myconfig.5 man page should be installed"
+    );
+    assert!(
+        prefix.join("share/doc/test-install/README").exists(),
+        "README doc should be installed"
+    );
+    assert!(
+        prefix.join("share/doc/test-install/LICENSE").exists(),
+        "LICENSE doc should be installed"
+    );
 }
 
 // =============================================================================
@@ -278,8 +327,15 @@ fn test_http_helpers() {
     let engine = RecipeEngine::new(prefix.clone(), build_dir);
     let result = engine.execute(&recipe_path);
 
-    assert!(result.is_ok(), "HTTP helpers test failed: {:?}", result.err());
-    assert!(prefix.join("bin/test-bin").exists(), "test-bin should be installed");
+    assert!(
+        result.is_ok(),
+        "HTTP helpers test failed: {:?}",
+        result.err()
+    );
+    assert!(
+        prefix.join("bin/test-bin").exists(),
+        "test-bin should be installed"
+    );
 }
 
 // =============================================================================
@@ -315,8 +371,15 @@ fn test_acquire_helpers() {
     let engine = RecipeEngine::new(prefix.clone(), build_dir);
     let result = engine.execute(&recipe_path);
 
-    assert!(result.is_ok(), "Acquire helpers test failed: {:?}", result.err());
-    assert!(prefix.join("bin/test-bin").exists(), "test-bin should be installed");
+    assert!(
+        result.is_ok(),
+        "Acquire helpers test failed: {:?}",
+        result.err()
+    );
+    assert!(
+        prefix.join("bin/test-bin").exists(),
+        "test-bin should be installed"
+    );
 }
 
 // =============================================================================
@@ -352,13 +415,29 @@ fn test_all_helpers() {
     let engine = RecipeEngine::new(prefix.clone(), build_dir);
     let result = engine.execute(&recipe_path);
 
-    assert!(result.is_ok(), "Comprehensive helpers test failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Comprehensive helpers test failed: {:?}",
+        result.err()
+    );
 
     // Verify all installed files
-    assert!(prefix.join("bin/mybin").exists(), "mybin should be installed");
-    assert!(prefix.join("lib/libtest.so").exists(), "libtest.so should be installed");
-    assert!(prefix.join("share/man/man1/mybin.1").exists(), "mybin.1 man page should be installed");
-    assert!(prefix.join("share/doc/test-all-helpers/README.md").exists(), "README.md doc should be installed");
+    assert!(
+        prefix.join("bin/mybin").exists(),
+        "mybin should be installed"
+    );
+    assert!(
+        prefix.join("lib/libtest.so").exists(),
+        "libtest.so should be installed"
+    );
+    assert!(
+        prefix.join("share/man/man1/mybin.1").exists(),
+        "mybin.1 man page should be installed"
+    );
+    assert!(
+        prefix.join("share/doc/test-all-helpers/README.md").exists(),
+        "README.md doc should be installed"
+    );
 }
 
 // =============================================================================
@@ -416,7 +495,11 @@ fn install() {}
     let engine = RecipeEngine::new(prefix, build_dir);
     let result = engine.execute(&recipe_path);
 
-    assert!(result.is_ok(), "parse_version test failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "parse_version test failed: {:?}",
+        result.err()
+    );
 }
 
 #[cheat_aware(
@@ -468,7 +551,11 @@ fn install() {}
     let engine = RecipeEngine::new(prefix, build_dir);
     let result = engine.execute(&recipe_path);
 
-    assert!(result.is_ok(), "mkdir recursive test failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "mkdir recursive test failed: {:?}",
+        result.err()
+    );
 }
 
 #[cheat_aware(
@@ -657,7 +744,11 @@ fn install() {}
     let engine = RecipeEngine::new(prefix, build_dir);
     let result = engine.execute(&recipe_path);
 
-    assert!(result.is_ok(), "run_output/run_status test failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "run_output/run_status test failed: {:?}",
+        result.err()
+    );
 }
 
 #[cheat_aware(
@@ -708,7 +799,11 @@ fn install() {}
     let engine = RecipeEngine::new(prefix, build_dir);
     let result = engine.execute(&recipe_path);
 
-    assert!(result.is_ok(), "exec/exec_output test failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "exec/exec_output test failed: {:?}",
+        result.err()
+    );
 }
 
 #[cheat_aware(
@@ -760,7 +855,11 @@ fn install() {}
     let engine = RecipeEngine::new(prefix, build_dir);
     let result = engine.execute(&recipe_path);
 
-    assert!(result.is_ok(), "env/set_env test failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "env/set_env test failed: {:?}",
+        result.err()
+    );
 }
 
 #[cheat_aware(
@@ -801,7 +900,8 @@ fn test_extract_tarball() {
     let recipes_dir = prefix.parent().unwrap().join("recipes");
     std::fs::create_dir_all(&recipes_dir).unwrap();
 
-    let recipe_content = format!(r#"
+    let recipe_content = format!(
+        r#"
 let name = "extract-test";
 let version = "1.0.0";
 let installed = false;
@@ -830,7 +930,9 @@ fn build() {{
 }}
 
 fn install() {{}}
-"#, source_dir.display());
+"#,
+        source_dir.display()
+    );
 
     let recipe_path = recipes_dir.join("extract-test.rhai");
     std::fs::write(&recipe_path, recipe_content).unwrap();
@@ -838,5 +940,9 @@ fn install() {{}}
     let engine = RecipeEngine::new(prefix, build_dir);
     let result = engine.execute(&recipe_path);
 
-    assert!(result.is_ok(), "extract tarball test failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "extract tarball test failed: {:?}",
+        result.err()
+    );
 }

@@ -4,11 +4,16 @@
 //! Tests are named with the pattern: test_regression_<brief_description>
 
 use leviso_cheat_test::cheat_aware;
-use levitate_recipe::{recipe_state, RecipeEngine};
+use levitate_recipe::{RecipeEngine, recipe_state};
 use std::path::Path;
 use tempfile::TempDir;
 
-fn create_test_env() -> (TempDir, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+fn create_test_env() -> (
+    TempDir,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
     let dir = TempDir::new().unwrap();
     let prefix = dir.path().join("prefix");
     let build_dir = dir.path().join("build");
@@ -50,11 +55,15 @@ fn test_regression_var_substring_matching_get() {
     let path = dir.path().join("test.rhai");
 
     // Write recipe with both "installed" and "installed_files"
-    std::fs::write(&path, r#"
+    std::fs::write(
+        &path,
+        r#"
 let installed = false;
 let installed_files = ["/usr/bin/foo", "/usr/lib/bar"];
 let installed_version = "1.0.0";
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     // get_var("installed") should return false, NOT match installed_files
     let val: Option<bool> = recipe_state::get_var(&path, "installed").unwrap();
@@ -62,7 +71,10 @@ let installed_version = "1.0.0";
 
     // get_var("installed_files") should return the array
     let files: Option<Vec<String>> = recipe_state::get_var(&path, "installed_files").unwrap();
-    assert_eq!(files, Some(vec!["/usr/bin/foo".to_string(), "/usr/lib/bar".to_string()]));
+    assert_eq!(
+        files,
+        Some(vec!["/usr/bin/foo".to_string(), "/usr/lib/bar".to_string()])
+    );
 }
 
 #[cheat_aware(
@@ -81,10 +93,14 @@ fn test_regression_var_substring_matching_set() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test.rhai");
 
-    std::fs::write(&path, r#"
+    std::fs::write(
+        &path,
+        r#"
 let installed = false;
 let installed_files = ["/usr/bin/foo"];
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     // Setting "installed" should NOT affect "installed_files"
     recipe_state::set_var(&path, "installed", &true).unwrap();
@@ -207,7 +223,11 @@ fn test_regression_partial_removal_state_preserved() {
     // Put file inside so it's not empty
     std::fs::write(non_removable.join("file"), "content").unwrap();
 
-    let recipe_path = write_recipe(&recipes_dir, "partial", &format!(r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "partial",
+        &format!(
+            r#"
 let name = "partial";
 let version = "1.0.0";
 let installed = true;
@@ -215,7 +235,10 @@ let installed_version = "1.0.0";
 let installed_files = ["{}"];
 fn acquire() {{}}
 fn install() {{}}
-"#, non_removable.display()));
+"#,
+            non_removable.display()
+        ),
+    );
 
     let engine = RecipeEngine::new(prefix, build_dir);
 
@@ -225,7 +248,11 @@ fn install() {{}}
 
     // State should be PRESERVED (still installed)
     let installed: Option<bool> = recipe_state::get_var(&recipe_path, "installed").unwrap();
-    assert_eq!(installed, Some(true), "State was incorrectly cleared on partial removal failure");
+    assert_eq!(
+        installed,
+        Some(true),
+        "State was incorrectly cleared on partial removal failure"
+    );
 }
 
 // =============================================================================
@@ -251,7 +278,10 @@ fn install() {{}}
 fn test_regression_update_error_propagated() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
-    let recipe_path = write_recipe(&recipes_dir, "failing-update", r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "failing-update",
+        r#"
 let name = "failing-update";
 let version = "1.0.0";
 let installed = false;
@@ -262,14 +292,20 @@ fn check_update() {
     // Simulate network error
     throw "Network error!";
 }
-"#);
+"#,
+    );
 
     let engine = RecipeEngine::new(prefix, build_dir);
     let result = engine.update(&recipe_path);
 
     // Should return error, not Ok(None)
     assert!(result.is_err(), "Update check error was silently ignored");
-    assert!(result.unwrap_err().to_string().contains("update check failed"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("update check failed")
+    );
 }
 
 // =============================================================================
@@ -345,7 +381,11 @@ fn test_regression_http_has_timeout() {
 
     assert!(result.is_err());
     // Should fail within a few seconds, not 30+ seconds
-    assert!(elapsed.as_secs() < 10, "HTTP request took too long: {:?}", elapsed);
+    assert!(
+        elapsed.as_secs() < 10,
+        "HTTP request took too long: {:?}",
+        elapsed
+    );
 }
 
 // =============================================================================
@@ -429,9 +469,15 @@ fn test_regression_path_traversal_blocked() {
 
         // At minimum, verify these patterns would be dangerous
         assert!(
-            name.contains('/') || name.contains('\\') || name.contains(' ')
-            || name.contains('!') || name.contains('@') || *name == "." || *name == "..",
-            "Name '{}' should be detected as dangerous", name
+            name.contains('/')
+                || name.contains('\\')
+                || name.contains(' ')
+                || name.contains('!')
+                || name.contains('@')
+                || *name == "."
+                || *name == "..",
+            "Name '{}' should be detected as dangerous",
+            name
         );
     }
 }
@@ -464,7 +510,10 @@ fn test_regression_state_not_corrupted_on_install_failure() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
     // Create recipe that will fail during install
-    let recipe_path = write_recipe(&recipes_dir, "fail-install", r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "fail-install",
+        r#"
 let name = "fail-install";
 let version = "1.0.0";
 let installed = false;
@@ -474,7 +523,8 @@ fn acquire() {}
 fn install() {
     throw "Install failed!";
 }
-"#);
+"#,
+    );
 
     let engine = RecipeEngine::new(prefix, build_dir);
     let result = engine.execute(&recipe_path);
@@ -484,7 +534,11 @@ fn install() {
 
     // State should NOT be updated
     let installed: Option<bool> = recipe_state::get_var(&recipe_path, "installed").unwrap();
-    assert_eq!(installed, Some(false), "State was corrupted despite install failure");
+    assert_eq!(
+        installed,
+        Some(false),
+        "State was corrupted despite install failure"
+    );
 }
 
 #[cheat_aware(
@@ -502,7 +556,10 @@ fn install() {
 fn test_regression_state_not_corrupted_on_acquire_failure() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
-    let recipe_path = write_recipe(&recipes_dir, "fail-acquire", r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "fail-acquire",
+        r#"
 let name = "fail-acquire";
 let version = "1.0.0";
 let installed = false;
@@ -511,7 +568,8 @@ fn acquire() {
     throw "Acquire failed!";
 }
 fn install() {}
-"#);
+"#,
+    );
 
     let engine = RecipeEngine::new(prefix, build_dir);
     let result = engine.execute(&recipe_path);
@@ -520,7 +578,11 @@ fn install() {}
 
     // Should not have "installed = true" since we never got there
     let installed: Option<bool> = recipe_state::get_var(&recipe_path, "installed").unwrap();
-    assert_ne!(installed, Some(true), "State was set despite acquire failure");
+    assert_ne!(
+        installed,
+        Some(true),
+        "State was set despite acquire failure"
+    );
 }
 
 #[cheat_aware(
@@ -538,7 +600,10 @@ fn install() {}
 fn test_regression_state_not_corrupted_on_build_failure() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
-    let recipe_path = write_recipe(&recipes_dir, "fail-build", r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "fail-build",
+        r#"
 let name = "fail-build";
 let version = "1.0.0";
 let installed = false;
@@ -548,7 +613,8 @@ fn build() {
     throw "Build failed!";
 }
 fn install() {}
-"#);
+"#,
+    );
 
     let engine = RecipeEngine::new(prefix, build_dir);
     let result = engine.execute(&recipe_path);
@@ -578,7 +644,10 @@ fn install() {}
 fn test_regression_empty_installed_files_handled() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
-    let recipe_path = write_recipe(&recipes_dir, "empty-files", r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "empty-files",
+        r#"
 let name = "empty-files";
 let version = "1.0.0";
 let installed = true;
@@ -586,7 +655,8 @@ let installed_version = "1.0.0";
 let installed_files = [];
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let engine = RecipeEngine::new(prefix, build_dir);
 
@@ -614,7 +684,7 @@ fn test_regression_unicode_in_recipe_preserved() {
     let original = r#"let name = "日本語パッケージ";
 let description = "Package with 📦 emoji";
 let version = "1.0.0";"#;
-let installed = false;
+    let installed = false;
 
     std::fs::write(&path, original).unwrap();
 

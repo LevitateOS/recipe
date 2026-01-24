@@ -77,7 +77,7 @@ pub use core::output;
 pub use core::recipe_state;
 
 use anyhow::Result;
-use rhai::{module_resolvers::FileModuleResolver, Engine};
+use rhai::{Engine, module_resolvers::FileModuleResolver};
 use std::path::{Path, PathBuf};
 
 /// Recipe execution engine

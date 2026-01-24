@@ -3,12 +3,17 @@
 //! These tests verify that multiple components work together correctly.
 
 use leviso_cheat_test::{cheat_aware, cheat_canary};
-use levitate_recipe::{recipe_state, RecipeEngine};
+use levitate_recipe::{RecipeEngine, recipe_state};
 use std::path::Path;
 use tempfile::TempDir;
 
 /// Create a test environment with prefix, build_dir, and recipes directories
-fn create_test_env() -> (TempDir, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+fn create_test_env() -> (
+    TempDir,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
     let dir = TempDir::new().unwrap();
     let prefix = dir.path().join("prefix");
     let build_dir = dir.path().join("build");
@@ -46,7 +51,11 @@ fn test_full_install_lifecycle() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
     // Create a simple recipe that creates a file
-    let recipe_path = write_recipe(&recipes_dir, "simple", &format!(r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "simple",
+        &format!(
+            r#"
 let name = "simple";
 let version = "1.0.0";
 let installed = false;
@@ -63,7 +72,10 @@ fn install() {{
     run(`echo '#!/bin/sh\necho hello' > ${{bin_dir}}/simple-cmd`);
     run(`chmod +x ${{bin_dir}}/simple-cmd`);
 }}
-"#, prefix.display()));
+"#,
+            prefix.display()
+        ),
+    );
 
     let engine = RecipeEngine::new(prefix.clone(), build_dir);
 
@@ -77,7 +89,9 @@ fn install() {{
 
     let installed_version: Option<recipe_state::OptionalString> =
         recipe_state::get_var(&recipe_path, "installed_version").unwrap();
-    assert!(matches!(installed_version, Some(recipe_state::OptionalString::Some(ref v)) if v == "1.0.0"));
+    assert!(
+        matches!(installed_version, Some(recipe_state::OptionalString::Some(ref v)) if v == "1.0.0")
+    );
 }
 
 #[cheat_aware(
@@ -101,7 +115,11 @@ fn test_install_then_remove_lifecycle() {
     std::fs::write(&test_file, "binary content").unwrap();
 
     // Create recipe with pre-existing file in installed_files
-    let recipe_path = write_recipe(&recipes_dir, "removable", &format!(r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "removable",
+        &format!(
+            r#"
 let name = "removable";
 let version = "1.0.0";
 let installed = true;
@@ -110,7 +128,10 @@ let installed_files = ["{}"];
 
 fn acquire() {{}}
 fn install() {{}}
-"#, test_file.display()));
+"#,
+            test_file.display()
+        ),
+    );
 
     let engine = RecipeEngine::new(prefix.clone(), build_dir);
 
@@ -144,14 +165,18 @@ fn install() {{}}
 fn test_reinstall_after_remove() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
-    let recipe_path = write_recipe(&recipes_dir, "reinstall", r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "reinstall",
+        r#"
 let name = "reinstall";
 let version = "1.0.0";
 let installed = false;
 
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let engine = RecipeEngine::new(prefix.clone(), build_dir);
 
@@ -189,7 +214,10 @@ fn install() {}
 fn test_skip_already_installed() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
-    let recipe_path = write_recipe(&recipes_dir, "already-installed", r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "already-installed",
+        r#"
 let name = "already-installed";
 let version = "1.0.0";
 let installed = true;
@@ -204,7 +232,8 @@ fn acquire() {
 fn install() {
     throw "install should not be called";
 }
-"#);
+"#,
+    );
 
     let engine = RecipeEngine::new(prefix.clone(), build_dir);
 
@@ -232,7 +261,10 @@ fn install() {
 fn test_update_finds_new_version() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
-    let recipe_path = write_recipe(&recipes_dir, "updatable", r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "updatable",
+        r#"
 let name = "updatable";
 let version = "1.0.0";
 let installed = false;
@@ -242,7 +274,8 @@ fn install() {}
 fn check_update() {
     "2.0.0"
 }
-"#);
+"#,
+    );
 
     let engine = RecipeEngine::new(prefix, build_dir);
 
@@ -270,7 +303,10 @@ fn check_update() {
 fn test_update_no_new_version() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
-    let recipe_path = write_recipe(&recipes_dir, "up-to-date", r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "up-to-date",
+        r#"
 let name = "up-to-date";
 let version = "1.0.0";
 let installed = false;
@@ -280,7 +316,8 @@ fn install() {}
 fn check_update() {
     ()  // No update available
 }
-"#);
+"#,
+    );
 
     let engine = RecipeEngine::new(prefix, build_dir);
 
@@ -304,7 +341,10 @@ fn check_update() {
 fn test_upgrade_when_version_differs() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
-    let recipe_path = write_recipe(&recipes_dir, "upgradable", r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "upgradable",
+        r#"
 let name = "upgradable";
 let version = "2.0.0";
 let installed = true;
@@ -313,7 +353,8 @@ let installed_files = [];
 
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let engine = RecipeEngine::new(prefix.clone(), build_dir.clone());
 
@@ -324,7 +365,9 @@ fn install() {}
     // installed_version should now match version
     let installed_version: Option<recipe_state::OptionalString> =
         recipe_state::get_var(&recipe_path, "installed_version").unwrap();
-    assert!(matches!(installed_version, Some(recipe_state::OptionalString::Some(ref v)) if v == "2.0.0"));
+    assert!(
+        matches!(installed_version, Some(recipe_state::OptionalString::Some(ref v)) if v == "2.0.0")
+    );
 }
 
 #[cheat_aware(
@@ -342,7 +385,10 @@ fn install() {}
 fn test_upgrade_skipped_when_up_to_date() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
-    let recipe_path = write_recipe(&recipes_dir, "no-upgrade", r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "no-upgrade",
+        r#"
 let name = "no-upgrade";
 let version = "1.0.0";
 let installed = true;
@@ -351,7 +397,8 @@ let installed_files = [];
 
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let engine = RecipeEngine::new(prefix, build_dir);
 
@@ -379,14 +426,18 @@ fn install() {}
 fn test_state_persists_after_install() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
-    let recipe_path = write_recipe(&recipes_dir, "persistent", r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "persistent",
+        r#"
 let name = "persistent";
 let version = "1.0.0";
 let installed = false;
 
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let engine = RecipeEngine::new(prefix, build_dir);
     engine.execute(&recipe_path).unwrap();
@@ -463,13 +514,17 @@ fn install() {
 fn test_execute_missing_acquire() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
-    let recipe_path = write_recipe(&recipes_dir, "no-acquire", r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "no-acquire",
+        r#"
 let name = "no-acquire";
 let version = "1.0.0";
 let installed = false;
 
 fn install() {}
-"#);
+"#,
+    );
 
     let engine = RecipeEngine::new(prefix, build_dir);
     let result = engine.execute(&recipe_path);
@@ -493,13 +548,17 @@ fn install() {}
 fn test_execute_missing_install() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
-    let recipe_path = write_recipe(&recipes_dir, "no-install", r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "no-install",
+        r#"
 let name = "no-install";
 let version = "1.0.0";
 let installed = false;
 
 fn acquire() {}
-"#);
+"#,
+    );
 
     let engine = RecipeEngine::new(prefix, build_dir);
     let result = engine.execute(&recipe_path);
@@ -523,7 +582,10 @@ fn acquire() {}
 fn test_execute_acquire_failure() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
-    let recipe_path = write_recipe(&recipes_dir, "acquire-fail", r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "acquire-fail",
+        r#"
 let name = "acquire-fail";
 let version = "1.0.0";
 let installed = false;
@@ -533,7 +595,8 @@ fn acquire() {
 }
 
 fn install() {}
-"#);
+"#,
+    );
 
     let engine = RecipeEngine::new(prefix, build_dir);
     let result = engine.execute(&recipe_path);
@@ -561,7 +624,10 @@ fn install() {}
 fn test_execute_install_failure() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
-    let recipe_path = write_recipe(&recipes_dir, "install-fail", r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "install-fail",
+        r#"
 let name = "install-fail";
 let version = "1.0.0";
 let installed = false;
@@ -571,7 +637,8 @@ fn acquire() {}
 fn install() {
     throw "Install failed!";
 }
-"#);
+"#,
+    );
 
     let engine = RecipeEngine::new(prefix, build_dir);
     let result = engine.execute(&recipe_path);
@@ -604,14 +671,18 @@ fn test_optional_build_phase() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
     // Recipe without build phase
-    let recipe_path = write_recipe(&recipes_dir, "no-build", r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "no-build",
+        r#"
 let name = "no-build";
 let version = "1.0.0";
 let installed = false;
 
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let engine = RecipeEngine::new(prefix, build_dir);
     let result = engine.execute(&recipe_path);
@@ -635,7 +706,10 @@ fn install() {}
 fn test_with_build_phase() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
-    let recipe_path = write_recipe(&recipes_dir, "with-build", r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "with-build",
+        r#"
 let name = "with-build";
 let version = "1.0.0";
 let installed = false;
@@ -645,7 +719,8 @@ fn build() {
     // Build phase runs
 }
 fn install() {}
-"#);
+"#,
+    );
 
     let engine = RecipeEngine::new(prefix, build_dir);
     let result = engine.execute(&recipe_path);
@@ -668,7 +743,10 @@ fn install() {}
 fn test_build_failure_prevents_install() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
-    let recipe_path = write_recipe(&recipes_dir, "build-fail", r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "build-fail",
+        r#"
 let name = "build-fail";
 let version = "1.0.0";
 let installed = false;
@@ -680,7 +758,8 @@ fn build() {
 fn install() {
     throw "Install should not be reached!";
 }
-"#);
+"#,
+    );
 
     let engine = RecipeEngine::new(prefix, build_dir);
     let result = engine.execute(&recipe_path);
@@ -709,7 +788,10 @@ fn test_is_installed_function_overrides_state() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
     // Recipe says installed=true but is_installed() returns false
-    let recipe_path = write_recipe(&recipes_dir, "check-installed", r#"
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "check-installed",
+        r#"
 let name = "check-installed";
 let version = "1.0.0";
 let installed = true;
@@ -722,7 +804,8 @@ fn is_installed() {
 
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let engine = RecipeEngine::new(prefix, build_dir);
 
@@ -750,21 +833,29 @@ fn install() {}
 fn test_multiple_recipes_independent() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
-    let recipe1 = write_recipe(&recipes_dir, "pkg1", r#"
+    let recipe1 = write_recipe(
+        &recipes_dir,
+        "pkg1",
+        r#"
 let name = "pkg1";
 let version = "1.0.0";
 let installed = false;
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
-    let recipe2 = write_recipe(&recipes_dir, "pkg2", r#"
+    let recipe2 = write_recipe(
+        &recipes_dir,
+        "pkg2",
+        r#"
 let name = "pkg2";
 let version = "2.0.0";
 let installed = false;
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let engine = RecipeEngine::new(prefix, build_dir);
 
@@ -805,13 +896,17 @@ fn install() {}
 fn canary_recipe_verbose_state_check() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
-    let recipe = write_recipe(&recipes_dir, "canary_pkg", r#"
+    let recipe = write_recipe(
+        &recipes_dir,
+        "canary_pkg",
+        r#"
 let name = "canary_pkg";
 let version = "9.9.9";
 let installed = false;
 fn acquire() {}
 fn install() {}
-"#);
+"#,
+    );
 
     let engine = RecipeEngine::new(prefix, build_dir);
     engine.execute(&recipe).unwrap();
@@ -825,11 +920,19 @@ fn install() {}
 
     // Check 2: name unchanged
     let name: Option<String> = recipe_state::get_var(&recipe, "name").unwrap();
-    assert_eq!(name.as_deref(), Some("canary_pkg"), "name was modified unexpectedly");
+    assert_eq!(
+        name.as_deref(),
+        Some("canary_pkg"),
+        "name was modified unexpectedly"
+    );
 
     // Check 3: version unchanged
     let version: Option<String> = recipe_state::get_var(&recipe, "version").unwrap();
-    assert_eq!(version.as_deref(), Some("9.9.9"), "version was modified unexpectedly");
+    assert_eq!(
+        version.as_deref(),
+        Some("9.9.9"),
+        "version was modified unexpectedly"
+    );
 
     // Check 4: installed_version matches
     let installed_version: Option<recipe_state::OptionalString> =
@@ -848,5 +951,8 @@ fn install() {}
     assert!(content.contains("canary_pkg"), "recipe content corrupted");
 
     // Check 7: recipe contains installed = true after execution
-    assert!(content.contains("installed = true"), "installed flag not persisted to file");
+    assert!(
+        content.contains("installed = true"),
+        "installed flag not persisted to file"
+    );
 }

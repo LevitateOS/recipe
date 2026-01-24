@@ -1,6 +1,6 @@
 //! Command execution helpers
 
-use crate::core::{with_context, CONTEXT};
+use crate::core::{CONTEXT, with_context};
 use rhai::EvalAltResult;
 use std::process::Command;
 
@@ -16,7 +16,9 @@ pub fn run_output(cmd: &str) -> Result<String, Box<EvalAltResult>> {
             .map_err(|e| format!("command failed: {}", e))?;
 
         if !output.status.success() {
-            return Err(format!("command failed with exit code: {:?}", output.status.code()).into());
+            return Err(
+                format!("command failed with exit code: {:?}", output.status.code()).into(),
+            );
         }
 
         String::from_utf8(output.stdout).map_err(|e| format!("invalid utf8: {}", e).into())

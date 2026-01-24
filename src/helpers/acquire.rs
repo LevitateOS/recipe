@@ -71,15 +71,17 @@ pub fn download(url: &str) -> Result<(), Box<EvalAltResult>> {
             pb.set_length(len);
             pb.set_style(
                 ProgressStyle::default_bar()
-                    .template("     {spinner:.cyan} [{bar:30.cyan/dim}] {bytes}/{total_bytes} ({eta})")
+                    .template(
+                        "     {spinner:.cyan} [{bar:30.cyan/dim}] {bytes}/{total_bytes} ({eta})",
+                    )
                     .unwrap()
                     .progress_chars("━╸━"),
             );
         }
 
         // Create output file
-        let mut file = std::fs::File::create(&dest)
-            .map_err(|e| format!("cannot create file: {}", e))?;
+        let mut file =
+            std::fs::File::create(&dest).map_err(|e| format!("cannot create file: {}", e))?;
 
         // Read and write with progress
         let mut reader = response.into_reader();
@@ -128,8 +130,14 @@ pub fn copy_files(pattern: &str) -> Result<(), Box<EvalAltResult>> {
         for src in &matches {
             let filename = src.file_name().ok_or("invalid filename")?;
             let dest = ctx.build_dir.join(filename);
-            std::fs::copy(src, &dest)
-                .map_err(|e| format!("copy failed: {} -> {}: {}", src.display(), dest.display(), e))?;
+            std::fs::copy(src, &dest).map_err(|e| {
+                format!(
+                    "copy failed: {} -> {}: {}",
+                    src.display(),
+                    dest.display(),
+                    e
+                )
+            })?;
             ctx.last_downloaded = Some(dest);
         }
 
@@ -182,7 +190,9 @@ pub fn verify_hash_sha256(file: &Path, expected: &str) -> Result<(), Box<EvalAlt
     let mut hasher = Sha256::new();
     let mut buffer = [0; 8192];
     loop {
-        let n = f.read(&mut buffer).map_err(|e| format!("read error: {}", e))?;
+        let n = f
+            .read(&mut buffer)
+            .map_err(|e| format!("read error: {}", e))?;
         if n == 0 {
             break;
         }
@@ -209,7 +219,9 @@ pub fn verify_hash_sha512(file: &Path, expected: &str) -> Result<(), Box<EvalAlt
     let mut hasher = Sha512::new();
     let mut buffer = [0; 8192];
     loop {
-        let n = f.read(&mut buffer).map_err(|e| format!("read error: {}", e))?;
+        let n = f
+            .read(&mut buffer)
+            .map_err(|e| format!("read error: {}", e))?;
         if n == 0 {
             break;
         }
@@ -236,7 +248,9 @@ pub fn verify_hash_blake3(file: &Path, expected: &str) -> Result<(), Box<EvalAlt
     let mut hasher = blake3::Hasher::new();
     let mut buffer = [0; 8192];
     loop {
-        let n = f.read(&mut buffer).map_err(|e| format!("read error: {}", e))?;
+        let n = f
+            .read(&mut buffer)
+            .map_err(|e| format!("read error: {}", e))?;
         if n == 0 {
             break;
         }

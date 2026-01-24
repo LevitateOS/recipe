@@ -48,7 +48,10 @@ pub fn github_latest_release(repo: &str) -> Result<String, Box<EvalAltResult>> {
 }
 
 /// Internal: Get latest release with configurable base URL (for testing)
-fn github_latest_release_with_base(repo: &str, base_url: &str) -> Result<String, Box<EvalAltResult>> {
+fn github_latest_release_with_base(
+    repo: &str,
+    base_url: &str,
+) -> Result<String, Box<EvalAltResult>> {
     let url = format!("{}/repos/{}/releases/latest", base_url, repo);
 
     let response = ureq::get(&url)
@@ -59,10 +62,11 @@ fn github_latest_release_with_base(repo: &str, base_url: &str) -> Result<String,
         .map_err(|e| {
             // Handle rate limiting specifically
             if let ureq::Error::Status(403, _) = e {
-                return "GitHub API rate limit exceeded. Try again later or set GITHUB_TOKEN.".into();
+                return "GitHub API rate limit exceeded. Try again later or set GITHUB_TOKEN."
+                    .into();
             }
             if let ureq::Error::Status(404, _) = e {
-                return format!("Repository '{}' not found", repo).into();
+                return format!("Repository '{}' not found", repo);
             }
             format!("GitHub API request failed: {}", e)
         })?;
@@ -100,10 +104,11 @@ fn github_latest_tag_with_base(repo: &str, base_url: &str) -> Result<String, Box
         .map_err(|e| {
             // Handle rate limiting specifically
             if let ureq::Error::Status(403, _) = e {
-                return "GitHub API rate limit exceeded. Try again later or set GITHUB_TOKEN.".into();
+                return "GitHub API rate limit exceeded. Try again later or set GITHUB_TOKEN."
+                    .into();
             }
             if let ureq::Error::Status(404, _) = e {
-                return format!("Repository '{}' not found", repo).into();
+                return format!("Repository '{}' not found", repo);
             }
             format!("GitHub API request failed: {}", e)
         })?;
@@ -346,13 +351,10 @@ mod tests {
 
             Mock::given(method("GET"))
                 .and(path("/repos/owner/repo/releases/latest"))
-                .respond_with(
-                    ResponseTemplate::new(200)
-                        .set_body_json(serde_json::json!({
-                            "tag_name": "v1.2.3",
-                            "name": "Release 1.2.3"
-                        })),
-                )
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "tag_name": "v1.2.3",
+                    "name": "Release 1.2.3"
+                })))
                 .mount(&mock_server)
                 .await;
 
@@ -369,12 +371,9 @@ mod tests {
 
             Mock::given(method("GET"))
                 .and(path("/repos/owner/repo/releases/latest"))
-                .respond_with(
-                    ResponseTemplate::new(200)
-                        .set_body_json(serde_json::json!({
-                            "tag_name": "14.1.0"
-                        })),
-                )
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "tag_name": "14.1.0"
+                })))
                 .mount(&mock_server)
                 .await;
 
@@ -435,13 +434,10 @@ mod tests {
 
             Mock::given(method("GET"))
                 .and(path("/repos/owner/repo/releases/latest"))
-                .respond_with(
-                    ResponseTemplate::new(200)
-                        .set_body_json(serde_json::json!({
-                            "name": "Some Release"
-                            // Missing tag_name
-                        })),
-                )
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "name": "Some Release"
+                    // Missing tag_name
+                })))
                 .mount(&mock_server)
                 .await;
 
@@ -468,14 +464,11 @@ mod tests {
 
             Mock::given(method("GET"))
                 .and(path("/repos/torvalds/linux/tags"))
-                .respond_with(
-                    ResponseTemplate::new(200)
-                        .set_body_json(serde_json::json!([
-                            {"name": "v6.7", "commit": {}},
-                            {"name": "v6.6", "commit": {}},
-                            {"name": "v6.5", "commit": {}}
-                        ])),
-                )
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                    {"name": "v6.7", "commit": {}},
+                    {"name": "v6.6", "commit": {}},
+                    {"name": "v6.5", "commit": {}}
+                ])))
                 .mount(&mock_server)
                 .await;
 

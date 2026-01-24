@@ -68,18 +68,18 @@ pub fn get_var<T: FromRecipeVar>(recipe_path: &Path, var_name: &str) -> Result<O
     // Find the variable declaration: let <var_name> = <value>;
     for line in content.lines() {
         let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("let ") {
-            if let Some(after_name) = rest.strip_prefix(var_name) {
-                // Check for word boundary: next char must be whitespace or '='
-                let first_char = after_name.chars().next();
-                if first_char == Some(' ') || first_char == Some('=') || first_char == Some('\t') {
-                    let after_name = after_name.trim();
-                    if let Some(value_part) = after_name.strip_prefix('=') {
-                        let value_str = value_part.trim().trim_end_matches(';').trim();
-                        // Strip inline comments before parsing
-                        let value_str = strip_inline_comments(value_str);
-                        return T::from_recipe_str(&value_str).map(Some);
-                    }
+        if let Some(rest) = trimmed.strip_prefix("let ")
+            && let Some(after_name) = rest.strip_prefix(var_name)
+        {
+            // Check for word boundary: next char must be whitespace or '='
+            let first_char = after_name.chars().next();
+            if first_char == Some(' ') || first_char == Some('=') || first_char == Some('\t') {
+                let after_name = after_name.trim();
+                if let Some(value_part) = after_name.strip_prefix('=') {
+                    let value_str = value_part.trim().trim_end_matches(';').trim();
+                    // Strip inline comments before parsing
+                    let value_str = strip_inline_comments(value_str);
+                    return T::from_recipe_str(&value_str).map(Some);
                 }
             }
         }
@@ -127,16 +127,21 @@ pub fn set_var<T: ToRecipeVar>(recipe_path: &Path, var_name: &str, value: &T) ->
     let parent = recipe_path.parent().unwrap_or(Path::new("."));
     let temp_path = parent.join(format!(
         ".{}.tmp.{}",
-        recipe_path.file_name().unwrap_or_default().to_string_lossy(),
+        recipe_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy(),
         std::process::id()
     ));
 
     // Write to temp file
     let mut temp_file = std::fs::File::create(&temp_path)
         .with_context(|| format!("Failed to create temp file: {}", temp_path.display()))?;
-    temp_file.write_all(new_content.as_bytes())
+    temp_file
+        .write_all(new_content.as_bytes())
         .with_context(|| format!("Failed to write temp file: {}", temp_path.display()))?;
-    temp_file.sync_all()
+    temp_file
+        .sync_all()
         .with_context(|| format!("Failed to sync temp file: {}", temp_path.display()))?;
     drop(temp_file);
 
@@ -153,13 +158,20 @@ pub fn set_var<T: ToRecipeVar>(recipe_path: &Path, var_name: &str, value: &T) ->
 /// Find the best position to insert a new state variable
 fn find_state_insert_position(lines: &[String]) -> usize {
     // Look for existing state variables and insert after them
-    let state_vars = ["installed", "installed_version", "installed_at", "installed_files"];
+    let state_vars = [
+        "installed",
+        "installed_version",
+        "installed_at",
+        "installed_files",
+    ];
     let mut last_state_line = 0;
 
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
         for var in &state_vars {
-            if trimmed.starts_with(&format!("let {} ", var)) || trimmed.starts_with(&format!("let {}=", var)) {
+            if trimmed.starts_with(&format!("let {} ", var))
+                || trimmed.starts_with(&format!("let {}=", var))
+            {
                 last_state_line = i + 1;
             }
         }
@@ -174,7 +186,9 @@ fn find_state_insert_position(lines: &[String]) -> usize {
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
         for var in &def_vars {
-            if trimmed.starts_with(&format!("let {} ", var)) || trimmed.starts_with(&format!("let {}=", var)) {
+            if trimmed.starts_with(&format!("let {} ", var))
+                || trimmed.starts_with(&format!("let {}=", var))
+            {
                 last_state_line = i + 1;
             }
         }
@@ -221,7 +235,7 @@ impl FromRecipeVar for String {
     fn from_recipe_str(s: &str) -> Result<Self> {
         // Handle quoted strings
         if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
-            Ok(s[1..s.len()-1].to_string())
+            Ok(s[1..s.len() - 1].to_string())
         } else {
             Ok(s.to_string())
         }
@@ -259,7 +273,7 @@ impl FromRecipeVar for Vec<String> {
             anyhow::bail!("Invalid array syntax: {}", s);
         }
 
-        let inner = s[1..s.len()-1].trim();
+        let inner = s[1..s.len() - 1].trim();
         if inner.is_empty() {
             return Ok(vec![]);
         }
@@ -273,12 +287,12 @@ impl FromRecipeVar for Vec<String> {
             if escape_next {
                 // Handle escape sequences properly
                 match ch {
-                    '\\' => current.push('\\'),  // \\ -> \
-                    '"' => current.push('"'),    // \" -> "
-                    '\'' => current.push('\''),  // \' -> '
-                    'n' => current.push('\n'),   // \n -> newline
-                    't' => current.push('\t'),   // \t -> tab
-                    'r' => current.push('\r'),   // \r -> carriage return
+                    '\\' => current.push('\\'), // \\ -> \
+                    '"' => current.push('"'),   // \" -> "
+                    '\'' => current.push('\''), // \' -> '
+                    'n' => current.push('\n'),  // \n -> newline
+                    't' => current.push('\t'),  // \t -> tab
+                    'r' => current.push('\r'),  // \r -> carriage return
                     _ => {
                         // Unknown escape - preserve backslash and char
                         current.push('\\');
@@ -412,10 +426,12 @@ mod tests {
     )]
     #[test]
     fn test_get_bool_var() {
-        let (_dir, path) = write_test_recipe(r#"
+        let (_dir, path) = write_test_recipe(
+            r#"
 let name = "test";
 let installed = false;
-"#);
+"#,
+        );
 
         let val: Option<bool> = get_var(&path, "installed").unwrap();
         assert_eq!(val, Some(false));
@@ -424,10 +440,12 @@ let installed = false;
     #[cheat_reviewed("Parsing test - string variable extraction")]
     #[test]
     fn test_get_string_var() {
-        let (_dir, path) = write_test_recipe(r#"
+        let (_dir, path) = write_test_recipe(
+            r#"
 let name = "test-pkg";
 let version = "1.0.0";
-"#);
+"#,
+        );
 
         let name: Option<String> = get_var(&path, "name").unwrap();
         assert_eq!(name, Some("test-pkg".to_string()));
@@ -439,9 +457,11 @@ let version = "1.0.0";
     #[cheat_reviewed("Parsing test - missing variable returns None")]
     #[test]
     fn test_get_missing_var() {
-        let (_dir, path) = write_test_recipe(r#"
+        let (_dir, path) = write_test_recipe(
+            r#"
 let name = "test";
-"#);
+"#,
+        );
 
         let val: Option<bool> = get_var(&path, "installed").unwrap();
         assert_eq!(val, None);
@@ -460,10 +480,12 @@ let name = "test";
     )]
     #[test]
     fn test_set_existing_var() {
-        let (_dir, path) = write_test_recipe(r#"
+        let (_dir, path) = write_test_recipe(
+            r#"
 let name = "test";
 let installed = false;
-"#);
+"#,
+        );
 
         set_var(&path, "installed", &true).unwrap();
 
@@ -474,10 +496,12 @@ let installed = false;
     #[cheat_reviewed("Persistence test - new variable added to recipe")]
     #[test]
     fn test_set_new_var() {
-        let (_dir, path) = write_test_recipe(r#"
+        let (_dir, path) = write_test_recipe(
+            r#"
 let name = "test";
 let version = "1.0.0";
-"#);
+"#,
+        );
 
         set_var(&path, "installed", &true).unwrap();
 
@@ -498,12 +522,20 @@ let version = "1.0.0";
     )]
     #[test]
     fn test_get_array_var() {
-        let (_dir, path) = write_test_recipe(r#"
+        let (_dir, path) = write_test_recipe(
+            r#"
 let installed_files = ["/usr/bin/foo", "/usr/lib/bar.so"];
-"#);
+"#,
+        );
 
         let files: Option<Vec<String>> = get_var(&path, "installed_files").unwrap();
-        assert_eq!(files, Some(vec!["/usr/bin/foo".to_string(), "/usr/lib/bar.so".to_string()]));
+        assert_eq!(
+            files,
+            Some(vec![
+                "/usr/bin/foo".to_string(),
+                "/usr/lib/bar.so".to_string()
+            ])
+        );
     }
 
     #[cheat_aware(
@@ -519,10 +551,12 @@ let installed_files = ["/usr/bin/foo", "/usr/lib/bar.so"];
     )]
     #[test]
     fn test_set_array_var() {
-        let (_dir, path) = write_test_recipe(r#"
+        let (_dir, path) = write_test_recipe(
+            r#"
 let name = "test";
 let installed_files = [];
-"#);
+"#,
+        );
 
         let files = vec!["/usr/bin/test".to_string()];
         set_var(&path, "installed_files", &files).unwrap();
@@ -534,14 +568,21 @@ let installed_files = [];
     #[cheat_reviewed("Parsing test - optional string type (unit or string)")]
     #[test]
     fn test_optional_string() {
-        let (_dir, path) = write_test_recipe(r#"
+        let (_dir, path) = write_test_recipe(
+            r#"
 let installed_version = ();
-"#);
+"#,
+        );
 
         let val: Option<OptionalString> = get_var(&path, "installed_version").unwrap();
         assert!(matches!(val, Some(OptionalString::None)));
 
-        set_var(&path, "installed_version", &OptionalString::Some("1.0.0".to_string())).unwrap();
+        set_var(
+            &path,
+            "installed_version",
+            &OptionalString::Some("1.0.0".to_string()),
+        )
+        .unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains(r#"let installed_version = "1.0.0";"#));
@@ -561,10 +602,12 @@ let installed_version = ();
     #[test]
     fn test_var_substring_no_match() {
         // Test that get_var("installed") doesn't match "installed_files"
-        let (_dir, path) = write_test_recipe(r#"
+        let (_dir, path) = write_test_recipe(
+            r#"
 let installed_files = ["/usr/bin/foo"];
 let installed = false;
-"#);
+"#,
+        );
 
         let val: Option<bool> = get_var(&path, "installed").unwrap();
         assert_eq!(val, Some(false));
@@ -580,32 +623,36 @@ let installed = false;
     #[test]
     fn test_array_escape_sequences() {
         // Test that escape sequences in arrays are handled correctly
-        let (_dir, path) = write_test_recipe(r#"
+        let (_dir, path) = write_test_recipe(
+            r#"
 let files = ["C:\\path\\to\\file", "hello\"world", "tab\there"];
-"#);
+"#,
+        );
 
         let files: Option<Vec<String>> = get_var(&path, "files").unwrap();
-        assert_eq!(files, Some(vec![
-            "C:\\path\\to\\file".to_string(),
-            "hello\"world".to_string(),
-            "tab\there".to_string(),
-        ]));
+        assert_eq!(
+            files,
+            Some(vec![
+                "C:\\path\\to\\file".to_string(),
+                "hello\"world".to_string(),
+                "tab\there".to_string(),
+            ])
+        );
     }
 
     #[cheat_reviewed("Parsing test - unknown escape sequences preserved")]
     #[test]
     fn test_array_unknown_escape_preserved() {
         // Test that unknown escapes preserve the backslash
-        let (_dir, path) = write_test_recipe(r#"
+        let (_dir, path) = write_test_recipe(
+            r#"
 let pattern = ["\\d+", "\\s*"];
-"#);
+"#,
+        );
 
         let pattern: Option<Vec<String>> = get_var(&path, "pattern").unwrap();
         // \d should become \d (backslash preserved for unknown escape)
-        assert_eq!(pattern, Some(vec![
-            "\\d+".to_string(),
-            "\\s*".to_string(),
-        ]));
+        assert_eq!(pattern, Some(vec!["\\d+".to_string(), "\\s*".to_string(),]));
     }
 
     // ==================== Edge Cases ====================
@@ -831,11 +878,13 @@ let pattern = ["\\d+", "\\s*"];
     )]
     #[test]
     fn test_multiple_similar_var_names() {
-        let (_dir, path) = write_test_recipe(r#"
+        let (_dir, path) = write_test_recipe(
+            r#"
 let ver = "1.0";
 let version = "2.0";
 let version_old = "0.9";
-"#);
+"#,
+        );
         let ver: Option<String> = get_var(&path, "ver").unwrap();
         let version: Option<String> = get_var(&path, "version").unwrap();
         let version_old: Option<String> = get_var(&path, "version_old").unwrap();
@@ -857,14 +906,18 @@ let version_old = "0.9";
     #[cheat_reviewed("Persistence test - variable inserted in correct position")]
     #[test]
     fn test_set_var_inserts_after_version() {
-        let (_dir, path) = write_test_recipe(r#"let name = "test";
-let version = "1.0";"#);
+        let (_dir, path) = write_test_recipe(
+            r#"let name = "test";
+let version = "1.0";"#,
+        );
         set_var(&path, "installed", &true).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = content.lines().collect();
         // installed should be inserted after version
-        assert!(lines.iter().position(|l| l.contains("version")).unwrap()
-            < lines.iter().position(|l| l.contains("installed")).unwrap());
+        assert!(
+            lines.iter().position(|l| l.contains("version")).unwrap()
+                < lines.iter().position(|l| l.contains("installed")).unwrap()
+        );
     }
 
     #[cheat_reviewed("Parsing test - optional semicolon")]
@@ -889,12 +942,17 @@ let version = "1.0";"#);
     )]
     #[test]
     fn test_array_with_paths_containing_spaces() {
-        let (_dir, path) = write_test_recipe(r#"let files = ["/path/with spaces/file.txt", "/another path/here"];"#);
+        let (_dir, path) = write_test_recipe(
+            r#"let files = ["/path/with spaces/file.txt", "/another path/here"];"#,
+        );
         let files: Option<Vec<String>> = get_var(&path, "files").unwrap();
-        assert_eq!(files, Some(vec![
-            "/path/with spaces/file.txt".to_string(),
-            "/another path/here".to_string(),
-        ]));
+        assert_eq!(
+            files,
+            Some(vec![
+                "/path/with spaces/file.txt".to_string(),
+                "/another path/here".to_string(),
+            ])
+        );
     }
 
     #[cheat_aware(
@@ -991,7 +1049,8 @@ let version = "1.0";"#);
     #[cheat_reviewed("Integration test - multiple variables in file")]
     #[test]
     fn test_many_variables_in_file() {
-        let (_dir, path) = write_test_recipe(r#"
+        let (_dir, path) = write_test_recipe(
+            r#"
 let name = "test-package";
 let version = "1.0.0";
 let description = "A test package";
@@ -1000,9 +1059,16 @@ let installed = false;
 let installed_version = ();
 let installed_at = 0;
 let installed_files = [];
-"#);
-        assert_eq!(get_var::<String>(&path, "name").unwrap(), Some("test-package".to_string()));
-        assert_eq!(get_var::<String>(&path, "version").unwrap(), Some("1.0.0".to_string()));
+"#,
+        );
+        assert_eq!(
+            get_var::<String>(&path, "name").unwrap(),
+            Some("test-package".to_string())
+        );
+        assert_eq!(
+            get_var::<String>(&path, "version").unwrap(),
+            Some("1.0.0".to_string())
+        );
         assert_eq!(get_var::<bool>(&path, "installed").unwrap(), Some(false));
         assert_eq!(get_var::<i64>(&path, "installed_at").unwrap(), Some(0));
     }
@@ -1011,12 +1077,14 @@ let installed_files = [];
     #[test]
     fn test_file_with_comments_and_code() {
         // Comments should not interfere with variable parsing
-        let (_dir, path) = write_test_recipe(r#"
+        let (_dir, path) = write_test_recipe(
+            r#"
 // This is a comment
 let name = "test"; // inline comment
 /* block comment */
 let version = "1.0";
-"#);
+"#,
+        );
         // Note: Our parser doesn't handle comments, so "test"; // inline comment"
         // might cause issues. Let's see what happens.
         let name: Option<String> = get_var(&path, "name").unwrap();

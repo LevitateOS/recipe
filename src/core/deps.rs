@@ -14,7 +14,7 @@
 //! ];
 //! ```
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -218,8 +218,8 @@ impl DepGraph {
 
             // Check remaining children starting from child_idx
             let mut found_unprocessed = false;
-            for i in child_idx..deps.len() {
-                let dep = &deps[i];
+            for (offset, dep) in deps[child_idx..].iter().enumerate() {
+                let i = child_idx + offset;
                 match state.get(dep).copied().unwrap_or(NodeState::Unprocessed) {
                     NodeState::Unprocessed => {
                         // Push current node back with next index, then push child
@@ -267,9 +267,12 @@ fn build_graph_with_constraints(recipes_path: &Path, parse_constraints: bool) ->
         return Ok(graph);
     }
 
-    for entry in std::fs::read_dir(recipes_path)
-        .with_context(|| format!("Failed to read recipes directory: {}", recipes_path.display()))?
-    {
+    for entry in std::fs::read_dir(recipes_path).with_context(|| {
+        format!(
+            "Failed to read recipes directory: {}",
+            recipes_path.display()
+        )
+    })? {
         let entry = entry?;
         let path = entry.path();
 
@@ -332,10 +335,7 @@ fn build_graph_with_constraints(recipes_path: &Path, parse_constraints: bool) ->
 /// The target package is last in the list.
 ///
 /// Also validates version constraints - returns an error if any constraints are violated.
-pub fn resolve_deps(
-    target: &str,
-    recipes_path: &Path,
-) -> Result<Vec<(String, PathBuf)>> {
+pub fn resolve_deps(target: &str, recipes_path: &Path) -> Result<Vec<(String, PathBuf)>> {
     let graph = build_graph(recipes_path)?;
 
     if !graph.contains(target) {
@@ -401,13 +401,12 @@ pub fn reverse_deps_installed(
 
     let mut result = Vec::new();
     for (name, deps) in &graph.edges {
-        if deps.contains(&package.to_string()) {
-            if let Some(path) = graph.get_path(name) {
-                let installed: Option<bool> =
-                    recipe_state::get_var(path, "installed").unwrap_or(None);
-                if installed == Some(true) {
-                    result.push((name.clone(), path.clone()));
-                }
+        if deps.contains(&package.to_string())
+            && let Some(path) = graph.get_path(name)
+        {
+            let installed: Option<bool> = recipe_state::get_var(path, "installed").unwrap_or(None);
+            if installed == Some(true) {
+                result.push((name.clone(), path.clone()));
             }
         }
     }
@@ -427,18 +426,18 @@ pub fn find_orphans(recipes_path: &Path) -> Result<Vec<(String, PathBuf)>> {
     let mut orphans = Vec::new();
 
     // Pre-compute which packages are installed (avoids repeated file reads)
-    let mut installed_packages: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for (name, _) in &graph.edges {
+    let mut installed_packages: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    for name in graph.edges.keys() {
         if let Some(path) = graph.get_path(name) {
-            let installed: Option<bool> =
-                recipe_state::get_var(path, "installed").unwrap_or(None);
+            let installed: Option<bool> = recipe_state::get_var(path, "installed").unwrap_or(None);
             if installed == Some(true) {
                 installed_packages.insert(name.clone());
             }
         }
     }
 
-    for (name, _) in &graph.edges {
+    for name in graph.edges.keys() {
         if let Some(path) = graph.get_path(name) {
             // Check if installed
             if !installed_packages.contains(name) {
@@ -723,7 +722,10 @@ let installed = false;
 
         let deps = vec![
             ("installed".into(), recipes_path.join("installed.rhai")),
-            ("notinstalled".into(), recipes_path.join("notinstalled.rhai")),
+            (
+                "notinstalled".into(),
+                recipes_path.join("notinstalled.rhai"),
+            ),
         ];
 
         let uninstalled = filter_uninstalled(deps).unwrap();
@@ -739,9 +741,7 @@ let installed = false;
         graph.add_package("b".into(), vec![], PathBuf::from("b.rhai"));
         graph.add_package("c".into(), vec!["a".into()], PathBuf::from("c.rhai"));
 
-        let order = graph
-            .topological_sort(&["b".into(), "c".into()])
-            .unwrap();
+        let order = graph.topological_sort(&["b".into(), "c".into()]).unwrap();
         // Should include a, b, c (a before c, b can be anywhere)
         assert!(order.contains(&"a".to_string()));
         assert!(order.contains(&"b".to_string()));
@@ -852,12 +852,28 @@ let installed = false;
         let mut graph = DepGraph::new();
 
         graph.add_package("core".into(), vec![], PathBuf::from("core.rhai"));
-        graph.add_package("http".into(), vec!["core".into()], PathBuf::from("http.rhai"));
-        graph.add_package("json".into(), vec!["core".into()], PathBuf::from("json.rhai"));
-        graph.add_package("crypto".into(), vec!["core".into()], PathBuf::from("crypto.rhai"));
+        graph.add_package(
+            "http".into(),
+            vec!["core".into()],
+            PathBuf::from("http.rhai"),
+        );
+        graph.add_package(
+            "json".into(),
+            vec!["core".into()],
+            PathBuf::from("json.rhai"),
+        );
+        graph.add_package(
+            "crypto".into(),
+            vec!["core".into()],
+            PathBuf::from("crypto.rhai"),
+        );
         graph.add_package("web".into(), vec!["http".into()], PathBuf::from("web.rhai"));
         graph.add_package("db".into(), vec!["json".into()], PathBuf::from("db.rhai"));
-        graph.add_package("auth".into(), vec!["crypto".into()], PathBuf::from("auth.rhai"));
+        graph.add_package(
+            "auth".into(),
+            vec!["crypto".into()],
+            PathBuf::from("auth.rhai"),
+        );
         graph.add_package(
             "myapp".into(),
             vec!["web".into(), "db".into(), "auth".into()],
@@ -895,9 +911,17 @@ let installed = false;
         //   leaf1     leaf2
         let mut graph = DepGraph::new();
         graph.add_package("leaf1".into(), vec![], PathBuf::from("leaf1.rhai"));
-        graph.add_package("tree1".into(), vec!["leaf1".into()], PathBuf::from("tree1.rhai"));
+        graph.add_package(
+            "tree1".into(),
+            vec!["leaf1".into()],
+            PathBuf::from("tree1.rhai"),
+        );
         graph.add_package("leaf2".into(), vec![], PathBuf::from("leaf2.rhai"));
-        graph.add_package("tree2".into(), vec!["leaf2".into()], PathBuf::from("tree2.rhai"));
+        graph.add_package(
+            "tree2".into(),
+            vec!["leaf2".into()],
+            PathBuf::from("tree2.rhai"),
+        );
 
         // Request both trees
         let order = graph
@@ -988,7 +1012,11 @@ let installed = false;
         // target -> a, but b <-> c form a cycle (not reachable from target)
         let mut graph = DepGraph::new();
         graph.add_package("a".into(), vec![], PathBuf::from("a.rhai"));
-        graph.add_package("target".into(), vec!["a".into()], PathBuf::from("target.rhai"));
+        graph.add_package(
+            "target".into(),
+            vec!["a".into()],
+            PathBuf::from("target.rhai"),
+        );
         graph.add_package("b".into(), vec!["c".into()], PathBuf::from("b.rhai"));
         graph.add_package("c".into(), vec!["b".into()], PathBuf::from("c.rhai"));
 
@@ -1022,8 +1050,16 @@ let installed = false;
         let result = graph.topological_sort(&["a".into()]);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("Missing dependencies"), "Expected missing dependency error, got: {}", err);
-        assert!(err.contains("'b' depends on missing package 'missing'"), "Expected specific error message, got: {}", err);
+        assert!(
+            err.contains("Missing dependencies"),
+            "Expected missing dependency error, got: {}",
+            err
+        );
+        assert!(
+            err.contains("'b' depends on missing package 'missing'"),
+            "Expected specific error message, got: {}",
+            err
+        );
     }
 
     #[cheat_aware(
@@ -1184,7 +1220,12 @@ let installed = true;
         }
 
         let deps: Vec<_> = (0..3)
-            .map(|i| (format!("pkg{}", i), dir.path().join(format!("pkg{}.rhai", i))))
+            .map(|i| {
+                (
+                    format!("pkg{}", i),
+                    dir.path().join(format!("pkg{}.rhai", i)),
+                )
+            })
             .collect();
 
         let uninstalled = filter_uninstalled(deps).unwrap();
@@ -1232,7 +1273,11 @@ let installed = true;
     #[test]
     fn test_package_names_with_hyphens() {
         let mut graph = DepGraph::new();
-        graph.add_package("my-app".into(), vec!["my-lib".into()], PathBuf::from("my-app.rhai"));
+        graph.add_package(
+            "my-app".into(),
+            vec!["my-lib".into()],
+            PathBuf::from("my-app.rhai"),
+        );
         graph.add_package("my-lib".into(), vec![], PathBuf::from("my-lib.rhai"));
 
         let order = graph.topological_sort(&["my-app".into()]).unwrap();
@@ -1243,7 +1288,11 @@ let installed = true;
     #[test]
     fn test_package_names_with_numbers() {
         let mut graph = DepGraph::new();
-        graph.add_package("lib2".into(), vec!["lib1".into()], PathBuf::from("lib2.rhai"));
+        graph.add_package(
+            "lib2".into(),
+            vec!["lib1".into()],
+            PathBuf::from("lib2.rhai"),
+        );
         graph.add_package("lib1".into(), vec![], PathBuf::from("lib1.rhai"));
 
         let order = graph.topological_sort(&["lib2".into()]).unwrap();
@@ -1298,8 +1347,16 @@ let installed = true;
     #[test]
     fn test_depgraph_add_package_overwrites() {
         let mut graph = DepGraph::new();
-        graph.add_package("pkg".into(), vec!["old-dep".into()], PathBuf::from("old.rhai"));
-        graph.add_package("pkg".into(), vec!["new-dep".into()], PathBuf::from("new.rhai"));
+        graph.add_package(
+            "pkg".into(),
+            vec!["old-dep".into()],
+            PathBuf::from("old.rhai"),
+        );
+        graph.add_package(
+            "pkg".into(),
+            vec!["new-dep".into()],
+            PathBuf::from("new.rhai"),
+        );
 
         // Should have the new values
         assert_eq!(graph.get_path("pkg"), Some(&PathBuf::from("new.rhai")));
@@ -1539,7 +1596,11 @@ let deps = [{}];
         let result = resolve_deps("curl", dir.path());
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("constraint"), "Expected constraint error, got: {}", err);
+        assert!(
+            err.contains("constraint"),
+            "Expected constraint error, got: {}",
+            err
+        );
     }
 
     #[cheat_reviewed("Version constraint - range constraint satisfied")]

@@ -13,7 +13,7 @@
 //! ];
 //! ```
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use semver::{Version, VersionReq};
 use std::fmt;
 
