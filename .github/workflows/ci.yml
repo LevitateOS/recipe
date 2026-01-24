@@ -12,24 +12,27 @@ on:
         required: true
         default: 'patch'
         type: choice
-        options:
-          - patch
-          - minor
-          - major
+        options: [patch, minor, major]
 
 jobs:
+  changes:
+    uses: LevitateOS/LevitateOS/.github/workflows/detect-changes.yml@master
+    with:
+      type: rust
+
   ci:
+    needs: changes
+    if: needs.changes.outputs.has_changes == 'true'
     uses: LevitateOS/LevitateOS/.github/workflows/rust-ci.yml@master
     with:
       msrv: '1.93'
 
   release:
-    needs: [ci]
+    needs: [changes, ci]
     if: |
-      (github.event_name == 'push' &&
-       (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') &&
-       !startsWith(github.event.head_commit.message, 'chore: Bump version')) ||
-      github.event_name == 'workflow_dispatch'
+      needs.changes.outputs.has_changes == 'true' &&
+      ((github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'chore: Bump version')) ||
+      github.event_name == 'workflow_dispatch')
     uses: LevitateOS/LevitateOS/.github/workflows/rust-release.yml@master
     with:
       create-binary-artifact: true
