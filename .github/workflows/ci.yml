@@ -14,6 +14,9 @@ on:
         type: choice
         options: [patch, minor, major]
 
+permissions:
+  contents: write
+
 jobs:
   changes:
     uses: LevitateOS/LevitateOS/.github/workflows/detect-changes.yml@master
