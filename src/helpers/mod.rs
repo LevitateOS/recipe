@@ -17,6 +17,7 @@
 //! - **git**: git_clone, git_clone_depth
 //! - **torrent**: torrent, download_with_resume
 //! - **disk**: check_disk_space, format_bytes
+//! - **llm**: llm_extract, llm_find_latest_version, llm_find_download_url
 
 pub mod acquire;
 pub mod build;
@@ -28,6 +29,7 @@ pub mod git;
 pub mod http;
 pub mod install;
 pub mod io;
+pub mod llm;
 pub mod process;
 pub mod torrent;
 
@@ -106,4 +108,9 @@ pub fn register_all(engine: &mut Engine) {
     // Torrent/download utilities
     engine.register_fn("torrent", torrent::torrent);
     engine.register_fn("download_with_resume", torrent::download_with_resume);
+
+    // LLM utilities (for complex version/URL extraction)
+    engine.register_fn("llm_extract", llm::llm_extract);
+    engine.register_fn("llm_find_latest_version", llm::llm_find_latest_version);
+    engine.register_fn("llm_find_download_url", llm::llm_find_download_url);
 }
