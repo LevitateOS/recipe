@@ -10,7 +10,7 @@
 
 mod context;
 pub mod deps;
-pub(crate) mod lifecycle;
+pub mod lifecycle;
 pub mod lockfile;
 pub mod output;
 pub mod recipe_state;

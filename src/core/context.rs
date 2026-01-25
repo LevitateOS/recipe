@@ -44,6 +44,7 @@ pub fn record_installed_file(path: PathBuf) {
 }
 
 /// Get all installed files from the context
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn get_installed_files() -> Vec<PathBuf> {
     CONTEXT.with(|c| {
         c.borrow()
