@@ -11,6 +11,13 @@
 //! 2. Read `helpers/` - all the recipe-facing functions
 //! 3. Understand how state flows through the system
 //!
+//! # Design Philosophy
+//!
+//! **Phase separation is sacred.** Never combine acquire/build/install.
+//! Each phase must be independently re-runnable and cacheable.
+//!
+//! See `core/lifecycle/mod.rs` for detailed rationale.
+//!
 //! # Example Recipe
 //!
 //! ```rhai
@@ -139,15 +146,6 @@ impl RecipeEngine {
     /// Returns true if upgrade was performed
     pub fn upgrade(&self, recipe_path: &Path) -> Result<bool> {
         core::lifecycle::upgrade(&self.engine, &self.prefix, &self.build_dir, recipe_path)
-    }
-
-    /// Resolve a dependency - calls resolve() and returns the path
-    ///
-    /// This is a lightweight lifecycle for dependency recipes that don't need
-    /// full install capabilities. The recipe just needs a `fn resolve()` that
-    /// returns the path to the resolved dependency.
-    pub fn resolve(&self, recipe_path: &Path) -> Result<std::path::PathBuf> {
-        core::lifecycle::resolve(&self.engine, &self.build_dir, recipe_path)
     }
 
     /// Get the prefix path

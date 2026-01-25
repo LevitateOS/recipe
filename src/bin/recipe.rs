@@ -8,10 +8,9 @@
 //!   recipe list                    List installed packages
 //!   recipe search <pattern>        Search available recipes
 //!   recipe info <name>             Show package info
-//!   recipe resolve <name>          Resolve dependency path (doesn't install)
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use levitate_recipe::{RecipeEngine, deps, output, recipe_state};
 use std::path::{Path, PathBuf};
 
@@ -221,28 +220,6 @@ enum Commands {
         #[command(subcommand)]
         action: LockAction,
     },
-
-    /// Resolve a dependency (returns path, doesn't install)
-    ///
-    /// Calls the resolve() function in a recipe and returns the path.
-    /// Used for dependency resolution without full package installation.
-    Resolve {
-        /// Package name or path to recipe
-        package: String,
-
-        /// Output format
-        #[arg(short = 'F', long, value_enum, default_value_t = OutputFormat::Plain)]
-        format: OutputFormat,
-    },
-}
-
-/// Output format for resolve command
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum OutputFormat {
-    /// Human-readable path
-    Plain,
-    /// JSON object with "path" field
-    Json,
 }
 
 #[derive(Subcommand)]
@@ -783,21 +760,6 @@ fn main() -> Result<()> {
                         println!("  {} {}", name.red(), "(installed)".dimmed());
                     }
                 }
-            }
-        }
-
-        Commands::Resolve { package, format } => {
-            let recipe_path = resolve_recipe(&package, &recipes_path)?;
-            let engine = create_engine(&cli.prefix, cli.build_dir.as_deref(), &recipes_path)?;
-            let path = engine.resolve(&recipe_path)?;
-
-            match format {
-                OutputFormat::Json => {
-                    // Use serde_json for proper escaping to prevent injection
-                    let json = serde_json::json!({"path": path.to_string_lossy()});
-                    println!("{}", json);
-                }
-                OutputFormat::Plain => println!("{}", path.display()),
             }
         }
 

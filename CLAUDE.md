@@ -1,5 +1,41 @@
 # CLAUDE.md - recipe
 
+## Core Design Philosophy - READ THIS FIRST
+
+### Phase Separation is Sacred
+
+Recipe uses a 3-phase lifecycle: `acquire()` → `build()` → `install()`
+
+Each phase:
+1. **Checks if already done** - returns early if work exists
+2. **Does ONE thing** - acquire OR build OR install, never combined
+3. **Enables caching** - user can re-run any phase independently
+
+### WHY This Matters
+
+| Without separation | With separation |
+|-------------------|-----------------|
+| Change one thing → redo everything | Change one thing → redo only that phase |
+| No caching possible | Each phase cached independently |
+| Monolithic, fragile | Granular, robust |
+
+### Anti-Patterns (DO NOT DO)
+
+❌ **Monolithic functions** - putting acquire+build+install in one function
+❌ **Skipping phases** - calling build() from acquire()
+❌ **Combining phases** - downloading AND extracting in acquire()
+
+### The sys.exit(0) Test
+
+Before implementing, ask: "Am I making the test pass, or actually solving the problem?"
+
+If your solution bypasses phase separation to "get it working" - STOP.
+That's reward hacking. The easy path and correct path must be the same.
+
+Reference: https://www.anthropic.com/research/emergent-misalignment-reward-hacking
+
+---
+
 ## What is recipe?
 
 Rhai-based package manager for LevitateOS. Recipes are executable scripts, not static configs. State lives in recipe files (`installed = true`), not a database.
