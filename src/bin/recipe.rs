@@ -220,6 +220,19 @@ enum Commands {
         #[command(subcommand)]
         action: LockAction,
     },
+
+    /// Resolve a dependency (returns path, doesn't install)
+    ///
+    /// Calls the resolve() function in a recipe and returns the path.
+    /// Used for dependency resolution without full package installation.
+    Resolve {
+        /// Dependency name or path to recipe
+        name: String,
+
+        /// Output format (plain or json)
+        #[arg(long, default_value = "plain")]
+        format: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -751,6 +764,21 @@ fn main() -> Result<()> {
                         println!("  {} {}", name.red(), "(installed)".dimmed());
                     }
                 }
+            }
+        }
+
+        Commands::Resolve { name, format } => {
+            let recipe_path = resolve_recipe(&name, &recipes_path)?;
+            let engine = create_engine(&cli.prefix, cli.build_dir.as_deref(), &recipes_path)?;
+            let path = engine.resolve(&recipe_path)?;
+
+            match format.as_str() {
+                "json" => {
+                    // Use serde_json for proper escaping to prevent injection
+                    let json = serde_json::json!({"path": path.to_string_lossy()});
+                    println!("{}", json);
+                }
+                _ => println!("{}", path.display()),
             }
         }
 

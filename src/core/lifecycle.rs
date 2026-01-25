@@ -618,6 +618,123 @@ pub fn update(engine: &Engine, recipe_path: &Path) -> Result<Option<String>> {
     }
 }
 
+/// Resolve a dependency - calls resolve() and returns the path
+///
+/// This is a lightweight lifecycle that doesn't require name/version/installed fields.
+/// The recipe only needs to define a `fn resolve() -> String` that returns the path.
+///
+/// # Example Recipe (linux.rhai)
+/// ```rhai
+/// let name = "linux";
+/// let description = "Linux kernel source";
+///
+/// fn resolve() {
+///     // Priority 1: env var
+///     let path = env("LINUX_SOURCE");
+///     if path != "" && exists(path + "/Makefile") {
+///         return path;
+///     }
+///
+///     // Priority 2: submodule
+///     if exists("../linux/Makefile") {
+///         return "../linux";
+///     }
+///
+///     // Priority 3: download
+///     git_clone_depth("https://github.com/LevitateOS/linux.git", 1);
+///     return BUILD_DIR + "/linux";
+/// }
+/// ```
+pub fn resolve(
+    engine: &Engine,
+    build_dir: &Path,
+    recipe_path: &Path,
+) -> Result<std::path::PathBuf> {
+    let script = std::fs::read_to_string(recipe_path)
+        .with_context(|| format!("Failed to read recipe: {}", recipe_path.display()))?;
+
+    // Canonicalize recipe path for locking
+    let recipe_path_canonical = recipe_path
+        .canonicalize()
+        .unwrap_or_else(|_| recipe_path.to_path_buf());
+
+    // Acquire exclusive lock to prevent concurrent resolution
+    let _lock = acquire_recipe_lock(&recipe_path_canonical)?;
+
+    // Set up minimal execution context for helpers (git_clone needs BUILD_DIR)
+    init_context(build_dir.to_path_buf(), build_dir.to_path_buf());
+    let _context_guard = ContextGuard::new();
+
+    // Create scope with variables
+    let mut scope = Scope::new();
+    scope.push_constant("BUILD_DIR", build_dir.to_string_lossy().to_string());
+    scope.push_constant("ARCH", std::env::consts::ARCH);
+
+    // Compile script
+    let ast = engine
+        .compile(&script)
+        .map_err(|e| anyhow::anyhow!("Failed to compile recipe: {}", e))?;
+
+    // Check that resolve() function exists
+    if !has_action(&ast, "resolve") {
+        return Err(anyhow::anyhow!(
+            "Recipe '{}' does not define a resolve() function",
+            recipe_path.display()
+        ));
+    }
+
+    // Get recipe name for logging
+    let name = recipe_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    output::action(&format!("Resolving {}", name));
+
+    // Call resolve() function
+    let result = engine
+        .call_fn::<rhai::Dynamic>(&mut scope, &ast, "resolve", ())
+        .map_err(|e| anyhow::anyhow!("resolve() failed: {}", e))?;
+
+    // Validate return type - must be a String
+    let result_type = result.type_name();
+    let result = result.try_cast::<String>().ok_or_else(|| {
+        anyhow::anyhow!(
+            "resolve() must return a String path, got: {}",
+            result_type
+        )
+    })?;
+
+    // Validate and normalize the returned path
+    let path = std::path::PathBuf::from(&result);
+
+    // Handle relative paths by joining with build_dir
+    let path = if path.is_relative() {
+        build_dir.join(&path)
+    } else {
+        path
+    };
+
+    // Verify the path exists before canonicalizing
+    if !path.exists() {
+        return Err(anyhow::anyhow!(
+            "resolve() returned path that doesn't exist: {}",
+            path.display()
+        ));
+    }
+
+    // Canonicalize the path to prevent path traversal attacks
+    let path = path.canonicalize().with_context(|| {
+        format!(
+            "Failed to canonicalize resolved path: {}",
+            path.display()
+        )
+    })?;
+
+    output::success(&format!("{} resolved to {}", name, path.display()));
+    Ok(path)
+}
+
 /// Upgrade a package (reinstall if new version available)
 pub fn upgrade(
     engine: &Engine,
@@ -1532,5 +1649,165 @@ fn install() {}
         // "a" removed but prefix itself should remain
         assert!(!nested.exists());
         assert!(prefix.exists());
+    }
+
+    // ==================== resolve() tests ====================
+
+    #[cheat_aware(
+        protects = "User sees helpful error when resolve() returns wrong type",
+        severity = "MEDIUM",
+        ease = "EASY",
+        cheats = [
+            "Accept any return type and coerce to string",
+            "Show generic 'resolve failed' error without type info"
+        ],
+        consequence = "User sees cryptic error message when debugging recipes"
+    )]
+    #[test]
+    fn test_resolve_wrong_return_type() {
+        let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "wrong-type-resolve",
+            r#"
+fn resolve() {
+    return 42;  // Returns integer instead of string
+}
+"#,
+        );
+        let engine = RecipeEngine::new(prefix, build_dir);
+        let result = engine.resolve(&recipe_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("must return a String"));
+        assert!(err.contains("i64")); // Rhai's integer type
+    }
+
+    #[cheat_aware(
+        protects = "User sees clear error when resolve() function is missing",
+        severity = "HIGH",
+        ease = "EASY",
+        cheats = [
+            "Return empty path silently",
+            "Skip resolve entirely if missing"
+        ],
+        consequence = "User's recipe silently fails to resolve sources"
+    )]
+    #[test]
+    fn test_resolve_missing_function() {
+        let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "no-resolve",
+            r#"
+let name = "test";
+let version = "1.0";
+// No resolve() function defined
+"#,
+        );
+        let engine = RecipeEngine::new(prefix, build_dir);
+        let result = engine.resolve(&recipe_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("does not define a resolve() function"));
+    }
+
+    #[cheat_aware(
+        protects = "User sees error when resolve() returns non-existent path",
+        severity = "HIGH",
+        ease = "EASY",
+        cheats = [
+            "Create the directory automatically",
+            "Return success with non-existent path"
+        ],
+        consequence = "Build fails later with confusing 'file not found' error"
+    )]
+    #[test]
+    fn test_resolve_path_not_exist() {
+        let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "nonexistent-path",
+            r#"
+fn resolve() {
+    return "/nonexistent/path/that/does/not/exist";
+}
+"#,
+        );
+        let engine = RecipeEngine::new(prefix, build_dir);
+        let result = engine.resolve(&recipe_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("doesn't exist"));
+    }
+
+    #[cheat_aware(
+        protects = "Relative paths from resolve() are correctly joined with build_dir",
+        severity = "HIGH",
+        ease = "MEDIUM",
+        cheats = [
+            "Use relative path as-is without joining",
+            "Join with wrong base directory"
+        ],
+        consequence = "User's build finds wrong source directory or fails"
+    )]
+    #[test]
+    fn test_resolve_relative_path_joined() {
+        let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+
+        // Create the source directory inside build_dir
+        let source_dir = build_dir.join("my-source");
+        std::fs::create_dir_all(&source_dir).unwrap();
+
+        let recipe_path = write_recipe(
+            &recipes_dir,
+            "relative-resolve",
+            r#"
+fn resolve() {
+    return "my-source";  // Relative path
+}
+"#,
+        );
+        let engine = RecipeEngine::new(prefix, build_dir);
+        let result = engine.resolve(&recipe_path);
+        assert!(result.is_ok());
+        let resolved = result.unwrap();
+        assert_eq!(resolved, source_dir.canonicalize().unwrap());
+    }
+
+    #[cheat_aware(
+        protects = "Absolute paths from resolve() are accepted as-is",
+        severity = "HIGH",
+        ease = "MEDIUM",
+        cheats = [
+            "Force absolute paths to be relative to build_dir",
+            "Reject absolute paths entirely"
+        ],
+        consequence = "User can't reference sources outside build_dir (breaks ../linux pattern)"
+    )]
+    #[test]
+    fn test_resolve_absolute_path_accepted() {
+        let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+
+        // Create a source directory (will use its absolute path)
+        let source_dir = recipes_dir.join("external-source");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let absolute_path = source_dir.canonicalize().unwrap();
+
+        let recipe_content = format!(
+            r#"
+fn resolve() {{
+    return "{}";
+}}
+"#,
+            absolute_path.display()
+        );
+        let recipe_path = write_recipe(&recipes_dir, "absolute-resolve", &recipe_content);
+
+        let engine = RecipeEngine::new(prefix, build_dir);
+        let result = engine.resolve(&recipe_path);
+        assert!(result.is_ok());
+        let resolved = result.unwrap();
+        assert_eq!(resolved, absolute_path);
     }
 }

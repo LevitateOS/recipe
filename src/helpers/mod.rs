@@ -14,16 +14,20 @@
 //! - **command**: run_output, run_status
 //! - **http**: http_get, github_latest_release, github_latest_tag, parse_version
 //! - **process**: exec, exec_output
+//! - **git**: git_clone, git_clone_depth
+//! - **torrent**: torrent, download_with_resume
 
 pub mod acquire;
 pub mod build;
 pub mod command;
 pub mod env;
 pub mod filesystem;
+pub mod git;
 pub mod http;
 pub mod install;
 pub mod io;
 pub mod process;
+pub mod torrent;
 
 use rhai::Engine;
 
@@ -81,4 +85,12 @@ pub fn register_all(engine: &mut Engine) {
     // Execution utilities for run command
     engine.register_fn("exec", process::exec);
     engine.register_fn("exec_output", process::exec_output);
+
+    // Git utilities
+    engine.register_fn("git_clone", git::git_clone);
+    engine.register_fn("git_clone_depth", git::git_clone_depth);
+
+    // Torrent/download utilities
+    engine.register_fn("torrent", torrent::torrent);
+    engine.register_fn("download_with_resume", torrent::download_with_resume);
 }

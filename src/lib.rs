@@ -141,6 +141,15 @@ impl RecipeEngine {
         core::lifecycle::upgrade(&self.engine, &self.prefix, &self.build_dir, recipe_path)
     }
 
+    /// Resolve a dependency - calls resolve() and returns the path
+    ///
+    /// This is a lightweight lifecycle for dependency recipes that don't need
+    /// full install capabilities. The recipe just needs a `fn resolve()` that
+    /// returns the path to the resolved dependency.
+    pub fn resolve(&self, recipe_path: &Path) -> Result<std::path::PathBuf> {
+        core::lifecycle::resolve(&self.engine, &self.build_dir, recipe_path)
+    }
+
     /// Get the prefix path
     pub fn prefix(&self) -> &Path {
         &self.prefix
