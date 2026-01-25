@@ -13,9 +13,19 @@ pub fn file_exists(path: &str) -> bool {
     Path::new(path).is_file()
 }
 
+/// Check if a file exists (alias for file_exists)
+pub fn is_file(path: &str) -> bool {
+    file_exists(path)
+}
+
 /// Check if a directory exists
 pub fn dir_exists(path: &str) -> bool {
     Path::new(path).is_dir()
+}
+
+/// Check if a directory exists (alias for dir_exists)
+pub fn is_dir(path: &str) -> bool {
+    dir_exists(path)
 }
 
 /// Create a directory and all parent directories

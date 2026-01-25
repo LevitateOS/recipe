@@ -387,3 +387,120 @@ pub struct FileHashes {
     pub sha512: String,
     pub blake3: String,
 }
+
+// ============================================================================
+// Pure helpers (no context dependency)
+// ============================================================================
+
+/// Download a file from a URL to a specific destination (pure version).
+///
+/// Returns the path to the downloaded file on success, empty string on failure.
+///
+/// # Example
+/// ```rhai
+/// let path = download("https://example.com/foo.tar.gz", "/tmp/foo.tar.gz");
+/// if path != "" {
+///     verify_sha256(path, "abc123...");
+/// }
+/// ```
+pub fn download_to(url: &str, dest: &str) -> Result<String, Box<EvalAltResult>> {
+    let dest_path = Path::new(dest);
+
+    // Create parent directory if needed
+    if let Some(parent) = dest_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot create directory: {}", e))?;
+    }
+
+    let filename = dest_path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "download".to_string());
+
+    // Create progress bar
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .template("     {spinner:.cyan} {msg}")
+            .unwrap()
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+    );
+    pb.set_message(format!("downloading {}", filename));
+    pb.enable_steady_tick(Duration::from_millis(80));
+
+    // Make the request
+    let response = ureq::get(url)
+        .call()
+        .map_err(|e| format!("download failed: {}", e))?;
+
+    // Get content length if available
+    let content_length: Option<u64> = response
+        .header("content-length")
+        .and_then(|s| s.parse().ok());
+
+    // If we have content length, switch to a progress bar
+    if let Some(len) = content_length {
+        pb.set_length(len);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template(
+                    "     {spinner:.cyan} [{bar:30.cyan/dim}] {bytes}/{total_bytes} ({eta})",
+                )
+                .unwrap()
+                .progress_chars("━╸━"),
+        );
+    }
+
+    // Create output file
+    let mut file =
+        std::fs::File::create(dest_path).map_err(|e| format!("cannot create file: {}", e))?;
+
+    // Read and write with progress
+    let mut reader = response.into_reader();
+    let mut buffer = [0u8; 8192];
+    let mut total_bytes = 0u64;
+
+    loop {
+        let bytes_read = reader
+            .read(&mut buffer)
+            .map_err(|e| format!("read error: {}", e))?;
+
+        if bytes_read == 0 {
+            break;
+        }
+
+        file.write_all(&buffer[..bytes_read])
+            .map_err(|e| format!("write error: {}", e))?;
+
+        total_bytes += bytes_read as u64;
+        pb.set_position(total_bytes);
+    }
+
+    pb.finish_and_clear();
+    output::detail(&format!("downloaded {} ({} bytes)", filename, total_bytes));
+
+    Ok(dest.to_string())
+}
+
+/// Verify the SHA256 hash of a specific file (pure version).
+///
+/// # Example
+/// ```rhai
+/// verify_sha256("/tmp/foo.tar.gz", "abc123...");
+/// ```
+pub fn verify_sha256_file(path: &str, expected: &str) -> Result<(), Box<EvalAltResult>> {
+    output::detail(&format!("verifying sha256 of {}", path));
+    verify_hash_sha256(Path::new(path), expected)
+}
+
+/// Verify the SHA512 hash of a specific file (pure version).
+pub fn verify_sha512_file(path: &str, expected: &str) -> Result<(), Box<EvalAltResult>> {
+    output::detail(&format!("verifying sha512 of {}", path));
+    verify_hash_sha512(Path::new(path), expected)
+}
+
+/// Verify the BLAKE3 hash of a specific file (pure version).
+pub fn verify_blake3_file(path: &str, expected: &str) -> Result<(), Box<EvalAltResult>> {
+    output::detail(&format!("verifying blake3 of {}", path));
+    verify_hash_blake3(Path::new(path), expected)
+}
