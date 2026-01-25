@@ -39,7 +39,7 @@ fn serial_log() -> PathBuf {
 }
 
 const SSH_PORT: u16 = 2222;
-const DISK_SIZE: &str = "20G";
+const DISK_SIZE: &str = "256G";
 const ARCH_IMAGE_URL: &str = "https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2";
 
 /// Check if QEMU is available
