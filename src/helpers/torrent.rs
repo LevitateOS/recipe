@@ -1,21 +1,22 @@
 //! Torrent/download helpers for recipe scripts
 //!
-//! Provides functions to download files via BitTorrent or HTTP with resume support.
+//! Pure functions for downloading files via BitTorrent or HTTP with resume support.
 //! Uses aria2c as the backend (supports torrents, metalinks, and HTTP resume).
 //!
 //! ## Example
 //!
 //! ```rhai
-//! fn resolve() {
-//!     // Download via torrent (faster for large files)
-//!     torrent("https://download.rockylinux.org/pub/rocky/9/isos/x86_64/Rocky-9.5-x86_64-dvd.iso.torrent");
-//!     return BUILD_DIR + "/Rocky-9.5-x86_64-dvd.iso";
+//! fn acquire(ctx) {
+//!     let path = torrent(ctx.torrent_url, BUILD_DIR);
+//!     ctx.iso_path = path;
+//!     ctx
 //! }
 //! ```
 
-use crate::core::{output, with_context};
+use crate::core::output;
 use indicatif::{ProgressBar, ProgressStyle};
 use rhai::EvalAltResult;
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
@@ -54,187 +55,185 @@ fn has_aria2c() -> bool {
         .unwrap_or(false)
 }
 
-/// Download a file via BitTorrent
+/// Download a file via BitTorrent.
 ///
-/// Takes a .torrent file URL or magnet link. Downloads the content to BUILD_DIR.
+/// Takes a .torrent file URL or magnet link. Downloads the content to dest_dir.
 /// Returns the path to the downloaded file.
 ///
 /// Requires `aria2c` to be installed on the system.
 ///
 /// # Example
 /// ```rhai
-/// torrent("https://example.com/file.torrent");
+/// let iso = torrent("https://example.com/file.torrent", BUILD_DIR);
 /// ```
-pub fn torrent(url: &str) -> Result<String, Box<EvalAltResult>> {
-    with_context(|ctx| {
-        // Validate URL scheme for security
-        validate_download_url(url)?;
+pub fn torrent(url: &str, dest_dir: &str) -> Result<String, Box<EvalAltResult>> {
+    // Validate URL scheme for security
+    validate_download_url(url)?;
 
-        if !has_aria2c() {
-            return Err(
-                "aria2c not found. Install it with: dnf install aria2 (or apt install aria2)"
-                    .into(),
-            );
-        }
-
-        let build_dir = &ctx.build_dir;
-
-        // Get build directory path as string, handling non-UTF8 gracefully
-        let build_dir_str = build_dir
-            .to_str()
-            .ok_or("build directory path contains invalid UTF-8")?;
-
-        output::detail(&format!("torrent download: {}", url));
-
-        // Create progress spinner with RAII guard for cleanup
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(
-            ProgressStyle::default_spinner()
-                .template("     {spinner:.cyan} {msg}")
-                .unwrap()
-                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+    if !has_aria2c() {
+        return Err(
+            "aria2c not found. Install it with: dnf install aria2 (or apt install aria2)"
+                .into(),
         );
-        pb.set_message("downloading via torrent...");
-        pb.enable_steady_tick(Duration::from_millis(80));
-        let _guard = ProgressGuard(pb);
+    }
 
-        // Use aria2c for torrent download with stderr capture
-        // --seed-time=0 means don't seed after download (we're not being a good peer, but this is a build tool)
-        // --continue=true enables resume
-        // --max-connection-per-server=16 improves HTTP download speed
-        // --bt-stop-timeout=300 stops if no progress for 5 minutes (stall detection)
-        // --timeout=300 connection timeout
-        let output = Command::new("aria2c")
-            .args([
-                "--dir",
-                build_dir_str,
-                "--continue=true",
-                "--seed-time=0",
-                "--max-connection-per-server=16",
-                "--summary-interval=0",
-                "--console-log-level=warn",
-                "--bt-stop-timeout=300",   // 5 minute stall detection for torrents
-                "--timeout=300",           // 5 minute connection timeout
-                "--connect-timeout=60",    // 1 minute initial connection timeout
-                url,
-            ])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .map_err(|e| format!("failed to run aria2c: {}", e))?;
+    // Get build directory path as string, handling non-UTF8 gracefully
+    let dest_dir_path = Path::new(dest_dir);
+    let dest_dir_str = dest_dir_path
+        .to_str()
+        .ok_or("destination directory path contains invalid UTF-8")?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(
-                format!("torrent download failed for {}\nDetails: {}", url, stderr.trim()).into(),
-            );
-        }
+    output::detail(&format!("torrent download: {}", url));
 
-        // Try to determine the downloaded filename
-        // For .torrent URLs, extract the base name
-        let filename = extract_filename_from_torrent_url(url);
-        let path = build_dir.join(&filename);
+    // Create progress spinner with RAII guard for cleanup
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .template("     {spinner:.cyan} {msg}")
+            .unwrap()
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+    );
+    pb.set_message("downloading via torrent...");
+    pb.enable_steady_tick(Duration::from_millis(80));
+    let _guard = ProgressGuard(pb);
 
-        output::detail(&format!("downloaded {}", filename));
-        Ok(path.to_string_lossy().to_string())
-    })
+    // Use aria2c for torrent download with stderr capture
+    // --seed-time=0 means don't seed after download (we're not being a good peer, but this is a build tool)
+    // --continue=true enables resume
+    // --max-connection-per-server=16 improves HTTP download speed
+    // --bt-stop-timeout=300 stops if no progress for 5 minutes (stall detection)
+    // --timeout=300 connection timeout
+    let output = Command::new("aria2c")
+        .args([
+            "--dir",
+            dest_dir_str,
+            "--continue=true",
+            "--seed-time=0",
+            "--max-connection-per-server=16",
+            "--summary-interval=0",
+            "--console-log-level=warn",
+            "--bt-stop-timeout=300",   // 5 minute stall detection for torrents
+            "--timeout=300",           // 5 minute connection timeout
+            "--connect-timeout=60",    // 1 minute initial connection timeout
+            url,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| format!("failed to run aria2c: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(
+            format!("torrent download failed for {}\nDetails: {}", url, stderr.trim()).into(),
+        );
+    }
+
+    // Try to determine the downloaded filename
+    // For .torrent URLs, extract the base name
+    let filename = extract_filename_from_torrent_url(url);
+    let path = dest_dir_path.join(&filename);
+
+    output::detail(&format!("downloaded {}", filename));
+    Ok(path.to_string_lossy().to_string())
 }
 
-/// Download a file via HTTP with resume support
+/// Download a file via HTTP with resume support.
 ///
 /// Uses aria2c for better performance and resume capability.
 /// Falls back to curl if aria2c is not available.
 ///
 /// # Example
 /// ```rhai
-/// download_with_resume("https://example.com/large-file.iso");
+/// let file = download_with_resume("https://example.com/large-file.iso", BUILD_DIR + "/file.iso");
 /// ```
-pub fn download_with_resume(url: &str) -> Result<String, Box<EvalAltResult>> {
-    with_context(|ctx| {
-        // Validate URL scheme for security
-        validate_download_url(url)?;
+pub fn download_with_resume(url: &str, dest: &str) -> Result<String, Box<EvalAltResult>> {
+    // Validate URL scheme for security
+    validate_download_url(url)?;
 
-        let filename = extract_filename_from_url(url);
-        let dest = ctx.build_dir.join(&filename);
+    let dest_path = Path::new(dest);
+    let dest_dir = dest_path.parent().unwrap_or(Path::new("."));
+    let filename = dest_path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| extract_filename_from_url(url));
 
-        // Get paths as strings, handling non-UTF8 gracefully
-        let build_dir_str = ctx
-            .build_dir
-            .to_str()
-            .ok_or("build directory path contains invalid UTF-8")?;
-        let dest_str = dest
-            .to_str()
-            .ok_or("destination path contains invalid UTF-8")?;
+    // Get paths as strings, handling non-UTF8 gracefully
+    let dest_dir_str = dest_dir
+        .to_str()
+        .ok_or("destination directory path contains invalid UTF-8")?;
+    let dest_str = dest_path
+        .to_str()
+        .ok_or("destination path contains invalid UTF-8")?;
 
-        // If file already exists, verify size or skip
-        if dest.exists() {
-            output::detail(&format!("{} exists, will resume if incomplete", filename));
+    // If file already exists, verify size or skip
+    if dest_path.exists() {
+        output::detail(&format!("{} exists, will resume if incomplete", filename));
+    }
+
+    output::detail(&format!("downloading with resume: {}", url));
+
+    // Create progress spinner with RAII guard for cleanup
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .template("     {spinner:.cyan} {msg}")
+            .unwrap()
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+    );
+    pb.set_message(format!("downloading {}", filename));
+    pb.enable_steady_tick(Duration::from_millis(80));
+    let _guard = ProgressGuard(pb);
+
+    let result = if has_aria2c() {
+        // Prefer aria2c with stderr capture
+        Command::new("aria2c")
+            .args([
+                "--dir",
+                dest_dir_str,
+                "--out",
+                &filename,
+                "--continue=true",
+                "--max-connection-per-server=16",
+                "--summary-interval=0",
+                "--console-log-level=warn",
+                "--timeout=300",           // 5 minute connection timeout
+                "--connect-timeout=60",    // 1 minute initial connection timeout
+                "--max-tries=3",           // 3 retries for HTTP
+                "--retry-wait=5",          // 5 second wait between retries
+                url,
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .output()
+    } else {
+        // Fall back to curl with resume
+        output::detail("aria2c not found, using curl");
+        Command::new("curl")
+            .args([
+                "-L", // Follow redirects
+                "-C",
+                "-", // Resume from where we left off
+                "-o",
+                dest_str,
+                url,
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .output()
+    };
+
+    match result {
+        Ok(output) if output.status.success() => {
+            output::detail(&format!("downloaded {}", dest_path.display()));
+            Ok(dest.to_string())
         }
-
-        output::detail(&format!("downloading with resume: {}", url));
-
-        // Create progress spinner with RAII guard for cleanup
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(
-            ProgressStyle::default_spinner()
-                .template("     {spinner:.cyan} {msg}")
-                .unwrap()
-                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-        );
-        pb.set_message(format!("downloading {}", filename));
-        pb.enable_steady_tick(Duration::from_millis(80));
-        let _guard = ProgressGuard(pb);
-
-        let result = if has_aria2c() {
-            // Prefer aria2c with stderr capture
-            Command::new("aria2c")
-                .args([
-                    "--dir",
-                    build_dir_str,
-                    "--out",
-                    &filename,
-                    "--continue=true",
-                    "--max-connection-per-server=16",
-                    "--summary-interval=0",
-                    "--console-log-level=warn",
-                    "--timeout=300",           // 5 minute connection timeout
-                    "--connect-timeout=60",    // 1 minute initial connection timeout
-                    "--max-tries=3",           // 3 retries for HTTP
-                    "--retry-wait=5",          // 5 second wait between retries
-                    url,
-                ])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::piped())
-                .output()
-        } else {
-            // Fall back to curl with resume
-            output::detail("aria2c not found, using curl");
-            Command::new("curl")
-                .args([
-                    "-L", // Follow redirects
-                    "-C",
-                    "-", // Resume from where we left off
-                    "-o",
-                    dest_str,
-                    url,
-                ])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::piped())
-                .output()
-        };
-
-        match result {
-            Ok(output) if output.status.success() => {
-                output::detail(&format!("downloaded {}", dest.display()));
-                Ok(dest.to_string_lossy().to_string())
-            }
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                Err(format!("download failed for {}\nDetails: {}", url, stderr.trim()).into())
-            }
-            Err(e) => Err(format!("failed to run downloader: {}", e).into()),
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(format!("download failed for {}\nDetails: {}", url, stderr.trim()).into())
         }
-    })
+        Err(e) => Err(format!("failed to run downloader: {}", e).into()),
+    }
 }
 
 /// Extract filename from a URL, handling query strings and sanitizing

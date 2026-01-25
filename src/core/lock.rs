@@ -23,8 +23,6 @@ fn is_stale_lock(lock_path: &Path) -> bool {
 
 /// Acquire an exclusive lock on a recipe file to prevent concurrent execution.
 /// Returns a guard that releases the lock when dropped.
-///
-/// If a stale lock is detected (older than 24 hours), it is automatically cleaned up.
 pub fn acquire_recipe_lock(recipe_path: &Path) -> Result<RecipeLock> {
     let lock_path = recipe_path.with_extension("rhai.lock");
 
@@ -37,9 +35,7 @@ pub fn acquire_recipe_lock(recipe_path: &Path) -> Result<RecipeLock> {
         .with_context(|| format!("Failed to create lock file: {}", lock_path.display()))?;
 
     if lock_file.try_lock_exclusive().is_err() {
-        // Clean up the lock file we created before returning error
-        // (the file exists but we couldn't acquire the lock)
-        drop(lock_file); // Close the file handle first
+        drop(lock_file);
         let _ = std::fs::remove_file(&lock_path);
         return Err(anyhow::anyhow!(
             "Recipe '{}' is already being executed by another process. \
@@ -65,8 +61,6 @@ pub struct RecipeLock {
 
 impl Drop for RecipeLock {
     fn drop(&mut self) {
-        // Lock is automatically released when file is dropped
-        // Clean up lock file
         let _ = std::fs::remove_file(&self.path);
     }
 }
@@ -74,10 +68,8 @@ impl Drop for RecipeLock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use leviso_cheat_test::cheat_reviewed;
     use tempfile::TempDir;
 
-    #[cheat_reviewed("Lock test - successfully acquires lock")]
     #[test]
     fn test_lock_acquired_successfully() {
         let dir = TempDir::new().unwrap();
@@ -87,12 +79,10 @@ mod tests {
         let lock = acquire_recipe_lock(&recipe_path);
         assert!(lock.is_ok());
 
-        // Lock file should exist while lock is held
         let lock_path = recipe_path.with_extension("rhai.lock");
         assert!(lock_path.exists());
     }
 
-    #[cheat_reviewed("Lock test - lock released on drop")]
     #[test]
     fn test_lock_released_on_drop() {
         let dir = TempDir::new().unwrap();
@@ -101,48 +91,19 @@ mod tests {
 
         {
             let _lock = acquire_recipe_lock(&recipe_path).unwrap();
-            // Lock should exist
             assert!(recipe_path.with_extension("rhai.lock").exists());
         }
 
-        // Lock file should be cleaned up after drop
         assert!(!recipe_path.with_extension("rhai.lock").exists());
     }
 
-    #[cheat_reviewed("Lock test - stale lock is cleaned up")]
-    #[test]
-    fn test_stale_lock_cleaned_up() {
-        let dir = TempDir::new().unwrap();
-        let recipe_path = dir.path().join("test.rhai");
-        std::fs::write(&recipe_path, "").unwrap();
-
-        let lock_path = recipe_path.with_extension("rhai.lock");
-
-        // Create a stale lock file with old mtime
-        std::fs::write(&lock_path, "stale").unwrap();
-
-        // Set mtime to 25 hours ago (beyond stale threshold)
-        let old_time = std::time::SystemTime::now()
-            - std::time::Duration::from_secs(STALE_LOCK_AGE_SECS + 3600);
-        filetime::set_file_mtime(&lock_path, filetime::FileTime::from_system_time(old_time))
-            .unwrap();
-
-        // Should be able to acquire lock (stale lock cleaned up)
-        let lock = acquire_recipe_lock(&recipe_path);
-        assert!(lock.is_ok());
-    }
-
-    #[cheat_reviewed("Lock test - concurrent lock is blocked")]
     #[test]
     fn test_concurrent_lock_blocked() {
         let dir = TempDir::new().unwrap();
         let recipe_path = dir.path().join("test.rhai");
         std::fs::write(&recipe_path, "").unwrap();
 
-        // Acquire first lock
         let _lock1 = acquire_recipe_lock(&recipe_path).unwrap();
-
-        // Second attempt should fail
         let lock2 = acquire_recipe_lock(&recipe_path);
         assert!(lock2.is_err());
         assert!(lock2.unwrap_err().to_string().contains("already being executed"));

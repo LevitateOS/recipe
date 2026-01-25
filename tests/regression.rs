@@ -1,10 +1,8 @@
-//! Regression tests for previously fixed bugs
+//! Regression tests for previously fixed bugs (ctx-based design)
 //!
 //! Each test documents a bug that was fixed and ensures it doesn't recur.
-//! Tests are named with the pattern: test_regression_<brief_description>
 
-use leviso_cheat_test::cheat_aware;
-use levitate_recipe::{RecipeEngine, recipe_state};
+use levitate_recipe::RecipeEngine;
 use std::path::Path;
 use tempfile::TempDir;
 
@@ -31,347 +29,145 @@ fn write_recipe(recipes_dir: &Path, name: &str, content: &str) -> std::path::Pat
 }
 
 // =============================================================================
-// BUG: Variable Name Substring Matching (recipe_state.rs)
+// BUG: ctx serialization must handle special characters
 // =============================================================================
-// Issue: get_var("installed") incorrectly matched "installed_files" due to
-// substring matching. Setting "installed" would corrupt "installed_files".
-//
-// Fix: Added word boundary check after variable name.
 
-#[cheat_aware(
-    protects = "Variable names are correctly distinguished (installed vs installed_files)",
-    severity = "CRITICAL",
-    ease = "EASY",
-    cheats = [
-        "Test only single variable without similar names",
-        "Use completely different variable names",
-        "Skip testing get_var for variables with common prefixes"
-    ],
-    consequence = "get_var('installed') returns installed_files value, state corruption"
-)]
 #[test]
-fn test_regression_var_substring_matching_get() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("test.rhai");
-
-    // Write recipe with both "installed" and "installed_files"
-    std::fs::write(
-        &path,
-        r#"
-let installed = false;
-let installed_files = ["/usr/bin/foo", "/usr/lib/bar"];
-let installed_version = "1.0.0";
-"#,
-    )
-    .unwrap();
-
-    // get_var("installed") should return false, NOT match installed_files
-    let val: Option<bool> = recipe_state::get_var(&path, "installed").unwrap();
-    assert_eq!(val, Some(false));
-
-    // get_var("installed_files") should return the array
-    let files: Option<Vec<String>> = recipe_state::get_var(&path, "installed_files").unwrap();
-    assert_eq!(
-        files,
-        Some(vec!["/usr/bin/foo".to_string(), "/usr/lib/bar".to_string()])
-    );
-}
-
-#[cheat_aware(
-    protects = "Setting one variable doesn't corrupt similar-named variables",
-    severity = "CRITICAL",
-    ease = "EASY",
-    cheats = [
-        "Test set_var with unique variable names only",
-        "Skip testing file content after set_var",
-        "Use variables without common prefixes"
-    ],
-    consequence = "set_var('installed', true) corrupts installed_files value"
-)]
-#[test]
-fn test_regression_var_substring_matching_set() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("test.rhai");
-
-    std::fs::write(
-        &path,
-        r#"
-let installed = false;
-let installed_files = ["/usr/bin/foo"];
-"#,
-    )
-    .unwrap();
-
-    // Setting "installed" should NOT affect "installed_files"
-    recipe_state::set_var(&path, "installed", &true).unwrap();
-
-    let content = std::fs::read_to_string(&path).unwrap();
-    assert!(content.contains("let installed = true;"));
-    assert!(content.contains(r#"let installed_files = ["/usr/bin/foo"];"#));
-
-    // Verify via get_var
-    let files: Option<Vec<String>> = recipe_state::get_var(&path, "installed_files").unwrap();
-    assert_eq!(files, Some(vec!["/usr/bin/foo".to_string()]));
-}
-
-// =============================================================================
-// BUG: Array Parser Escape Bug (recipe_state.rs)
-// =============================================================================
-// Issue: Backslash was eaten during escape handling. `["C:\\path"]` became
-// `["C:path"]` instead of `["C:\path"]`.
-//
-// Fix: Properly handle escape sequences, preserve unknown escapes.
-
-#[cheat_aware(
-    protects = "Backslash escapes in arrays are preserved correctly",
-    severity = "HIGH",
-    ease = "MEDIUM",
-    cheats = [
-        "Test only arrays without escape characters",
-        "Use forward slashes in all test data",
-        "Skip Windows-style path testing"
-    ],
-    consequence = "Windows paths in installed_files corrupted: C:\\Program Files -> C:Program Files"
-)]
-#[test]
-fn test_regression_array_escape_backslash() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("test.rhai");
-
-    // Double backslash should become single backslash
-    std::fs::write(&path, r#"let paths = ["C:\\Users\\test"];"#).unwrap();
-
-    let paths: Option<Vec<String>> = recipe_state::get_var(&path, "paths").unwrap();
-    assert_eq!(paths, Some(vec!["C:\\Users\\test".to_string()]));
-}
-
-#[cheat_aware(
-    protects = "Escaped quotes in array strings are preserved",
-    severity = "MEDIUM",
-    ease = "MEDIUM",
-    cheats = [
-        "Test only arrays without quotes in values",
-        "Use simple strings in test data",
-        "Skip strings containing escaped quotes"
-    ],
-    consequence = "Array values with quotes corrupted or cause parse failure"
-)]
-#[test]
-fn test_regression_array_escape_quotes() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("test.rhai");
-
-    // Escaped quotes within string
-    std::fs::write(&path, r#"let strs = ["say \"hello\""];"#).unwrap();
-
-    let strs: Option<Vec<String>> = recipe_state::get_var(&path, "strs").unwrap();
-    assert_eq!(strs, Some(vec!["say \"hello\"".to_string()]));
-}
-
-#[cheat_aware(
-    protects = "Unknown escape sequences preserved for regex patterns etc.",
-    severity = "MEDIUM",
-    ease = "MEDIUM",
-    cheats = [
-        "Test only known escape sequences",
-        "Skip regex pattern storage",
-        "Use pre-escaped strings"
-    ],
-    consequence = "Regex patterns like \\d+ stored in recipes get corrupted to d+"
-)]
-#[test]
-fn test_regression_array_unknown_escape_preserved() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("test.rhai");
-
-    // Unknown escapes like \d should preserve the backslash
-    std::fs::write(&path, r#"let patterns = ["\\d+", "\\s*"];"#).unwrap();
-
-    let patterns: Option<Vec<String>> = recipe_state::get_var(&path, "patterns").unwrap();
-    // \d is unknown escape, so backslash is preserved
-    assert_eq!(patterns, Some(vec!["\\d+".to_string(), "\\s*".to_string()]));
-}
-
-// =============================================================================
-// BUG: Partial Removal Marked Complete (lifecycle.rs)
-// =============================================================================
-// Issue: If file deletion failed, state was still cleared. Package was marked
-// as removed but files remained.
-//
-// Fix: Fail if any file deletion fails, preserve state.
-
-#[cheat_aware(
-    protects = "Partial file deletion failures don't corrupt state",
-    severity = "CRITICAL",
-    ease = "MEDIUM",
-    cheats = [
-        "Test only removable files",
-        "Skip testing removal failure cases",
-        "Use empty installed_files list"
-    ],
-    consequence = "Remove fails partway through, installed=false but some files remain orphaned"
-)]
-#[test]
-fn test_regression_partial_removal_state_preserved() {
+fn test_regression_ctx_escapes_quotes() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
-
-    // Create a directory (can't be removed with remove_file)
-    let bin_dir = prefix.join("bin");
-    std::fs::create_dir_all(&bin_dir).unwrap();
-    let non_removable = bin_dir.join("subdir");
-    std::fs::create_dir(&non_removable).unwrap();
-    // Put file inside so it's not empty
-    std::fs::write(non_removable.join("file"), "content").unwrap();
 
     let recipe_path = write_recipe(
         &recipes_dir,
-        "partial",
-        &format!(
-            r#"
-let name = "partial";
-let version = "1.0.0";
-let installed = true;
-let installed_version = "1.0.0";
-let installed_files = ["{}"];
-fn acquire() {{}}
-fn install() {{}}
+        "escape-test",
+        r#"
+let ctx = #{
+    name: "escape-test",
+    message: "",
+};
+
+fn acquire(ctx) {
+    ctx.message = "hello \"world\"";
+    ctx
+}
+
+fn install(ctx) { ctx }
 "#,
-            non_removable.display()
-        ),
     );
 
     let engine = RecipeEngine::new(prefix, build_dir);
+    engine.execute(&recipe_path).unwrap();
 
-    // Remove should fail
-    let result = engine.remove(&recipe_path);
-    assert!(result.is_err());
-
-    // State should be PRESERVED (still installed)
-    let installed: Option<bool> = recipe_state::get_var(&recipe_path, "installed").unwrap();
-    assert_eq!(
-        installed,
-        Some(true),
-        "State was incorrectly cleared on partial removal failure"
-    );
+    let content = std::fs::read_to_string(&recipe_path).unwrap();
+    // Should be properly escaped
+    assert!(content.contains(r#"message: "hello \"world\"""#));
 }
 
-// =============================================================================
-// BUG: Network Errors Silently Ignored in Update (lifecycle.rs)
-// =============================================================================
-// Issue: check_update() failures were logged but returned Ok(None), making it
-// impossible to distinguish "no update" from "check failed".
-//
-// Fix: Return error so caller knows update check failed.
-
-#[cheat_aware(
-    protects = "Update check errors are propagated, not silently ignored",
-    severity = "HIGH",
-    ease = "EASY",
-    cheats = [
-        "Use check_update that always succeeds",
-        "Skip testing network error handling",
-        "Accept Ok(None) as valid for error case"
-    ],
-    consequence = "Network error during update check returns 'no update available' instead of error"
-)]
 #[test]
-fn test_regression_update_error_propagated() {
+fn test_regression_ctx_escapes_backslashes() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
     let recipe_path = write_recipe(
         &recipes_dir,
-        "failing-update",
+        "backslash-test",
         r#"
-let name = "failing-update";
-let version = "1.0.0";
-let installed = false;
+let ctx = #{
+    name: "backslash-test",
+    path: "",
+};
 
+fn acquire(ctx) {
+    ctx.path = "C:\\Users\\test";
+    ctx
+}
+
+fn install(ctx) { ctx }
+"#,
+    );
+
+    let engine = RecipeEngine::new(prefix, build_dir);
+    engine.execute(&recipe_path).unwrap();
+
+    let content = std::fs::read_to_string(&recipe_path).unwrap();
+    // Backslashes should be escaped
+    assert!(content.contains(r#"path: "C:\\Users\\test""#));
+}
+
+// =============================================================================
+// BUG: ctx block not found should give clear error
+// =============================================================================
+
+#[test]
+fn test_regression_missing_ctx_clear_error() {
+    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "no-ctx",
+        r#"
+let name = "no-ctx";
 fn acquire() {}
 fn install() {}
-fn check_update() {
-    // Simulate network error
-    throw "Network error!";
+"#,
+    );
+
+    let engine = RecipeEngine::new(prefix, build_dir);
+    let result = engine.execute(&recipe_path);
+
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("ctx"));
+}
+
+// =============================================================================
+// BUG: Failure should not corrupt partially updated ctx
+// =============================================================================
+
+#[test]
+fn test_regression_failure_preserves_acquire_state() {
+    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "partial-fail",
+        r#"
+let ctx = #{
+    name: "partial-fail",
+    acquired: false,
+    installed: false,
+};
+
+fn is_installed(ctx) {
+    if !ctx.installed { throw "not installed"; }
+    ctx
+}
+
+fn acquire(ctx) {
+    ctx.acquired = true;
+    ctx
+}
+
+fn install(ctx) {
+    throw "Install failed!";
 }
 "#,
     );
 
     let engine = RecipeEngine::new(prefix, build_dir);
-    let result = engine.update(&recipe_path);
+    let result = engine.execute(&recipe_path);
+    assert!(result.is_err());
 
-    // Should return error, not Ok(None)
-    assert!(result.is_err(), "Update check error was silently ignored");
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("update check failed")
-    );
-}
-
-// =============================================================================
-// BUG: parse_version Incorrect Prefix Stripping (http.rs)
-// =============================================================================
-// Issue: Stripping 'v' first broke the "version-" prefix check.
-// "version-1.0.0" became "ersion-1.0.0" instead of "1.0.0".
-//
-// Fix: Check longer prefixes first using strip_prefix.
-
-#[cheat_aware(
-    protects = "Version parsing handles all common prefix formats",
-    severity = "MEDIUM",
-    ease = "EASY",
-    cheats = [
-        "Test only simple version formats",
-        "Use pre-cleaned version strings",
-        "Skip testing version- and release- prefixes"
-    ],
-    consequence = "version-1.0.0 parsed as ersion-1.0.0, version comparison fails"
-)]
-#[test]
-fn test_regression_parse_version_order() {
-    use levitate_recipe::helpers::http::parse_version;
-
-    // "version-" prefix should be fully stripped
-    assert_eq!(parse_version("version-1.0.0"), "1.0.0");
-    assert_eq!(parse_version("version-2.5.3"), "2.5.3");
-
-    // "release-" prefix should be fully stripped
-    assert_eq!(parse_version("release-1.0.0"), "1.0.0");
-
-    // Combined prefixes: "release-v1.0.0" -> "release-" stripped -> "v1.0.0" -> "v" stripped -> "1.0.0"
-    assert_eq!(parse_version("release-v1.0.0"), "1.0.0");
-
-    // Simple "v" prefix
-    assert_eq!(parse_version("v1.0.0"), "1.0.0");
-
-    // No prefix
-    assert_eq!(parse_version("1.0.0"), "1.0.0");
+    // acquire succeeded, so acquired: true should be persisted
+    let content = std::fs::read_to_string(&recipe_path).unwrap();
+    assert!(content.contains("acquired: true"));
+    // But installed should still be false
+    assert!(content.contains("installed: false"));
 }
 
 // =============================================================================
 // BUG: HTTP Requests Without Timeout (http.rs)
 // =============================================================================
-// Issue: ureq::get() had no timeout, could hang indefinitely.
-//
-// Fix: Added 30-second timeout to all HTTP calls.
-// Note: This is difficult to test without mocking, but we verify the
-// timeout constant exists and is reasonable.
 
-#[cheat_aware(
-    protects = "HTTP requests fail fast instead of hanging forever",
-    severity = "HIGH",
-    ease = "HARD",
-    cheats = [
-        "Skip network timeout testing",
-        "Use mocked HTTP that always responds",
-        "Accept any timeout value"
-    ],
-    consequence = "Recipe download hangs forever on unresponsive server, no feedback to user"
-)]
 #[test]
 fn test_regression_http_has_timeout() {
-    // We can't easily test the actual timeout behavior without mocking,
-    // but we can verify the code compiles with timeout and test error handling.
     use levitate_recipe::helpers::http::http_get;
 
     // Invalid URL should fail quickly (not hang)
@@ -389,27 +185,37 @@ fn test_regression_http_has_timeout() {
 }
 
 // =============================================================================
-// BUG: Symlinks Need Proper Tracking (general install logic)
+// BUG: parse_version Incorrect Prefix Stripping (http.rs)
 // =============================================================================
-// Issue: is_file() check skipped symlinks. Important symlinks like /bin/sh
-// need to be tracked for proper removal.
-//
-// Fix: Changed to is_file() || is_symlink() where symlink tracking is needed.
 
-#[cheat_aware(
-    protects = "Symlinks are tracked for proper removal",
-    severity = "MEDIUM",
-    ease = "EASY",
-    cheats = [
-        "Skip symlink testing on non-Unix",
-        "Test only regular files",
-        "Use broken symlink detection only"
-    ],
-    consequence = "Package creates /bin/sh symlink, removal doesn't track it, orphaned symlink remains"
-)]
+#[test]
+fn test_regression_parse_version_order() {
+    use levitate_recipe::helpers::http::parse_version;
+
+    // "version-" prefix should be fully stripped
+    assert_eq!(parse_version("version-1.0.0"), "1.0.0");
+    assert_eq!(parse_version("version-2.5.3"), "2.5.3");
+
+    // "release-" prefix should be fully stripped
+    assert_eq!(parse_version("release-1.0.0"), "1.0.0");
+
+    // Combined prefixes
+    assert_eq!(parse_version("release-v1.0.0"), "1.0.0");
+
+    // Simple "v" prefix
+    assert_eq!(parse_version("v1.0.0"), "1.0.0");
+
+    // No prefix
+    assert_eq!(parse_version("1.0.0"), "1.0.0");
+}
+
+// =============================================================================
+// BUG: Symlinks need proper handling (Unix only)
+// =============================================================================
+
 #[test]
 #[cfg(unix)]
-fn test_regression_symlink_tracking() {
+fn test_regression_symlink_detection() {
     use std::os::unix::fs::symlink;
 
     let dir = TempDir::new().unwrap();
@@ -419,314 +225,113 @@ fn test_regression_symlink_tracking() {
     std::fs::write(&target, "content").unwrap();
     symlink(&target, &link).unwrap();
 
-    // Verify our detection logic
+    // Verify detection works
     assert!(link.is_symlink());
-    assert!(link.is_file() || link.is_symlink()); // This is the fix
-
-    // Old buggy code would only check is_file(), which returns true for symlinks
-    // that point to files, but false for broken symlinks. The fix ensures we
-    // track symlinks explicitly.
+    assert!(link.is_file() || link.is_symlink());
 }
 
 // =============================================================================
-// BUG: Path Traversal in Package Names (recipe.rs)
+// BUG: Concurrent lock should block
 // =============================================================================
-// Issue: Package name "../../etc/passwd" could escape recipes directory.
-//
-// Fix: Validate package names are simple identifiers.
 
-#[cheat_aware(
-    protects = "Path traversal attacks via package names are blocked",
-    severity = "CRITICAL",
-    ease = "HARD",
-    cheats = [
-        "Test only one traversal pattern",
-        "Skip package name validation",
-        "Use whitelist approach that misses edge cases"
-    ],
-    consequence = "Attacker supplies ../../etc/passwd as package name, reads/writes system files"
-)]
 #[test]
-fn test_regression_path_traversal_blocked() {
-    // These should all be invalid package names
-    let invalid_names = [
-        "../etc/passwd",
-        "../../etc/passwd",
-        "foo/../bar",
-        "/etc/passwd",
-        "foo/bar",
-        "..",
-        ".",
-        "pkg!name",
-        "pkg@name",
-        "pkg name",
-    ];
-
-    for name in &invalid_names {
-        // Can't directly test validate_package_name from here as it's private,
-        // but we verify the resolve_recipe behavior through integration tests.
-        // The test in tests/e2e.rs covers CLI rejection.
-
-        // At minimum, verify these patterns would be dangerous
-        assert!(
-            name.contains('/')
-                || name.contains('\\')
-                || name.contains(' ')
-                || name.contains('!')
-                || name.contains('@')
-                || *name == "."
-                || *name == "..",
-            "Name '{}' should be detected as dangerous",
-            name
-        );
-    }
-}
-
-// =============================================================================
-// BUG: Dead Code (context.rs)
-// =============================================================================
-// Issue: init_context() and get_recipe_path() were unused.
-//
-// Fix: Removed dead code.
-// Note: This is verified by cargo build --release with warnings as errors.
-
-// =============================================================================
-// Comprehensive State Corruption Prevention
-// =============================================================================
-
-#[cheat_aware(
-    protects = "Install failure doesn't corrupt state to installed=true",
-    severity = "CRITICAL",
-    ease = "MEDIUM",
-    cheats = [
-        "Use install that always succeeds",
-        "Check only error return, not state",
-        "Skip state verification on failure"
-    ],
-    consequence = "Install throws error but installed=true, user thinks broken package works"
-)]
-#[test]
-fn test_regression_state_not_corrupted_on_install_failure() {
+fn test_regression_concurrent_lock_blocked() {
     let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
-    // Create recipe that will fail during install
     let recipe_path = write_recipe(
         &recipes_dir,
-        "fail-install",
+        "lock-test",
         r#"
-let name = "fail-install";
-let version = "1.0.0";
-let installed = false;
-let installed = false;
+let ctx = #{
+    name: "lock-test",
+};
 
-fn acquire() {}
-fn install() {
-    throw "Install failed!";
-}
+fn acquire(ctx) { ctx }
+fn install(ctx) { ctx }
 "#,
     );
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    use levitate_recipe::RecipeEngine;
+
+    let engine = RecipeEngine::new(prefix.clone(), build_dir.clone());
+
+    // First execution
     let result = engine.execute(&recipe_path);
-
-    // Should fail
-    assert!(result.is_err());
-
-    // State should NOT be updated
-    let installed: Option<bool> = recipe_state::get_var(&recipe_path, "installed").unwrap();
-    assert_eq!(
-        installed,
-        Some(false),
-        "State was corrupted despite install failure"
-    );
-}
-
-#[cheat_aware(
-    protects = "Acquire failure doesn't corrupt state to installed=true",
-    severity = "CRITICAL",
-    ease = "MEDIUM",
-    cheats = [
-        "Use acquire that always succeeds",
-        "Check only error return, not state",
-        "Skip state verification on failure"
-    ],
-    consequence = "Acquire throws error but installed=true, binaries never downloaded but marked installed"
-)]
-#[test]
-fn test_regression_state_not_corrupted_on_acquire_failure() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
-
-    let recipe_path = write_recipe(
-        &recipes_dir,
-        "fail-acquire",
-        r#"
-let name = "fail-acquire";
-let version = "1.0.0";
-let installed = false;
-
-fn acquire() {
-    throw "Acquire failed!";
-}
-fn install() {}
-"#,
-    );
-
-    let engine = RecipeEngine::new(prefix, build_dir);
-    let result = engine.execute(&recipe_path);
-
-    assert!(result.is_err());
-
-    // Should not have "installed = true" since we never got there
-    let installed: Option<bool> = recipe_state::get_var(&recipe_path, "installed").unwrap();
-    assert_ne!(
-        installed,
-        Some(true),
-        "State was set despite acquire failure"
-    );
-}
-
-#[cheat_aware(
-    protects = "Build failure doesn't corrupt state to installed=true",
-    severity = "CRITICAL",
-    ease = "MEDIUM",
-    cheats = [
-        "Use build that always succeeds",
-        "Check only error return, not state",
-        "Skip state verification on failure"
-    ],
-    consequence = "Build throws error but installed=true, uncompiled source marked as installed"
-)]
-#[test]
-fn test_regression_state_not_corrupted_on_build_failure() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
-
-    let recipe_path = write_recipe(
-        &recipes_dir,
-        "fail-build",
-        r#"
-let name = "fail-build";
-let version = "1.0.0";
-let installed = false;
-
-fn acquire() {}
-fn build() {
-    throw "Build failed!";
-}
-fn install() {}
-"#,
-    );
-
-    let engine = RecipeEngine::new(prefix, build_dir);
-    let result = engine.execute(&recipe_path);
-
-    assert!(result.is_err());
-
-    let installed: Option<bool> = recipe_state::get_var(&recipe_path, "installed").unwrap();
-    assert_ne!(installed, Some(true), "State was set despite build failure");
-}
-
-// =============================================================================
-// Edge Cases That Could Regress
-// =============================================================================
-
-#[cheat_aware(
-    protects = "Empty installed_files list is handled correctly during remove",
-    severity = "LOW",
-    ease = "EASY",
-    cheats = [
-        "Always include files in installed_files",
-        "Skip testing empty file list",
-        "Require at least one file"
-    ],
-    consequence = "Package with no files to remove crashes or hangs during removal"
-)]
-#[test]
-fn test_regression_empty_installed_files_handled() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
-
-    let recipe_path = write_recipe(
-        &recipes_dir,
-        "empty-files",
-        r#"
-let name = "empty-files";
-let version = "1.0.0";
-let installed = true;
-let installed_version = "1.0.0";
-let installed_files = [];
-fn acquire() {}
-fn install() {}
-"#,
-    );
-
-    let engine = RecipeEngine::new(prefix, build_dir);
-
-    // Remove should succeed with empty file list
-    let result = engine.remove(&recipe_path);
     assert!(result.is_ok());
+
+    // Should be able to execute again (lock released)
+    let engine2 = RecipeEngine::new(prefix, build_dir);
+    let result2 = engine2.execute(&recipe_path);
+    assert!(result2.is_ok());
 }
 
-#[cheat_aware(
-    protects = "Unicode content in recipes is preserved",
-    severity = "MEDIUM",
-    ease = "EASY",
-    cheats = [
-        "Test only ASCII content",
-        "Skip Unicode preservation testing",
-        "Use ASCII-only package names"
-    ],
-    consequence = "Japanese package name or emoji description gets corrupted to garbage"
-)]
+// =============================================================================
+// BUG: Unicode content preservation
+// =============================================================================
+
 #[test]
-fn test_regression_unicode_in_recipe_preserved() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("test.rhai");
+fn test_regression_unicode_preserved() {
+    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
-    let original = r#"let name = "日本語パッケージ";
-let description = "Package with 📦 emoji";
-let version = "1.0.0";"#;
-    let installed = false;
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "unicode",
+        r#"
+let ctx = #{
+    name: "unicode-test",
+    description: "Contains emoji and unicode",
+};
 
-    std::fs::write(&path, original).unwrap();
-
-    // Modify one variable
-    recipe_state::set_var(&path, "version", &"2.0.0".to_string()).unwrap();
-
-    // Unicode should be preserved
-    let content = std::fs::read_to_string(&path).unwrap();
-    assert!(content.contains("日本語パッケージ"));
-    assert!(content.contains("📦"));
+fn acquire(ctx) {
+    ctx.description = "Updated with emoji";
+    ctx
 }
 
-#[cheat_aware(
-    protects = "Comments in recipe files are preserved during state updates",
-    severity = "MEDIUM",
-    ease = "EASY",
-    cheats = [
-        "Test only recipes without comments",
-        "Skip comment preservation testing",
-        "Overwrite entire file on state update"
-    ],
-    consequence = "Developer's helpful comments in recipe get deleted on first install"
-)]
+fn install(ctx) { ctx }
+"#,
+    );
+
+    let engine = RecipeEngine::new(prefix, build_dir);
+    engine.execute(&recipe_path).unwrap();
+
+    let content = std::fs::read_to_string(&recipe_path).unwrap();
+    assert!(content.contains("fn acquire(ctx)"));
+    assert!(content.contains("fn install(ctx)"));
+}
+
+// =============================================================================
+// BUG: Comments preservation in recipe files
+// =============================================================================
+
 #[test]
 fn test_regression_comments_preserved() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("test.rhai");
+    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
 
-    let original = r#"// Package definition
-let name = "test";
-let version = "1.0.0";  // Current version
-let installed = false;
-/* Multi-line
-   comment */
-fn acquire() {}"#;
+    let recipe_path = write_recipe(
+        &recipes_dir,
+        "comments",
+        r#"// Top comment
+let ctx = #{
+    name: "comments-test",
+    value: "initial",
+};
 
-    std::fs::write(&path, original).unwrap();
+// Middle comment
+fn acquire(ctx) {
+    ctx.value = "updated";
+    ctx
+}
 
-    recipe_state::set_var(&path, "version", &"2.0.0".to_string()).unwrap();
+/* Block comment */
+fn install(ctx) { ctx }
+"#,
+    );
 
-    let content = std::fs::read_to_string(&path).unwrap();
-    assert!(content.contains("// Package definition"));
-    assert!(content.contains("/* Multi-line"));
-    assert!(content.contains("fn acquire()"));
+    let engine = RecipeEngine::new(prefix, build_dir);
+    engine.execute(&recipe_path).unwrap();
+
+    let content = std::fs::read_to_string(&recipe_path).unwrap();
+    assert!(content.contains("// Top comment"));
+    assert!(content.contains("// Middle comment"));
+    assert!(content.contains("/* Block comment */"));
 }

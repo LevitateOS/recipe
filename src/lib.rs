@@ -1,71 +1,72 @@
 //! Rhai-based package recipe executor for LevitateOS
 //!
-//! Recipes are Rhai scripts that define how to acquire, build, and install packages.
-//! The engine provides helper functions and executes the `acquire()`, `build()`, and
-//! `install()` functions defined in each recipe.
+//! Recipes are Rhai scripts that use a `ctx` map for state. The engine provides
+//! helper functions and executes phase functions defined in each recipe.
 //!
-//! # STOP. READ. THEN ACT.
-//!
-//! Before modifying this crate:
-//! 1. Read `core/` - lifecycle, context, recipe_state, deps
-//! 2. Read `helpers/` - all the recipe-facing functions
-//! 3. Understand how state flows through the system
-//!
-//! # Design Philosophy
-//!
-//! **Phase separation is sacred.** Never combine acquire/build/install.
-//! Each phase must be independently re-runnable and cacheable.
-//!
-//! See `core/lifecycle/mod.rs` for detailed rationale.
-//!
-//! # Example Recipe
+//! # Recipe Pattern
 //!
 //! ```rhai
-//! let name = "bash";
-//! let version = "5.2.26";
-//! let deps = ["readline", "ncurses"];  // Optional dependencies
+//! let ctx = #{
+//!     name: "mypackage",
+//!     version: "1.0",
+//!     installed: false,
+//! };
 //!
-//! fn acquire() {
-//!     download("https://ftp.gnu.org/gnu/bash/bash-5.2.26.tar.gz");
-//!     verify_sha256("abc123...");
-//! }
+//! fn is_acquired(ctx) { if ctx.source == "" { throw "not acquired"; } ctx }
+//! fn is_built(ctx) { if !is_file(ctx.artifact) { throw "not built"; } ctx }
+//! fn is_installed(ctx) { if !ctx.installed { throw "not installed"; } ctx }
 //!
-//! fn build() {
-//!     extract("tar.gz");
-//!     cd("bash-5.2.26");
-//!     run(`./configure --prefix=${PREFIX}`);
-//!     run(`make -j${NPROC}`);
-//! }
-//!
-//! fn install() {
-//!     run("make install");
-//! }
+//! fn acquire(ctx) { ctx.source = download(...); ctx }
+//! fn build(ctx) { run(...); ctx }
+//! fn install(ctx) { ctx.installed = true; ctx }
 //! ```
 //!
-//! # Dependencies
+//! # Phase Lifecycle
 //!
-//! Recipes can declare dependencies using `let deps = ["pkg1", "pkg2"]`.
-//! Use `recipe install --deps <package>` to install dependencies automatically.
-//! The `recipe deps <package>` command shows dependency information.
+//! 1. `is_installed()` - Check if already done (skip if doesn't throw)
+//! 2. `is_built()` - Check if build needed
+//! 3. `is_acquired()` - Check if acquire needed
+//! 4. Execute needed phases (acquire, build, install)
+//! 5. Persist ctx after each phase
 //!
 //! # Engine-Provided Functions
 //!
-//! ## Acquire Phase
-//! - `download(url)` - Download file from URL
-//! - `copy(pattern)` - Copy files matching glob pattern
-//! - `verify_sha256(hash)` - Verify last downloaded/copied file
+//! ## Filesystem
+//! - `is_file(path)` - Check if path is a file
+//! - `is_dir(path)` - Check if path is a directory
+//! - `mkdir(path)` - Create directory recursively
+//! - `rm(path)` - Remove file or directory
+//! - `mv(src, dst)` - Move/rename
+//! - `chmod(path, mode)` - Change permissions
 //!
-//! ## Build Phase
-//! - `extract(format)` - Extract archive (tar.gz, tar.xz, tar.bz2, zip)
-//! - `cd(dir)` - Change working directory
-//! - `run(cmd)` - Execute shell command
+//! ## Paths
+//! - `join_path(a, b)` - Join path components
+//! - `basename(path)` - Get filename
 //!
-//! ## Install Phase
-//! - `install_bin(pattern)` - Install to PREFIX/bin (0o755)
-//! - `install_lib(pattern)` - Install to PREFIX/lib (0o644)
-//! - `install_man(pattern)` - Install to PREFIX/share/man/man{N}
+//! ## Commands
+//! - `shell(cmd)` - Run shell command, throw on failure
+//! - `shell_status(cmd)` - Run command, return exit code
 //!
-//! For anything more complex (RPM extraction, custom paths), use `run()` directly.
+//! ## Network
+//! - `download(url, dest)` - HTTP download
+//! - `http_get(url)` - Fetch URL content as string
+//!
+//! ## Verification
+//! - `verify_sha256(path, hash)` - Verify checksum
+//! - `check_disk_space(path, bytes)` - Verify free space
+//!
+//! ## Archive
+//! - `extract(archive, dest)` - Auto-detect format and extract
+//!
+//! ## File I/O
+//! - `read_file(path)` - Read file as string
+//! - `write_file(path, content)` - Write string to file
+//!
+//! ## String
+//! - `trim(str)` - Remove whitespace
+//!
+//! ## Logging
+//! - `log(msg)` - Print info message
 //!
 //! # Variables Available in Scripts
 //!
@@ -78,10 +79,7 @@
 mod core;
 pub mod helpers;
 
-pub use core::deps;
-pub use core::lockfile;
 pub use core::output;
-pub use core::recipe_state;
 
 use anyhow::Result;
 use rhai::{Engine, module_resolvers::FileModuleResolver};
@@ -99,8 +97,6 @@ impl RecipeEngine {
     /// Create a new recipe engine
     pub fn new(prefix: PathBuf, build_dir: PathBuf) -> Self {
         let mut engine = Engine::new();
-
-        // Register all helper functions
         helpers::register_all(&mut engine);
 
         Self {
@@ -123,29 +119,23 @@ impl RecipeEngine {
     /// Execute a recipe script (install a package)
     ///
     /// Follows the package lifecycle:
-    /// 1. is_installed() - Check if already done (skip if true)
-    /// 2. acquire() - Get source materials
-    /// 3. build() - Compile/transform (optional)
-    /// 4. install() - Copy to PREFIX
+    /// 1. is_installed() - Check if already done (skip if doesn't throw)
+    /// 2. is_built() - Check if build needed
+    /// 3. is_acquired() - Check if acquire needed
+    /// 4. Execute needed phases
+    /// 5. Persist ctx after each phase
     pub fn execute(&self, recipe_path: &Path) -> Result<()> {
-        core::lifecycle::execute(&self.engine, &self.prefix, &self.build_dir, recipe_path)
+        core::executor::install(&self.engine, &self.prefix, &self.build_dir, recipe_path)
     }
 
     /// Remove an installed package
     pub fn remove(&self, recipe_path: &Path) -> Result<()> {
-        core::lifecycle::remove(&self.engine, &self.prefix, recipe_path)
+        core::executor::remove(&self.engine, &self.prefix, recipe_path)
     }
 
-    /// Check for updates to a package
-    /// Returns Some(new_version) if update available
-    pub fn update(&self, recipe_path: &Path) -> Result<Option<String>> {
-        core::lifecycle::update(&self.engine, recipe_path)
-    }
-
-    /// Upgrade a package (reinstall if newer version in recipe)
-    /// Returns true if upgrade was performed
-    pub fn upgrade(&self, recipe_path: &Path) -> Result<bool> {
-        core::lifecycle::upgrade(&self.engine, &self.prefix, &self.build_dir, recipe_path)
+    /// Clean up build artifacts
+    pub fn cleanup(&self, recipe_path: &Path) -> Result<()> {
+        core::executor::cleanup(&self.engine, &self.build_dir, recipe_path)
     }
 
     /// Get the prefix path
@@ -157,15 +147,18 @@ impl RecipeEngine {
     pub fn recipes_path(&self) -> Option<&Path> {
         self.recipes_path.as_deref()
     }
+
+    /// Get the underlying Rhai engine (for advanced use)
+    pub fn engine(&self) -> &Engine {
+        &self.engine
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use leviso_cheat_test::{cheat_aware, cheat_reviewed};
     use tempfile::TempDir;
 
-    #[cheat_reviewed("API test - engine creation with paths")]
     #[test]
     fn test_engine_creation() {
         let prefix = TempDir::new().unwrap();
@@ -174,19 +167,8 @@ mod tests {
         assert!(engine.recipes_path.is_none());
     }
 
-    #[cheat_aware(
-        protects = "User can execute minimal valid recipe",
-        severity = "HIGH",
-        ease = "MEDIUM",
-        cheats = [
-            "Skip recipe execution entirely",
-            "Return success without running functions",
-            "Ignore validation errors"
-        ],
-        consequence = "User's recipe appears to succeed but nothing is installed"
-    )]
     #[test]
-    fn test_empty_recipe() {
+    fn test_minimal_recipe() {
         let prefix = TempDir::new().unwrap();
         let build_dir = TempDir::new().unwrap();
         let engine = RecipeEngine::new(prefix.path().to_path_buf(), build_dir.path().to_path_buf());
@@ -196,18 +178,30 @@ mod tests {
         std::fs::write(
             &recipe_path,
             r#"
-            let name = "test";
-            let version = "1.0.0";
-            let installed = false;
+let ctx = #{
+    name: "test",
+    installed: false,
+};
 
-            fn acquire() {}
-            fn build() {}
-            fn install() {}
-        "#,
+fn is_installed(ctx) {
+    if !ctx.installed { throw "not installed"; }
+    ctx
+}
+
+fn acquire(ctx) { ctx }
+fn install(ctx) {
+    ctx.installed = true;
+    ctx
+}
+"#,
         )
         .unwrap();
 
         let result = engine.execute(&recipe_path);
         assert!(result.is_ok(), "Failed: {:?}", result);
+
+        // Verify ctx was persisted
+        let content = std::fs::read_to_string(&recipe_path).unwrap();
+        assert!(content.contains("installed: true"));
     }
 }

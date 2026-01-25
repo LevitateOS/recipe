@@ -1,24 +1,22 @@
 //! Git helpers for recipe scripts
 //!
-//! Provides functions to clone git repositories during the acquire phase.
+//! Pure functions for cloning git repositories.
+//! All functions take explicit inputs and return explicit outputs.
 //!
 //! ## Example
 //!
 //! ```rhai
-//! fn resolve() {
-//!     // Full clone
-//!     git_clone("https://github.com/LevitateOS/linux.git");
-//!     return BUILD_DIR + "/linux";
-//!
-//!     // Or shallow clone (faster for large repos)
-//!     git_clone_depth("https://github.com/LevitateOS/linux.git", 1);
-//!     return BUILD_DIR + "/linux";
+//! fn acquire(ctx) {
+//!     let repo_dir = git_clone("https://github.com/user/repo.git", BUILD_DIR);
+//!     ctx.src_dir = repo_dir;
+//!     ctx
 //! }
 //! ```
 
-use crate::core::{output, with_context};
+use crate::core::output;
 use indicatif::{ProgressBar, ProgressStyle};
 use rhai::EvalAltResult;
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
@@ -50,172 +48,172 @@ fn validate_git_url(url: &str) -> Result<(), Box<EvalAltResult>> {
     }
 }
 
-/// Clone a git repository to BUILD_DIR
+/// Clone a git repository to a specified directory.
 ///
-/// The repository is cloned into BUILD_DIR/{repo-name}. The repo name is
+/// The repository is cloned into dest_dir/{repo-name}. The repo name is
 /// extracted from the URL (e.g., "linux" from "https://github.com/torvalds/linux.git").
+///
+/// Returns the path to the cloned repository.
 ///
 /// # Example
 /// ```rhai
-/// git_clone("https://github.com/torvalds/linux.git");
+/// let repo = git_clone("https://github.com/torvalds/linux.git", BUILD_DIR);
 /// // Results in BUILD_DIR/linux/
 /// ```
-pub fn git_clone(url: &str) -> Result<String, Box<EvalAltResult>> {
-    with_context(|ctx| {
-        // Validate URL scheme for security
-        validate_git_url(url)?;
+pub fn git_clone(url: &str, dest_dir: &str) -> Result<String, Box<EvalAltResult>> {
+    // Validate URL scheme for security
+    validate_git_url(url)?;
 
-        let repo_name = extract_repo_name(url)?;
-        let dest = ctx.build_dir.join(&repo_name);
+    let repo_name = extract_repo_name(url)?;
+    let dest = Path::new(dest_dir).join(&repo_name);
 
-        // Skip if already cloned AND valid
-        if dest.join(".git").exists() {
-            // Verify repo is valid before skipping
-            let verify = Command::new("git")
-                .args(["-C", &dest.to_string_lossy(), "rev-parse", "HEAD"])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-            if verify.map(|s| s.success()).unwrap_or(false) {
-                output::detail(&format!("git: {} already cloned", repo_name));
-                return Ok(dest.to_string_lossy().to_string());
-            }
-            // If invalid, warn and re-clone
-            output::warning(&format!(
-                "git: {} exists but is invalid, re-cloning",
-                repo_name
-            ));
-            // Remove the invalid repo
-            let _ = std::fs::remove_dir_all(&dest);
-        }
-
-        output::detail(&format!("git clone {}", url));
-
-        // Create progress spinner with RAII guard for cleanup
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(
-            ProgressStyle::default_spinner()
-                .template("     {spinner:.cyan} {msg}")
-                .unwrap()
-                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-        );
-        pb.set_message(format!("cloning {}", repo_name));
-        pb.enable_steady_tick(Duration::from_millis(80));
-        let _guard = ProgressGuard(pb);
-
-        // Get destination path as string, handling non-UTF8 gracefully
-        let dest_str = dest
-            .to_str()
-            .ok_or("destination path contains invalid UTF-8")?;
-
-        // Run git clone with stderr capture for better error messages
-        let output = Command::new("git")
-            .args(["clone", "--progress", url, dest_str])
+    // Skip if already cloned AND valid
+    if dest.join(".git").exists() {
+        // Verify repo is valid before skipping
+        let verify = Command::new("git")
+            .args(["-C", &dest.to_string_lossy(), "rev-parse", "HEAD"])
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .map_err(|e| format!("failed to run git: {}", e))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("git clone failed for {}\nDetails: {}", url, stderr.trim()).into());
+            .stderr(std::process::Stdio::null())
+            .status();
+        if verify.map(|s| s.success()).unwrap_or(false) {
+            output::detail(&format!("git: {} already cloned", repo_name));
+            return Ok(dest.to_string_lossy().to_string());
         }
+        // If invalid, warn and re-clone
+        output::warning(&format!(
+            "git: {} exists but is invalid, re-cloning",
+            repo_name
+        ));
+        // Remove the invalid repo
+        let _ = std::fs::remove_dir_all(&dest);
+    }
 
-        output::detail(&format!("cloned {} to {}", repo_name, dest.display()));
-        Ok(dest.to_string_lossy().to_string())
-    })
+    output::detail(&format!("git clone {}", url));
+
+    // Create progress spinner with RAII guard for cleanup
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .template("     {spinner:.cyan} {msg}")
+            .unwrap()
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+    );
+    pb.set_message(format!("cloning {}", repo_name));
+    pb.enable_steady_tick(Duration::from_millis(80));
+    let _guard = ProgressGuard(pb);
+
+    // Get destination path as string, handling non-UTF8 gracefully
+    let dest_str = dest
+        .to_str()
+        .ok_or("destination path contains invalid UTF-8")?;
+
+    // Run git clone with stderr capture for better error messages
+    let output = Command::new("git")
+        .args(["clone", "--progress", url, dest_str])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| format!("failed to run git: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git clone failed for {}\nDetails: {}", url, stderr.trim()).into());
+    }
+
+    output::detail(&format!("cloned {} to {}", repo_name, dest.display()));
+    Ok(dest.to_string_lossy().to_string())
 }
 
-/// Clone a git repository with a shallow depth
+/// Clone a git repository with a shallow depth.
 ///
 /// Faster than full clone for large repositories. The `depth` parameter
 /// specifies how many commits to fetch (1 = only latest).
 ///
+/// Returns the path to the cloned repository.
+///
 /// # Example
 /// ```rhai
-/// git_clone_depth("https://github.com/torvalds/linux.git", 1);
+/// let repo = git_clone_depth("https://github.com/torvalds/linux.git", BUILD_DIR, 1);
 /// ```
-pub fn git_clone_depth(url: &str, depth: i64) -> Result<String, Box<EvalAltResult>> {
+pub fn git_clone_depth(url: &str, dest_dir: &str, depth: i64) -> Result<String, Box<EvalAltResult>> {
     // Validate depth parameter
     if depth <= 0 || depth > 1_000_000 {
         return Err("depth must be between 1 and 1000000".into());
     }
 
-    with_context(|ctx| {
-        // Validate URL scheme for security
-        validate_git_url(url)?;
+    // Validate URL scheme for security
+    validate_git_url(url)?;
 
-        let repo_name = extract_repo_name(url)?;
-        let dest = ctx.build_dir.join(&repo_name);
+    let repo_name = extract_repo_name(url)?;
+    let dest = Path::new(dest_dir).join(&repo_name);
 
-        // Skip if already cloned AND valid
-        if dest.join(".git").exists() {
-            // Verify repo is valid before skipping
-            let verify = Command::new("git")
-                .args(["-C", &dest.to_string_lossy(), "rev-parse", "HEAD"])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-            if verify.map(|s| s.success()).unwrap_or(false) {
-                output::detail(&format!("git: {} already cloned", repo_name));
-                return Ok(dest.to_string_lossy().to_string());
-            }
-            // If invalid, warn and re-clone
-            output::warning(&format!(
-                "git: {} exists but is invalid, re-cloning",
-                repo_name
-            ));
-            // Remove the invalid repo
-            let _ = std::fs::remove_dir_all(&dest);
-        }
-
-        output::detail(&format!("git clone --depth {} {}", depth, url));
-
-        // Create progress spinner with RAII guard for cleanup
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(
-            ProgressStyle::default_spinner()
-                .template("     {spinner:.cyan} {msg}")
-                .unwrap()
-                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-        );
-        pb.set_message(format!("shallow cloning {}", repo_name));
-        pb.enable_steady_tick(Duration::from_millis(80));
-        let _guard = ProgressGuard(pb);
-
-        // Get destination path as string, handling non-UTF8 gracefully
-        let dest_str = dest
-            .to_str()
-            .ok_or("destination path contains invalid UTF-8")?;
-
-        // Run git clone with stderr capture for better error messages
-        let output = Command::new("git")
-            .args([
-                "clone",
-                "--depth",
-                &depth.to_string(),
-                "--progress",
-                url,
-                dest_str,
-            ])
+    // Skip if already cloned AND valid
+    if dest.join(".git").exists() {
+        // Verify repo is valid before skipping
+        let verify = Command::new("git")
+            .args(["-C", &dest.to_string_lossy(), "rev-parse", "HEAD"])
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .map_err(|e| format!("failed to run git: {}", e))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("git clone failed for {}\nDetails: {}", url, stderr.trim()).into());
+            .stderr(std::process::Stdio::null())
+            .status();
+        if verify.map(|s| s.success()).unwrap_or(false) {
+            output::detail(&format!("git: {} already cloned", repo_name));
+            return Ok(dest.to_string_lossy().to_string());
         }
-
-        output::detail(&format!(
-            "shallow cloned {} to {} (depth={})",
-            repo_name,
-            dest.display(),
-            depth
+        // If invalid, warn and re-clone
+        output::warning(&format!(
+            "git: {} exists but is invalid, re-cloning",
+            repo_name
         ));
-        Ok(dest.to_string_lossy().to_string())
-    })
+        // Remove the invalid repo
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    output::detail(&format!("git clone --depth {} {}", depth, url));
+
+    // Create progress spinner with RAII guard for cleanup
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .template("     {spinner:.cyan} {msg}")
+            .unwrap()
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+    );
+    pb.set_message(format!("shallow cloning {}", repo_name));
+    pb.enable_steady_tick(Duration::from_millis(80));
+    let _guard = ProgressGuard(pb);
+
+    // Get destination path as string, handling non-UTF8 gracefully
+    let dest_str = dest
+        .to_str()
+        .ok_or("destination path contains invalid UTF-8")?;
+
+    // Run git clone with stderr capture for better error messages
+    let output = Command::new("git")
+        .args([
+            "clone",
+            "--depth",
+            &depth.to_string(),
+            "--progress",
+            url,
+            dest_str,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| format!("failed to run git: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git clone failed for {}\nDetails: {}", url, stderr.trim()).into());
+    }
+
+    output::detail(&format!(
+        "shallow cloned {} to {} (depth={})",
+        repo_name,
+        dest.display(),
+        depth
+    ));
+    Ok(dest.to_string_lossy().to_string())
 }
 
 /// Extract repository name from a git URL
@@ -393,7 +391,7 @@ mod tests {
     #[cheat_reviewed("Depth validation - zero rejected")]
     #[test]
     fn test_git_clone_depth_zero_rejected() {
-        let result = git_clone_depth("https://github.com/user/repo.git", 0);
+        let result = git_clone_depth("https://github.com/user/repo.git", "/tmp", 0);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("between 1 and"));
     }
@@ -401,7 +399,7 @@ mod tests {
     #[cheat_reviewed("Depth validation - negative rejected")]
     #[test]
     fn test_git_clone_depth_negative_rejected() {
-        let result = git_clone_depth("https://github.com/user/repo.git", -1);
+        let result = git_clone_depth("https://github.com/user/repo.git", "/tmp", -1);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("between 1 and"));
     }
@@ -409,7 +407,7 @@ mod tests {
     #[cheat_reviewed("Depth validation - too large rejected")]
     #[test]
     fn test_git_clone_depth_too_large_rejected() {
-        let result = git_clone_depth("https://github.com/user/repo.git", 2_000_000);
+        let result = git_clone_depth("https://github.com/user/repo.git", "/tmp", 2_000_000);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("between 1 and"));
     }

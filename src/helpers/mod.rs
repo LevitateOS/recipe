@@ -3,42 +3,51 @@
 //! This module contains all the functions available to recipe scripts.
 //! These are the public API that recipe authors use.
 //!
+//! ## Design: All Pure Functions
+//!
+//! All helper functions are PURE - they take explicit inputs and return
+//! explicit outputs, with no hidden state. This makes data flow visible:
+//!
+//! ```rhai
+//! // EXPLICIT: you can see where archive comes from and where it goes
+//! let archive = download(url, BUILD_DIR + "/foo.tar.gz");
+//! verify_sha256(archive, "abc123...");
+//! extract(archive, BUILD_DIR);
+//! ```
+//!
 //! ## Categories
 //!
-//! ### Pure helpers (no context dependency)
 //! - **paths**: join_path, basename, dirname
 //! - **string**: trim, starts_with, ends_with, contains, replace, split
 //! - **log**: log, debug, warn
 //! - **shell**: shell, shell_in, shell_status, shell_output
 //! - **io**: read_file, write_file, append_file, glob_list
-//! - **filesystem**: exists, file_exists, is_file, dir_exists, is_dir, mkdir, rm, mv, ln, chmod
-//!
-//! ### Pure helpers with explicit paths
-//! - **acquire**: download (2-arg), verify_sha256 (2-arg), verify_sha512 (2-arg), verify_blake3 (2-arg)
-//! - **build**: extract (2-arg)
-//!
-//! ### Context-based helpers (backwards compatibility)
-//! - **acquire**: download (1-arg), copy, verify_sha256 (1-arg)
-//! - **build**: extract (1-arg), cd, run
-//! - **install**: install_bin, install_lib, install_man
+//! - **filesystem**: exists, is_file, is_dir, mkdir, rm, mv, ln, chmod
+//! - **acquire**: download(url, dest), verify_sha256(path, hash)
+//! - **build**: extract(archive, dest)
 //! - **env**: env, set_env
-//! - **command**: run_output, run_status
-//! - **http**: http_get, github_latest_release, github_latest_tag, parse_version
+//! - **http**: http_get, github_latest_release, github_latest_tag
 //! - **process**: exec, exec_output
-//! - **git**: git_clone, git_clone_depth
-//! - **torrent**: torrent, download_with_resume
-//! - **disk**: check_disk_space, format_bytes
+//! - **git**: git_clone(url, dest), git_clone_depth(url, dest, depth)
+//! - **torrent**: torrent(url, dest), download_with_resume(url, dest)
+//! - **disk**: check_disk_space
 //! - **llm**: llm_extract, llm_find_latest_version, llm_find_download_url
 
+// Internal utility modules (used by other helpers)
+pub mod cmd;
+pub mod fs_utils;
+pub mod hash;
+pub mod progress;
+pub mod url_utils;
+
+// Recipe-facing helper modules (all pure functions)
 pub mod acquire;
 pub mod build;
-pub mod command;
 pub mod disk;
 pub mod env;
 pub mod filesystem;
 pub mod git;
 pub mod http;
-pub mod install;
 pub mod io;
 pub mod llm;
 pub mod log;
@@ -53,7 +62,7 @@ use rhai::Engine;
 /// Register all helper functions with the Rhai engine
 pub fn register_all(engine: &mut Engine) {
     // ========================================================================
-    // Pure helpers (no context dependency)
+    // Pure helpers - all functions take explicit inputs, return explicit outputs
     // ========================================================================
 
     // Path utilities
@@ -74,7 +83,7 @@ pub fn register_all(engine: &mut Engine) {
     engine.register_fn("debug", log::debug);
     engine.register_fn("warn", log::warn);
 
-    // Shell utilities (pure - run in current directory)
+    // Shell utilities (pure - run in current directory or explicit directory)
     engine.register_fn("shell", shell::shell);
     engine.register_fn("shell_in", shell::shell_in);
     engine.register_fn("shell_status", shell::shell_status);
@@ -101,47 +110,23 @@ pub fn register_all(engine: &mut Engine) {
     engine.register_fn("ln", filesystem::symlink);
     engine.register_fn("chmod", filesystem::chmod_file);
 
-    // Pure acquire helpers (2-arg versions with explicit paths)
-    engine.register_fn("download", acquire::download_to); // 2-arg pure version
-    engine.register_fn("verify_sha256", acquire::verify_sha256_file); // 2-arg pure version
-    engine.register_fn("verify_sha512", acquire::verify_sha512_file); // 2-arg pure version
-    engine.register_fn("verify_blake3", acquire::verify_blake3_file); // 2-arg pure version
-
-    // Pure build helpers (2-arg versions)
-    engine.register_fn("extract", build::extract_to); // 2-arg pure version
-    engine.register_fn("extract_with_format", build::extract_to_with_format); // 3-arg with format
-
-    // ========================================================================
-    // Context-based helpers (backwards compatibility)
-    // ========================================================================
-
-    // Acquire phase helpers (1-arg versions use context)
-    engine.register_fn("download", acquire::download); // 1-arg version uses context
-    engine.register_fn("copy", acquire::copy_files);
-    engine.register_fn("verify_sha256", acquire::verify_sha256); // 1-arg version uses context
+    // Acquire helpers - pure functions with explicit paths
+    // download(url, dest) -> path string
+    // verify_sha256(path, expected) -> () (throws on mismatch)
+    engine.register_fn("download", acquire::download);
+    engine.register_fn("verify_sha256", acquire::verify_sha256);
     engine.register_fn("verify_sha512", acquire::verify_sha512);
     engine.register_fn("verify_blake3", acquire::verify_blake3);
 
-    // Build phase helpers
-    engine.register_fn("extract", build::extract); // 1-arg version uses context
-    engine.register_fn("cd", build::change_dir);
-    engine.register_fn("run", build::run_cmd);
+    // Build helpers - pure functions
+    // extract(archive, dest) -> ()
+    // extract_with_format(archive, dest, format) -> ()
+    engine.register_fn("extract", build::extract);
+    engine.register_fn("extract_with_format", build::extract_with_format);
 
-    // Install phase helpers
-    engine.register_fn("install_bin", install::install_bin);
-    engine.register_fn("install_lib", install::install_lib);
-    engine.register_fn("install_man", install::install_man);
-    engine.register_fn("install_to_dir", install::install_to_dir); // 2-arg version
-    engine.register_fn("install_to_dir", install::install_to_dir_i64); // 3-arg version with mode
-    engine.register_fn("rpm_install", install::rpm_install);
-
-    // Environment utilities
+    // Environment utilities (process-wide, acceptable for scripts)
     engine.register_fn("env", env::get_env);
     engine.register_fn("set_env", env::set_env);
-
-    // Command utilities (context-based)
-    engine.register_fn("run_output", command::run_output);
-    engine.register_fn("run_status", command::run_status);
 
     // HTTP utilities for update checking
     engine.register_fn("http_get", http::http_get);
@@ -160,15 +145,19 @@ pub fn register_all(engine: &mut Engine) {
         },
     );
 
-    // Execution utilities for run command
+    // Process execution utilities
     engine.register_fn("exec", process::exec);
     engine.register_fn("exec_output", process::exec_output);
 
-    // Git utilities
+    // Git utilities - pure functions with explicit dest
+    // git_clone(url, dest_dir) -> path string
+    // git_clone_depth(url, dest_dir, depth) -> path string
     engine.register_fn("git_clone", git::git_clone);
     engine.register_fn("git_clone_depth", git::git_clone_depth);
 
-    // Torrent/download utilities
+    // Torrent/download utilities - pure functions with explicit dest
+    // torrent(url, dest_dir) -> path string
+    // download_with_resume(url, dest_path) -> path string
     engine.register_fn("torrent", torrent::torrent);
     engine.register_fn("download_with_resume", torrent::download_with_resume);
 
