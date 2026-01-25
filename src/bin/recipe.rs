@@ -8,9 +8,10 @@
 //!   recipe list                    List installed packages
 //!   recipe search <pattern>        Search available recipes
 //!   recipe info <name>             Show package info
+//!   recipe resolve <name>          Resolve dependency path (doesn't install)
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use levitate_recipe::{RecipeEngine, deps, output, recipe_state};
 use std::path::{Path, PathBuf};
 
@@ -121,9 +122,9 @@ enum Commands {
         /// Package name or path to recipe file
         package: String,
 
-        /// Also install dependencies
-        #[arg(short = 'd', long = "deps")]
-        with_deps: bool,
+        /// Skip dependency installation (install only the specified package)
+        #[arg(long)]
+        no_deps: bool,
 
         /// Show what would be installed without actually installing
         #[arg(short = 'n', long = "dry-run")]
@@ -192,9 +193,9 @@ enum Commands {
 
     /// Remove orphaned packages
     Autoremove {
-        /// Actually remove (without this, just shows what would be removed)
-        #[arg(long)]
-        yes: bool,
+        /// Show what would be removed without actually removing
+        #[arg(short = 'n', long)]
+        dry_run: bool,
     },
 
     /// Show dependency tree for a package
@@ -226,13 +227,22 @@ enum Commands {
     /// Calls the resolve() function in a recipe and returns the path.
     /// Used for dependency resolution without full package installation.
     Resolve {
-        /// Dependency name or path to recipe
-        name: String,
+        /// Package name or path to recipe
+        package: String,
 
-        /// Output format (plain or json)
-        #[arg(long, default_value = "plain")]
-        format: String,
+        /// Output format
+        #[arg(short = 'F', long, value_enum, default_value_t = OutputFormat::Plain)]
+        format: OutputFormat,
     },
+}
+
+/// Output format for resolve command
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum OutputFormat {
+    /// Human-readable path
+    Plain,
+    /// JSON object with "path" field
+    Json,
 }
 
 #[derive(Subcommand)]
@@ -265,14 +275,23 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Install {
             package,
-            with_deps,
+            no_deps,
             dry_run,
             locked,
         } => {
             use levitate_recipe::lockfile::LockFile;
             use owo_colors::OwoColorize;
 
-            if with_deps || dry_run || locked {
+            // Check if this is an explicit path (not in recipes directory)
+            let is_explicit_path =
+                package.contains('/') || package.contains('\\') || package.ends_with(".rhai");
+
+            // For explicit paths, dependency resolution doesn't apply - the recipe
+            // is not in the recipes directory so we can't resolve its deps through
+            // the standard graph. Use --no-deps implicitly.
+            let resolve_deps = !no_deps && !is_explicit_path;
+
+            if resolve_deps || dry_run || locked {
                 // Resolve dependencies
                 let install_order = deps::resolve_deps(&package, &recipes_path)?;
 
@@ -548,12 +567,12 @@ fn main() -> Result<()> {
                 println!();
                 println!(
                     "{}",
-                    "Run 'recipe autoremove --yes' to remove these packages".dimmed()
+                    "Run 'recipe autoremove' to remove these packages".dimmed()
                 );
             }
         }
 
-        Commands::Autoremove { yes } => {
+        Commands::Autoremove { dry_run } => {
             use owo_colors::OwoColorize;
 
             let orphans = deps::find_orphans(&recipes_path)?;
@@ -573,11 +592,11 @@ fn main() -> Result<()> {
                 );
             }
 
-            if !yes {
+            if dry_run {
                 println!();
                 println!(
                     "{}",
-                    "Run with --yes to actually remove these packages".cyan()
+                    "Dry run - no packages removed. Run without --dry-run to remove.".cyan()
                 );
                 return Ok(());
             }
@@ -767,18 +786,18 @@ fn main() -> Result<()> {
             }
         }
 
-        Commands::Resolve { name, format } => {
-            let recipe_path = resolve_recipe(&name, &recipes_path)?;
+        Commands::Resolve { package, format } => {
+            let recipe_path = resolve_recipe(&package, &recipes_path)?;
             let engine = create_engine(&cli.prefix, cli.build_dir.as_deref(), &recipes_path)?;
             let path = engine.resolve(&recipe_path)?;
 
-            match format.as_str() {
-                "json" => {
+            match format {
+                OutputFormat::Json => {
                     // Use serde_json for proper escaping to prevent injection
                     let json = serde_json::json!({"path": path.to_string_lossy()});
                     println!("{}", json);
                 }
-                _ => println!("{}", path.display()),
+                OutputFormat::Plain => println!("{}", path.display()),
             }
         }
 

@@ -102,6 +102,8 @@ pub fn torrent(url: &str) -> Result<String, Box<EvalAltResult>> {
         // --seed-time=0 means don't seed after download (we're not being a good peer, but this is a build tool)
         // --continue=true enables resume
         // --max-connection-per-server=16 improves HTTP download speed
+        // --bt-stop-timeout=300 stops if no progress for 5 minutes (stall detection)
+        // --timeout=300 connection timeout
         let output = Command::new("aria2c")
             .args([
                 "--dir",
@@ -111,6 +113,9 @@ pub fn torrent(url: &str) -> Result<String, Box<EvalAltResult>> {
                 "--max-connection-per-server=16",
                 "--summary-interval=0",
                 "--console-log-level=warn",
+                "--bt-stop-timeout=300",   // 5 minute stall detection for torrents
+                "--timeout=300",           // 5 minute connection timeout
+                "--connect-timeout=60",    // 1 minute initial connection timeout
                 url,
             ])
             .stdout(std::process::Stdio::null())
@@ -192,6 +197,10 @@ pub fn download_with_resume(url: &str) -> Result<String, Box<EvalAltResult>> {
                     "--max-connection-per-server=16",
                     "--summary-interval=0",
                     "--console-log-level=warn",
+                    "--timeout=300",           // 5 minute connection timeout
+                    "--connect-timeout=60",    // 1 minute initial connection timeout
+                    "--max-tries=3",           // 3 retries for HTTP
+                    "--retry-wait=5",          // 5 second wait between retries
                     url,
                 ])
                 .stdout(std::process::Stdio::null())

@@ -185,10 +185,23 @@ pub fn verify_blake3(expected: &str) -> Result<(), Box<EvalAltResult>> {
 }
 
 /// Internal: Verify SHA256 hash of a specific file
+///
+/// Shows progress for files larger than 100 MB.
 pub fn verify_hash_sha256(file: &Path, expected: &str) -> Result<(), Box<EvalAltResult>> {
     let mut f = std::fs::File::open(file).map_err(|e| format!("cannot open file: {}", e))?;
+    let file_size = f
+        .metadata()
+        .map(|m| m.len())
+        .unwrap_or(0);
+
     let mut hasher = Sha256::new();
-    let mut buffer = [0; 8192];
+    let mut buffer = [0; 1024 * 1024]; // 1MB chunks for better progress
+    let mut total_read = 0u64;
+    let mut last_percent = 0u8;
+
+    // Show progress for large files (> 100 MB)
+    let show_progress = file_size > 100 * 1024 * 1024;
+
     loop {
         let n = f
             .read(&mut buffer)
@@ -197,7 +210,22 @@ pub fn verify_hash_sha256(file: &Path, expected: &str) -> Result<(), Box<EvalAlt
             break;
         }
         hasher.update(&buffer[..n]);
+        total_read += n as u64;
+
+        if show_progress && file_size > 0 {
+            let percent = ((total_read * 100) / file_size) as u8;
+            if percent >= last_percent + 10 {
+                print!("\r     checksum: {}%...", percent);
+                std::io::Write::flush(&mut std::io::stdout()).ok();
+                last_percent = percent;
+            }
+        }
     }
+
+    if show_progress {
+        println!();
+    }
+
     let hash = hex::encode(hasher.finalize());
 
     if hash != expected.to_lowercase() {
@@ -214,10 +242,23 @@ pub fn verify_hash_sha256(file: &Path, expected: &str) -> Result<(), Box<EvalAlt
 }
 
 /// Internal: Verify SHA512 hash of a specific file
+///
+/// Shows progress for files larger than 100 MB.
 pub fn verify_hash_sha512(file: &Path, expected: &str) -> Result<(), Box<EvalAltResult>> {
     let mut f = std::fs::File::open(file).map_err(|e| format!("cannot open file: {}", e))?;
+    let file_size = f
+        .metadata()
+        .map(|m| m.len())
+        .unwrap_or(0);
+
     let mut hasher = Sha512::new();
-    let mut buffer = [0; 8192];
+    let mut buffer = [0; 1024 * 1024]; // 1MB chunks for better progress
+    let mut total_read = 0u64;
+    let mut last_percent = 0u8;
+
+    // Show progress for large files (> 100 MB)
+    let show_progress = file_size > 100 * 1024 * 1024;
+
     loop {
         let n = f
             .read(&mut buffer)
@@ -226,7 +267,22 @@ pub fn verify_hash_sha512(file: &Path, expected: &str) -> Result<(), Box<EvalAlt
             break;
         }
         hasher.update(&buffer[..n]);
+        total_read += n as u64;
+
+        if show_progress && file_size > 0 {
+            let percent = ((total_read * 100) / file_size) as u8;
+            if percent >= last_percent + 10 {
+                print!("\r     checksum: {}%...", percent);
+                std::io::Write::flush(&mut std::io::stdout()).ok();
+                last_percent = percent;
+            }
+        }
     }
+
+    if show_progress {
+        println!();
+    }
+
     let hash = hex::encode(hasher.finalize());
 
     if hash != expected.to_lowercase() {
@@ -243,10 +299,23 @@ pub fn verify_hash_sha512(file: &Path, expected: &str) -> Result<(), Box<EvalAlt
 }
 
 /// Internal: Verify BLAKE3 hash of a specific file
+///
+/// Shows progress for files larger than 100 MB.
 pub fn verify_hash_blake3(file: &Path, expected: &str) -> Result<(), Box<EvalAltResult>> {
     let mut f = std::fs::File::open(file).map_err(|e| format!("cannot open file: {}", e))?;
+    let file_size = f
+        .metadata()
+        .map(|m| m.len())
+        .unwrap_or(0);
+
     let mut hasher = blake3::Hasher::new();
-    let mut buffer = [0; 8192];
+    let mut buffer = [0; 1024 * 1024]; // 1MB chunks for better progress
+    let mut total_read = 0u64;
+    let mut last_percent = 0u8;
+
+    // Show progress for large files (> 100 MB)
+    let show_progress = file_size > 100 * 1024 * 1024;
+
     loop {
         let n = f
             .read(&mut buffer)
@@ -255,7 +324,22 @@ pub fn verify_hash_blake3(file: &Path, expected: &str) -> Result<(), Box<EvalAlt
             break;
         }
         hasher.update(&buffer[..n]);
+        total_read += n as u64;
+
+        if show_progress && file_size > 0 {
+            let percent = ((total_read * 100) / file_size) as u8;
+            if percent >= last_percent + 10 {
+                print!("\r     checksum: {}%...", percent);
+                std::io::Write::flush(&mut std::io::stdout()).ok();
+                last_percent = percent;
+            }
+        }
     }
+
+    if show_progress {
+        println!();
+    }
+
     let hash = hasher.finalize().to_hex().to_string();
 
     if hash != expected.to_lowercase() {

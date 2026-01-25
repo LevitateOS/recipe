@@ -16,10 +16,12 @@
 //! - **process**: exec, exec_output
 //! - **git**: git_clone, git_clone_depth
 //! - **torrent**: torrent, download_with_resume
+//! - **disk**: check_disk_space, format_bytes
 
 pub mod acquire;
 pub mod build;
 pub mod command;
+pub mod disk;
 pub mod env;
 pub mod filesystem;
 pub mod git;
@@ -81,6 +83,17 @@ pub fn register_all(engine: &mut Engine) {
     engine.register_fn("github_latest_release", http::github_latest_release);
     engine.register_fn("github_latest_tag", http::github_latest_tag);
     engine.register_fn("parse_version", http::parse_version);
+    engine.register_fn("github_download_release", http::github_download_release);
+    engine.register_fn("extract_from_tarball", http::extract_from_tarball);
+
+    // Disk space utilities
+    engine.register_fn(
+        "check_disk_space",
+        |path: &str, required: i64| -> Result<(), Box<rhai::EvalAltResult>> {
+            disk::check_disk_space(std::path::Path::new(path), required as u64)
+                .map_err(|e| e.to_string().into())
+        },
+    );
 
     // Execution utilities for run command
     engine.register_fn("exec", process::exec);
