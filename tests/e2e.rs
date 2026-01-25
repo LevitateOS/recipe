@@ -1115,7 +1115,7 @@ fn test_cli_deps_nonexistent_package() {
         "Accept any success without verifying all packages installed",
         "Test with no-dep packages to avoid real test"
     ],
-    consequence = "User runs 'install --deps pkg', deps not installed, pkg fails at runtime"
+    consequence = "User runs 'install pkg', deps not installed, pkg fails at runtime"
 )]
 #[test]
 fn test_cli_install_deps_installs_in_order() {
@@ -1147,11 +1147,11 @@ fn install() {}
 "#,
     );
 
-    let output = run_recipe(&["install", "--deps", "app"], &prefix, &recipes);
+    let output = run_recipe(&["install", "app"], &prefix, &recipes);
 
     assert!(
         output.status.success(),
-        "install --deps failed: {}",
+        "install failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1208,11 +1208,11 @@ fn install() {}
 "#,
     );
 
-    let output = run_recipe(&["install", "--deps", "needs-it"], &prefix, &recipes);
+    let output = run_recipe(&["install", "needs-it"], &prefix, &recipes);
 
     assert!(
         output.status.success(),
-        "install --deps failed: {}",
+        "install failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1234,7 +1234,7 @@ fn install() {}
         "Mark some packages as not installed",
         "Skip output verification"
     ],
-    consequence = "User runs install --deps when all installed, gets confusing feedback"
+    consequence = "User runs install when all installed, gets confusing feedback"
 )]
 #[test]
 fn test_cli_install_deps_all_already_installed() {
@@ -1270,7 +1270,7 @@ fn install() {}
 "#,
     );
 
-    let output = run_recipe(&["install", "--deps", "app-installed"], &prefix, &recipes);
+    let output = run_recipe(&["install", "app-installed"], &prefix, &recipes);
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1324,11 +1324,11 @@ fn install() {{}}
         );
     }
 
-    let output = run_recipe(&["install", "--deps", "d"], &prefix, &recipes);
+    let output = run_recipe(&["install", "d"], &prefix, &recipes);
 
     assert!(
         output.status.success(),
-        "install --deps failed: {}",
+        "install failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
