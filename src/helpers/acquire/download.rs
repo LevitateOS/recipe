@@ -1,6 +1,6 @@
-//! Acquire phase helpers
+//! Download helpers for acquiring files
 //!
-//! Pure functions for downloading and verifying files.
+//! Pure functions for downloading files from URLs.
 //! All functions take explicit inputs and return explicit outputs.
 //!
 //! ## Example
@@ -16,21 +16,14 @@
 //!     ctx
 //! }
 //! ```
-//!
-//! ## Supported Hash Algorithms
-//!
-//! - `verify_sha256(path, expected)` - SHA-256 (recommended)
-//! - `verify_sha512(path, expected)` - SHA-512 (stronger)
-//! - `verify_blake3(path, expected)` - BLAKE3 (fastest)
 
 use crate::core::output;
 use rhai::EvalAltResult;
 use std::io::{Read, Write};
 use std::path::Path;
 
-use super::fs_utils;
-use super::hash::{self, HashAlgorithm};
-use super::progress::{self, upgrade_to_bytes};
+use super::super::internal::fs_utils;
+use super::super::internal::progress::{self, upgrade_to_bytes};
 
 /// Download a file from a URL to a specific destination.
 ///
@@ -58,43 +51,6 @@ pub fn download(url: &str, dest: &str) -> Result<String, Box<EvalAltResult>> {
 
     Ok(dest.to_string())
 }
-
-/// Verify the SHA256 hash of a file.
-///
-/// Throws an error if the hash doesn't match.
-///
-/// # Example
-/// ```rhai
-/// verify_sha256("/tmp/foo.tar.gz", "abc123...");
-/// ```
-pub fn verify_sha256(path: &str, expected: &str) -> Result<(), Box<EvalAltResult>> {
-    output::detail(&format!("verifying sha256 of {}", path));
-    hash::verify_file_hash(Path::new(path), expected, HashAlgorithm::Sha256)
-}
-
-/// Verify the SHA512 hash of a file.
-///
-/// Throws an error if the hash doesn't match.
-pub fn verify_sha512(path: &str, expected: &str) -> Result<(), Box<EvalAltResult>> {
-    output::detail(&format!("verifying sha512 of {}", path));
-    hash::verify_file_hash(Path::new(path), expected, HashAlgorithm::Sha512)
-}
-
-/// Verify the BLAKE3 hash of a file.
-///
-/// Throws an error if the hash doesn't match.
-pub fn verify_blake3(path: &str, expected: &str) -> Result<(), Box<EvalAltResult>> {
-    output::detail(&format!("verifying blake3 of {}", path));
-    hash::verify_file_hash(Path::new(path), expected, HashAlgorithm::Blake3)
-}
-
-/// Compute all hashes for a file (used by `recipe hash` command)
-pub fn compute_hashes(file: &Path) -> Result<hash::FileHashes, std::io::Error> {
-    hash::compute_all_hashes(file)
-}
-
-/// Re-export FileHashes for backwards compatibility
-pub use hash::FileHashes;
 
 // ============================================================================
 // Internal helpers

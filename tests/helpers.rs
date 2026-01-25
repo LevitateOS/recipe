@@ -426,7 +426,7 @@ fn install(ctx) {
 
 #[test]
 fn test_parse_version_helper() {
-    use levitate_recipe::helpers::http::parse_version;
+    use levitate_recipe::helpers::acquire::http::parse_version;
 
     // Test various version formats
     assert_eq!(parse_version("v1.0.0"), "1.0.0");

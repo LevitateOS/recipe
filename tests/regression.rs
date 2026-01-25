@@ -168,7 +168,7 @@ fn install(ctx) {
 
 #[test]
 fn test_regression_http_has_timeout() {
-    use levitate_recipe::helpers::http::http_get;
+    use levitate_recipe::helpers::acquire::http::http_get;
 
     // Invalid URL should fail quickly (not hang)
     let start = std::time::Instant::now();
@@ -190,7 +190,7 @@ fn test_regression_http_has_timeout() {
 
 #[test]
 fn test_regression_parse_version_order() {
-    use levitate_recipe::helpers::http::parse_version;
+    use levitate_recipe::helpers::acquire::http::parse_version;
 
     // "version-" prefix should be fully stripped
     assert_eq!(parse_version("version-1.0.0"), "1.0.0");
