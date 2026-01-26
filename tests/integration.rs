@@ -2,6 +2,7 @@
 //!
 //! These tests verify the ctx-based recipe execution pattern.
 
+use leviso_cheat_test::cheat_aware;
 use levitate_recipe::RecipeEngine;
 use std::path::Path;
 use tempfile::TempDir;
@@ -64,6 +65,15 @@ fn install(ctx) {
     assert!(content.contains("installed: true"));
 }
 
+#[cheat_aware(
+    protects = "Already-installed packages skip acquire/install phases",
+    severity = "MEDIUM",
+    ease = "MEDIUM",
+    cheats = ["Always run all phases regardless of is_installed()", "Ignore is_installed check"],
+    consequence = "User waits for unnecessary downloads/builds, potential overwrites of customizations",
+    legitimate_change = "is_installed() returning without throw means package is already installed. \
+        This enables proper caching and idempotent operations."
+)]
 #[test]
 fn test_skip_already_installed() {
     let (_dir, build_dir, recipes_dir) = create_test_env();
@@ -218,6 +228,15 @@ fn install(ctx) { ctx }
     assert!(result.unwrap_err().to_string().contains("acquire"));
 }
 
+#[cheat_aware(
+    protects = "Build failure prevents install phase from running",
+    severity = "HIGH",
+    ease = "MEDIUM",
+    cheats = ["Continue to install() after build() fails", "Catch and ignore build errors"],
+    consequence = "Broken build artifacts get installed, user gets cryptic runtime errors",
+    legitimate_change = "Phase ordering is sacred: acquire -> build -> install. \
+        If build fails, we must not proceed to install."
+)]
 #[test]
 fn test_build_failure_prevents_install() {
     let (_dir, build_dir, recipes_dir) = create_test_env();

@@ -2,6 +2,7 @@
 //!
 //! These tests run the actual CLI binary and verify behavior.
 
+use leviso_cheat_test::cheat_aware;
 use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
@@ -73,6 +74,14 @@ fn test_cli_version() {
 // Install Command Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "Nonexistent package produces clear error, not silent success",
+    severity = "HIGH",
+    ease = "EASY",
+    cheats = ["Return success for missing packages", "Create empty package on the fly"],
+    consequence = "User thinks package installed but nothing happened, confusion when binary missing",
+    legitimate_change = "Missing recipes must always fail with clear error message"
+)]
 #[test]
 fn test_cli_install_nonexistent_package() {
     let (_dir, recipes) = create_test_env();
@@ -84,6 +93,14 @@ fn test_cli_install_nonexistent_package() {
     assert!(stderr.contains("not found") || stderr.contains("Recipe not found"));
 }
 
+#[cheat_aware(
+    protects = "Package installation completes and persists state correctly",
+    severity = "HIGH",
+    ease = "MEDIUM",
+    cheats = ["Return success without running install()", "Skip state persistence"],
+    consequence = "User thinks package is installed but it isn't, re-runs fail or behave unexpectedly",
+    legitimate_change = "If install semantics change, update the lifecycle in src/core/lifecycle.rs"
+)]
 #[test]
 fn test_cli_install_success() {
     let (_dir, recipes) = create_test_env();
@@ -193,6 +210,14 @@ fn install(ctx) {
 // Remove Command Tests
 // =============================================================================
 
+#[cheat_aware(
+    protects = "Package removal actually deletes installed files and updates state",
+    severity = "HIGH",
+    ease = "MEDIUM",
+    cheats = ["Return success without calling remove()", "Update state but leave files"],
+    consequence = "User thinks package is removed but files remain, disk fills up or conflicts occur",
+    legitimate_change = "If remove semantics change, update the lifecycle in src/core/lifecycle.rs"
+)]
 #[test]
 fn test_cli_remove_success() {
     let (_dir, recipes) = create_test_env();

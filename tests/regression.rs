@@ -2,6 +2,7 @@
 //!
 //! Each test documents a bug that was fixed and ensures it doesn't recur.
 
+use leviso_cheat_test::cheat_aware;
 use levitate_recipe::RecipeEngine;
 use std::path::Path;
 use tempfile::TempDir;
@@ -114,6 +115,15 @@ fn install() {}
 // BUG: Failure should not corrupt partially updated ctx
 // =============================================================================
 
+#[cheat_aware(
+    protects = "Partial failures preserve completed phase state for resume",
+    severity = "HIGH",
+    ease = "MEDIUM",
+    cheats = ["Roll back all state on any failure", "Only persist state on full success"],
+    consequence = "User re-runs failed install, must re-download/rebuild from scratch",
+    legitimate_change = "Phase state must be persisted after each phase completes. \
+        This enables resumable installations where only the failed phase re-runs."
+)]
 #[test]
 fn test_regression_failure_preserves_acquire_state() {
     let (_dir, build_dir, recipes_dir) = create_test_env();
