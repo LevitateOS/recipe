@@ -49,5 +49,5 @@ zip = "2.2"
 tempfile = "3"
 wiremock = "0.6"
 tokio = { version = "1", features = ["rt", "macros"] }
-leviso-cheat-test = "0.1"
+leviso-cheat-test = { path = "../../testing/cheat-test" }
 filetime = "0.2"
