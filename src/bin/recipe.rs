@@ -167,19 +167,34 @@ fn main() -> Result<()> {
         Commands::Install { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(cli.build_dir.as_deref())?;
-            engine.execute(&recipe_path)?;
+            let ctx = engine.execute(&recipe_path)?;
+            // Output ctx as JSON to stdout (logs go to stderr)
+            let dynamic = rhai::Dynamic::from(ctx);
+            let json: serde_json::Value = rhai::serde::from_dynamic(&dynamic)
+                .map_err(|e| anyhow::anyhow!("Failed to serialize ctx: {}", e))?;
+            println!("{}", serde_json::to_string(&json)?);
         }
 
         Commands::Remove { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(cli.build_dir.as_deref())?;
-            engine.remove(&recipe_path)?;
+            let ctx = engine.remove(&recipe_path)?;
+            // Output ctx as JSON to stdout (logs go to stderr)
+            let dynamic = rhai::Dynamic::from(ctx);
+            let json: serde_json::Value = rhai::serde::from_dynamic(&dynamic)
+                .map_err(|e| anyhow::anyhow!("Failed to serialize ctx: {}", e))?;
+            println!("{}", serde_json::to_string(&json)?);
         }
 
         Commands::Cleanup { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(cli.build_dir.as_deref())?;
-            engine.cleanup(&recipe_path)?;
+            let ctx = engine.cleanup(&recipe_path)?;
+            // Output ctx as JSON to stdout (logs go to stderr)
+            let dynamic = rhai::Dynamic::from(ctx);
+            let json: serde_json::Value = rhai::serde::from_dynamic(&dynamic)
+                .map_err(|e| anyhow::anyhow!("Failed to serialize ctx: {}", e))?;
+            println!("{}", serde_json::to_string(&json)?);
         }
 
         Commands::List => {

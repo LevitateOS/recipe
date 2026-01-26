@@ -122,17 +122,23 @@ impl RecipeEngine {
     /// 3. is_acquired() - Check if acquire needed
     /// 4. Execute needed phases
     /// 5. Persist ctx after each phase
-    pub fn execute(&self, recipe_path: &Path) -> Result<()> {
+    ///
+    /// Returns the final ctx map containing all recipe state.
+    pub fn execute(&self, recipe_path: &Path) -> Result<rhai::Map> {
         core::executor::install(&self.engine, &self.build_dir, recipe_path)
     }
 
     /// Remove an installed package
-    pub fn remove(&self, recipe_path: &Path) -> Result<()> {
+    ///
+    /// Returns the final ctx map after removal.
+    pub fn remove(&self, recipe_path: &Path) -> Result<rhai::Map> {
         core::executor::remove(&self.engine, recipe_path)
     }
 
     /// Clean up build artifacts
-    pub fn cleanup(&self, recipe_path: &Path) -> Result<()> {
+    ///
+    /// Returns the final ctx map after cleanup.
+    pub fn cleanup(&self, recipe_path: &Path) -> Result<rhai::Map> {
         core::executor::cleanup(&self.engine, &self.build_dir, recipe_path)
     }
 

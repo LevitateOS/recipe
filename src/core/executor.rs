@@ -19,7 +19,9 @@ use std::path::Path;
 /// 3. Check is_acquired(ctx) - skip acquire if doesn't throw
 /// 4. Execute needed phases (acquire, build, install)
 /// 5. Persist ctx after each phase
-pub fn install(engine: &Engine, build_dir: &Path, recipe_path: &Path) -> Result<()> {
+///
+/// Returns the final ctx map containing all recipe state.
+pub fn install(engine: &Engine, build_dir: &Path, recipe_path: &Path) -> Result<rhai::Map> {
     let recipe_path = recipe_path
         .canonicalize()
         .unwrap_or_else(|_| recipe_path.to_path_buf());
@@ -70,7 +72,7 @@ pub fn install(engine: &Engine, build_dir: &Path, recipe_path: &Path) -> Result<
 
     if !needs_install {
         output::skip(&format!("{} already installed, skipping", name));
-        return Ok(());
+        return Ok(ctx_map);
     }
 
     output::action(&format!("Installing {}", name));
@@ -101,11 +103,13 @@ pub fn install(engine: &Engine, build_dir: &Path, recipe_path: &Path) -> Result<
     }
 
     output::success(&format!("{} installed", name));
-    Ok(())
+    Ok(ctx_map)
 }
 
 /// Remove an installed package
-pub fn remove(engine: &Engine, recipe_path: &Path) -> Result<()> {
+///
+/// Returns the final ctx map after removal.
+pub fn remove(engine: &Engine, recipe_path: &Path) -> Result<rhai::Map> {
     let recipe_path = recipe_path
         .canonicalize()
         .unwrap_or_else(|_| recipe_path.to_path_buf());
@@ -152,11 +156,13 @@ pub fn remove(engine: &Engine, recipe_path: &Path) -> Result<()> {
     fs::write(&recipe_path, &source)?;
 
     output::success(&format!("{} removed", name));
-    Ok(())
+    Ok(ctx_map)
 }
 
 /// Clean up build artifacts
-pub fn cleanup(engine: &Engine, build_dir: &Path, recipe_path: &Path) -> Result<()> {
+///
+/// Returns the final ctx map after cleanup.
+pub fn cleanup(engine: &Engine, build_dir: &Path, recipe_path: &Path) -> Result<rhai::Map> {
     let recipe_path = recipe_path
         .canonicalize()
         .unwrap_or_else(|_| recipe_path.to_path_buf());
@@ -204,7 +210,7 @@ pub fn cleanup(engine: &Engine, build_dir: &Path, recipe_path: &Path) -> Result<
     fs::write(&recipe_path, &source)?;
 
     output::success(&format!("{} cleaned", name));
-    Ok(())
+    Ok(ctx_map)
 }
 
 /// Check if a phase check function throws (meaning the phase is needed)

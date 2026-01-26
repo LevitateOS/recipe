@@ -2,20 +2,20 @@
 //!
 //! Uses owo-colors for terminal colors and indicatif for progress bars.
 
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use owo_colors::OwoColorize;
 use std::time::Duration;
 
 /// Print an action header (blue, bold)
 /// Example: "==> Installing ripgrep"
 pub fn action(message: &str) {
-    println!("{} {}", "==>".blue().bold(), message.bold());
+    eprintln!("{} {}", "==>".blue().bold(), message.bold());
 }
 
 /// Print an action with package counter (blue, bold)
 /// Example: "(1/5) Installing ripgrep"
 pub fn action_numbered(current: usize, total: usize, message: &str) {
-    println!(
+    eprintln!(
         "{} {}",
         format!("({}/{})", current, total).cyan(),
         message.bold()
@@ -25,24 +25,24 @@ pub fn action_numbered(current: usize, total: usize, message: &str) {
 /// Print a sub-action (cyan arrow)
 /// Example: "  -> acquire"
 pub fn sub_action(phase: &str) {
-    println!("  {} {}", "->".cyan(), phase);
+    eprintln!("  {} {}", "->".cyan(), phase);
 }
 
 /// Print a detail line (dimmed prefix)
 /// Example: "     downloading https://..."
 pub fn detail(message: &str) {
-    println!("     {}", message.dimmed());
+    eprintln!("     {}", message.dimmed());
 }
 
 /// Print a success message (green)
 /// Example: "==> ripgrep installed"
 pub fn success(message: &str) {
-    println!("{} {}", "==>".green().bold(), message.green());
+    eprintln!("{} {}", "==>".green().bold(), message.green());
 }
 
 /// Print an info message (cyan)
 pub fn info(message: &str) {
-    println!("{} {}", "::".cyan(), message);
+    eprintln!("{} {}", "::".cyan(), message);
 }
 
 /// Print a warning message (yellow)
@@ -58,21 +58,22 @@ pub fn error(message: &str) {
 /// Print a skip message (dimmed)
 /// Example: "==> ripgrep already installed, skipping"
 pub fn skip(message: &str) {
-    println!("{} {}", "==>".dimmed(), message.dimmed());
+    eprintln!("{} {}", "==>".dimmed(), message.dimmed());
 }
 
 /// Print package status in list output
 pub fn list_item(name: &str, status: &str, is_installed: bool) {
     if is_installed {
-        println!("  {} {}", name.green(), status.dimmed());
+        eprintln!("  {} {}", name.green(), status.dimmed());
     } else {
-        println!("  {} {}", name, status.dimmed());
+        eprintln!("  {} {}", name, status.dimmed());
     }
 }
 
 /// Create a download progress bar
 pub fn download_progress(total_size: u64) -> ProgressBar {
     let pb = ProgressBar::new(total_size);
+    pb.set_draw_target(ProgressDrawTarget::stderr());
     pb.set_style(
         ProgressStyle::default_bar()
             .template("     {spinner:.cyan} [{bar:30.cyan/dim}] {bytes}/{total_bytes} ({eta})")
@@ -86,6 +87,7 @@ pub fn download_progress(total_size: u64) -> ProgressBar {
 /// Create an indeterminate progress bar (spinner) for build phase
 pub fn build_spinner(message: &str) -> ProgressBar {
     let pb = ProgressBar::new_spinner();
+    pb.set_draw_target(ProgressDrawTarget::stderr());
     pb.set_style(
         ProgressStyle::default_spinner()
             .template("  {spinner:.cyan} {msg}")
@@ -100,6 +102,7 @@ pub fn build_spinner(message: &str) -> ProgressBar {
 /// Create a simple spinner for operations
 pub fn spinner(message: &str) -> ProgressBar {
     let pb = ProgressBar::new_spinner();
+    pb.set_draw_target(ProgressDrawTarget::stderr());
     pb.set_style(
         ProgressStyle::default_spinner()
             .template("     {spinner:.cyan} {msg}")
