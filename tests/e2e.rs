@@ -17,13 +17,11 @@ fn recipe_bin() -> std::path::PathBuf {
 }
 
 /// Create a test environment
-fn create_test_env() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
+fn create_test_env() -> (TempDir, std::path::PathBuf) {
     let dir = TempDir::new().unwrap();
-    let prefix = dir.path().join("prefix");
     let recipes = dir.path().join("recipes");
-    std::fs::create_dir_all(&prefix).unwrap();
     std::fs::create_dir_all(&recipes).unwrap();
-    (dir, prefix, recipes)
+    (dir, recipes)
 }
 
 /// Write a recipe file
@@ -33,10 +31,9 @@ fn write_recipe(recipes_dir: &Path, name: &str, content: &str) {
 }
 
 /// Run recipe CLI with arguments
-fn run_recipe(args: &[&str], prefix: &Path, recipes: &Path) -> std::process::Output {
+fn run_recipe(args: &[&str], recipes: &Path) -> std::process::Output {
     Command::new(recipe_bin())
         .args(args)
-        .args(["--prefix", prefix.to_str().unwrap()])
         .args(["--recipes-path", recipes.to_str().unwrap()])
         .output()
         .expect("Failed to execute recipe command")
@@ -78,9 +75,9 @@ fn test_cli_version() {
 
 #[test]
 fn test_cli_install_nonexistent_package() {
-    let (_dir, prefix, recipes) = create_test_env();
+    let (_dir, recipes) = create_test_env();
 
-    let output = run_recipe(&["install", "nonexistent"], &prefix, &recipes);
+    let output = run_recipe(&["install", "nonexistent"], &recipes);
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -89,7 +86,7 @@ fn test_cli_install_nonexistent_package() {
 
 #[test]
 fn test_cli_install_success() {
-    let (_dir, prefix, recipes) = create_test_env();
+    let (_dir, recipes) = create_test_env();
 
     write_recipe(
         &recipes,
@@ -114,7 +111,7 @@ fn install(ctx) {
 "#,
     );
 
-    let output = run_recipe(&["install", "simple"], &prefix, &recipes);
+    let output = run_recipe(&["install", "simple"], &recipes);
 
     assert!(
         output.status.success(),
@@ -129,7 +126,7 @@ fn install(ctx) {
 
 #[test]
 fn test_cli_install_already_installed() {
-    let (_dir, prefix, recipes) = create_test_env();
+    let (_dir, recipes) = create_test_env();
 
     write_recipe(
         &recipes,
@@ -153,13 +150,13 @@ fn install(ctx) {
 "#,
     );
 
-    let output = run_recipe(&["install", "already"], &prefix, &recipes);
+    let output = run_recipe(&["install", "already"], &recipes);
     assert!(output.status.success());
 }
 
 #[test]
 fn test_cli_accepts_explicit_rhai_path() {
-    let (_dir, prefix, recipes) = create_test_env();
+    let (_dir, recipes) = create_test_env();
 
     // Write recipe outside the recipes directory
     let recipe_path = recipes.parent().unwrap().join("external.rhai");
@@ -182,7 +179,6 @@ fn install(ctx) {
 
     let output = Command::new(recipe_bin())
         .args(["install", recipe_path.to_str().unwrap()])
-        .args(["--prefix", prefix.to_str().unwrap()])
         .output()
         .expect("Failed to execute recipe command");
 
@@ -199,11 +195,12 @@ fn install(ctx) {
 
 #[test]
 fn test_cli_remove_success() {
-    let (_dir, prefix, recipes) = create_test_env();
+    let (_dir, recipes) = create_test_env();
 
-    // Create a file that will be "removed"
-    let test_file = prefix.join("bin/test-binary");
-    std::fs::create_dir_all(prefix.join("bin")).unwrap();
+    // Create a file that will be "removed" in the recipe's output dir
+    let output_dir = recipes.join("output");
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let test_file = output_dir.join("test-binary");
     std::fs::write(&test_file, "binary content").unwrap();
 
     write_recipe(
@@ -232,7 +229,7 @@ fn remove(ctx) {{
 
     assert!(test_file.exists());
 
-    let output = run_recipe(&["remove", "removable"], &prefix, &recipes);
+    let output = run_recipe(&["remove", "removable"], &recipes);
 
     assert!(
         output.status.success(),
@@ -250,7 +247,7 @@ fn remove(ctx) {{
 
 #[test]
 fn test_cli_remove_no_function() {
-    let (_dir, prefix, recipes) = create_test_env();
+    let (_dir, recipes) = create_test_env();
 
     write_recipe(
         &recipes,
@@ -263,7 +260,7 @@ let ctx = #{
 "#,
     );
 
-    let output = run_recipe(&["remove", "noremove"], &prefix, &recipes);
+    let output = run_recipe(&["remove", "noremove"], &recipes);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("no remove function"));
@@ -275,7 +272,7 @@ let ctx = #{
 
 #[test]
 fn test_cli_cleanup_success() {
-    let (_dir, prefix, recipes) = create_test_env();
+    let (_dir, recipes) = create_test_env();
 
     write_recipe(
         &recipes,
@@ -293,7 +290,7 @@ fn cleanup(ctx) {
 "#,
     );
 
-    let output = run_recipe(&["cleanup", "cleanable"], &prefix, &recipes);
+    let output = run_recipe(&["cleanup", "cleanable"], &recipes);
 
     assert!(
         output.status.success(),
@@ -311,15 +308,15 @@ fn cleanup(ctx) {
 
 #[test]
 fn test_cli_list_empty() {
-    let (_dir, prefix, recipes) = create_test_env();
+    let (_dir, recipes) = create_test_env();
 
-    let output = run_recipe(&["list"], &prefix, &recipes);
+    let output = run_recipe(&["list"], &recipes);
     assert!(output.status.success());
 }
 
 #[test]
 fn test_cli_list_recipes() {
-    let (_dir, prefix, recipes) = create_test_env();
+    let (_dir, recipes) = create_test_env();
 
     write_recipe(
         &recipes,
@@ -343,7 +340,7 @@ let ctx = #{
 "#,
     );
 
-    let output = run_recipe(&["list"], &prefix, &recipes);
+    let output = run_recipe(&["list"], &recipes);
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("pkg1") || stdout.contains("pkg2"));
@@ -355,7 +352,7 @@ let ctx = #{
 
 #[test]
 fn test_cli_info_shows_details() {
-    let (_dir, prefix, recipes) = create_test_env();
+    let (_dir, recipes) = create_test_env();
 
     write_recipe(
         &recipes,
@@ -369,7 +366,7 @@ let ctx = #{
 "#,
     );
 
-    let output = run_recipe(&["info", "mypackage"], &prefix, &recipes);
+    let output = run_recipe(&["info", "mypackage"], &recipes);
 
     assert!(
         output.status.success(),
@@ -388,7 +385,7 @@ let ctx = #{
 
 #[test]
 fn test_cli_install_acquire_failure() {
-    let (_dir, prefix, recipes) = create_test_env();
+    let (_dir, recipes) = create_test_env();
 
     write_recipe(
         &recipes,
@@ -412,7 +409,7 @@ fn install(ctx) { ctx }
 "#,
     );
 
-    let output = run_recipe(&["install", "fail-acquire"], &prefix, &recipes);
+    let output = run_recipe(&["install", "fail-acquire"], &recipes);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("acquire") || stderr.contains("Download failed"));
@@ -420,7 +417,7 @@ fn install(ctx) { ctx }
 
 #[test]
 fn test_cli_install_build_failure() {
-    let (_dir, prefix, recipes) = create_test_env();
+    let (_dir, recipes) = create_test_env();
 
     write_recipe(
         &recipes,
@@ -446,7 +443,7 @@ fn install(ctx) { ctx }
 "#,
     );
 
-    let output = run_recipe(&["install", "fail-build"], &prefix, &recipes);
+    let output = run_recipe(&["install", "fail-build"], &recipes);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("build") || stderr.contains("Compilation failed"));
@@ -454,7 +451,7 @@ fn install(ctx) { ctx }
 
 #[test]
 fn test_cli_install_install_failure() {
-    let (_dir, prefix, recipes) = create_test_env();
+    let (_dir, recipes) = create_test_env();
 
     write_recipe(
         &recipes,
@@ -478,7 +475,7 @@ fn install(ctx) {
 "#,
     );
 
-    let output = run_recipe(&["install", "fail-install"], &prefix, &recipes);
+    let output = run_recipe(&["install", "fail-install"], &recipes);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("install") || stderr.contains("Install failed"));

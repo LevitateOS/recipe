@@ -70,7 +70,7 @@
 //!
 //! # Variables Available in Scripts
 //!
-//! - `PREFIX` - Installation prefix
+//! - `RECIPE_DIR` - Directory containing the recipe file
 //! - `BUILD_DIR` - Temporary build directory
 //! - `ARCH` - Target architecture (x86_64, aarch64)
 //! - `NPROC` - Number of CPUs
@@ -88,20 +88,18 @@ use std::path::{Path, PathBuf};
 /// Recipe execution engine
 pub struct RecipeEngine {
     engine: Engine,
-    prefix: PathBuf,
     build_dir: PathBuf,
     recipes_path: Option<PathBuf>,
 }
 
 impl RecipeEngine {
     /// Create a new recipe engine
-    pub fn new(prefix: PathBuf, build_dir: PathBuf) -> Self {
+    pub fn new(build_dir: PathBuf) -> Self {
         let mut engine = Engine::new();
         helpers::register_all(&mut engine);
 
         Self {
             engine,
-            prefix,
             build_dir,
             recipes_path: None,
         }
@@ -125,22 +123,17 @@ impl RecipeEngine {
     /// 4. Execute needed phases
     /// 5. Persist ctx after each phase
     pub fn execute(&self, recipe_path: &Path) -> Result<()> {
-        core::executor::install(&self.engine, &self.prefix, &self.build_dir, recipe_path)
+        core::executor::install(&self.engine, &self.build_dir, recipe_path)
     }
 
     /// Remove an installed package
     pub fn remove(&self, recipe_path: &Path) -> Result<()> {
-        core::executor::remove(&self.engine, &self.prefix, recipe_path)
+        core::executor::remove(&self.engine, recipe_path)
     }
 
     /// Clean up build artifacts
     pub fn cleanup(&self, recipe_path: &Path) -> Result<()> {
         core::executor::cleanup(&self.engine, &self.build_dir, recipe_path)
-    }
-
-    /// Get the prefix path
-    pub fn prefix(&self) -> &Path {
-        &self.prefix
     }
 
     /// Get the recipes path
@@ -161,17 +154,15 @@ mod tests {
 
     #[test]
     fn test_engine_creation() {
-        let prefix = TempDir::new().unwrap();
         let build_dir = TempDir::new().unwrap();
-        let engine = RecipeEngine::new(prefix.path().to_path_buf(), build_dir.path().to_path_buf());
+        let engine = RecipeEngine::new(build_dir.path().to_path_buf());
         assert!(engine.recipes_path.is_none());
     }
 
     #[test]
     fn test_minimal_recipe() {
-        let prefix = TempDir::new().unwrap();
         let build_dir = TempDir::new().unwrap();
-        let engine = RecipeEngine::new(prefix.path().to_path_buf(), build_dir.path().to_path_buf());
+        let engine = RecipeEngine::new(build_dir.path().to_path_buf());
 
         let recipe_dir = TempDir::new().unwrap();
         let recipe_path = recipe_dir.path().join("test.rhai");

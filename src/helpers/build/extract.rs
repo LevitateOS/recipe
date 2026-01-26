@@ -9,7 +9,7 @@
 //! fn build(ctx) {
 //!     extract(ctx.archive_path, BUILD_DIR);
 //!     let src_dir = BUILD_DIR + "/myapp-1.0";
-//!     shell_in(src_dir, "./configure --prefix=" + PREFIX);
+//!     shell_in(src_dir, "./configure");
 //!     shell_in(src_dir, "make -j" + NPROC);
 //!     ctx.src_dir = src_dir;
 //!     ctx

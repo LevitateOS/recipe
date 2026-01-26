@@ -6,21 +6,14 @@ use levitate_recipe::RecipeEngine;
 use std::path::Path;
 use tempfile::TempDir;
 
-/// Create a test environment with prefix, build_dir, and recipes directories
-fn create_test_env() -> (
-    TempDir,
-    std::path::PathBuf,
-    std::path::PathBuf,
-    std::path::PathBuf,
-) {
+/// Create a test environment with build_dir and recipes directories
+fn create_test_env() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
     let dir = TempDir::new().unwrap();
-    let prefix = dir.path().join("prefix");
     let build_dir = dir.path().join("build");
     let recipes_dir = dir.path().join("recipes");
-    std::fs::create_dir_all(&prefix).unwrap();
     std::fs::create_dir_all(&build_dir).unwrap();
     std::fs::create_dir_all(&recipes_dir).unwrap();
-    (dir, prefix, build_dir, recipes_dir)
+    (dir, build_dir, recipes_dir)
 }
 
 /// Write a recipe file and return its path
@@ -36,7 +29,7 @@ fn write_recipe(recipes_dir: &Path, name: &str, content: &str) -> std::path::Pat
 
 #[test]
 fn test_install_basic_recipe() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+    let (_dir, build_dir, recipes_dir) = create_test_env();
 
     let recipe_path = write_recipe(
         &recipes_dir,
@@ -62,7 +55,7 @@ fn install(ctx) {
 "#,
     );
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
     assert!(result.is_ok(), "Execute failed: {:?}", result.err());
 
@@ -73,7 +66,7 @@ fn install(ctx) {
 
 #[test]
 fn test_skip_already_installed() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+    let (_dir, build_dir, recipes_dir) = create_test_env();
 
     let recipe_path = write_recipe(
         &recipes_dir,
@@ -96,14 +89,14 @@ fn install(ctx) {
 "#,
     );
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
     assert!(result.is_ok());
 }
 
 #[test]
 fn test_install_with_build_phase() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+    let (_dir, build_dir, recipes_dir) = create_test_env();
 
     let recipe_path = write_recipe(
         &recipes_dir,
@@ -139,7 +132,7 @@ fn install(ctx) {
 "#,
     );
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
     assert!(result.is_ok());
 
@@ -150,7 +143,7 @@ fn install(ctx) {
 
 #[test]
 fn test_skip_build_when_already_built() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+    let (_dir, build_dir, recipes_dir) = create_test_env();
 
     let recipe_path = write_recipe(
         &recipes_dir,
@@ -184,7 +177,7 @@ fn install(ctx) {
 "#,
     );
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
     assert!(result.is_ok());
 }
@@ -195,7 +188,7 @@ fn install(ctx) {
 
 #[test]
 fn test_acquire_failure() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+    let (_dir, build_dir, recipes_dir) = create_test_env();
 
     let recipe_path = write_recipe(
         &recipes_dir,
@@ -219,7 +212,7 @@ fn install(ctx) { ctx }
 "#,
     );
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("acquire"));
@@ -227,7 +220,7 @@ fn install(ctx) { ctx }
 
 #[test]
 fn test_build_failure_prevents_install() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+    let (_dir, build_dir, recipes_dir) = create_test_env();
 
     let recipe_path = write_recipe(
         &recipes_dir,
@@ -255,7 +248,7 @@ fn install(ctx) {
 "#,
     );
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("build"));
@@ -263,7 +256,7 @@ fn install(ctx) {
 
 #[test]
 fn test_install_failure() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+    let (_dir, build_dir, recipes_dir) = create_test_env();
 
     let recipe_path = write_recipe(
         &recipes_dir,
@@ -287,7 +280,7 @@ fn install(ctx) {
 "#,
     );
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("install"));
@@ -299,7 +292,7 @@ fn install(ctx) {
 
 #[test]
 fn test_ctx_persisted_with_paths() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+    let (_dir, build_dir, recipes_dir) = create_test_env();
 
     let recipe_path = write_recipe(
         &recipes_dir,
@@ -328,7 +321,7 @@ fn install(ctx) {
 "#,
     );
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     engine.execute(&recipe_path).unwrap();
 
     let content = std::fs::read_to_string(&recipe_path).unwrap();
@@ -338,7 +331,7 @@ fn install(ctx) {
 
 #[test]
 fn test_original_content_preserved() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+    let (_dir, build_dir, recipes_dir) = create_test_env();
 
     let recipe_path = write_recipe(
         &recipes_dir,
@@ -364,7 +357,7 @@ fn install(ctx) {
 "#,
     );
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     engine.execute(&recipe_path).unwrap();
 
     let content = std::fs::read_to_string(&recipe_path).unwrap();
@@ -379,7 +372,7 @@ fn install(ctx) {
 
 #[test]
 fn test_remove_basic() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+    let (_dir, build_dir, recipes_dir) = create_test_env();
 
     let recipe_path = write_recipe(
         &recipes_dir,
@@ -397,7 +390,7 @@ fn remove(ctx) {
 "#,
     );
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     let result = engine.remove(&recipe_path);
     assert!(result.is_ok());
 
@@ -407,7 +400,7 @@ fn remove(ctx) {
 
 #[test]
 fn test_remove_no_function() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+    let (_dir, build_dir, recipes_dir) = create_test_env();
 
     let recipe_path = write_recipe(
         &recipes_dir,
@@ -419,7 +412,7 @@ let ctx = #{
 "#,
     );
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     let result = engine.remove(&recipe_path);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("no remove function"));
@@ -431,7 +424,7 @@ let ctx = #{
 
 #[test]
 fn test_cleanup_basic() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+    let (_dir, build_dir, recipes_dir) = create_test_env();
 
     let recipe_path = write_recipe(
         &recipes_dir,
@@ -449,7 +442,7 @@ fn cleanup(ctx) {
 "#,
     );
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     let result = engine.cleanup(&recipe_path);
     assert!(result.is_ok());
 
@@ -463,7 +456,7 @@ fn cleanup(ctx) {
 
 #[test]
 fn test_no_is_installed_means_always_install() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+    let (_dir, build_dir, recipes_dir) = create_test_env();
 
     // Recipe without is_installed - should always run install
     let recipe_path = write_recipe(
@@ -487,7 +480,7 @@ fn install(ctx) {
 "#,
     );
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     engine.execute(&recipe_path).unwrap();
 
     let content = std::fs::read_to_string(&recipe_path).unwrap();
@@ -496,7 +489,7 @@ fn install(ctx) {
 
 #[test]
 fn test_multiple_recipes_independent() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+    let (_dir, build_dir, recipes_dir) = create_test_env();
 
     let recipe1 = write_recipe(
         &recipes_dir,
@@ -532,7 +525,7 @@ fn install(ctx) {
 "#,
     );
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     engine.execute(&recipe1).unwrap();
     engine.execute(&recipe2).unwrap();
 

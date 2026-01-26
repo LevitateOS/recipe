@@ -102,7 +102,7 @@ Required variables:
 
 Required functions:
 - `acquire()` - Download/copy source
-- `install()` - Install to PREFIX
+- `install()` - Install files to destination
 
 Optional:
 - `build()` - Extract, configure, compile
@@ -135,11 +135,10 @@ Optional:
 
 | Function | Description |
 |----------|-------------|
-| `install_bin(pattern)` | Install to PREFIX/bin (0755) |
-| `install_lib(pattern)` | Install to PREFIX/lib (0644) |
-| `install_man(pattern)` | Install to PREFIX/share/man |
-| `install_to_dir(pattern, subdir)` | Install to PREFIX/subdir |
-| `install_to_dir(pattern, subdir, mode)` | Install with specific permissions |
+| `install_bin(dest, pattern)` | Install executables (0755) |
+| `install_lib(dest, pattern)` | Install libraries (0644) |
+| `install_to_dir(dest, pattern)` | Install files to directory |
+| `install_to_dir(dest, pattern, mode)` | Install with specific permissions |
 | `rpm_install(pattern)` | Extract and install from RPM |
 
 ### Filesystem
@@ -186,7 +185,7 @@ Optional:
 
 | Variable | Description |
 |----------|-------------|
-| `PREFIX` | Install prefix (default: `/usr/local`) |
+| `RECIPE_DIR` | Directory containing the recipe file |
 | `BUILD_DIR` | Temp build directory |
 | `ARCH` | Architecture (`x86_64`, `aarch64`) |
 | `NPROC` | CPU core count |

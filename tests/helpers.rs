@@ -7,14 +7,14 @@
 use levitate_recipe::RecipeEngine;
 use tempfile::TempDir;
 
-/// Create a test environment with prefix and build_dir
+/// Create a test environment with build_dir
 fn create_test_env() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
     let dir = TempDir::new().unwrap();
-    let prefix = dir.path().join("prefix");
+    let recipes_dir = dir.path().join("recipes");
     let build_dir = dir.path().join("build");
-    std::fs::create_dir_all(&prefix).unwrap();
+    std::fs::create_dir_all(&recipes_dir).unwrap();
     std::fs::create_dir_all(&build_dir).unwrap();
-    (dir, prefix, build_dir)
+    (dir, recipes_dir, build_dir)
 }
 
 // =============================================================================
@@ -23,11 +23,9 @@ fn create_test_env() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
 
 #[test]
 fn test_mkdir_recursive() {
-    let (_dir, prefix, build_dir) = create_test_env();
+    let (_dir, recipes_dir, build_dir) = create_test_env();
 
-    let recipes_dir = prefix.parent().unwrap().join("recipes");
-    std::fs::create_dir_all(&recipes_dir).unwrap();
-
+    
     let recipe_content = r#"
 let ctx = #{
     name: "mkdir-test",
@@ -66,7 +64,7 @@ fn install(ctx) {
     let recipe_path = recipes_dir.join("mkdir-test.rhai");
     std::fs::write(&recipe_path, recipe_content).unwrap();
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
 
     assert!(
@@ -78,11 +76,9 @@ fn install(ctx) {
 
 #[test]
 fn test_glob_list_helper() {
-    let (_dir, prefix, build_dir) = create_test_env();
+    let (_dir, recipes_dir, build_dir) = create_test_env();
 
-    let recipes_dir = prefix.parent().unwrap().join("recipes");
-    std::fs::create_dir_all(&recipes_dir).unwrap();
-
+    
     let recipe_content = r#"
 let ctx = #{
     name: "glob-test",
@@ -132,7 +128,7 @@ fn install(ctx) {
     let recipe_path = recipes_dir.join("glob-test.rhai");
     std::fs::write(&recipe_path, recipe_content).unwrap();
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
 
     assert!(result.is_ok(), "glob_list test failed: {:?}", result.err());
@@ -140,11 +136,9 @@ fn install(ctx) {
 
 #[test]
 fn test_mv_and_ln_helpers() {
-    let (_dir, prefix, build_dir) = create_test_env();
+    let (_dir, recipes_dir, build_dir) = create_test_env();
 
-    let recipes_dir = prefix.parent().unwrap().join("recipes");
-    std::fs::create_dir_all(&recipes_dir).unwrap();
-
+    
     let recipe_content = r#"
 let ctx = #{
     name: "mv-ln-test",
@@ -189,7 +183,7 @@ fn install(ctx) {
     let recipe_path = recipes_dir.join("mv-ln-test.rhai");
     std::fs::write(&recipe_path, recipe_content).unwrap();
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
 
     assert!(
@@ -201,11 +195,9 @@ fn install(ctx) {
 
 #[test]
 fn test_shell_output_and_status() {
-    let (_dir, prefix, build_dir) = create_test_env();
+    let (_dir, recipes_dir, build_dir) = create_test_env();
 
-    let recipes_dir = prefix.parent().unwrap().join("recipes");
-    std::fs::create_dir_all(&recipes_dir).unwrap();
-
+    
     let recipe_content = r#"
 let ctx = #{
     name: "shell-test",
@@ -249,7 +241,7 @@ fn install(ctx) {
     let recipe_path = recipes_dir.join("shell-test.rhai");
     std::fs::write(&recipe_path, recipe_content).unwrap();
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
 
     assert!(
@@ -261,11 +253,9 @@ fn install(ctx) {
 
 #[test]
 fn test_exec_helpers() {
-    let (_dir, prefix, build_dir) = create_test_env();
+    let (_dir, recipes_dir, build_dir) = create_test_env();
 
-    let recipes_dir = prefix.parent().unwrap().join("recipes");
-    std::fs::create_dir_all(&recipes_dir).unwrap();
-
+    
     let recipe_content = r#"
 let ctx = #{
     name: "exec-test",
@@ -300,7 +290,7 @@ fn install(ctx) {
     let recipe_path = recipes_dir.join("exec-test.rhai");
     std::fs::write(&recipe_path, recipe_content).unwrap();
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
 
     assert!(
@@ -312,11 +302,9 @@ fn install(ctx) {
 
 #[test]
 fn test_env_helpers() {
-    let (_dir, prefix, build_dir) = create_test_env();
+    let (_dir, recipes_dir, build_dir) = create_test_env();
 
-    let recipes_dir = prefix.parent().unwrap().join("recipes");
-    std::fs::create_dir_all(&recipes_dir).unwrap();
-
+    
     let recipe_content = r#"
 let ctx = #{
     name: "env-test",
@@ -357,7 +345,7 @@ fn install(ctx) {
     let recipe_path = recipes_dir.join("env-test.rhai");
     std::fs::write(&recipe_path, recipe_content).unwrap();
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
 
     assert!(
@@ -369,11 +357,9 @@ fn install(ctx) {
 
 #[test]
 fn test_extract_tarball() {
-    let (_dir, prefix, build_dir) = create_test_env();
+    let (_dir, recipes_dir, build_dir) = create_test_env();
 
-    let recipes_dir = prefix.parent().unwrap().join("recipes");
-    std::fs::create_dir_all(&recipes_dir).unwrap();
-
+    
     let recipe_content = r#"
 let ctx = #{
     name: "extract-test",
@@ -414,7 +400,7 @@ fn install(ctx) {
     let recipe_path = recipes_dir.join("extract-test.rhai");
     std::fs::write(&recipe_path, recipe_content).unwrap();
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
 
     assert!(
@@ -442,11 +428,9 @@ fn test_parse_version_helper() {
 #[test]
 #[ignore]
 fn test_download_helper() {
-    let (_dir, prefix, build_dir) = create_test_env();
+    let (_dir, recipes_dir, build_dir) = create_test_env();
 
-    let recipes_dir = prefix.parent().unwrap().join("recipes");
-    std::fs::create_dir_all(&recipes_dir).unwrap();
-
+    
     let recipe_content = r#"
 let ctx = #{
     name: "download-test",
@@ -477,7 +461,7 @@ fn install(ctx) {
     let recipe_path = recipes_dir.join("download-test.rhai");
     std::fs::write(&recipe_path, recipe_content).unwrap();
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
 
     assert!(
@@ -490,11 +474,9 @@ fn install(ctx) {
 #[test]
 #[ignore]
 fn test_http_get_helper() {
-    let (_dir, prefix, build_dir) = create_test_env();
+    let (_dir, recipes_dir, build_dir) = create_test_env();
 
-    let recipes_dir = prefix.parent().unwrap().join("recipes");
-    std::fs::create_dir_all(&recipes_dir).unwrap();
-
+    
     let recipe_content = r#"
 let ctx = #{
     name: "http-get-test",
@@ -525,7 +507,7 @@ fn install(ctx) {
     let recipe_path = recipes_dir.join("http-get-test.rhai");
     std::fs::write(&recipe_path, recipe_content).unwrap();
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
 
     assert!(
@@ -538,11 +520,9 @@ fn install(ctx) {
 #[test]
 #[ignore]
 fn test_git_clone_helper() {
-    let (_dir, prefix, build_dir) = create_test_env();
+    let (_dir, recipes_dir, build_dir) = create_test_env();
 
-    let recipes_dir = prefix.parent().unwrap().join("recipes");
-    std::fs::create_dir_all(&recipes_dir).unwrap();
-
+    
     let recipe_content = r#"
 let ctx = #{
     name: "git-clone-test",
@@ -573,7 +553,7 @@ fn install(ctx) {
     let recipe_path = recipes_dir.join("git-clone-test.rhai");
     std::fs::write(&recipe_path, recipe_content).unwrap();
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
 
     assert!(

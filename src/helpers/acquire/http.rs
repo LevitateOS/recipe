@@ -296,7 +296,8 @@ pub fn github_release_assets(repo: &str) -> Result<Vec<(String, String)>, Box<Ev
 ///
 /// # Example
 /// ```rhai
-/// extract_from_tarball("tool-1.0.tar.gz", "*/bin/tool", PREFIX + "/bin/tool");
+/// let output_dir = RECIPE_DIR + "/output";
+/// extract_from_tarball("tool-1.0.tar.gz", "*/bin/tool", output_dir + "/bin/tool");
 /// ```
 pub fn extract_from_tarball(
     archive: &str,

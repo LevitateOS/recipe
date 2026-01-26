@@ -19,7 +19,7 @@ use std::path::Path;
 /// 3. Check is_acquired(ctx) - skip acquire if doesn't throw
 /// 4. Execute needed phases (acquire, build, install)
 /// 5. Persist ctx after each phase
-pub fn install(engine: &Engine, prefix: &Path, build_dir: &Path, recipe_path: &Path) -> Result<()> {
+pub fn install(engine: &Engine, build_dir: &Path, recipe_path: &Path) -> Result<()> {
     let recipe_path = recipe_path
         .canonicalize()
         .unwrap_or_else(|_| recipe_path.to_path_buf());
@@ -33,9 +33,15 @@ pub fn install(engine: &Engine, prefix: &Path, build_dir: &Path, recipe_path: &P
         .compile(&source)
         .map_err(|e| anyhow!("Failed to compile recipe: {}", e))?;
 
+    // Derive RECIPE_DIR from the recipe file's parent directory
+    let recipe_dir = recipe_path
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".to_string());
+
     // Set up scope with constants
     let mut scope = Scope::new();
-    scope.push_constant("PREFIX", prefix.to_string_lossy().to_string());
+    scope.push_constant("RECIPE_DIR", recipe_dir);
     scope.push_constant("BUILD_DIR", build_dir.to_string_lossy().to_string());
     scope.push_constant("ARCH", std::env::consts::ARCH);
     scope.push_constant("NPROC", num_cpus::get() as i64);
@@ -99,7 +105,7 @@ pub fn install(engine: &Engine, prefix: &Path, build_dir: &Path, recipe_path: &P
 }
 
 /// Remove an installed package
-pub fn remove(engine: &Engine, prefix: &Path, recipe_path: &Path) -> Result<()> {
+pub fn remove(engine: &Engine, recipe_path: &Path) -> Result<()> {
     let recipe_path = recipe_path
         .canonicalize()
         .unwrap_or_else(|_| recipe_path.to_path_buf());
@@ -113,8 +119,14 @@ pub fn remove(engine: &Engine, prefix: &Path, recipe_path: &Path) -> Result<()> 
         .compile(&source)
         .map_err(|e| anyhow!("Failed to compile recipe: {}", e))?;
 
+    // Derive RECIPE_DIR from the recipe file's parent directory
+    let recipe_dir = recipe_path
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".to_string());
+
     let mut scope = Scope::new();
-    scope.push_constant("PREFIX", prefix.to_string_lossy().to_string());
+    scope.push_constant("RECIPE_DIR", recipe_dir);
 
     // Run script to populate scope
     engine.run_ast_with_scope(&mut scope, &ast)?;
@@ -158,7 +170,14 @@ pub fn cleanup(engine: &Engine, build_dir: &Path, recipe_path: &Path) -> Result<
         .compile(&source)
         .map_err(|e| anyhow!("Failed to compile recipe: {}", e))?;
 
+    // Derive RECIPE_DIR from the recipe file's parent directory
+    let recipe_dir = recipe_path
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".to_string());
+
     let mut scope = Scope::new();
+    scope.push_constant("RECIPE_DIR", recipe_dir);
     scope.push_constant("BUILD_DIR", build_dir.to_string_lossy().to_string());
 
     // Run script to populate scope
@@ -231,9 +250,7 @@ mod tests {
     #[test]
     fn test_install_minimal_recipe() {
         let dir = TempDir::new().unwrap();
-        let prefix = dir.path().join("prefix");
         let build_dir = dir.path().join("build");
-        fs::create_dir_all(&prefix).unwrap();
         fs::create_dir_all(&build_dir).unwrap();
 
         let recipe_path = dir.path().join("test.rhai");
@@ -260,7 +277,7 @@ fn install(ctx) {
         .unwrap();
 
         let engine = create_engine();
-        let result = install(&engine, &prefix, &build_dir, &recipe_path);
+        let result = install(&engine, &build_dir, &recipe_path);
         assert!(result.is_ok(), "Failed: {:?}", result);
 
         // Check ctx was persisted
@@ -271,9 +288,7 @@ fn install(ctx) {
     #[test]
     fn test_install_already_installed_skips() {
         let dir = TempDir::new().unwrap();
-        let prefix = dir.path().join("prefix");
         let build_dir = dir.path().join("build");
-        fs::create_dir_all(&prefix).unwrap();
         fs::create_dir_all(&build_dir).unwrap();
 
         let recipe_path = dir.path().join("test.rhai");
@@ -292,7 +307,7 @@ fn install(ctx) { throw "should not run"; }
         .unwrap();
 
         let engine = create_engine();
-        let result = install(&engine, &prefix, &build_dir, &recipe_path);
+        let result = install(&engine, &build_dir, &recipe_path);
         assert!(result.is_ok());
     }
 

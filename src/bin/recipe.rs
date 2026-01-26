@@ -107,10 +107,6 @@ struct Cli {
     #[arg(short = 'r', long, global = true)]
     recipes_path: Option<PathBuf>,
 
-    /// Installation prefix
-    #[arg(short, long, global = true, default_value = "/usr/local")]
-    prefix: PathBuf,
-
     /// Build directory (uses temp dir if not specified)
     #[arg(short, long, global = true)]
     build_dir: Option<PathBuf>,
@@ -170,19 +166,19 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Install { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
-            let engine = create_engine(&cli.prefix, cli.build_dir.as_deref())?;
+            let engine = create_engine(cli.build_dir.as_deref())?;
             engine.execute(&recipe_path)?;
         }
 
         Commands::Remove { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
-            let engine = create_engine(&cli.prefix, cli.build_dir.as_deref())?;
+            let engine = create_engine(cli.build_dir.as_deref())?;
             engine.remove(&recipe_path)?;
         }
 
         Commands::Cleanup { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
-            let engine = create_engine(&cli.prefix, cli.build_dir.as_deref())?;
+            let engine = create_engine(cli.build_dir.as_deref())?;
             engine.cleanup(&recipe_path)?;
         }
 
@@ -228,7 +224,7 @@ fn main() -> Result<()> {
 }
 
 /// Create a recipe engine with proper configuration
-fn create_engine(prefix: &Path, build_dir: Option<&Path>) -> Result<RecipeEngine> {
+fn create_engine(build_dir: Option<&Path>) -> Result<RecipeEngine> {
     let build_dir = match build_dir {
         Some(dir) => {
             std::fs::create_dir_all(dir)
@@ -241,10 +237,7 @@ fn create_engine(prefix: &Path, build_dir: Option<&Path>) -> Result<RecipeEngine
         }
     };
 
-    std::fs::create_dir_all(prefix)
-        .with_context(|| format!("Failed to create prefix directory: {}", prefix.display()))?;
-
-    Ok(RecipeEngine::new(prefix.to_path_buf(), build_dir))
+    Ok(RecipeEngine::new(build_dir))
 }
 
 /// Resolve a recipe path (absolute path or relative to recipes_path)

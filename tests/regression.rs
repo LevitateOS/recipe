@@ -6,20 +6,13 @@ use levitate_recipe::RecipeEngine;
 use std::path::Path;
 use tempfile::TempDir;
 
-fn create_test_env() -> (
-    TempDir,
-    std::path::PathBuf,
-    std::path::PathBuf,
-    std::path::PathBuf,
-) {
+fn create_test_env() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
     let dir = TempDir::new().unwrap();
-    let prefix = dir.path().join("prefix");
     let build_dir = dir.path().join("build");
     let recipes_dir = dir.path().join("recipes");
-    std::fs::create_dir_all(&prefix).unwrap();
     std::fs::create_dir_all(&build_dir).unwrap();
     std::fs::create_dir_all(&recipes_dir).unwrap();
-    (dir, prefix, build_dir, recipes_dir)
+    (dir, build_dir, recipes_dir)
 }
 
 fn write_recipe(recipes_dir: &Path, name: &str, content: &str) -> std::path::PathBuf {
@@ -34,7 +27,7 @@ fn write_recipe(recipes_dir: &Path, name: &str, content: &str) -> std::path::Pat
 
 #[test]
 fn test_regression_ctx_escapes_quotes() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+    let (_dir, build_dir, recipes_dir) = create_test_env();
 
     let recipe_path = write_recipe(
         &recipes_dir,
@@ -54,7 +47,7 @@ fn install(ctx) { ctx }
 "#,
     );
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     engine.execute(&recipe_path).unwrap();
 
     let content = std::fs::read_to_string(&recipe_path).unwrap();
@@ -64,7 +57,7 @@ fn install(ctx) { ctx }
 
 #[test]
 fn test_regression_ctx_escapes_backslashes() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+    let (_dir, build_dir, recipes_dir) = create_test_env();
 
     let recipe_path = write_recipe(
         &recipes_dir,
@@ -84,7 +77,7 @@ fn install(ctx) { ctx }
 "#,
     );
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     engine.execute(&recipe_path).unwrap();
 
     let content = std::fs::read_to_string(&recipe_path).unwrap();
@@ -98,7 +91,7 @@ fn install(ctx) { ctx }
 
 #[test]
 fn test_regression_missing_ctx_clear_error() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+    let (_dir, build_dir, recipes_dir) = create_test_env();
 
     let recipe_path = write_recipe(
         &recipes_dir,
@@ -110,7 +103,7 @@ fn install() {}
 "#,
     );
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
 
     assert!(result.is_err());
@@ -123,7 +116,7 @@ fn install() {}
 
 #[test]
 fn test_regression_failure_preserves_acquire_state() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+    let (_dir, build_dir, recipes_dir) = create_test_env();
 
     let recipe_path = write_recipe(
         &recipes_dir,
@@ -151,7 +144,7 @@ fn install(ctx) {
 "#,
     );
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
     assert!(result.is_err());
 
@@ -236,7 +229,7 @@ fn test_regression_symlink_detection() {
 
 #[test]
 fn test_regression_concurrent_lock_blocked() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+    let (_dir, build_dir, recipes_dir) = create_test_env();
 
     let recipe_path = write_recipe(
         &recipes_dir,
@@ -253,14 +246,14 @@ fn install(ctx) { ctx }
 
     use levitate_recipe::RecipeEngine;
 
-    let engine = RecipeEngine::new(prefix.clone(), build_dir.clone());
+    let engine = RecipeEngine::new(build_dir.clone());
 
     // First execution
     let result = engine.execute(&recipe_path);
     assert!(result.is_ok());
 
     // Should be able to execute again (lock released)
-    let engine2 = RecipeEngine::new(prefix, build_dir);
+    let engine2 = RecipeEngine::new(build_dir);
     let result2 = engine2.execute(&recipe_path);
     assert!(result2.is_ok());
 }
@@ -271,7 +264,7 @@ fn install(ctx) { ctx }
 
 #[test]
 fn test_regression_unicode_preserved() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+    let (_dir, build_dir, recipes_dir) = create_test_env();
 
     let recipe_path = write_recipe(
         &recipes_dir,
@@ -291,7 +284,7 @@ fn install(ctx) { ctx }
 "#,
     );
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     engine.execute(&recipe_path).unwrap();
 
     let content = std::fs::read_to_string(&recipe_path).unwrap();
@@ -305,7 +298,7 @@ fn install(ctx) { ctx }
 
 #[test]
 fn test_regression_comments_preserved() {
-    let (_dir, prefix, build_dir, recipes_dir) = create_test_env();
+    let (_dir, build_dir, recipes_dir) = create_test_env();
 
     let recipe_path = write_recipe(
         &recipes_dir,
@@ -327,7 +320,7 @@ fn install(ctx) { ctx }
 "#,
     );
 
-    let engine = RecipeEngine::new(prefix, build_dir);
+    let engine = RecipeEngine::new(build_dir);
     engine.execute(&recipe_path).unwrap();
 
     let content = std::fs::read_to_string(&recipe_path).unwrap();
