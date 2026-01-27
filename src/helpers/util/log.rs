@@ -1,8 +1,8 @@
 //! Logging helpers
 
-/// Log a message to stdout
+/// Log a message to stderr (stdout is reserved for JSON output)
 pub fn log(msg: &str) {
-    println!("[recipe] {}", msg);
+    eprintln!("[recipe] {}", msg);
 }
 
 /// Log a debug message (only shown in verbose mode)
