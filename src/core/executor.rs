@@ -6,8 +6,8 @@
 //! - ctx is persisted to the recipe file after each phase
 
 use super::{ctx, lock::acquire_recipe_lock, output};
-use anyhow::{anyhow, Context, Result};
-use rhai::{Engine, Scope, AST};
+use anyhow::{Context, Result, anyhow};
+use rhai::{AST, Engine, Scope};
 use std::fs;
 use std::path::Path;
 
@@ -63,7 +63,13 @@ pub fn install(engine: &Engine, build_dir: &Path, recipe_path: &Path) -> Result<
     let name = ctx_map
         .get("name")
         .and_then(|v| v.clone().into_string().ok())
-        .unwrap_or_else(|| recipe_path.file_stem().unwrap_or_default().to_string_lossy().to_string());
+        .unwrap_or_else(|| {
+            recipe_path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        });
 
     // Check phases (reverse order) - throw means "needs this phase"
     let needs_install = check_throws(engine, &ast, &scope, "is_installed", &ctx_map);
@@ -82,24 +88,21 @@ pub fn install(engine: &Engine, build_dir: &Path, recipe_path: &Path) -> Result<
         output::sub_action("acquire");
         ctx_map = run_phase(engine, &ast, &mut scope, "acquire", ctx_map)?;
         source = ctx::persist(&source, &ctx_map)?;
-        fs::write(&recipe_path, &source)
-            .with_context(|| "Failed to persist ctx after acquire")?;
+        fs::write(&recipe_path, &source).with_context(|| "Failed to persist ctx after acquire")?;
     }
 
     if needs_build && has_fn(&ast, "build") {
         output::sub_action("build");
         ctx_map = run_phase(engine, &ast, &mut scope, "build", ctx_map)?;
         source = ctx::persist(&source, &ctx_map)?;
-        fs::write(&recipe_path, &source)
-            .with_context(|| "Failed to persist ctx after build")?;
+        fs::write(&recipe_path, &source).with_context(|| "Failed to persist ctx after build")?;
     }
 
     if needs_install {
         output::sub_action("install");
         ctx_map = run_phase(engine, &ast, &mut scope, "install", ctx_map)?;
         source = ctx::persist(&source, &ctx_map)?;
-        fs::write(&recipe_path, &source)
-            .with_context(|| "Failed to persist ctx after install")?;
+        fs::write(&recipe_path, &source).with_context(|| "Failed to persist ctx after install")?;
     }
 
     output::success(&format!("{} installed", name));

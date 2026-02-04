@@ -111,10 +111,7 @@ impl Drop for ProgressGuard<'_> {
 ///     Ok(())
 /// })?;
 /// ```
-pub fn with_spinner<T, E>(
-    message: &str,
-    f: impl FnOnce() -> Result<T, E>,
-) -> Result<T, E> {
+pub fn with_spinner<T, E>(message: &str, f: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
     let pb = create_spinner(message);
     let result = f();
     pb.finish_and_clear();

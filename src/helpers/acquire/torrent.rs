@@ -72,8 +72,7 @@ pub fn torrent(url: &str, dest_dir: &str) -> Result<String, Box<EvalAltResult>> 
 
     if !has_aria2c() {
         return Err(
-            "aria2c not found. Install it with: dnf install aria2 (or apt install aria2)"
-                .into(),
+            "aria2c not found. Install it with: dnf install aria2 (or apt install aria2)".into(),
         );
     }
 
@@ -112,9 +111,9 @@ pub fn torrent(url: &str, dest_dir: &str) -> Result<String, Box<EvalAltResult>> 
             "--max-connection-per-server=16",
             "--summary-interval=0",
             "--console-log-level=warn",
-            "--bt-stop-timeout=300",   // 5 minute stall detection for torrents
-            "--timeout=300",           // 5 minute connection timeout
-            "--connect-timeout=60",    // 1 minute initial connection timeout
+            "--bt-stop-timeout=300", // 5 minute stall detection for torrents
+            "--timeout=300",         // 5 minute connection timeout
+            "--connect-timeout=60",  // 1 minute initial connection timeout
             url,
         ])
         .stdout(std::process::Stdio::null())
@@ -124,9 +123,12 @@ pub fn torrent(url: &str, dest_dir: &str) -> Result<String, Box<EvalAltResult>> 
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(
-            format!("torrent download failed for {}\nDetails: {}", url, stderr.trim()).into(),
-        );
+        return Err(format!(
+            "torrent download failed for {}\nDetails: {}",
+            url,
+            stderr.trim()
+        )
+        .into());
     }
 
     // Try to determine the downloaded filename
@@ -197,10 +199,10 @@ pub fn download_with_resume(url: &str, dest: &str) -> Result<String, Box<EvalAlt
                 "--max-connection-per-server=16",
                 "--summary-interval=0",
                 "--console-log-level=warn",
-                "--timeout=300",           // 5 minute connection timeout
-                "--connect-timeout=60",    // 1 minute initial connection timeout
-                "--max-tries=3",           // 3 retries for HTTP
-                "--retry-wait=5",          // 5 second wait between retries
+                "--timeout=300",        // 5 minute connection timeout
+                "--connect-timeout=60", // 1 minute initial connection timeout
+                "--max-tries=3",        // 3 retries for HTTP
+                "--retry-wait=5",       // 5 second wait between retries
                 url,
             ])
             .stdout(std::process::Stdio::null())
@@ -212,11 +214,8 @@ pub fn download_with_resume(url: &str, dest: &str) -> Result<String, Box<EvalAlt
         Command::new("curl")
             .args([
                 "-L", // Follow redirects
-                "-C",
-                "-", // Resume from where we left off
-                "-o",
-                dest_str,
-                url,
+                "-C", "-", // Resume from where we left off
+                "-o", dest_str, url,
             ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
@@ -240,9 +239,15 @@ pub fn download_with_resume(url: &str, dest: &str) -> Result<String, Box<EvalAlt
 fn extract_filename_from_url(url: &str) -> String {
     // Strip query parameters and fragments
     let url_without_query = url.split('?').next().unwrap_or(url);
-    let url_without_fragment = url_without_query.split('#').next().unwrap_or(url_without_query);
+    let url_without_fragment = url_without_query
+        .split('#')
+        .next()
+        .unwrap_or(url_without_query);
 
-    let filename = url_without_fragment.rsplit('/').next().unwrap_or("download");
+    let filename = url_without_fragment
+        .rsplit('/')
+        .next()
+        .unwrap_or("download");
 
     // Strip .torrent extension if present
     let name = filename.strip_suffix(".torrent").unwrap_or(filename);
@@ -283,9 +288,15 @@ fn extract_filename_from_torrent_url(url: &str) -> String {
 
     // Strip query parameters and fragments first
     let url_without_query = url.split('?').next().unwrap_or(url);
-    let url_without_fragment = url_without_query.split('#').next().unwrap_or(url_without_query);
+    let url_without_fragment = url_without_query
+        .split('#')
+        .next()
+        .unwrap_or(url_without_query);
 
-    let filename = url_without_fragment.rsplit('/').next().unwrap_or("download");
+    let filename = url_without_fragment
+        .rsplit('/')
+        .next()
+        .unwrap_or("download");
 
     // Strip .torrent extension if present
     let name = filename.strip_suffix(".torrent").unwrap_or(filename);
@@ -349,8 +360,9 @@ mod tests {
     #[cheat_reviewed("URL parsing test - torrent URL extracts base filename")]
     #[test]
     fn test_extract_filename_from_torrent_url() {
-        let name =
-            extract_filename_from_torrent_url("https://example.com/Rocky-9.5-x86_64-dvd.iso.torrent");
+        let name = extract_filename_from_torrent_url(
+            "https://example.com/Rocky-9.5-x86_64-dvd.iso.torrent",
+        );
         assert_eq!(name, "Rocky-9.5-x86_64-dvd.iso");
     }
 

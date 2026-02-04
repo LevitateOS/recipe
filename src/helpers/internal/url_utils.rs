@@ -43,11 +43,7 @@ pub fn validate_url_scheme(url: &str, allowed: &[UrlScheme]) -> Result<(), Box<E
     }
 
     let allowed_str: Vec<_> = allowed.iter().map(|s| s.prefix()).collect();
-    Err(format!(
-        "URL must use one of: {:?}\n  got: {}",
-        allowed_str, url
-    )
-    .into())
+    Err(format!("URL must use one of: {:?}\n  got: {}", allowed_str, url).into())
 }
 
 /// Extract filename from a URL.
@@ -80,7 +76,9 @@ pub fn extract_filename(url: &str) -> String {
     // If it looks like a domain (no extension, or common TLDs), return "download"
     if filename.contains('.') {
         let ext = filename.rsplit('.').next().unwrap_or("");
-        let common_tlds = ["com", "org", "net", "io", "dev", "co", "uk", "de", "fr", "ru"];
+        let common_tlds = [
+            "com", "org", "net", "io", "dev", "co", "uk", "de", "fr", "ru",
+        ];
         if common_tlds.contains(&ext) && !filename.contains('_') && !filename.contains('-') {
             return "download".to_string();
         }
@@ -187,11 +185,7 @@ pub fn extract_repo_name(url: &str) -> String {
         if !clean[..colon_pos].contains('/') {
             // This is git@host:user/repo format
             let after_colon = &clean[colon_pos + 1..];
-            return after_colon
-                .rsplit('/')
-                .next()
-                .unwrap_or("repo")
-                .to_string();
+            return after_colon.rsplit('/').next().unwrap_or("repo").to_string();
         }
     }
 
@@ -255,14 +249,8 @@ mod tests {
 
     #[test]
     fn test_extract_repo_name_https() {
-        assert_eq!(
-            extract_repo_name("https://github.com/foo/bar.git"),
-            "bar"
-        );
-        assert_eq!(
-            extract_repo_name("https://github.com/foo/bar"),
-            "bar"
-        );
+        assert_eq!(extract_repo_name("https://github.com/foo/bar.git"), "bar");
+        assert_eq!(extract_repo_name("https://github.com/foo/bar"), "bar");
     }
 
     #[test]
@@ -273,10 +261,7 @@ mod tests {
 
     #[test]
     fn test_extract_repo_name_trailing_slash() {
-        assert_eq!(
-            extract_repo_name("https://github.com/foo/bar/"),
-            "bar"
-        );
+        assert_eq!(extract_repo_name("https://github.com/foo/bar/"), "bar");
     }
 
     #[test]

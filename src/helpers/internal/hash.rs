@@ -43,15 +43,18 @@ pub fn verify_file_hash(
     expected: &str,
     algorithm: HashAlgorithm,
 ) -> Result<(), Box<EvalAltResult>> {
-    let mut f =
-        std::fs::File::open(file).map_err(|e| format!("cannot open file: {}", e))?;
+    let mut f = std::fs::File::open(file).map_err(|e| format!("cannot open file: {}", e))?;
 
     let file_size = f.metadata().map(|m| m.len()).unwrap_or(0);
     let show_progress = file_size > PROGRESS_THRESHOLD;
 
     let hash = match algorithm {
-        HashAlgorithm::Sha256 => hash_with_progress::<sha2::Sha256>(&mut f, file_size, show_progress)?,
-        HashAlgorithm::Sha512 => hash_with_progress::<sha2::Sha512>(&mut f, file_size, show_progress)?,
+        HashAlgorithm::Sha256 => {
+            hash_with_progress::<sha2::Sha256>(&mut f, file_size, show_progress)?
+        }
+        HashAlgorithm::Sha512 => {
+            hash_with_progress::<sha2::Sha512>(&mut f, file_size, show_progress)?
+        }
         HashAlgorithm::Blake3 => hash_blake3_with_progress(&mut f, file_size, show_progress)?,
     };
 
@@ -205,7 +208,12 @@ mod tests {
 
         let result = verify_file_hash(&file_path, "wrong_hash", HashAlgorithm::Sha256);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("integrity check failed"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("integrity check failed")
+        );
     }
 
     #[test]

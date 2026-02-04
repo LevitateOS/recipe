@@ -57,7 +57,11 @@ pub fn download(url: &str, dest: &str) -> Result<String, Box<EvalAltResult>> {
 // ============================================================================
 
 /// Download a file with progress bar (shared implementation)
-fn download_with_progress(url: &str, dest: &Path, filename: &str) -> Result<u64, Box<EvalAltResult>> {
+fn download_with_progress(
+    url: &str,
+    dest: &Path,
+    filename: &str,
+) -> Result<u64, Box<EvalAltResult>> {
     let pb = progress::create_spinner(&format!("downloading {}", filename));
 
     // Make the request
@@ -66,13 +70,15 @@ fn download_with_progress(url: &str, dest: &Path, filename: &str) -> Result<u64,
         .map_err(|e| format!("download failed: {}", e))?;
 
     // Get content length if available and upgrade progress bar
-    if let Some(len) = response.header("content-length").and_then(|s| s.parse().ok()) {
+    if let Some(len) = response
+        .header("content-length")
+        .and_then(|s| s.parse().ok())
+    {
         upgrade_to_bytes(&pb, len);
     }
 
     // Create output file
-    let mut file =
-        std::fs::File::create(dest).map_err(|e| format!("cannot create file: {}", e))?;
+    let mut file = std::fs::File::create(dest).map_err(|e| format!("cannot create file: {}", e))?;
 
     // Read and write with progress
     let mut reader = response.into_reader();

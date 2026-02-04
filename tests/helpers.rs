@@ -25,7 +25,6 @@ fn create_test_env() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
 fn test_mkdir_recursive() {
     let (_dir, recipes_dir, build_dir) = create_test_env();
 
-    
     let recipe_content = r#"
 let ctx = #{
     name: "mkdir-test",
@@ -78,7 +77,6 @@ fn install(ctx) {
 fn test_glob_list_helper() {
     let (_dir, recipes_dir, build_dir) = create_test_env();
 
-    
     let recipe_content = r#"
 let ctx = #{
     name: "glob-test",
@@ -138,7 +136,6 @@ fn install(ctx) {
 fn test_mv_and_ln_helpers() {
     let (_dir, recipes_dir, build_dir) = create_test_env();
 
-    
     let recipe_content = r#"
 let ctx = #{
     name: "mv-ln-test",
@@ -186,18 +183,13 @@ fn install(ctx) {
     let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
 
-    assert!(
-        result.is_ok(),
-        "mv/ln test failed: {:?}",
-        result.err()
-    );
+    assert!(result.is_ok(), "mv/ln test failed: {:?}", result.err());
 }
 
 #[test]
 fn test_shell_output_and_status() {
     let (_dir, recipes_dir, build_dir) = create_test_env();
 
-    
     let recipe_content = r#"
 let ctx = #{
     name: "shell-test",
@@ -255,7 +247,6 @@ fn install(ctx) {
 fn test_exec_helpers() {
     let (_dir, recipes_dir, build_dir) = create_test_env();
 
-    
     let recipe_content = r#"
 let ctx = #{
     name: "exec-test",
@@ -304,7 +295,6 @@ fn install(ctx) {
 fn test_env_helpers() {
     let (_dir, recipes_dir, build_dir) = create_test_env();
 
-    
     let recipe_content = r#"
 let ctx = #{
     name: "env-test",
@@ -359,7 +349,6 @@ fn install(ctx) {
 fn test_extract_tarball() {
     let (_dir, recipes_dir, build_dir) = create_test_env();
 
-    
     let recipe_content = r#"
 let ctx = #{
     name: "extract-test",
@@ -430,7 +419,6 @@ fn test_parse_version_helper() {
 fn test_download_helper() {
     let (_dir, recipes_dir, build_dir) = create_test_env();
 
-    
     let recipe_content = r#"
 let ctx = #{
     name: "download-test",
@@ -464,11 +452,7 @@ fn install(ctx) {
     let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
 
-    assert!(
-        result.is_ok(),
-        "download test failed: {:?}",
-        result.err()
-    );
+    assert!(result.is_ok(), "download test failed: {:?}", result.err());
 }
 
 #[test]
@@ -476,7 +460,6 @@ fn install(ctx) {
 fn test_http_get_helper() {
     let (_dir, recipes_dir, build_dir) = create_test_env();
 
-    
     let recipe_content = r#"
 let ctx = #{
     name: "http-get-test",
@@ -510,11 +493,7 @@ fn install(ctx) {
     let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
 
-    assert!(
-        result.is_ok(),
-        "http_get test failed: {:?}",
-        result.err()
-    );
+    assert!(result.is_ok(), "http_get test failed: {:?}", result.err());
 }
 
 #[test]
@@ -522,7 +501,6 @@ fn install(ctx) {
 fn test_git_clone_helper() {
     let (_dir, recipes_dir, build_dir) = create_test_env();
 
-    
     let recipe_content = r#"
 let ctx = #{
     name: "git-clone-test",
@@ -556,9 +534,5 @@ fn install(ctx) {
     let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
 
-    assert!(
-        result.is_ok(),
-        "git_clone test failed: {:?}",
-        result.err()
-    );
+    assert!(result.is_ok(), "git_clone test failed: {:?}", result.err());
 }

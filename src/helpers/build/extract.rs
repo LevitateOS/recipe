@@ -33,7 +33,10 @@ fn extract_tar<R: Read>(reader: R, dest: &Path) -> Result<(), Box<EvalAltResult>
     let mut archive = tar::Archive::new(reader);
 
     // Unpack with security checks
-    for entry in archive.entries().map_err(|e| format!("tar read error: {}", e))? {
+    for entry in archive
+        .entries()
+        .map_err(|e| format!("tar read error: {}", e))?
+    {
         let mut entry = entry.map_err(|e| format!("tar entry error: {}", e))?;
 
         // Get the path and check for path traversal (clone to avoid borrow issues)
@@ -43,7 +46,11 @@ fn extract_tar<R: Read>(reader: R, dest: &Path) -> Result<(), Box<EvalAltResult>
             .into_owned();
 
         // Security: reject paths that could escape the destination
-        if path.is_absolute() || path.components().any(|c| c == std::path::Component::ParentDir) {
+        if path.is_absolute()
+            || path
+                .components()
+                .any(|c| c == std::path::Component::ParentDir)
+        {
             return Err(format!("tar contains unsafe path: {}", path.display()).into());
         }
 
@@ -114,8 +121,7 @@ fn extract_zip(archive_path: &Path, dest: &Path) -> Result<(), Box<EvalAltResult
     let file = File::open(archive_path)
         .map_err(|e| format!("cannot open {}: {}", archive_path.display(), e))?;
 
-    let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| format!("zip read error: {}", e))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("zip read error: {}", e))?;
 
     for i in 0..archive.len() {
         let mut file = archive
@@ -300,7 +306,9 @@ mod tests {
         header.set_size(content.len() as u64);
         header.set_mode(0o644);
         header.set_cksum();
-        builder.append_data(&mut header, "test.txt", &content[..]).unwrap();
+        builder
+            .append_data(&mut header, "test.txt", &content[..])
+            .unwrap();
 
         // Properly finish and close the archive
         let encoder = builder.into_inner().unwrap();
@@ -313,7 +321,10 @@ mod tests {
         // Verify
         let extracted_file = extract_dir.join("test.txt");
         assert!(extracted_file.exists());
-        assert_eq!(std::fs::read_to_string(extracted_file).unwrap(), "Hello, World!");
+        assert_eq!(
+            std::fs::read_to_string(extracted_file).unwrap(),
+            "Hello, World!"
+        );
     }
 
     #[test]
@@ -338,7 +349,10 @@ mod tests {
         // Verify
         let extracted_file = extract_dir.join("test.txt");
         assert!(extracted_file.exists());
-        assert_eq!(std::fs::read_to_string(extracted_file).unwrap(), "Hello from zip!");
+        assert_eq!(
+            std::fs::read_to_string(extracted_file).unwrap(),
+            "Hello from zip!"
+        );
     }
 
     #[test]
@@ -358,7 +372,9 @@ mod tests {
         header.set_size(content.len() as u64);
         header.set_mode(0o644);
         header.set_cksum();
-        builder.append_data(&mut header, "foo/bar/baz.txt", &content[..]).unwrap();
+        builder
+            .append_data(&mut header, "foo/bar/baz.txt", &content[..])
+            .unwrap();
 
         let encoder = builder.into_inner().unwrap();
         encoder.finish().unwrap();
@@ -370,7 +386,10 @@ mod tests {
         // Verify nested structure was created
         let extracted_file = extract_dir.join("foo/bar/baz.txt");
         assert!(extracted_file.exists());
-        assert_eq!(std::fs::read_to_string(extracted_file).unwrap(), "nested content");
+        assert_eq!(
+            std::fs::read_to_string(extracted_file).unwrap(),
+            "nested content"
+        );
     }
 
     #[test]
@@ -397,6 +416,9 @@ mod tests {
         // Verify
         let extracted_file = extract_dir.join("foo/bar/baz.txt");
         assert!(extracted_file.exists());
-        assert_eq!(std::fs::read_to_string(extracted_file).unwrap(), "nested zip content");
+        assert_eq!(
+            std::fs::read_to_string(extracted_file).unwrap(),
+            "nested zip content"
+        );
     }
 }

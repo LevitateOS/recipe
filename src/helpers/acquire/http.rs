@@ -241,10 +241,9 @@ fn github_download_release_impl(
         .map_err(|e| format!("Download failed: {}", e))?;
 
     let mut reader = response.into_reader();
-    let mut file = std::fs::File::create(&dest_path)
-        .map_err(|e| format!("Failed to create file: {}", e))?;
-    std::io::copy(&mut reader, &mut file)
-        .map_err(|e| format!("Failed to write file: {}", e))?;
+    let mut file =
+        std::fs::File::create(&dest_path).map_err(|e| format!("Failed to create file: {}", e))?;
+    std::io::copy(&mut reader, &mut file).map_err(|e| format!("Failed to write file: {}", e))?;
 
     output::detail(&format!("downloaded {}", asset_name));
     Ok(dest_path.to_string_lossy().to_string())
@@ -341,8 +340,11 @@ pub fn extract_from_tarball(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Failed to extract '{}' from {}: {}", file_pattern, archive, stderr)
-            .into());
+        return Err(format!(
+            "Failed to extract '{}' from {}: {}",
+            file_pattern, archive, stderr
+        )
+        .into());
     }
 
     // Write the extracted content to destination

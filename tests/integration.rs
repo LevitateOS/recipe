@@ -434,7 +434,12 @@ let ctx = #{
     let engine = RecipeEngine::new(build_dir);
     let result = engine.remove(&recipe_path);
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("no remove function"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("no remove function")
+    );
 }
 
 // =============================================================================

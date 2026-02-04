@@ -360,7 +360,10 @@ mod tests {
     fn test_extract_string_value() {
         assert_eq!(extract_string_value("name: \"test\","), "test");
         assert_eq!(extract_string_value("version: \"1.0\","), "1.0");
-        assert_eq!(extract_string_value("  description: \"A test package\","), "A test package");
+        assert_eq!(
+            extract_string_value("  description: \"A test package\","),
+            "A test package"
+        );
     }
 
     #[test]

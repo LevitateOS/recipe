@@ -106,6 +106,11 @@ mod tests {
         let _lock1 = acquire_recipe_lock(&recipe_path).unwrap();
         let lock2 = acquire_recipe_lock(&recipe_path);
         assert!(lock2.is_err());
-        assert!(lock2.unwrap_err().to_string().contains("already being executed"));
+        assert!(
+            lock2
+                .unwrap_err()
+                .to_string()
+                .contains("already being executed")
+        );
     }
 }

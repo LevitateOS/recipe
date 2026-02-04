@@ -135,7 +135,11 @@ pub fn git_clone(url: &str, dest_dir: &str) -> Result<String, Box<EvalAltResult>
 /// ```rhai
 /// let repo = git_clone_depth("https://github.com/torvalds/linux.git", BUILD_DIR, 1);
 /// ```
-pub fn git_clone_depth(url: &str, dest_dir: &str, depth: i64) -> Result<String, Box<EvalAltResult>> {
+pub fn git_clone_depth(
+    url: &str,
+    dest_dir: &str,
+    depth: i64,
+) -> Result<String, Box<EvalAltResult>> {
     // Validate depth parameter
     if depth <= 0 || depth > 1_000_000 {
         return Err("depth must be between 1 and 1000000".into());

@@ -124,8 +124,7 @@ impl ShellCmd {
             .into());
         }
 
-        String::from_utf8(output.stdout)
-            .map_err(|e| format!("invalid utf8 output: {}", e).into())
+        String::from_utf8(output.stdout).map_err(|e| format!("invalid utf8 output: {}", e).into())
     }
 
     /// Run the command and capture both stdout and stderr.

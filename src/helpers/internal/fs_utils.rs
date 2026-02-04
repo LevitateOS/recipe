@@ -110,7 +110,11 @@ pub fn is_safe_path(path: &Path) -> bool {
 /// Validate a path is safe, returning error if not.
 pub fn validate_safe_path(path: &Path) -> Result<(), Box<EvalAltResult>> {
     if !is_safe_path(path) {
-        return Err(format!("unsafe path (contains .. or is absolute): {}", path.display()).into());
+        return Err(format!(
+            "unsafe path (contains .. or is absolute): {}",
+            path.display()
+        )
+        .into());
     }
     Ok(())
 }

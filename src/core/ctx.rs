@@ -5,7 +5,7 @@
 //! - `serialize`: convert Map to Rhai literal
 //! - `persist`: update ctx in source file
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use rhai::Dynamic;
 
 /// Find the byte range of `let ctx = #{...};` in source

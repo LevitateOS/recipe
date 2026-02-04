@@ -2,7 +2,7 @@
 //!
 //! Provides functions to check available disk space before large downloads.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::path::Path;
 use std::process::Command;
 

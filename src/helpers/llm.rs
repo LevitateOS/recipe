@@ -67,7 +67,10 @@ pub fn llm_extract(_content: &str, _prompt: &str) -> Result<String, Box<EvalAltR
 ///
 /// # Returns
 /// The version string (e.g., "10.2", "1.0.0-beta.3")
-pub fn llm_find_latest_version(_url: &str, _project_name: &str) -> Result<String, Box<EvalAltResult>> {
+pub fn llm_find_latest_version(
+    _url: &str,
+    _project_name: &str,
+) -> Result<String, Box<EvalAltResult>> {
     // TODO: Implement
     // 1. Fetch the URL
     // 2. Strip HTML to text (reduce token usage)
@@ -85,7 +88,10 @@ pub fn llm_find_latest_version(_url: &str, _project_name: &str) -> Result<String
 ///
 /// # Returns
 /// The extracted URL
-pub fn llm_find_download_url(_content: &str, _criteria: &str) -> Result<String, Box<EvalAltResult>> {
+pub fn llm_find_download_url(
+    _content: &str,
+    _criteria: &str,
+) -> Result<String, Box<EvalAltResult>> {
     // TODO: Implement
     // 1. Ask LLM to find URL matching criteria
     // 2. Validate response is a valid URL

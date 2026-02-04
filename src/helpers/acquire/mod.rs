@@ -26,4 +26,4 @@ pub use http::{
     http_get, parse_version,
 };
 pub use torrent::{download_with_resume, torrent};
-pub use verify::{compute_hashes, verify_blake3, verify_sha256, verify_sha512, FileHashes};
+pub use verify::{FileHashes, compute_hashes, verify_blake3, verify_sha256, verify_sha512};
