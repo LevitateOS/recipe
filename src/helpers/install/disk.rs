@@ -75,10 +75,10 @@ pub fn get_available_space(path: &Path) -> Option<u64> {
     let line = stdout.lines().nth(1)?;
     let fields: Vec<&str> = line.split_whitespace().collect();
 
-    if fields.len() >= 4 {
-        if let Ok(kb) = fields[3].parse::<u64>() {
-            return Some(kb * 1024);
-        }
+    if fields.len() >= 4
+        && let Ok(kb) = fields[3].parse::<u64>()
+    {
+        return Some(kb * 1024);
     }
 
     None

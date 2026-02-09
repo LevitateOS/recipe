@@ -70,7 +70,7 @@ pub fn extract_filename(url: &str) -> String {
         .rsplit('/')
         .next()
         .filter(|s| !s.is_empty())
-        .map(|s| sanitize_filename(s))
+        .map(sanitize_filename)
         .unwrap_or_else(|| "download".to_string());
 
     // If it looks like a domain (no extension, or common TLDs), return "download"
@@ -114,11 +114,11 @@ fn percent_decode(s: &str) -> String {
         if c == '%' {
             // Try to read two hex digits
             let hex: String = chars.by_ref().take(2).collect();
-            if hex.len() == 2 {
-                if let Ok(byte) = u8::from_str_radix(&hex, 16) {
-                    result.push(byte as char);
-                    continue;
-                }
+            if hex.len() == 2
+                && let Ok(byte) = u8::from_str_radix(&hex, 16)
+            {
+                result.push(byte as char);
+                continue;
             }
             result.push('%');
             result.push_str(&hex);
@@ -181,12 +181,12 @@ pub fn extract_repo_name(url: &str) -> String {
         .unwrap_or(url);
 
     // Handle git@host:user/repo format
-    if let Some(colon_pos) = clean.rfind(':') {
-        if !clean[..colon_pos].contains('/') {
-            // This is git@host:user/repo format
-            let after_colon = &clean[colon_pos + 1..];
-            return after_colon.rsplit('/').next().unwrap_or("repo").to_string();
-        }
+    if let Some(colon_pos) = clean.rfind(':')
+        && !clean[..colon_pos].contains('/')
+    {
+        // This is git@host:user/repo format
+        let after_colon = &clean[colon_pos + 1..];
+        return after_colon.rsplit('/').next().unwrap_or("repo").to_string();
     }
 
     // Handle https:// format
