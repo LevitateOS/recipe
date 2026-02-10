@@ -9,7 +9,115 @@ use super::{ctx, lock::acquire_recipe_lock, output};
 use anyhow::{Context, Result, anyhow};
 use rhai::{AST, Engine, Scope};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Parse `//! extends: <path>` from leading comments.
+///
+/// Only looks at comment lines at the top of the file. Stops at the first
+/// non-comment, non-empty line.
+fn parse_extends(source: &str) -> Option<String> {
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("//! extends:") {
+            return Some(rest.trim().to_string());
+        }
+        if !trimmed.starts_with("//") {
+            break;
+        }
+    }
+    None
+}
+
+/// Resolve a base recipe path.
+///
+/// Tries relative to the child recipe's directory first, then the search path.
+fn resolve_base_path(
+    base_rel: &str,
+    child_path: &Path,
+    search_path: Option<&Path>,
+) -> Result<PathBuf> {
+    // Try relative to child
+    if let Some(child_dir) = child_path.parent() {
+        let candidate = child_dir.join(base_rel);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    // Try search path
+    if let Some(sp) = search_path {
+        let candidate = sp.join(base_rel);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    anyhow::bail!(
+        "Base recipe '{}' not found (child: {}, search_path: {:?})",
+        base_rel,
+        child_path.display(),
+        search_path
+    )
+}
+
+/// Compile a recipe with `//! extends:` resolution.
+///
+/// If the child recipe declares `//! extends: <base>`, the base is compiled first
+/// and merged with the child AST. Child functions with the same name+arity replace
+/// base functions. Top-level statements run base-first, then child.
+///
+/// Returns (merged_ast, child_source, Option<base_dir>).
+fn compile_recipe(
+    engine: &Engine,
+    recipe_path: &Path,
+    search_path: Option<&Path>,
+) -> Result<(AST, String, Option<PathBuf>)> {
+    let source = fs::read_to_string(recipe_path)
+        .with_context(|| format!("Failed to read recipe: {}", recipe_path.display()))?;
+
+    let extends = parse_extends(&source);
+
+    if let Some(base_rel) = extends {
+        let base_path = resolve_base_path(&base_rel, recipe_path, search_path)?;
+        let base_source = fs::read_to_string(&base_path)
+            .with_context(|| format!("Failed to read base recipe: {}", base_path.display()))?;
+
+        // Reject recursive extends
+        if parse_extends(&base_source).is_some() {
+            anyhow::bail!(
+                "Recursive extends not supported: {} extends {} which also extends",
+                recipe_path.display(),
+                base_path.display()
+            );
+        }
+
+        let mut base_ast = engine.compile(&base_source).map_err(|e| {
+            anyhow!(
+                "Failed to compile base recipe {}: {}",
+                base_path.display(),
+                e
+            )
+        })?;
+
+        let child_ast = engine
+            .compile(&source)
+            .map_err(|e| anyhow!("Failed to compile recipe {}: {}", recipe_path.display(), e))?;
+
+        // Merge: child overrides base functions, top-level runs base then child
+        base_ast += child_ast;
+
+        let base_dir = base_path.parent().map(|p| p.to_path_buf());
+        Ok((base_ast, source, base_dir))
+    } else {
+        let ast = engine
+            .compile(&source)
+            .map_err(|e| anyhow!("Failed to compile recipe: {}", e))?;
+        Ok((ast, source, None))
+    }
+}
 
 /// Install a package by executing its recipe
 ///
@@ -21,19 +129,20 @@ use std::path::Path;
 /// 5. Persist ctx after each phase
 ///
 /// Returns the final ctx map containing all recipe state.
-pub fn install(engine: &Engine, build_dir: &Path, recipe_path: &Path) -> Result<rhai::Map> {
+pub fn install(
+    engine: &Engine,
+    build_dir: &Path,
+    recipe_path: &Path,
+    defines: &[(String, String)],
+    search_path: Option<&Path>,
+) -> Result<rhai::Map> {
     let recipe_path = recipe_path
         .canonicalize()
         .unwrap_or_else(|_| recipe_path.to_path_buf());
 
     let _lock = acquire_recipe_lock(&recipe_path)?;
 
-    let mut source = fs::read_to_string(&recipe_path)
-        .with_context(|| format!("Failed to read recipe: {}", recipe_path.display()))?;
-
-    let ast = engine
-        .compile(&source)
-        .map_err(|e| anyhow!("Failed to compile recipe: {}", e))?;
+    let (ast, mut source, base_dir) = compile_recipe(engine, &recipe_path, search_path)?;
 
     // Derive RECIPE_DIR from the recipe file's parent directory
     let recipe_dir = recipe_path
@@ -44,10 +153,18 @@ pub fn install(engine: &Engine, build_dir: &Path, recipe_path: &Path) -> Result<
     // Set up scope with constants
     let mut scope = Scope::new();
     scope.push_constant("RECIPE_DIR", recipe_dir);
+    if let Some(ref bd) = base_dir {
+        scope.push_constant("BASE_RECIPE_DIR", bd.to_string_lossy().to_string());
+    }
     scope.push_constant("BUILD_DIR", build_dir.to_string_lossy().to_string());
     scope.push_constant("ARCH", std::env::consts::ARCH);
     scope.push_constant("NPROC", num_cpus::get() as i64);
     scope.push_constant("RPM_PATH", std::env::var("RPM_PATH").unwrap_or_default());
+
+    // Inject user-defined constants (from --define KEY=VALUE)
+    for (key, value) in defines {
+        scope.push_constant(key.as_str(), value.clone());
+    }
 
     // Run script to populate scope (this sets up ctx)
     engine
@@ -112,19 +229,18 @@ pub fn install(engine: &Engine, build_dir: &Path, recipe_path: &Path) -> Result<
 /// Remove an installed package
 ///
 /// Returns the final ctx map after removal.
-pub fn remove(engine: &Engine, recipe_path: &Path) -> Result<rhai::Map> {
+pub fn remove(
+    engine: &Engine,
+    recipe_path: &Path,
+    search_path: Option<&Path>,
+) -> Result<rhai::Map> {
     let recipe_path = recipe_path
         .canonicalize()
         .unwrap_or_else(|_| recipe_path.to_path_buf());
 
     let _lock = acquire_recipe_lock(&recipe_path)?;
 
-    let mut source = fs::read_to_string(&recipe_path)
-        .with_context(|| format!("Failed to read recipe: {}", recipe_path.display()))?;
-
-    let ast = engine
-        .compile(&source)
-        .map_err(|e| anyhow!("Failed to compile recipe: {}", e))?;
+    let (ast, mut source, base_dir) = compile_recipe(engine, &recipe_path, search_path)?;
 
     // Derive RECIPE_DIR from the recipe file's parent directory
     let recipe_dir = recipe_path
@@ -134,6 +250,9 @@ pub fn remove(engine: &Engine, recipe_path: &Path) -> Result<rhai::Map> {
 
     let mut scope = Scope::new();
     scope.push_constant("RECIPE_DIR", recipe_dir);
+    if let Some(ref bd) = base_dir {
+        scope.push_constant("BASE_RECIPE_DIR", bd.to_string_lossy().to_string());
+    }
 
     // Run script to populate scope
     engine.run_ast_with_scope(&mut scope, &ast)?;
@@ -165,19 +284,19 @@ pub fn remove(engine: &Engine, recipe_path: &Path) -> Result<rhai::Map> {
 /// Clean up build artifacts
 ///
 /// Returns the final ctx map after cleanup.
-pub fn cleanup(engine: &Engine, build_dir: &Path, recipe_path: &Path) -> Result<rhai::Map> {
+pub fn cleanup(
+    engine: &Engine,
+    build_dir: &Path,
+    recipe_path: &Path,
+    search_path: Option<&Path>,
+) -> Result<rhai::Map> {
     let recipe_path = recipe_path
         .canonicalize()
         .unwrap_or_else(|_| recipe_path.to_path_buf());
 
     let _lock = acquire_recipe_lock(&recipe_path)?;
 
-    let mut source = fs::read_to_string(&recipe_path)
-        .with_context(|| format!("Failed to read recipe: {}", recipe_path.display()))?;
-
-    let ast = engine
-        .compile(&source)
-        .map_err(|e| anyhow!("Failed to compile recipe: {}", e))?;
+    let (ast, mut source, base_dir) = compile_recipe(engine, &recipe_path, search_path)?;
 
     // Derive RECIPE_DIR from the recipe file's parent directory
     let recipe_dir = recipe_path
@@ -187,6 +306,9 @@ pub fn cleanup(engine: &Engine, build_dir: &Path, recipe_path: &Path) -> Result<
 
     let mut scope = Scope::new();
     scope.push_constant("RECIPE_DIR", recipe_dir);
+    if let Some(ref bd) = base_dir {
+        scope.push_constant("BASE_RECIPE_DIR", bd.to_string_lossy().to_string());
+    }
     scope.push_constant("BUILD_DIR", build_dir.to_string_lossy().to_string());
 
     // Run script to populate scope
@@ -286,7 +408,7 @@ fn install(ctx) {
         .unwrap();
 
         let engine = create_engine();
-        let result = install(&engine, &build_dir, &recipe_path);
+        let result = install(&engine, &build_dir, &recipe_path, &[], None);
         assert!(result.is_ok(), "Failed: {:?}", result);
 
         // Check ctx was persisted
@@ -316,7 +438,7 @@ fn install(ctx) { throw "should not run"; }
         .unwrap();
 
         let engine = create_engine();
-        let result = install(&engine, &build_dir, &recipe_path);
+        let result = install(&engine, &build_dir, &recipe_path, &[], None);
         assert!(result.is_ok());
     }
 
@@ -327,5 +449,131 @@ fn install(ctx) { throw "should not run"; }
         assert!(has_fn(&ast, "foo"));
         assert!(has_fn(&ast, "bar"));
         assert!(!has_fn(&ast, "baz"));
+    }
+
+    #[test]
+    fn test_parse_extends() {
+        assert_eq!(
+            parse_extends("//! extends: base.rhai\nlet ctx = #{};"),
+            Some("base.rhai".to_string())
+        );
+        assert_eq!(
+            parse_extends("//! extends:  linux-base.rhai \nlet ctx = #{};"),
+            Some("linux-base.rhai".to_string())
+        );
+        assert_eq!(
+            parse_extends("// comment\n//! extends: base.rhai\nlet ctx = #{};"),
+            Some("base.rhai".to_string())
+        );
+        assert_eq!(parse_extends("let ctx = #{};"), None);
+        assert_eq!(
+            parse_extends("\n\n//! extends: base.rhai"),
+            Some("base.rhai".to_string())
+        );
+        // Non-comment line before extends stops parsing
+        assert_eq!(parse_extends("let x = 1;\n//! extends: base.rhai"), None);
+    }
+
+    #[test]
+    fn test_extends_merges_functions() {
+        let dir = TempDir::new().unwrap();
+        let build_dir = dir.path().join("build");
+        fs::create_dir_all(&build_dir).unwrap();
+
+        // Base recipe with acquire + install
+        let base_path = dir.path().join("base.rhai");
+        fs::write(
+            &base_path,
+            r#"
+let ctx = #{
+    name: "base",
+    acquired: false,
+    installed: false,
+};
+
+fn is_installed(ctx) {
+    if !ctx.installed { throw "not installed"; }
+    ctx
+}
+
+fn acquire(ctx) {
+    ctx.acquired = true;
+    ctx
+}
+
+fn install(ctx) {
+    ctx.installed = true;
+    ctx
+}
+"#,
+        )
+        .unwrap();
+
+        // Child recipe that extends base, overrides install
+        let child_path = dir.path().join("child.rhai");
+        fs::write(
+            &child_path,
+            r#"//! extends: base.rhai
+
+let ctx = #{
+    name: "child",
+    acquired: false,
+    installed: false,
+    child_ran: false,
+};
+
+fn install(ctx) {
+    ctx.installed = true;
+    ctx.child_ran = true;
+    ctx
+}
+"#,
+        )
+        .unwrap();
+
+        let engine = create_engine();
+        let result = install(&engine, &build_dir, &child_path, &[], None);
+        assert!(result.is_ok(), "Failed: {:?}", result);
+
+        let ctx = result.unwrap();
+        // Child's install ran (child_ran = true)
+        assert_eq!(ctx.get("child_ran").unwrap().as_bool().unwrap(), true);
+        // Base's acquire ran (acquired = true)
+        assert_eq!(ctx.get("acquired").unwrap().as_bool().unwrap(), true);
+        // Name should be "child" (child ctx wins)
+        assert_eq!(
+            ctx.get("name").unwrap().clone().into_string().unwrap(),
+            "child"
+        );
+    }
+
+    #[test]
+    fn test_extends_recursive_rejected() {
+        let dir = TempDir::new().unwrap();
+
+        let grandparent = dir.path().join("grandparent.rhai");
+        fs::write(
+            &grandparent,
+            "//! extends: nonexistent.rhai\nlet ctx = #{};",
+        )
+        .unwrap();
+
+        let child = dir.path().join("child.rhai");
+        fs::write(&child, "//! extends: grandparent.rhai\nlet ctx = #{};").unwrap();
+
+        let engine = create_engine();
+        let result = compile_recipe(&engine, &child, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extends_base_not_found() {
+        let dir = TempDir::new().unwrap();
+        let child = dir.path().join("child.rhai");
+        fs::write(&child, "//! extends: nonexistent.rhai\nlet ctx = #{};").unwrap();
+
+        let engine = create_engine();
+        let result = compile_recipe(&engine, &child, None);
+        assert!(result.is_err());
     }
 }

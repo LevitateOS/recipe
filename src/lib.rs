@@ -90,6 +90,8 @@ pub struct RecipeEngine {
     engine: Engine,
     build_dir: PathBuf,
     recipes_path: Option<PathBuf>,
+    /// User-defined scope constants (injected via --define KEY=VALUE)
+    defines: Vec<(String, String)>,
 }
 
 impl RecipeEngine {
@@ -102,6 +104,7 @@ impl RecipeEngine {
             engine,
             build_dir,
             recipes_path: None,
+            defines: Vec::new(),
         }
     }
 
@@ -112,6 +115,11 @@ impl RecipeEngine {
         self.engine.set_module_resolver(resolver);
         self.recipes_path = Some(path);
         self
+    }
+
+    /// Add a user-defined scope constant.
+    pub fn add_define(&mut self, key: String, value: String) {
+        self.defines.push((key, value));
     }
 
     /// Execute a recipe script (install a package)
@@ -125,21 +133,32 @@ impl RecipeEngine {
     ///
     /// Returns the final ctx map containing all recipe state.
     pub fn execute(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        core::executor::install(&self.engine, &self.build_dir, recipe_path)
+        core::executor::install(
+            &self.engine,
+            &self.build_dir,
+            recipe_path,
+            &self.defines,
+            self.recipes_path.as_deref(),
+        )
     }
 
     /// Remove an installed package
     ///
     /// Returns the final ctx map after removal.
     pub fn remove(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        core::executor::remove(&self.engine, recipe_path)
+        core::executor::remove(&self.engine, recipe_path, self.recipes_path.as_deref())
     }
 
     /// Clean up build artifacts
     ///
     /// Returns the final ctx map after cleanup.
     pub fn cleanup(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        core::executor::cleanup(&self.engine, &self.build_dir, recipe_path)
+        core::executor::cleanup(
+            &self.engine,
+            &self.build_dir,
+            recipe_path,
+            self.recipes_path.as_deref(),
+        )
     }
 
     /// Get the recipes path

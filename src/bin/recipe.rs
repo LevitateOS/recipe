@@ -110,6 +110,10 @@ struct Cli {
     /// Build directory (uses temp dir if not specified)
     #[arg(short, long, global = true)]
     build_dir: Option<PathBuf>,
+
+    /// Define scope constants (KEY=VALUE), injected into Rhai scope before execution
+    #[arg(short, long = "define", global = true, value_name = "KEY=VALUE")]
+    defines: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -166,7 +170,8 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Install { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
-            let engine = create_engine(cli.build_dir.as_deref())?;
+            let engine =
+                create_engine(cli.build_dir.as_deref(), Some(&recipes_path), &cli.defines)?;
             let ctx = engine.execute(&recipe_path)?;
             // Output ctx as JSON to stdout (logs go to stderr)
             let dynamic = rhai::Dynamic::from(ctx);
@@ -177,7 +182,8 @@ fn main() -> Result<()> {
 
         Commands::Remove { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
-            let engine = create_engine(cli.build_dir.as_deref())?;
+            let engine =
+                create_engine(cli.build_dir.as_deref(), Some(&recipes_path), &cli.defines)?;
             let ctx = engine.remove(&recipe_path)?;
             // Output ctx as JSON to stdout (logs go to stderr)
             let dynamic = rhai::Dynamic::from(ctx);
@@ -188,7 +194,8 @@ fn main() -> Result<()> {
 
         Commands::Cleanup { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
-            let engine = create_engine(cli.build_dir.as_deref())?;
+            let engine =
+                create_engine(cli.build_dir.as_deref(), Some(&recipes_path), &cli.defines)?;
             let ctx = engine.cleanup(&recipe_path)?;
             // Output ctx as JSON to stdout (logs go to stderr)
             let dynamic = rhai::Dynamic::from(ctx);
@@ -239,7 +246,11 @@ fn main() -> Result<()> {
 }
 
 /// Create a recipe engine with proper configuration
-fn create_engine(build_dir: Option<&Path>) -> Result<RecipeEngine> {
+fn create_engine(
+    build_dir: Option<&Path>,
+    recipes_path: Option<&Path>,
+    defines: &[String],
+) -> Result<RecipeEngine> {
     let build_dir = match build_dir {
         Some(dir) => {
             std::fs::create_dir_all(dir)
@@ -252,7 +263,21 @@ fn create_engine(build_dir: Option<&Path>) -> Result<RecipeEngine> {
         }
     };
 
-    Ok(RecipeEngine::new(build_dir))
+    let mut engine = RecipeEngine::new(build_dir);
+
+    if let Some(rp) = recipes_path {
+        engine = engine.with_recipes_path(rp.to_path_buf());
+    }
+
+    for define in defines {
+        if let Some((key, value)) = define.split_once('=') {
+            engine.add_define(key.to_string(), value.to_string());
+        } else {
+            anyhow::bail!("Invalid --define format: '{}' (expected KEY=VALUE)", define);
+        }
+    }
+
+    Ok(engine)
 }
 
 /// Resolve a recipe path (absolute path or relative to recipes_path)
