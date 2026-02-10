@@ -7,8 +7,8 @@ use fs2::FileExt;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-/// How old a lock file can be before it's considered stale (24 hours)
-const STALE_LOCK_AGE_SECS: u64 = 86400;
+/// How old a lock file can be before it's considered stale (2 hours)
+const STALE_LOCK_AGE_SECS: u64 = 7200;
 
 /// Check if a lock file is stale (older than STALE_LOCK_AGE_SECS)
 fn is_stale_lock(lock_path: &Path) -> bool {

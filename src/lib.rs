@@ -98,6 +98,12 @@ impl RecipeEngine {
     /// Create a new recipe engine
     pub fn new(build_dir: PathBuf) -> Self {
         let mut engine = Engine::new();
+
+        // Safety limits to prevent runaway recipes
+        engine.set_max_operations(2_000_000); // ~2M ops before abort
+        engine.set_max_call_levels(64); // prevent deep recursion
+        engine.set_max_string_size(64 * 1024 * 1024); // 64 MB max string
+
         helpers::register_all(&mut engine);
 
         Self {

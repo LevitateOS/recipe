@@ -2,13 +2,28 @@
 //!
 //! These functions run commands in the current working directory
 //! without depending on execution context.
+//!
+//! IMPORTANT: `shell()`, `shell_in()`, `shell_status()`, and `shell_status_in()`
+//! redirect child stdout → stderr so that shell output does not corrupt the
+//! JSON context emitted on stdout by the recipe binary.
 
 use rhai::EvalAltResult;
-use std::process::Command;
+use std::process::{Command, Stdio};
+
+/// Create a Stdio that writes to stderr, for use as a child process's stdout.
+/// This prevents shell output from corrupting the JSON pipe on stdout.
+fn stderr_as_stdout() -> Stdio {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/stderr")
+        .map(Stdio::from)
+        .unwrap_or_else(|_| Stdio::null())
+}
 
 /// Run a shell command in the current directory.
 ///
 /// Throws an error if the command fails.
+/// Child stdout is redirected to stderr to protect the JSON output pipe.
 ///
 /// # Example
 /// ```rhai
@@ -17,6 +32,9 @@ use std::process::Command;
 pub fn shell(cmd: &str) -> Result<(), Box<EvalAltResult>> {
     let status = Command::new("sh")
         .args(["-c", cmd])
+        .stdout(stderr_as_stdout())
+        .stderr(Stdio::inherit())
+        .stdin(Stdio::null())
         .status()
         .map_err(|e| format!("command failed to start: {}", e))?;
 
@@ -35,6 +53,7 @@ pub fn shell(cmd: &str) -> Result<(), Box<EvalAltResult>> {
 /// Run a shell command in a specific directory.
 ///
 /// Throws an error if the command fails.
+/// Child stdout is redirected to stderr to protect the JSON output pipe.
 ///
 /// # Example
 /// ```rhai
@@ -44,6 +63,9 @@ pub fn shell_in(dir: &str, cmd: &str) -> Result<(), Box<EvalAltResult>> {
     let status = Command::new("sh")
         .args(["-c", cmd])
         .current_dir(dir)
+        .stdout(stderr_as_stdout())
+        .stderr(Stdio::inherit())
+        .stdin(Stdio::null())
         .status()
         .map_err(|e| format!("command failed to start: {}", e))?;
 
@@ -63,6 +85,7 @@ pub fn shell_in(dir: &str, cmd: &str) -> Result<(), Box<EvalAltResult>> {
 /// Run a shell command and return its exit status code.
 ///
 /// Returns the exit code (0 for success), or -1 if the command couldn't run.
+/// Child stdout is redirected to stderr to protect the JSON output pipe.
 ///
 /// # Example
 /// ```rhai
@@ -74,16 +97,23 @@ pub fn shell_in(dir: &str, cmd: &str) -> Result<(), Box<EvalAltResult>> {
 pub fn shell_status(cmd: &str) -> i64 {
     Command::new("sh")
         .args(["-c", cmd])
+        .stdout(stderr_as_stdout())
+        .stderr(Stdio::inherit())
+        .stdin(Stdio::null())
         .status()
         .map(|s| s.code().unwrap_or(-1) as i64)
         .unwrap_or(-1)
 }
 
 /// Run a shell command in a specific directory and return its exit status code.
+/// Child stdout is redirected to stderr to protect the JSON output pipe.
 pub fn shell_status_in(dir: &str, cmd: &str) -> i64 {
     Command::new("sh")
         .args(["-c", cmd])
         .current_dir(dir)
+        .stdout(stderr_as_stdout())
+        .stderr(Stdio::inherit())
+        .stdin(Stdio::null())
         .status()
         .map(|s| s.code().unwrap_or(-1) as i64)
         .unwrap_or(-1)
@@ -92,6 +122,7 @@ pub fn shell_status_in(dir: &str, cmd: &str) -> i64 {
 /// Run a shell command and return its stdout output.
 ///
 /// Throws an error if the command fails.
+/// NOTE: This captures stdout for the caller — does NOT redirect to stderr.
 ///
 /// # Example
 /// ```rhai
@@ -117,6 +148,7 @@ pub fn shell_output(cmd: &str) -> Result<String, Box<EvalAltResult>> {
 }
 
 /// Run a shell command in a specific directory and return its stdout output.
+/// NOTE: This captures stdout for the caller — does NOT redirect to stderr.
 pub fn shell_output_in(dir: &str, cmd: &str) -> Result<String, Box<EvalAltResult>> {
     let output = Command::new("sh")
         .args(["-c", cmd])

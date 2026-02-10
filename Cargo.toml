@@ -16,7 +16,8 @@ name = "recipe"
 path = "src/bin/recipe.rs"
 
 [dependencies]
-rhai = { version = "1.19", features = ["sync", "serde"] }
+# Pinned: extends mechanism relies on AST += merge semantics (child shadows base let bindings)
+rhai = { version = "=1.19.0", features = ["sync", "serde"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 sha2 = "0.10"

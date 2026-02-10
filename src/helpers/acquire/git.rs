@@ -20,6 +20,9 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
+/// Git clone timeout (10 minutes). Prevents hangs on network issues.
+const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(600);
+
 /// RAII guard for progress bars - ensures cleanup on any exit path
 struct ProgressGuard(ProgressBar);
 
@@ -107,9 +110,19 @@ pub fn git_clone(url: &str, dest_dir: &str) -> Result<String, Box<EvalAltResult>
         .to_str()
         .ok_or("destination path contains invalid UTF-8")?;
 
-    // Run git clone with stderr capture for better error messages
+    // Run git clone with stderr capture and network timeout
+    let timeout_secs = GIT_CLONE_TIMEOUT.as_secs().to_string();
     let output = Command::new("git")
-        .args(["clone", "--progress", url, dest_str])
+        .args([
+            "-c",
+            "http.lowSpeedLimit=1000",
+            "-c",
+            &format!("http.lowSpeedTime={}", timeout_secs),
+            "clone",
+            "--progress",
+            url,
+            dest_str,
+        ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .output()
@@ -191,9 +204,14 @@ pub fn git_clone_depth(
         .to_str()
         .ok_or("destination path contains invalid UTF-8")?;
 
-    // Run git clone with stderr capture for better error messages
+    // Run git clone with stderr capture and network timeout
+    let timeout_secs = GIT_CLONE_TIMEOUT.as_secs().to_string();
     let output = Command::new("git")
         .args([
+            "-c",
+            "http.lowSpeedLimit=1000",
+            "-c",
+            &format!("http.lowSpeedTime={}", timeout_secs),
             "clone",
             "--depth",
             &depth.to_string(),

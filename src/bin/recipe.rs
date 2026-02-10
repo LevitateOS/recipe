@@ -259,6 +259,8 @@ fn create_engine(
         }
         None => {
             let temp = tempfile::tempdir().context("Failed to create temporary build directory")?;
+            // Persist the directory so it survives this scope. Cleanup happens
+            // via the recipe's cleanup() phase, not automatic drop.
             temp.keep()
         }
     };
