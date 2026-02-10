@@ -5,7 +5,7 @@
 //! - `acquire(ctx)`, `build(ctx)`, `install(ctx)` return updated ctx
 //! - ctx is persisted to the recipe file after each phase
 
-use super::{ctx, lock::acquire_recipe_lock, output};
+use super::{build_deps, ctx, lock::acquire_recipe_lock, output};
 use anyhow::{Context, Result, anyhow};
 use rhai::{AST, Engine, Scope};
 use std::fs;
@@ -70,7 +70,7 @@ fn resolve_base_path(
 /// base functions. Top-level statements run base-first, then child.
 ///
 /// Returns (merged_ast, child_source, Option<base_dir>).
-fn compile_recipe(
+pub(crate) fn compile_recipe(
     engine: &Engine,
     recipe_path: &Path,
     search_path: Option<&Path>,
@@ -197,6 +197,77 @@ pub fn install(
         output::skip(&format!("{} already installed, skipping", name));
         return Ok(ctx_map);
     }
+
+    // Resolve build dependencies if declared
+    let build_deps: Vec<String> = scope
+        .get_value::<rhai::Array>("build_deps")
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.clone().into_string().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let saved_path = if !build_deps.is_empty() {
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let mut resolver =
+            build_deps::BuildDepsResolver::new(engine, build_dir, search_path, defines);
+        let tools_prefix = resolver.resolve_and_install(&build_deps)?;
+        // Safety: we're single-threaded during recipe execution
+        unsafe {
+            std::env::set_var(
+                "PATH",
+                format!(
+                    "{}:{}:{}:{}:{}",
+                    tools_prefix.join("usr/bin").display(),
+                    tools_prefix.join("usr/sbin").display(),
+                    tools_prefix.join("bin").display(),
+                    tools_prefix.join("sbin").display(),
+                    original_path
+                ),
+            );
+        }
+
+        // Save current env for these keys before overwriting
+        let env_keys = [
+            "BISON_PKGDATADIR",
+            "M4",
+            "LIBRARY_PATH",
+            "C_INCLUDE_PATH",
+            "CPLUS_INCLUDE_PATH",
+            "PKG_CONFIG_PATH",
+        ];
+        let mut saved_env: Vec<(String, Option<String>)> =
+            vec![("PATH".to_string(), Some(original_path))];
+        for key in &env_keys {
+            saved_env.push((key.to_string(), std::env::var(key).ok()));
+        }
+
+        // Set data/lib paths so relocated RPM tools find their files
+        let tools_usr = tools_prefix.join("usr");
+        let env_fixups: &[(&str, std::path::PathBuf)] = &[
+            ("BISON_PKGDATADIR", tools_usr.join("share/bison")),
+            ("M4", tools_usr.join("bin/m4")),
+            ("LIBRARY_PATH", tools_usr.join("lib64")),
+            ("C_INCLUDE_PATH", tools_usr.join("include")),
+            ("CPLUS_INCLUDE_PATH", tools_usr.join("include")),
+            ("PKG_CONFIG_PATH", tools_usr.join("lib64/pkgconfig")),
+        ];
+        for (key, val) in env_fixups {
+            if val.exists() {
+                unsafe {
+                    std::env::set_var(key, val);
+                }
+            }
+        }
+
+        Some(saved_env)
+    } else {
+        None
+    };
+
+    // Guard to restore PATH even on error
+    let _env_guard = saved_path.map(EnvRestoreGuard);
 
     output::action(&format!("Installing {}", name));
 
@@ -359,6 +430,23 @@ fn run_phase(
     engine
         .call_fn::<rhai::Map>(scope, ast, fn_name, (ctx,))
         .map_err(|e| anyhow!("{} failed: {}", fn_name, e))
+}
+
+/// RAII guard that restores environment variables on drop (even on early error return).
+struct EnvRestoreGuard(Vec<(String, Option<String>)>);
+
+impl Drop for EnvRestoreGuard {
+    fn drop(&mut self) {
+        // Safety: single-threaded recipe execution
+        for (key, val) in &self.0 {
+            unsafe {
+                match val {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
 }
 
 /// Check if AST has a function with the given name

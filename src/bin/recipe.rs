@@ -10,6 +10,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use levitate_recipe::{RecipeEngine, output};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Recipe metadata extracted from ctx block
@@ -114,6 +115,10 @@ struct Cli {
     /// Define scope constants (KEY=VALUE), injected into Rhai scope before execution
     #[arg(short, long = "define", global = true, value_name = "KEY=VALUE")]
     defines: Vec<String>,
+
+    /// Write JSON output to file instead of stdout (keeps stdout clean for build output)
+    #[arg(long, global = true)]
+    json_output: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -152,6 +157,24 @@ enum Commands {
     },
 }
 
+/// Write ctx as JSON to a file or stdout.
+fn emit_json(ctx: &rhai::Map, path: Option<&Path>) -> Result<()> {
+    let dynamic = rhai::Dynamic::from(ctx.clone());
+    let json: serde_json::Value = rhai::serde::from_dynamic(&dynamic)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize ctx: {}", e))?;
+    let json_str = serde_json::to_string(&json)?;
+    match path {
+        Some(p) => {
+            std::fs::write(p, &json_str)
+                .with_context(|| format!("Failed to write JSON to {}", p.display()))?;
+        }
+        None => {
+            writeln!(std::io::stdout(), "{}", json_str)?;
+        }
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -167,17 +190,15 @@ fn main() -> Result<()> {
         })?;
     }
 
+    let json_output = cli.json_output;
+
     match cli.command {
         Commands::Install { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine =
                 create_engine(cli.build_dir.as_deref(), Some(&recipes_path), &cli.defines)?;
             let ctx = engine.execute(&recipe_path)?;
-            // Output ctx as JSON to stdout (logs go to stderr)
-            let dynamic = rhai::Dynamic::from(ctx);
-            let json: serde_json::Value = rhai::serde::from_dynamic(&dynamic)
-                .map_err(|e| anyhow::anyhow!("Failed to serialize ctx: {}", e))?;
-            println!("{}", serde_json::to_string(&json)?);
+            emit_json(&ctx, json_output.as_deref())?;
         }
 
         Commands::Remove { recipe } => {
@@ -185,11 +206,7 @@ fn main() -> Result<()> {
             let engine =
                 create_engine(cli.build_dir.as_deref(), Some(&recipes_path), &cli.defines)?;
             let ctx = engine.remove(&recipe_path)?;
-            // Output ctx as JSON to stdout (logs go to stderr)
-            let dynamic = rhai::Dynamic::from(ctx);
-            let json: serde_json::Value = rhai::serde::from_dynamic(&dynamic)
-                .map_err(|e| anyhow::anyhow!("Failed to serialize ctx: {}", e))?;
-            println!("{}", serde_json::to_string(&json)?);
+            emit_json(&ctx, json_output.as_deref())?;
         }
 
         Commands::Cleanup { recipe } => {
@@ -197,11 +214,7 @@ fn main() -> Result<()> {
             let engine =
                 create_engine(cli.build_dir.as_deref(), Some(&recipes_path), &cli.defines)?;
             let ctx = engine.cleanup(&recipe_path)?;
-            // Output ctx as JSON to stdout (logs go to stderr)
-            let dynamic = rhai::Dynamic::from(ctx);
-            let json: serde_json::Value = rhai::serde::from_dynamic(&dynamic)
-                .map_err(|e| anyhow::anyhow!("Failed to serialize ctx: {}", e))?;
-            println!("{}", serde_json::to_string(&json)?);
+            emit_json(&ctx, json_output.as_deref())?;
         }
 
         Commands::List => {

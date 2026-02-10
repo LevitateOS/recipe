@@ -10,20 +10,10 @@
 use rhai::EvalAltResult;
 use std::process::{Command, Stdio};
 
-/// Create a Stdio that writes to stderr, for use as a child process's stdout.
-/// This prevents shell output from corrupting the JSON pipe on stdout.
-fn stderr_as_stdout() -> Stdio {
-    std::fs::OpenOptions::new()
-        .write(true)
-        .open("/dev/stderr")
-        .map(Stdio::from)
-        .unwrap_or_else(|_| Stdio::null())
-}
-
 /// Run a shell command in the current directory.
 ///
 /// Throws an error if the command fails.
-/// Child stdout is redirected to stderr to protect the JSON output pipe.
+/// Child stdout and stderr are inherited so build output streams to the terminal.
 ///
 /// # Example
 /// ```rhai
@@ -32,7 +22,7 @@ fn stderr_as_stdout() -> Stdio {
 pub fn shell(cmd: &str) -> Result<(), Box<EvalAltResult>> {
     let status = Command::new("sh")
         .args(["-c", cmd])
-        .stdout(stderr_as_stdout())
+        .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .stdin(Stdio::null())
         .status()
@@ -63,7 +53,7 @@ pub fn shell_in(dir: &str, cmd: &str) -> Result<(), Box<EvalAltResult>> {
     let status = Command::new("sh")
         .args(["-c", cmd])
         .current_dir(dir)
-        .stdout(stderr_as_stdout())
+        .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .stdin(Stdio::null())
         .status()
@@ -97,7 +87,7 @@ pub fn shell_in(dir: &str, cmd: &str) -> Result<(), Box<EvalAltResult>> {
 pub fn shell_status(cmd: &str) -> i64 {
     Command::new("sh")
         .args(["-c", cmd])
-        .stdout(stderr_as_stdout())
+        .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .stdin(Stdio::null())
         .status()
@@ -111,7 +101,7 @@ pub fn shell_status_in(dir: &str, cmd: &str) -> i64 {
     Command::new("sh")
         .args(["-c", cmd])
         .current_dir(dir)
-        .stdout(stderr_as_stdout())
+        .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .stdin(Stdio::null())
         .status()
