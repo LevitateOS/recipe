@@ -5,7 +5,8 @@ use std::path::Path;
 
 /// Check if a path exists
 pub fn exists(path: &str) -> bool {
-    Path::new(path).exists()
+    // Use symlink_metadata to detect dangling symlinks too
+    Path::new(path).symlink_metadata().is_ok()
 }
 
 /// Check if a file exists

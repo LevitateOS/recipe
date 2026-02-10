@@ -198,7 +198,18 @@ pub fn install(
         return Ok(ctx_map);
     }
 
-    // Resolve build dependencies if declared
+    // Resolve dependencies declared in scope.
+    // - `deps`: resolved before all phases (tools needed for acquire/build/install)
+    // - `build_deps`: resolved only before build phase (compile-time tools)
+    let deps: Vec<String> = scope
+        .get_value::<rhai::Array>("deps")
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.clone().into_string().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+
     let build_deps: Vec<String> = scope
         .get_value::<rhai::Array>("build_deps")
         .map(|arr| {
@@ -208,66 +219,18 @@ pub fn install(
         })
         .unwrap_or_default();
 
-    let saved_path = if !build_deps.is_empty() {
-        let original_path = std::env::var("PATH").unwrap_or_default();
-        let mut resolver =
-            build_deps::BuildDepsResolver::new(engine, build_dir, search_path, defines);
-        let tools_prefix = resolver.resolve_and_install(&build_deps)?;
-        // Safety: we're single-threaded during recipe execution
-        unsafe {
-            std::env::set_var(
-                "PATH",
-                format!(
-                    "{}:{}:{}:{}:{}",
-                    tools_prefix.join("usr/bin").display(),
-                    tools_prefix.join("usr/sbin").display(),
-                    tools_prefix.join("bin").display(),
-                    tools_prefix.join("sbin").display(),
-                    original_path
-                ),
-            );
-        }
-
-        // Save current env for these keys before overwriting
-        let env_keys = [
-            "BISON_PKGDATADIR",
-            "M4",
-            "LIBRARY_PATH",
-            "C_INCLUDE_PATH",
-            "CPLUS_INCLUDE_PATH",
-            "PKG_CONFIG_PATH",
-        ];
-        let mut saved_env: Vec<(String, Option<String>)> =
-            vec![("PATH".to_string(), Some(original_path))];
-        for key in &env_keys {
-            saved_env.push((key.to_string(), std::env::var(key).ok()));
-        }
-
-        // Set data/lib paths so relocated RPM tools find their files
-        let tools_usr = tools_prefix.join("usr");
-        let env_fixups: &[(&str, std::path::PathBuf)] = &[
-            ("BISON_PKGDATADIR", tools_usr.join("share/bison")),
-            ("M4", tools_usr.join("bin/m4")),
-            ("LIBRARY_PATH", tools_usr.join("lib64")),
-            ("C_INCLUDE_PATH", tools_usr.join("include")),
-            ("CPLUS_INCLUDE_PATH", tools_usr.join("include")),
-            ("PKG_CONFIG_PATH", tools_usr.join("lib64/pkgconfig")),
-        ];
-        for (key, val) in env_fixups {
-            if val.exists() {
-                unsafe {
-                    std::env::set_var(key, val);
-                }
-            }
-        }
-
-        Some(saved_env)
+    // Resolve `deps` immediately (needed for all phases)
+    let _env_guard = if !deps.is_empty() {
+        Some(resolve_deps(
+            engine,
+            build_dir,
+            search_path,
+            defines,
+            &deps,
+        )?)
     } else {
         None
     };
-
-    // Guard to restore PATH even on error
-    let _env_guard = saved_path.map(EnvRestoreGuard);
 
     output::action(&format!("Installing {}", name));
 
@@ -280,10 +243,30 @@ pub fn install(
     }
 
     if needs_build && has_fn(&ast, "build") {
-        output::sub_action("build");
-        ctx_map = run_phase(engine, &ast, &mut scope, "build", ctx_map)?;
-        source = ctx::persist(&source, &ctx_map)?;
-        fs::write(&recipe_path, &source).with_context(|| "Failed to persist ctx after build")?;
+        // Re-check: does the recipe still need building after acquire ran?
+        // (acquire may have set ctx.stolen=true, making is_built pass now)
+        let still_needs_build = check_throws(engine, &ast, &scope, "is_built", &ctx_map);
+
+        // Resolve build_deps only when actually building
+        let _build_env_guard = if still_needs_build && !build_deps.is_empty() {
+            Some(resolve_deps(
+                engine,
+                build_dir,
+                search_path,
+                defines,
+                &build_deps,
+            )?)
+        } else {
+            None
+        };
+
+        if still_needs_build {
+            output::sub_action("build");
+            ctx_map = run_phase(engine, &ast, &mut scope, "build", ctx_map)?;
+            source = ctx::persist(&source, &ctx_map)?;
+            fs::write(&recipe_path, &source)
+                .with_context(|| "Failed to persist ctx after build")?;
+        }
     }
 
     if needs_install {
@@ -430,6 +413,70 @@ fn run_phase(
     engine
         .call_fn::<rhai::Map>(scope, ast, fn_name, (ctx,))
         .map_err(|e| anyhow!("{} failed: {}", fn_name, e))
+}
+
+/// Resolve dependency recipes, install tools, and set up PATH + env vars.
+/// Returns an RAII guard that restores the environment on drop.
+fn resolve_deps(
+    engine: &Engine,
+    build_dir: &Path,
+    search_path: Option<&Path>,
+    defines: &[(String, String)],
+    dep_names: &[String],
+) -> Result<EnvRestoreGuard> {
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let mut resolver = build_deps::BuildDepsResolver::new(engine, build_dir, search_path, defines);
+    let tools_prefix = resolver.resolve_and_install(dep_names)?;
+
+    // Safety: we're single-threaded during recipe execution
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}:{}:{}:{}",
+                tools_prefix.join("usr/bin").display(),
+                tools_prefix.join("usr/sbin").display(),
+                tools_prefix.join("bin").display(),
+                tools_prefix.join("sbin").display(),
+                original_path
+            ),
+        );
+    }
+
+    // Save current env for restoration
+    let env_keys = [
+        "BISON_PKGDATADIR",
+        "M4",
+        "LIBRARY_PATH",
+        "C_INCLUDE_PATH",
+        "CPLUS_INCLUDE_PATH",
+        "PKG_CONFIG_PATH",
+    ];
+    let mut saved_env: Vec<(String, Option<String>)> =
+        vec![("PATH".to_string(), Some(original_path))];
+    for key in &env_keys {
+        saved_env.push((key.to_string(), std::env::var(key).ok()));
+    }
+
+    // Set data/lib paths so relocated RPM tools find their files
+    let tools_usr = tools_prefix.join("usr");
+    let env_fixups: &[(&str, PathBuf)] = &[
+        ("BISON_PKGDATADIR", tools_usr.join("share/bison")),
+        ("M4", tools_usr.join("bin/m4")),
+        ("LIBRARY_PATH", tools_usr.join("lib64")),
+        ("C_INCLUDE_PATH", tools_usr.join("include")),
+        ("CPLUS_INCLUDE_PATH", tools_usr.join("include")),
+        ("PKG_CONFIG_PATH", tools_usr.join("lib64/pkgconfig")),
+    ];
+    for (key, val) in env_fixups {
+        if val.exists() {
+            unsafe {
+                std::env::set_var(key, val);
+            }
+        }
+    }
+
+    Ok(EnvRestoreGuard(saved_env))
 }
 
 /// RAII guard that restores environment variables on drop (even on early error return).
