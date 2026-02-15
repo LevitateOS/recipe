@@ -5,63 +5,49 @@
 use anyhow::{Context, Result};
 use fs2::FileExt;
 use std::fs::File;
-use std::path::{Path, PathBuf};
-
-/// How old a lock file can be before it's considered stale (2 hours)
-const STALE_LOCK_AGE_SECS: u64 = 7200;
-
-/// Check if a lock file is stale (older than STALE_LOCK_AGE_SECS)
-fn is_stale_lock(lock_path: &Path) -> bool {
-    if let Ok(metadata) = std::fs::metadata(lock_path)
-        && let Ok(modified) = metadata.modified()
-        && let Ok(age) = std::time::SystemTime::now().duration_since(modified)
-    {
-        return age.as_secs() > STALE_LOCK_AGE_SECS;
-    }
-    false
-}
+use std::fs::OpenOptions;
+use std::path::Path;
 
 /// Acquire an exclusive lock on a recipe file to prevent concurrent execution.
 /// Returns a guard that releases the lock when dropped.
 pub fn acquire_recipe_lock(recipe_path: &Path) -> Result<RecipeLock> {
     let lock_path = recipe_path.with_extension("rhai.lock");
 
-    // Check for stale lock and clean up if found
-    if lock_path.exists() && is_stale_lock(&lock_path) {
-        let _ = std::fs::remove_file(&lock_path);
-    }
+    // IMPORTANT:
+    // - Do not delete the lock file on contention. Another process may legitimately hold the lock.
+    // - Use an advisory exclusive lock; stale lock files are harmless because locks are released on exit.
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("Failed to open lock file: {}", lock_path.display()))?;
 
-    let lock_file = File::create(&lock_path)
-        .with_context(|| format!("Failed to create lock file: {}", lock_path.display()))?;
-
-    if lock_file.try_lock_exclusive().is_err() {
-        drop(lock_file);
-        let _ = std::fs::remove_file(&lock_path);
+    if let Err(e) = lock_file.try_lock_exclusive() {
+        // Keep the lock file intact to preserve exclusivity for the current holder.
         return Err(anyhow::anyhow!(
-            "Recipe '{}' is already being executed by another process. \
-             If this is incorrect, delete '{}'",
+            "Recipe '{}' is already being executed by another process (lock: '{}'): {e}",
             recipe_path.display(),
             lock_path.display()
         ));
     }
 
-    Ok(RecipeLock {
-        _file: lock_file,
-        path: lock_path,
-    })
+    Ok(RecipeLock { _file: lock_file })
 }
 
-/// RAII guard for recipe lock - releases lock and deletes lock file when dropped
+/// RAII guard for recipe lock - releases lock when dropped
 #[derive(Debug)]
 pub struct RecipeLock {
     #[allow(dead_code)]
     _file: File,
-    path: PathBuf,
 }
 
 impl Drop for RecipeLock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        // File drop releases the advisory lock; we intentionally keep the lock file in place.
+        // Deleting a lock file while other processes have it open can enable a "new file, new lock"
+        // race in future blocking-lock implementations.
     }
 }
 
@@ -94,7 +80,8 @@ mod tests {
             assert!(recipe_path.with_extension("rhai.lock").exists());
         }
 
-        assert!(!recipe_path.with_extension("rhai.lock").exists());
+        // Lock should be released (file may remain on disk).
+        assert!(acquire_recipe_lock(&recipe_path).is_ok());
     }
 
     #[test]
