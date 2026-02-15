@@ -21,12 +21,107 @@ use indicatif::{ProgressBar, ProgressStyle};
 use rhai::EvalAltResult;
 use std::fs::File;
 use std::io::{BufReader, Read};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 // ============================================================================
 // Native archive extraction (no external tools needed)
 // ============================================================================
+
+fn normalize_lexical(path: &Path) -> PathBuf {
+    // Lexically normalize a path (no filesystem access). This is used to
+    // validate link targets without following symlinks.
+    let mut out = PathBuf::new();
+    let mut has_root = false;
+
+    for c in path.components() {
+        match c {
+            Component::Prefix(p) => {
+                out.clear();
+                out.push(p.as_os_str());
+                has_root = true;
+            }
+            Component::RootDir => {
+                out.push(Component::RootDir.as_os_str());
+                has_root = true;
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let popped = out
+                    .components()
+                    .next_back()
+                    .is_some_and(|last| matches!(last, Component::Normal(_)));
+                if popped {
+                    out.pop();
+                } else if !has_root {
+                    // Preserve leading ".." for relative paths.
+                    out.push("..");
+                }
+            }
+            Component::Normal(seg) => out.push(seg),
+        }
+    }
+
+    out
+}
+
+fn ensure_no_symlink_components(dest: &Path, full_path: &Path) -> Result<(), Box<EvalAltResult>> {
+    let rel = full_path.strip_prefix(dest).map_err(|_| {
+        format!(
+            "tar contains path outside destination: {}",
+            full_path.display()
+        )
+    })?;
+
+    // Reject if any existing path component (including leaf) is a symlink.
+    let mut cur = dest.to_path_buf();
+    for comp in rel.components() {
+        cur.push(comp);
+        if let Ok(md) = std::fs::symlink_metadata(&cur)
+            && md.file_type().is_symlink()
+        {
+            return Err(format!(
+                "tar extraction blocked: symlink in path component: {}",
+                cur.display()
+            )
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_link_target_within_dest(
+    dest: &Path,
+    link_parent: &Path,
+    link_name: &Path,
+) -> Result<(), Box<EvalAltResult>> {
+    if link_name.is_absolute()
+        || link_name
+            .components()
+            .any(|c| matches!(c, Component::Prefix(_) | Component::RootDir))
+    {
+        return Err(format!(
+            "tar contains unsafe link target (absolute): {}",
+            link_name.display()
+        )
+        .into());
+    }
+
+    // Resolve relative to the link's parent, then ensure it stays within dest.
+    let candidate = normalize_lexical(&link_parent.join(link_name));
+    let norm_dest = normalize_lexical(dest);
+    if candidate.strip_prefix(&norm_dest).is_err() {
+        return Err(format!(
+            "tar contains unsafe link target (escapes dest): {} -> {}",
+            link_parent.display(),
+            link_name.display()
+        )
+        .into());
+    }
+
+    Ok(())
+}
 
 /// Extract a tar archive with optional decompression
 fn extract_tar<R: Read>(reader: R, dest: &Path) -> Result<(), Box<EvalAltResult>> {
@@ -54,10 +149,46 @@ fn extract_tar<R: Read>(reader: R, dest: &Path) -> Result<(), Box<EvalAltResult>
             return Err(format!("tar contains unsafe path: {}", path.display()).into());
         }
 
+        // Some archives contain a "." entry; treat it as a no-op.
+        if path.as_os_str().is_empty() || path == Path::new(".") {
+            continue;
+        }
+
         let full_path = dest.join(&path);
+
+        // Block tar "symlink swap" / link-based extraction escapes:
+        // if any existing component is a symlink, writing through it could
+        // escape `dest` even when `path` is syntactically safe.
+        ensure_no_symlink_components(dest, &full_path)?;
+
+        // Validate link targets before extraction.
+        let entry_type = entry.header().entry_type();
+        if entry_type == tar::EntryType::Symlink || entry_type == tar::EntryType::Link {
+            let link_name = entry
+                .link_name()
+                .map_err(|e| format!("tar link_name error: {}", e))?;
+            if let Some(link_name) = link_name {
+                let link_parent = full_path.parent().unwrap_or(dest);
+                ensure_link_target_within_dest(dest, link_parent, &link_name)?;
+            } else {
+                return Err(format!(
+                    "tar contains {} without link target: {}",
+                    if entry_type == tar::EntryType::Symlink {
+                        "symlink"
+                    } else {
+                        "hardlink"
+                    },
+                    path.display()
+                )
+                .into());
+            }
+        }
 
         // Create parent directories
         if let Some(parent) = full_path.parent() {
+            if parent.starts_with(dest) {
+                ensure_no_symlink_components(dest, parent)?;
+            }
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("cannot create directory {}: {}", parent.display(), e))?;
         }
@@ -389,6 +520,81 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(extracted_file).unwrap(),
             "nested content"
+        );
+    }
+
+    #[test]
+    fn test_extract_tar_blocks_symlink_escape() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let archive_path = temp_dir.path().join("escape.tar.gz");
+        let extract_dir = temp_dir.path().join("extracted");
+
+        let file = File::create(&archive_path).unwrap();
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+
+        // Create a symlink "a" -> "/" then attempt to write "a/evil.txt".
+        let mut link_header = tar::Header::new_gnu();
+        link_header.set_entry_type(tar::EntryType::Symlink);
+        link_header.set_size(0);
+        link_header.set_mode(0o777);
+        link_header.set_cksum();
+        link_header.set_link_name("/").unwrap();
+        builder
+            .append_data(&mut link_header, "a", std::io::empty())
+            .unwrap();
+
+        let content = b"pwned";
+        let mut file_header = tar::Header::new_gnu();
+        file_header.set_size(content.len() as u64);
+        file_header.set_mode(0o644);
+        file_header.set_cksum();
+        builder
+            .append_data(&mut file_header, "a/evil.txt", &content[..])
+            .unwrap();
+
+        let encoder = builder.into_inner().unwrap();
+        encoder.finish().unwrap();
+
+        std::fs::create_dir_all(&extract_dir).unwrap();
+        let err = extract_tar_gz(&archive_path, &extract_dir).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unsafe link target") || msg.contains("symlink"),
+            "expected link/symlink safety error, got: {msg}"
+        );
+        assert!(!extract_dir.join("a/evil.txt").exists());
+    }
+
+    #[test]
+    fn test_extract_tar_blocks_hardlink_outside_dest() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let archive_path = temp_dir.path().join("hardlink.tar.gz");
+        let extract_dir = temp_dir.path().join("extracted");
+
+        let file = File::create(&archive_path).unwrap();
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Link);
+        header.set_size(0);
+        header.set_mode(0o777);
+        header.set_cksum();
+        header.set_link_name("/etc/passwd").unwrap();
+        builder
+            .append_data(&mut header, "hl", std::io::empty())
+            .unwrap();
+
+        let encoder = builder.into_inner().unwrap();
+        encoder.finish().unwrap();
+
+        std::fs::create_dir_all(&extract_dir).unwrap();
+        let err = extract_tar_gz(&archive_path, &extract_dir).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unsafe link target"),
+            "expected unsafe link target error, got: {msg}"
         );
     }
 
