@@ -1,7 +1,7 @@
 //! Torrent/download helpers for recipe scripts
 //!
 //! Pure functions for downloading files via BitTorrent or HTTP with resume support.
-//! Uses aria2c as the backend (supports torrents, metalinks, and HTTP resume).
+//! Uses a pure-Rust BitTorrent client (librqbit) and pure-Rust HTTP downloads.
 //!
 //! ## Example
 //!
@@ -14,20 +14,13 @@
 //! ```
 
 use crate::core::output;
-use indicatif::{ProgressBar, ProgressStyle};
+use crate::helpers::internal::progress;
+use indicatif::ProgressBar;
+use librqbit::{AddTorrent, AddTorrentOptions, AddTorrentResponse, Session, SessionOptions};
 use rhai::EvalAltResult;
-use std::path::Path;
-use std::process::Command;
+use std::io::{Read, Write};
+use std::path::{Component, Path};
 use std::time::Duration;
-
-/// RAII guard for progress bars - ensures cleanup on any exit path
-struct ProgressGuard(ProgressBar);
-
-impl Drop for ProgressGuard {
-    fn drop(&mut self) {
-        self.0.finish_and_clear();
-    }
-}
 
 /// Validate that a URL uses an allowed scheme for torrent/download operations.
 /// Only http://, https://, and magnet: URLs are supported.
@@ -44,23 +37,17 @@ fn validate_download_url(url: &str) -> Result<(), Box<EvalAltResult>> {
     }
 }
 
-/// Check if aria2c is available
-fn has_aria2c() -> bool {
-    Command::new("aria2c")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+fn validate_safe_relative_path(p: &Path) -> Result<(), Box<EvalAltResult>> {
+    if p.components().any(|c| !matches!(c, Component::Normal(_))) {
+        return Err(format!("unsafe torrent path component: {}", p.display()).into());
+    }
+    Ok(())
 }
 
 /// Download a file via BitTorrent.
 ///
 /// Takes a .torrent file URL or magnet link. Downloads the content to dest_dir.
 /// Returns the path to the downloaded file.
-///
-/// Requires `aria2c` to be installed on the system.
 ///
 /// # Example
 /// ```rhai
@@ -70,80 +57,117 @@ pub fn torrent(url: &str, dest_dir: &str) -> Result<String, Box<EvalAltResult>> 
     // Validate URL scheme for security
     validate_download_url(url)?;
 
-    if !has_aria2c() {
-        return Err(
-            "aria2c not found. Install it with: dnf install aria2 (or apt install aria2)".into(),
-        );
-    }
-
-    // Get build directory path as string, handling non-UTF8 gracefully
     let dest_dir_path = Path::new(dest_dir);
-    let dest_dir_str = dest_dir_path
-        .to_str()
-        .ok_or("destination directory path contains invalid UTF-8")?;
+    std::fs::create_dir_all(dest_dir_path)
+        .map_err(|e| format!("cannot create destination directory {}: {}", dest_dir, e))?;
 
     output::detail(&format!("torrent download: {}", url));
 
-    // Create progress spinner with RAII guard for cleanup
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .template("     {spinner:.cyan} {msg}")
-            .unwrap()
-            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-    );
-    pb.set_message("downloading via torrent...");
-    pb.enable_steady_tick(Duration::from_millis(80));
-    let _guard = ProgressGuard(pb);
+    let pb = progress::create_download_progress("downloading via bittorrent...");
+    let pb_for_async = pb.clone();
+    let _guard = progress::ProgressGuard::new(&pb);
 
-    // Use aria2c for torrent download with stderr capture
-    // --seed-time=0 means don't seed after download (we're not being a good peer, but this is a build tool)
-    // --continue=true enables resume
-    // --max-connection-per-server=16 improves HTTP download speed
-    // --bt-stop-timeout=300 stops if no progress for 5 minutes (stall detection)
-    // --timeout=300 connection timeout
-    let output = Command::new("aria2c")
-        .args([
-            "--dir",
-            dest_dir_str,
-            "--continue=true",
-            "--seed-time=0",
-            "--max-connection-per-server=16",
-            "--summary-interval=0",
-            "--console-log-level=warn",
-            "--bt-stop-timeout=300", // 5 minute stall detection for torrents
-            "--timeout=300",         // 5 minute connection timeout
-            "--connect-timeout=60",  // 1 minute initial connection timeout
-            url,
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .map_err(|e| format!("failed to run aria2c: {}", e))?;
+    let url = url.to_string();
+    let output_folder = dest_dir.to_string();
+    let dest_dir_path = dest_dir_path.to_path_buf();
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "torrent download failed for {}\nDetails: {}",
-            url,
-            stderr.trim()
-        )
-        .into());
-    }
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("failed to initialize tokio runtime: {}", e))?;
 
-    // Try to determine the downloaded filename
-    // For .torrent URLs, extract the base name
-    let filename = extract_filename_from_torrent_url(url);
-    let path = dest_dir_path.join(&filename);
+    let downloaded_path = rt
+        .block_on(async move {
+            let session_opts = SessionOptions {
+                // Avoid polluting user config with DHT persistence for build tooling.
+                disable_dht_persistence: true,
+                // Build tooling should not seed/upload.
+                disable_upload: true,
+                ..Default::default()
+            };
+            let session = Session::new_with_opts(dest_dir_path.clone(), session_opts).await?;
 
-    output::detail(&format!("downloaded {}", filename));
-    Ok(path.to_string_lossy().to_string())
+            let handle = match session
+                .add_torrent(
+                    AddTorrent::from_url(url),
+                    Some(AddTorrentOptions {
+                        // Allow resuming/continuing on existing files in dest_dir.
+                        overwrite: true,
+                        // Always download into the explicit dest_dir (no implicit subfolder).
+                        output_folder: Some(output_folder),
+                        ..Default::default()
+                    }),
+                )
+                .await?
+            {
+                AddTorrentResponse::Added(_, handle) => handle,
+                AddTorrentResponse::AlreadyManaged(_, handle) => handle,
+                AddTorrentResponse::ListOnly(_) => {
+                    anyhow::bail!("internal error: list_only response while downloading")
+                }
+            };
+
+            // Update progress while waiting for completion.
+            let pb2: ProgressBar = pb_for_async;
+            let handle2 = handle.clone();
+            let progress_task = tokio::spawn(async move {
+                let mut upgraded = false;
+                loop {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    let stats = handle2.stats();
+
+                    if stats.total_bytes > 0 {
+                        if !upgraded {
+                            progress::upgrade_to_bytes(&pb2, stats.total_bytes);
+                            upgraded = true;
+                        }
+                        pb2.set_position(stats.progress_bytes);
+                        pb2.set_message(format!(
+                            "downloading via bittorrent ({:.1}%)",
+                            (stats.progress_bytes as f64 / stats.total_bytes as f64) * 100.0
+                        ));
+                    } else {
+                        pb2.set_message(
+                            "downloading via bittorrent (resolving metadata)".to_string(),
+                        );
+                    }
+
+                    if stats.finished {
+                        break;
+                    }
+                }
+            });
+
+            handle.wait_until_completed().await?;
+            progress_task.abort();
+
+            // Single-file torrents: return the file path.
+            // Multi-file torrents: return dest_dir (the output folder).
+            let computed = handle.with_metadata(|m| {
+                if m.file_infos.len() == 1 {
+                    let rel = &m.file_infos[0].relative_filename;
+                    validate_safe_relative_path(rel)?;
+                    Ok::<_, Box<EvalAltResult>>(
+                        dest_dir_path.join(rel).to_string_lossy().to_string(),
+                    )
+                } else {
+                    Ok::<_, Box<EvalAltResult>>(dest_dir_path.to_string_lossy().to_string())
+                }
+            })??;
+
+            Ok::<_, anyhow::Error>(computed)
+        })
+        .map_err(|e| format!("torrent download failed: {:#}", e))?;
+
+    output::detail(&format!("downloaded {}", downloaded_path));
+    Ok(downloaded_path)
 }
 
 /// Download a file via HTTP with resume support.
 ///
-/// Uses aria2c for better performance and resume capability.
-/// Falls back to curl if aria2c is not available.
+/// If `dest` already exists, this function requires the server to honor HTTP `Range`
+/// requests (HTTP 206) or report that the file is already complete (HTTP 416 with a
+/// valid `Content-Range`). It will not fall back to restarting the download.
 ///
 /// # Example
 /// ```rhai
@@ -160,133 +184,128 @@ pub fn download_with_resume(url: &str, dest: &str) -> Result<String, Box<EvalAlt
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| extract_filename_from_url(url));
 
-    // Get paths as strings, handling non-UTF8 gracefully
-    let dest_dir_str = dest_dir
-        .to_str()
-        .ok_or("destination directory path contains invalid UTF-8")?;
-    let dest_str = dest_path
-        .to_str()
-        .ok_or("destination path contains invalid UTF-8")?;
+    std::fs::create_dir_all(dest_dir)
+        .map_err(|e| format!("cannot create destination directory: {}", e))?;
 
-    // If file already exists, verify size or skip
-    if dest_path.exists() {
-        output::detail(&format!("{} exists, will resume if incomplete", filename));
-    }
+    // Determine current size for resume.
+    let existing_len = dest_path.metadata().map(|m| m.len()).unwrap_or(0);
 
     output::detail(&format!("downloading with resume: {}", url));
+    let pb = progress::create_download_progress(&format!("downloading {}", filename));
+    let _guard = progress::ProgressGuard::new(&pb);
 
-    // Create progress spinner with RAII guard for cleanup
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .template("     {spinner:.cyan} {msg}")
-            .unwrap()
-            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-    );
-    pb.set_message(format!("downloading {}", filename));
-    pb.enable_steady_tick(Duration::from_millis(80));
-    let _guard = ProgressGuard(pb);
+    // Build request with Range header if resuming.
+    let mut req = ureq::get(url);
+    if existing_len > 0 {
+        req = req.set("Range", &format!("bytes={}-", existing_len));
+        pb.set_message(format!("resuming {} ({} bytes)", filename, existing_len));
+    }
 
-    let result = if has_aria2c() {
-        // Prefer aria2c with stderr capture
-        Command::new("aria2c")
-            .args([
-                "--dir",
-                dest_dir_str,
-                "--out",
-                &filename,
-                "--continue=true",
-                "--max-connection-per-server=16",
-                "--summary-interval=0",
-                "--console-log-level=warn",
-                "--timeout=300",        // 5 minute connection timeout
-                "--connect-timeout=60", // 1 minute initial connection timeout
-                "--max-tries=3",        // 3 retries for HTTP
-                "--retry-wait=5",       // 5 second wait between retries
-                url,
-            ])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .output()
+    let resp = req.call().map_err(|e| format!("download failed: {}", e))?;
+    let status = resp.status();
+
+    // No fallback: if resuming, server must honor Range (206) or indicate already complete (416).
+    let (append, total_len_opt) = if existing_len > 0 {
+        match status {
+            206 => {
+                let total = resp
+                    .header("content-range")
+                    .and_then(|cr| cr.split('/').nth(1))
+                    .and_then(|t| t.parse::<u64>().ok())
+                    .or_else(|| {
+                        resp.header("content-length")
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .map(|remaining| existing_len + remaining)
+                    });
+                (true, total)
+            }
+            416 => {
+                let total = resp
+                    .header("content-range")
+                    .and_then(|cr| cr.split('/').nth(1))
+                    .and_then(|t| t.parse::<u64>().ok())
+                    .ok_or("resume requested but server returned 416 without Content-Range")?;
+
+                if existing_len == total {
+                    output::detail(&format!("{} already fully downloaded", dest_path.display()));
+                    return Ok(dest.to_string());
+                }
+                return Err(format!(
+                    "resume requested but local file size {} does not match remote size {} for {}",
+                    existing_len, total, url
+                )
+                .into());
+            }
+            200 => {
+                return Err(format!(
+                    "resume requested for {} but server did not honor Range (returned 200). Delete '{}' to restart from scratch.",
+                    url,
+                    dest_path.display()
+                )
+                .into());
+            }
+            other => {
+                return Err(
+                    format!("unexpected HTTP status {} while downloading {}", other, url).into(),
+                );
+            }
+        }
     } else {
-        // Fall back to curl with resume
-        output::detail("aria2c not found, using curl");
-        Command::new("curl")
-            .args([
-                "-L", // Follow redirects
-                "-C", "-", // Resume from where we left off
-                "-o", dest_str, url,
-            ])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .output()
+        match status {
+            200 => {
+                let total = resp
+                    .header("content-length")
+                    .and_then(|s| s.parse::<u64>().ok());
+                (false, total)
+            }
+            other => {
+                return Err(
+                    format!("unexpected HTTP status {} while downloading {}", other, url).into(),
+                );
+            }
+        }
     };
 
-    match result {
-        Ok(output) if output.status.success() => {
-            output::detail(&format!("downloaded {}", dest_path.display()));
-            Ok(dest.to_string())
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(format!("download failed for {}\nDetails: {}", url, stderr.trim()).into())
-        }
-        Err(e) => Err(format!("failed to run downloader: {}", e).into()),
+    if let Some(total) = total_len_opt {
+        progress::upgrade_to_bytes(&pb, total);
+        pb.set_position(existing_len);
     }
+
+    let mut file = if append {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dest_path)
+            .map_err(|e| format!("cannot open for append {}: {}", dest_path.display(), e))?
+    } else {
+        std::fs::File::create(dest_path)
+            .map_err(|e| format!("cannot create file {}: {}", dest_path.display(), e))?
+    };
+
+    let mut reader = resp.into_reader();
+    let mut buf = [0u8; 64 * 1024];
+    let mut written = existing_len;
+
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| format!("read error: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n])
+            .map_err(|e| format!("write error: {}", e))?;
+        written += n as u64;
+        pb.set_position(written);
+    }
+
+    output::detail(&format!("downloaded {}", dest_path.display()));
+    Ok(dest.to_string())
 }
 
 /// Extract filename from a URL, handling query strings and sanitizing
 fn extract_filename_from_url(url: &str) -> String {
     // Strip query parameters and fragments
-    let url_without_query = url.split('?').next().unwrap_or(url);
-    let url_without_fragment = url_without_query
-        .split('#')
-        .next()
-        .unwrap_or(url_without_query);
-
-    let filename = url_without_fragment
-        .rsplit('/')
-        .next()
-        .unwrap_or("download");
-
-    // Strip .torrent extension if present
-    let name = filename.strip_suffix(".torrent").unwrap_or(filename);
-
-    // Sanitize: ensure non-empty and not a path traversal
-    if name.is_empty() || name == "." || name == ".." {
-        return "download".to_string();
-    }
-
-    name.to_string()
-}
-
-/// Extract the expected filename from a torrent URL
-///
-/// For URLs like "Rocky-9.5-x86_64-dvd.iso.torrent", returns "Rocky-9.5-x86_64-dvd.iso"
-/// For magnet links, generates a unique name based on timestamp
-fn extract_filename_from_torrent_url(url: &str) -> String {
-    // Handle magnet links specially
-    if url.starts_with("magnet:") {
-        // Try to extract display name from magnet link (dn= parameter)
-        if let Some(dn_start) = url.find("dn=") {
-            let dn_value = &url[dn_start + 3..];
-            let dn_end = dn_value.find('&').unwrap_or(dn_value.len());
-            let name = &dn_value[..dn_end];
-            // URL decode basic escapes
-            let name = name.replace("%20", " ").replace("+", " ");
-            if !name.is_empty() && name != "." && name != ".." {
-                return name;
-            }
-        }
-        // Fall back to timestamp-based name for magnet links
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
-        return format!("magnet_{}", timestamp);
-    }
-
-    // Strip query parameters and fragments first
     let url_without_query = url.split('?').next().unwrap_or(url);
     let url_without_fragment = url_without_query
         .split('#')
@@ -353,86 +372,6 @@ mod tests {
     fn test_validate_download_url_bare_path_rejected() {
         let result = validate_download_url("/local/path/to/file");
         assert!(result.is_err());
-    }
-
-    // ==================== Filename Extraction Tests ====================
-
-    #[cheat_reviewed("URL parsing test - torrent URL extracts base filename")]
-    #[test]
-    fn test_extract_filename_from_torrent_url() {
-        let name = extract_filename_from_torrent_url(
-            "https://example.com/Rocky-9.5-x86_64-dvd.iso.torrent",
-        );
-        assert_eq!(name, "Rocky-9.5-x86_64-dvd.iso");
-    }
-
-    #[cheat_reviewed("URL parsing test - non-torrent URL preserved")]
-    #[test]
-    fn test_extract_filename_regular_url() {
-        let name = extract_filename_from_torrent_url("https://example.com/file.iso");
-        assert_eq!(name, "file.iso");
-    }
-
-    #[cheat_reviewed("URL parsing test - simple URL")]
-    #[test]
-    fn test_extract_filename_simple() {
-        let name = extract_filename_from_torrent_url("https://example.com/archive.tar.gz");
-        assert_eq!(name, "archive.tar.gz");
-    }
-
-    #[cheat_reviewed("URL parsing test - query string stripped")]
-    #[test]
-    fn test_extract_filename_with_query() {
-        let name = extract_filename_from_torrent_url(
-            "https://example.com/file.iso.torrent?token=abc&sig=xyz",
-        );
-        assert_eq!(name, "file.iso");
-    }
-
-    #[cheat_reviewed("URL parsing test - fragment stripped")]
-    #[test]
-    fn test_extract_filename_with_fragment() {
-        let name = extract_filename_from_torrent_url("https://example.com/file.iso#section");
-        assert_eq!(name, "file.iso");
-    }
-
-    #[cheat_reviewed("URL parsing test - magnet link generates unique name")]
-    #[test]
-    fn test_extract_filename_magnet() {
-        let name = extract_filename_from_torrent_url("magnet:?xt=urn:btih:abc123");
-        assert!(name.starts_with("magnet_"));
-    }
-
-    #[cheat_reviewed("URL parsing test - magnet link with display name")]
-    #[test]
-    fn test_extract_filename_magnet_with_dn() {
-        let name = extract_filename_from_torrent_url(
-            "magnet:?xt=urn:btih:abc123&dn=Ubuntu.22.04.iso&tr=udp://tracker",
-        );
-        assert_eq!(name, "Ubuntu.22.04.iso");
-    }
-
-    #[cheat_reviewed("URL parsing test - empty filename sanitized")]
-    #[test]
-    fn test_extract_filename_empty_sanitized() {
-        let name = extract_filename_from_torrent_url("https://example.com/");
-        assert_eq!(name, "download");
-    }
-
-    #[cheat_reviewed("URL parsing test - dot filename sanitized")]
-    #[test]
-    fn test_extract_filename_dot_sanitized() {
-        // A URL like "https://example.com/." should not result in "."
-        let name = extract_filename_from_torrent_url("https://example.com/.");
-        assert_eq!(name, "download");
-    }
-
-    #[cheat_reviewed("URL parsing test - double dot filename sanitized")]
-    #[test]
-    fn test_extract_filename_dotdot_sanitized() {
-        // A URL like "https://example.com/.." should not result in ".."
-        let name = extract_filename_from_torrent_url("https://example.com/..");
-        assert_eq!(name, "download");
     }
 
     // ==================== extract_filename_from_url Tests ====================

@@ -108,6 +108,7 @@ pub fn register_all(engine: &mut Engine) {
     engine.register_fn("verify_sha256", acquire::verify_sha256);
     engine.register_fn("verify_sha512", acquire::verify_sha512);
     engine.register_fn("verify_blake3", acquire::verify_blake3);
+    engine.register_fn("fetch_sha256", acquire::fetch_sha256);
 
     // Build helpers (build/extract)
     // extract(archive, dest) -> ()

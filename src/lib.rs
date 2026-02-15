@@ -49,10 +49,13 @@
 //!
 //! ## Network
 //! - `download(url, dest)` - HTTP download
+//! - `download_with_resume(url, dest)` - HTTP download with Range resume (throws if resume can't be honored)
 //! - `http_get(url)` - Fetch URL content as string
+//! - `torrent(url, dest_dir)` - BitTorrent download into `dest_dir`
 //!
 //! ## Verification
 //! - `verify_sha256(path, hash)` - Verify checksum
+//! - `fetch_sha256(url, filename)` - Fetch a SHA256 from a remote checksum file
 //! - `check_disk_space(path, bytes)` - Verify free space
 //!
 //! ## Archive

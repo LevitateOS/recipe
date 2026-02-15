@@ -1,8 +1,8 @@
 # Recipe Package Manager Requirements
 
-**Version:** 1.0.0
+**Version:** 1.1.0
 **Status:** Specification
-**Last Updated:** 2026-01-25
+**Last Updated:** 2026-02-14
 
 This document defines the complete requirements for the `recipe` package manager.
 It is implementation and language agnostic. Any conforming implementation MUST
@@ -33,6 +33,7 @@ strongly recommended. Requirements marked MAY are optional enhancements.
 18. [Git Operations](#18-git-operations)
 19. [Atomic Installation](#19-atomic-installation)
 20. [Conformance Testing](#20-conformance-testing)
+21. [Traceability](#21-traceability)
 
 ---
 
@@ -65,6 +66,10 @@ This specification covers:
 | Phase | A distinct step in the install lifecycle (acquire/build/install) |
 | Helper | A built-in function available to recipe scripts |
 | Prefix | The installation destination directory |
+| Sysroot | Target filesystem root directory for install/remove operations (e.g. mountpoint of slot B) |
+| Refresh | LLM-assisted recipe maintenance: update the recipe itself so it continues to build/install correctly |
+| Update | Deterministic version discovery: find the latest available version for a recipe (no LLM) |
+| Upgrade | Deterministic application: reinstall/compose the new version into the target root/prefix |
 | Build Directory | Temporary workspace for downloads and compilation |
 | Staging | Isolated directory where files are installed before commit |
 
@@ -188,7 +193,15 @@ fn install()  // Copy files to prefix
 
 **REQ-FORMAT-009**: The acquire function MUST be called before install.
 
-**REQ-FORMAT-010**: Functions MUST NOT return values (void return type).
+**REQ-FORMAT-010**: Lifecycle phase functions and hooks MUST NOT return values
+(unit/void return type):
+- `acquire()`, `build()` (if defined), `install()`
+- `pre_install()`, `post_install()`
+- `pre_remove()`, `post_remove()`
+- `remove()` (if defined)
+
+Exceptions: `check_update()` and `refresh_recipe()` are allowed to return values
+as specified below.
 
 ### 3.5 Optional Functions
 
@@ -199,11 +212,30 @@ fn install()  // Copy files to prefix
 | `build()` | Extract, compile, transform | After acquire, before install |
 | `is_installed()` | Custom installation check | Before any phase |
 | `check_update()` | Query for newer versions | During update command |
+| `refresh_recipe()` | Propose recipe maintenance changes | During refresh command |
 | `remove()` | Custom removal logic | During remove command |
 | `pre_install()` | Hook before install phase | After build, before install |
 | `post_install()` | Hook after install phase | After install completes |
 | `pre_remove()` | Hook before removal | Before remove starts |
 | `post_remove()` | Hook after removal | After files deleted |
+
+### 3.5.1 Update vs Refresh Hook Semantics
+
+**REQ-FORMAT-014**: `check_update()`, if defined, MUST return:
+- String: the latest available version (if newer than current `version`)
+- Unit/void: no update available
+
+**REQ-FORMAT-015**: `check_update()` MUST be deterministic and MUST NOT depend
+on LLM-based heuristics. It MAY consult structured upstream sources (for example
+an API endpoint) to determine the latest version.
+
+**REQ-FORMAT-016**: `refresh_recipe()`, if defined, MUST return:
+- String: a proposed recipe patch (unified diff recommended)
+- Unit/void: no refresh needed
+
+**REQ-FORMAT-017**: `refresh_recipe()` MAY invoke LLM helpers and consult online
+sources, but it MUST be treated as proposal-only: it MUST NOT directly mutate
+the installed target filesystem.
 
 ### 3.6 Variables Available in Functions
 
@@ -211,6 +243,7 @@ fn install()  // Copy files to prefix
 
 | Variable | Type | Description |
 |----------|------|-------------|
+| `SYSROOT` | String | Target system root directory for install/remove operations (default: `/`) |
 | `PREFIX` | String | Installation prefix path |
 | `BUILD_DIR` | String | Temporary build directory path |
 | `ARCH` | String | Target architecture (x86_64, aarch64, etc.) |
@@ -400,6 +433,7 @@ recipe --prefix /usr/local install package
 | Option | Short | Argument | Description |
 |--------|-------|----------|-------------|
 | `--recipes-path` | `-r` | PATH | Recipe directory location |
+| `--sysroot` | `-R` | PATH | Target system root directory (for offline/chroot/A/B installs) |
 | `--prefix` | `-p` | PATH | Installation prefix |
 | `--build-dir` | `-b` | PATH | Build directory location |
 | `--help` | `-h` | - | Show help message |
@@ -407,8 +441,43 @@ recipe --prefix /usr/local install package
 
 **REQ-CLI-011**: Default values:
 - `--recipes-path`: `$RECIPE_PATH` or `$XDG_DATA_HOME/recipe/recipes`
+- `--sysroot`: `/`
 - `--prefix`: `/usr/local`
 - `--build-dir`: System temp directory
+
+### 5.2.1 Sysroot Semantics
+
+**REQ-CLI-012**: When `--sysroot` is provided, install/remove/upgrade operations
+MUST apply filesystem mutations under `SYSROOT` (treating it as the target `/`).
+The effective filesystem prefix for install helpers is `join_path(SYSROOT, PREFIX)`;
+recipes SHOULD NOT need to embed sysroot mount paths into `PREFIX`.
+
+**REQ-CLI-013**: When `--sysroot` is provided, the implementation MUST NOT write
+outside `SYSROOT` except for build artifacts under `BUILD_DIR`.
+
+**REQ-CLI-014**: When `--sysroot` is provided, paths stored in `installed_files`
+MUST be interpreted as absolute paths inside the target sysroot:
+- Stored: `/usr/bin/foo`
+- Applied to filesystem as: `${SYSROOT}/usr/bin/foo`
+
+### 5.2.2 Mutability Modes (A/B vs Mutable)
+
+**REQ-CLI-015**: Implementations MUST support two mutability modes for
+system-level installs/upgrades:
+- **A/B immutable**: compose changes into a non-active target sysroot, then
+  activate via reboot (trial boot + commit).
+- **Mutable**: apply changes in-place to the active system.
+
+**REQ-CLI-016**: In A/B immutable mode, install/upgrade MUST target the inactive
+slot by default (not the running `/`). If the inactive slot sysroot cannot be
+determined automatically, the command MUST fail with a clear error requiring
+`--sysroot`.
+
+**REQ-CLI-017**: `recipe` MUST NOT perform boot-affecting actions implicitly.
+If `recipe` integrates with slot tooling (e.g. `recab`), it MUST require an
+explicit flag to change the next-boot target.
+
+**REQ-CLI-018**: `recipe` MUST NOT reboot the system.
 
 ### 5.3 Install Command
 
@@ -470,13 +539,37 @@ remain true.
 **REQ-CLI-041**: If package specified:
 - Call `check_update()` for that package
 - Report available update or "up to date"
+- If an update is available, update the recipe's `version` to the returned value.
 
 **REQ-CLI-042**: If no package specified:
 - Iterate all installed packages
 - Report all available updates
+- For each package with an update available, update the recipe's `version` to the returned value.
 
 **REQ-CLI-043**: `check_update()` returning unit/void MUST be interpreted
 as "no update available".
+
+**REQ-CLI-044**: Update (`recipe update` / `check_update()`) MUST be deterministic
+version discovery and MUST NOT depend on LLM-based heuristics.
+
+**REQ-CLI-045**: `recipe update` MUST NOT install, remove, or otherwise mutate
+the target filesystem under `SYSROOT`/`PREFIX`. It only updates recipe metadata
+(e.g., `version`) to prepare for a later `recipe upgrade`.
+
+### 5.5.1 Refresh Command
+
+**REQ-CLI-046**: Syntax: `recipe refresh [package]`
+
+**REQ-CLI-047**: `recipe refresh` MUST execute an LLM-assisted maintenance
+workflow (via `refresh_recipe()` if defined) that proposes changes to the recipe
+source so it continues to build/install correctly.
+
+**REQ-CLI-048**: `recipe refresh` MUST NOT apply changes automatically by
+default. It MUST output a proposed patch suitable for operator review.
+
+**REQ-CLI-049**: If `recipe refresh` provides an "apply" mode, it MUST require
+explicit operator consent and MUST record provenance (what sources were consulted
+and what changes were made).
 
 ### 5.6 Upgrade Command
 
@@ -488,6 +581,11 @@ as "no update available".
 3. Install new version
 
 **REQ-CLI-052**: If no upgrade needed, command MUST succeed without action.
+
+**REQ-CLI-053**: Upgrade MUST be implemented as deterministic application:
+reinstall the target version (via the recipe lifecycle) into the target sysroot
+and prefix, rather than attempting in-place delta patching of the installed
+files.
 
 ### 5.7 List Command
 
@@ -1127,6 +1225,14 @@ added to `installed_files`.
 
 **REQ-STATE-033**: Directories MUST NOT be tracked (only files).
 
+**REQ-STATE-034**: Paths in `installed_files` MUST be sysroot-independent:
+they MUST NOT include the `SYSROOT` prefix and MUST represent paths rooted at
+`/` inside the target OS.
+
+**REQ-STATE-035**: For operations targeting a non-`/` sysroot, the implementation
+MUST apply `installed_files` paths by prefixing them with `SYSROOT` on the host
+filesystem (and MUST validate the resulting path cannot escape `SYSROOT`).
+
 ---
 
 ## 8. Dependency Resolution
@@ -1435,6 +1541,10 @@ hint: Run 'recipe search foo' to find packages
 within PREFIX.
 
 **REQ-SEC-003**: No path component may be `.` or `..`.
+
+**REQ-SEC-004**: When `SYSROOT` is not `/`, installation helpers and removal
+logic MUST validate destinations are within `SYSROOT` (no sysroot escape via
+symlinks, traversal, or path normalization quirks).
 
 ### 12.2 Command Injection
 
@@ -1784,6 +1894,13 @@ Implementations MUST pass the following test categories:
 - [ ] Failed install leaves no state change
 - [ ] Successful install updates all state
 
+#### 20.1.8 Sysroot / A/B Tests
+
+- [ ] With `--sysroot` set, installs and removals only mutate paths under `SYSROOT`
+- [ ] With `--sysroot` set, `installed_files` entries do not include the sysroot prefix
+- [ ] With `--sysroot` set, removal deletes `${SYSROOT}<installed_file>` paths
+- [ ] In A/B immutable mode, installs/upgrades do not mutate the running `/` by default
+
 ### 20.2 Test Recipe
 
 The following minimal recipe MUST work on all conforming implementations:
@@ -1817,6 +1934,51 @@ fn is_installed() {
 which version of this specification they implement.
 
 **REQ-CONFORM-002**: Implementations MUST document any deviations.
+
+---
+
+## 21. Traceability
+
+This section records the primary sources for the A/B + sysroot requirements and
+provides a traceability matrix to keep implementation and tests aligned with
+this spec.
+
+### 21.1 Source Traces
+
+- `tools/recipe/OS_UPGRADES_BRAINDUMP.md` (recipe + A/B upgrade model)
+- `docs/ab-default-plan.md` (repo-wide A/B default plan)
+- `checkpoints.md` (CP7 Slot B Trial Boot)
+- `tools/recab/REQUIREMENTS.md` (slot state machine responsibilities)
+- `docs/content/src/content/04-architecture/03-atomic-updates.ts` (product docs)
+- `docs/content/src/content/02-package-manager/01-cli-reference.ts` (recipe docs)
+
+### 21.2 Traceability Matrix (A/B + Sysroot + Update Lifecycle)
+
+| Requirement | Source | Implementation | Verification |
+|---|---|---|---|
+| REQ-FORMAT-012 (SYSROOT) | `tools/recipe/OS_UPGRADES_BRAINDUMP.md` | TODO | TODO |
+| REQ-FORMAT-014 | `tools/recipe/OS_UPGRADES_BRAINDUMP.md` | TODO | TODO |
+| REQ-FORMAT-015 | `tools/recipe/OS_UPGRADES_BRAINDUMP.md` | TODO | TODO |
+| REQ-FORMAT-016 | `tools/recipe/OS_UPGRADES_BRAINDUMP.md` | TODO | TODO |
+| REQ-FORMAT-017 | `tools/recipe/OS_UPGRADES_BRAINDUMP.md` | TODO | TODO |
+| REQ-CLI-010 (sysroot flag) | `tools/recipe/OS_UPGRADES_BRAINDUMP.md` | TODO | TODO |
+| REQ-CLI-012 | `tools/recipe/OS_UPGRADES_BRAINDUMP.md` | TODO | TODO |
+| REQ-CLI-013 | `tools/recipe/OS_UPGRADES_BRAINDUMP.md` | TODO | TODO |
+| REQ-CLI-014 | `tools/recipe/OS_UPGRADES_BRAINDUMP.md` | TODO | TODO |
+| REQ-CLI-015 | `docs/ab-default-plan.md`, `docs/content/src/content/04-architecture/03-atomic-updates.ts` | TODO | TODO |
+| REQ-CLI-016 | `checkpoints.md`, `docs/content/src/content/02-package-manager/01-cli-reference.ts` | TODO | TODO |
+| REQ-CLI-017 | `tools/recab/REQUIREMENTS.md` | TODO | TODO |
+| REQ-CLI-018 | `tools/recab/REQUIREMENTS.md` | TODO | TODO |
+| REQ-CLI-044 | `tools/recipe/OS_UPGRADES_BRAINDUMP.md` | TODO | TODO |
+| REQ-CLI-045 | `tools/recipe/OS_UPGRADES_BRAINDUMP.md` | TODO | TODO |
+| REQ-CLI-046 | `tools/recipe/OS_UPGRADES_BRAINDUMP.md` | TODO | TODO |
+| REQ-CLI-047 | `tools/recipe/OS_UPGRADES_BRAINDUMP.md` | TODO | TODO |
+| REQ-CLI-048 | `tools/recipe/OS_UPGRADES_BRAINDUMP.md` | TODO | TODO |
+| REQ-CLI-049 | `tools/recipe/OS_UPGRADES_BRAINDUMP.md` | TODO | TODO |
+| REQ-CLI-053 | `tools/recipe/OS_UPGRADES_BRAINDUMP.md` | TODO | TODO |
+| REQ-STATE-034 | `tools/recipe/OS_UPGRADES_BRAINDUMP.md` | TODO | TODO |
+| REQ-STATE-035 | `tools/recipe/OS_UPGRADES_BRAINDUMP.md` | TODO | TODO |
+| REQ-SEC-004 | `tools/recipe/OS_UPGRADES_BRAINDUMP.md` | TODO | TODO |
 
 ---
 

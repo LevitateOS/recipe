@@ -37,12 +37,17 @@ pub fn append_file(path: &str, content: &str) -> Result<(), Box<EvalAltResult>> 
 
 /// List files matching a glob pattern
 pub fn glob_list(pattern: &str) -> rhai::Array {
-    glob::glob(pattern)
+    // Deterministic ordering matters for callers that merge/overlay results
+    // (e.g., kconfig fragments). The glob crate does not guarantee ordering.
+    let mut out: Vec<String> = glob::glob(pattern)
         .map(|paths| {
             paths
                 .filter_map(|r| r.ok())
-                .map(|p| rhai::Dynamic::from(p.to_string_lossy().to_string()))
+                .map(|p| p.to_string_lossy().to_string())
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+    out.sort();
+    out.into_iter().map(rhai::Dynamic::from).collect()
 }

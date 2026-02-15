@@ -1,232 +1,120 @@
 # recipe
 
-Package manager for LevitateOS. Recipes are Rhai scripts. State is stored in the recipe files themselves.
+Local-first recipe executor for LevitateOS. Recipes are Rhai scripts. State is stored in the recipe file itself (in a `ctx` map) and is persisted after each phase.
+
+If you are looking for:
+
+- the full spec: `tools/recipe/REQUIREMENTS.md`
+- the real, current helper API surface: `tools/recipe/HELPERS_AUDIT.md`
 
 ## Status
 
-**Alpha.** Works for basic package installation. No repository system.
+**Alpha.** The implementation currently focuses on executing individual recipes and providing a small, explicit helper surface.
 
-| Works | Doesn't work yet |
-|-------|------------------|
-| Recipe parsing + validation | Central package repository |
-| `acquire → build → install` lifecycle | Parallel installation |
-| Dependency resolution (toposort) | Conflict detection |
-| State persistence in `.rhai` files | Rollback/undo |
-| Lock file for reproducible installs | |
+What works today:
 
-## How It Works
+- `acquire(ctx) -> ctx` → `build(ctx) -> ctx` (optional) → `install(ctx) -> ctx`
+- ctx persistence back into the recipe (`let ctx = #{ ... };`)
+- `//! extends: <base.rhai>` (AST merge: base runs first, child overrides)
+- Per-recipe execution lock (`.rhai.lock`)
+- Downloads (HTTP + resume), git clone, torrents (pure Rust `librqbit`), native archive extraction
 
-Recipes are executable Rhai scripts:
+Not implemented yet (but required by the spec):
+
+- Sysroot/prefix plumbing + confinement for safe A/B composition
+- Atomic staging/commit and `installed_files` tracking
+- Higher-level install helpers (`install_bin`, `install_to_dir`, etc.)
+- Update/upgrade/refresh lifecycle commands
+
+## Recipe Pattern (Implemented)
+
+Recipes use a `ctx` map for state. Phase functions take `ctx` and return an updated `ctx`. Check functions (`is_*`) should `throw` when the phase needs to run.
 
 ```rhai
-let name = "ripgrep";
-let version = "14.1.0";
-let installed = false;
+let ctx = #{
+    name: "ripgrep",
+    version: "14.1.0",
+    url: "https://example.com/ripgrep.tar.gz",
+    sha256: "abc123...",
+    archive: "",
+    prefix: "/usr",
+    installed: false,
+};
 
-fn acquire() {
-    download(`https://github.com/.../ripgrep-${version}-x86_64-unknown-linux-musl.tar.gz`);
+fn is_acquired(ctx) {
+    if ctx.archive == "" || !is_file(ctx.archive) { throw "not acquired"; }
+    ctx
 }
 
-fn install() {
-    extract("tar.gz");
-    install_bin(`ripgrep-${version}-x86_64-unknown-linux-musl/rg`);
+fn acquire(ctx) {
+    mkdir(BUILD_DIR);
+    let archive = download(ctx.url, join_path(BUILD_DIR, "src.tar.gz"));
+    verify_sha256(archive, ctx.sha256);
+    ctx.archive = archive;
+    ctx
+}
+
+fn is_installed(ctx) {
+    if !ctx.installed { throw "not installed"; }
+    ctx
+}
+
+fn install(ctx) {
+    // Use filesystem helpers or shell/exec to place files under ctx.prefix (or any destination you decide).
+    ctx.installed = true;
+    ctx
 }
 ```
 
-When you run `recipe install ripgrep`:
-
-1. Engine loads and validates the recipe
-2. Calls `acquire()` → `build()` (optional) → `install()`
-3. Writes `installed = true` and `installed_files = [...]` back to the `.rhai` file
-
-No database. The recipe file IS the package state.
-
-## Commands
-
-### Package Management
+## Commands (Implemented)
 
 ```bash
-recipe install ripgrep        # Install package
-recipe install -d ripgrep     # Install with dependencies
-recipe install -n ripgrep     # Dry run (show what would install)
-recipe remove ripgrep         # Remove package
-recipe remove -f ripgrep      # Force remove (ignore dependents)
+recipe install <name-or-path>   # Execute acquire/build/install
+recipe remove <name-or-path>    # Execute remove(ctx) (if present)
+recipe cleanup <name-or-path>   # Execute cleanup(ctx) (if present)
+recipe list                     # List *.rhai in recipes dir
+recipe info <name-or-path>      # Show basic metadata from ctx
+recipe hash <file>              # Compute sha256/sha512/blake3
 ```
 
-### Updates
+Global flags:
 
-```bash
-recipe update                 # Check all packages for updates
-recipe update ripgrep         # Check specific package
-recipe upgrade                # Upgrade all packages with updates
-recipe upgrade ripgrep        # Upgrade specific package
-```
+- `-r, --recipes-path <dir>`: where to search for `<name>.rhai`
+- `-b, --build-dir <dir>`: where downloads/build artifacts go (otherwise a kept temp dir)
+- `--define KEY=VALUE`: inject constants into the Rhai scope before execution (repeatable)
+- `--json-output <file>`: write the final ctx JSON to a file
 
-### Information
+## Helpers
 
-```bash
-recipe list                   # Show all recipes + install status
-recipe search pattern         # Search recipes by name
-recipe info ripgrep           # Show package details
-recipe deps ripgrep           # Show direct dependencies
-recipe deps --resolve ripgrep # Show full install order
-recipe tree ripgrep           # Show dependency tree
-recipe why ripgrep            # Show what depends on this package
-recipe impact ripgrep         # Show what would break if removed
-```
+The authoritative helper inventory is `tools/recipe/HELPERS_AUDIT.md`.
 
-### Maintenance
+Helpers are registered in `tools/recipe/src/helpers/mod.rs`.
 
-```bash
-recipe orphans                # List orphaned dependencies
-recipe autoremove             # Show what would be removed
-recipe autoremove --yes       # Actually remove orphans
-recipe hash /path/to/file     # Compute sha256/sha512/blake3 hashes
-```
+## Script Constants
 
-### Lock Files
+Always provided:
 
-```bash
-recipe lock update            # Generate/update recipe.lock
-recipe lock show              # Show locked versions
-recipe lock verify            # Verify recipes match lock file
-recipe install --locked pkg   # Install only if versions match lock
-```
+- `RECIPE_DIR`
+- `BUILD_DIR`
+- `ARCH`
+- `NPROC`
 
-## Recipe Requirements
+Sometimes provided:
 
-Required variables:
-- `name` (String)
-- `version` (String)
-- `installed` (Boolean)
+- `BASE_RECIPE_DIR` (only when using `//! extends:`)
+- `RPM_PATH` (from environment)
+- `TOOLS_PREFIX` (only when executing dependency recipes via the build-deps resolver)
 
-Required functions:
-- `acquire()` - Download/copy source
-- `install()` - Install files to destination
+User-provided via `--define`:
 
-Optional:
-- `build()` - Extract, configure, compile
-- `deps` (Array) - Dependencies
-- `remove()` - Custom uninstall logic
-- `update()` - Check for newer version
-
-## Helper Functions
-
-### Acquire Phase
-
-| Function | Description |
-|----------|-------------|
-| `download(url)` | Download file |
-| `copy(pattern)` | Copy files matching glob |
-| `verify_sha256(hash)` | Verify last file (SHA-256) |
-| `verify_sha512(hash)` | Verify last file (SHA-512) |
-| `verify_blake3(hash)` | Verify last file (BLAKE3) |
-
-### Build Phase
-
-| Function | Description |
-|----------|-------------|
-| `extract(format)` | Extract tar.gz, tar.xz, tar.bz2, zip |
-| `cd(dir)` | Change directory |
-| `run(cmd)` | Execute shell command |
-| `shell(cmd)` | Alias for `run()` (use when recipe defines own `run()`) |
-
-### Install Phase
-
-| Function | Description |
-|----------|-------------|
-| `install_bin(dest, pattern)` | Install executables (0755) |
-| `install_lib(dest, pattern)` | Install libraries (0644) |
-| `install_to_dir(dest, pattern)` | Install files to directory |
-| `install_to_dir(dest, pattern, mode)` | Install with specific permissions |
-| `rpm_install(pattern)` | Extract and install from RPM |
-
-### Filesystem
-
-| Function | Description |
-|----------|-------------|
-| `exists(path)` | Check if path exists |
-| `file_exists(path)` | Check if file exists |
-| `dir_exists(path)` | Check if directory exists |
-| `mkdir(path)` | Create directory |
-| `rm(pattern)` | Remove files matching glob |
-| `mv(src, dst)` | Move file |
-| `ln(target, link)` | Create symlink |
-| `chmod(path, mode)` | Set permissions |
-| `read_file(path)` | Read file contents |
-| `glob_list(pattern)` | List files matching glob |
-
-### Environment
-
-| Function | Description |
-|----------|-------------|
-| `env(name)` | Get env var |
-| `set_env(name, value)` | Set env var |
-
-### Commands
-
-| Function | Description |
-|----------|-------------|
-| `run_output(cmd)` | Run command, return stdout |
-| `run_status(cmd)` | Run command, return exit code |
-| `exec(cmd)` | Execute command directly |
-| `exec_output(cmd)` | Execute command, return stdout |
-
-### HTTP / Version Checking
-
-| Function | Description |
-|----------|-------------|
-| `http_get(url)` | Fetch URL as string |
-| `github_latest_release(owner, repo)` | Get latest release tag |
-| `github_latest_tag(owner, repo)` | Get latest git tag |
-| `parse_version(string)` | Extract version from string |
-
-## Variables Available in Recipes
-
-| Variable | Description |
-|----------|-------------|
-| `RECIPE_DIR` | Directory containing the recipe file |
-| `BUILD_DIR` | Temp build directory |
-| `ARCH` | Architecture (`x86_64`, `aarch64`) |
-| `NPROC` | CPU core count |
-| `RPM_PATH` | Path to RPM repository (from environment) |
-
-## Code Structure
-
-```
-src/
-├── bin/recipe.rs       # CLI (15 commands)
-├── lib.rs              # RecipeEngine API
-├── core/
-│   ├── lifecycle.rs    # install/remove/upgrade logic
-│   ├── deps.rs         # Dependency resolution
-│   ├── recipe_state.rs # State persistence
-│   ├── lockfile.rs     # Lock file handling
-│   ├── version.rs      # Version comparison
-│   ├── context.rs      # Execution context
-│   └── output.rs       # Terminal formatting
-└── helpers/            # 33 helper functions
-    ├── acquire.rs      # download, copy, verify_*
-    ├── build.rs        # extract, cd, run
-    ├── install.rs      # install_bin, install_lib, rpm_install
-    ├── filesystem.rs   # mkdir, rm, mv, ln, chmod
-    ├── http.rs         # http_get, github_*
-    └── ...
-```
-
-## Known Limitations
-
-- No central repository - you maintain recipes locally
-- No conflict detection between packages
-- No rollback if install fails midway
-- Single-threaded installation
+- Anything you need (e.g. `PREFIX`, `SYSROOT`, custom URLs/versions, etc.)
 
 ## Building
 
 ```bash
-cargo build --release
+cargo build -p levitate-recipe
 ```
 
 ## License
 
-MIT
+MIT OR Apache-2.0

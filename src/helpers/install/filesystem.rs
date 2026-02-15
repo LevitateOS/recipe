@@ -1,5 +1,6 @@
 //! Filesystem operation helpers
 
+use crate::core::output;
 use rhai::EvalAltResult;
 use std::path::Path;
 
@@ -31,7 +32,7 @@ pub fn is_dir(path: &str) -> bool {
 
 /// Create a directory and all parent directories
 pub fn mkdir(path: &str) -> Result<(), Box<EvalAltResult>> {
-    println!("     mkdir {}", path);
+    output::detail(&format!("mkdir {}", path));
     std::fs::create_dir_all(path).map_err(|e| format!("mkdir failed: {}", e).into())
 }
 
@@ -39,7 +40,7 @@ pub fn mkdir(path: &str) -> Result<(), Box<EvalAltResult>> {
 pub fn rm_files(pattern: &str) -> Result<(), Box<EvalAltResult>> {
     for path in glob::glob(pattern).map_err(|e| format!("invalid pattern: {}", e))? {
         let path = path.map_err(|e| format!("glob error: {}", e))?;
-        println!("     rm {}", path.display());
+        output::detail(&format!("rm {}", path.display()));
         if path.is_dir() {
             std::fs::remove_dir_all(&path)
         } else {
@@ -52,14 +53,14 @@ pub fn rm_files(pattern: &str) -> Result<(), Box<EvalAltResult>> {
 
 /// Move/rename a file
 pub fn move_file(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>> {
-    println!("     mv {} -> {}", src, dest);
+    output::detail(&format!("mv {} -> {}", src, dest));
     std::fs::rename(src, dest).map_err(|e| format!("mv failed: {}", e).into())
 }
 
 /// Create a symbolic link
 #[cfg(unix)]
 pub fn symlink(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>> {
-    println!("     ln -s {} {}", src, dest);
+    output::detail(&format!("ln -s {} {}", src, dest));
     std::os::unix::fs::symlink(src, dest).map_err(|e| format!("symlink failed: {}", e).into())
 }
 
@@ -72,7 +73,7 @@ pub fn symlink(_src: &str, _dest: &str) -> Result<(), Box<EvalAltResult>> {
 #[cfg(unix)]
 pub fn chmod_file(path: &str, mode: i64) -> Result<(), Box<EvalAltResult>> {
     use std::os::unix::fs::PermissionsExt;
-    println!("     chmod {:o} {}", mode, path);
+    output::detail(&format!("chmod {:o} {}", mode, path));
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode as u32))
         .map_err(|e| format!("chmod failed: {}", e).into())
 }

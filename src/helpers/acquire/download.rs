@@ -8,9 +8,6 @@
 //! ```rhai
 //! fn acquire(ctx) {
 //!     let archive = download(ctx.url, BUILD_DIR + "/foo.tar.gz");
-//!     if archive == "" {
-//!         throw "download failed";
-//!     }
 //!     verify_sha256(archive, ctx.sha256);
 //!     ctx.archive_path = archive;
 //!     ctx
@@ -27,14 +24,13 @@ use super::super::internal::progress::{self, upgrade_to_bytes};
 
 /// Download a file from a URL to a specific destination.
 ///
-/// Returns the path to the downloaded file on success, or empty string on failure.
+/// Returns the path to the downloaded file on success.
+///
+/// Throws on failure.
 ///
 /// # Example
 /// ```rhai
 /// let path = download("https://example.com/foo.tar.gz", "/tmp/foo.tar.gz");
-/// if path == "" {
-///     throw "download failed";
-/// }
 /// verify_sha256(path, "abc123...");
 /// ```
 pub fn download(url: &str, dest: &str) -> Result<String, Box<EvalAltResult>> {

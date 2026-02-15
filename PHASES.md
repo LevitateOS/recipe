@@ -1,24 +1,32 @@
 # Recipe Lifecycle Phases
 
-This document explains the **order** and **reasoning** behind the recipe execution phases.
+This document explains the **order** and **reasoning** behind the recipe execution phases as
+implemented by `tools/recipe` today.
 
 ## Phase Order
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  1. is_installed()  →  Skip early if already done               │
+│  1. is_installed(ctx)  →  Skip early if already done            │
 │           ↓                                                     │
-│  2. acquire()       →  Get source materials                     │
+│  2. acquire(ctx)       →  Get source materials                  │
 │           ↓                                                     │
-│  3. build()         →  Compile/transform (optional)             │
+│  3. build(ctx)         →  Compile/transform (optional)          │
 │           ↓                                                     │
-│  4. install()       →  Copy outputs to PREFIX                   │
+│  4. install(ctx)       →  Copy outputs to destination paths     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+Notes:
+
+- Recipes use a **ctx-map** pattern: `let ctx = #{ ... };` holds state, and each phase function
+  takes `ctx` and returns the updated `ctx`.
+- The `is_*` functions are **checks**: if a check function exists and does **not** throw, the
+  engine considers that phase satisfied. If it throws, the phase runs.
+
 ## Phase Details
 
-### 1. `is_installed()` - Guard Phase (Optional)
+### 1. `is_installed(ctx)` - Guard Check (Optional)
 
 **Purpose:** Skip the entire recipe if the package is already installed.
 
@@ -27,14 +35,15 @@ This document explains the **order** and **reasoning** behind the recipe executi
 - Idempotency - running the recipe twice has the same result
 - Reduces network load and disk churn
 
-**Example:**
+**Example (throw means "not installed"):**
 ```rhai
-fn is_installed() {
-    file_exists(`${PREFIX}/bin/ripgrep`)
+fn is_installed(ctx) {
+    if !ctx.installed { throw "not installed"; }
+    ctx
 }
 ```
 
-### 2. `acquire()` - Source Acquisition Phase (Required)
+### 2. `acquire(ctx)` - Source Acquisition Phase (Required)
 
 **Purpose:** Get the raw materials needed to build the package.
 
@@ -43,20 +52,29 @@ fn is_installed() {
 - Downloads can fail - fail fast before spending time on build setup
 - Checksums can be verified before extraction
 
-**Helpers:**
-- `download(url)` - Download from URL, sets `last_downloaded`
-- `copy(pattern)` - Copy local files matching glob, sets `last_downloaded`
-- `verify_sha256(hash)` - Verify integrity of `last_downloaded`
+**Helpers (current implementation):**
+- `download(url, dest) -> String`
+- `verify_sha256(path, expected) -> ()`
+- `http_get(url) -> String` (for fetching remote checksums/metadata)
+- `check_disk_space(path, bytes) -> ()`
 
 **Example:**
 ```rhai
-fn acquire() {
-    download("https://github.com/BurntSushi/ripgrep/releases/download/14.1.0/ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz");
-    verify_sha256("abc123...");
+fn is_acquired(ctx) {
+    if ctx.archive == "" || !is_file(ctx.archive) { throw "not acquired"; }
+    ctx
+}
+
+fn acquire(ctx) {
+    mkdir(BUILD_DIR);
+    let archive = download(ctx.url, join_path(BUILD_DIR, "src.tar.gz"));
+    verify_sha256(archive, ctx.sha256);
+    ctx.archive = archive;
+    ctx
 }
 ```
 
-### 3. `build()` - Compilation Phase (Optional)
+### 3. `build(ctx)` - Compilation Phase (Optional)
 
 **Purpose:** Transform source into installable artifacts.
 
@@ -65,41 +83,51 @@ fn acquire() {
 - May produce artifacts in temporary locations
 - Can be skipped for pre-built binaries (RPMs, static binaries)
 
-**Helpers:**
-- `extract(format)` - Unpack archive (tar.gz, tar.xz, zip, etc.)
-- `cd(dir)` - Change working directory
-- `run(cmd)` - Execute shell command
+**Helpers (current implementation):**
+- `extract(archive, dest) -> ()` (auto-detect format)
+- `shell(cmd) -> ()` / `shell_in(dir, cmd) -> ()`
+- `exec(cmd, args) -> int` / `exec_output(cmd, args) -> String`
 
 **Example:**
 ```rhai
-fn build() {
-    extract("tar.gz");
-    cd("ripgrep-14.1.0-x86_64-unknown-linux-musl");
-    // No compilation needed for pre-built binary
+fn is_built(ctx) {
+    if ctx.src_dir == "" || !is_dir(ctx.src_dir) { throw "not built"; }
+    ctx
+}
+
+fn build(ctx) {
+    extract(ctx.archive, BUILD_DIR);
+    ctx.src_dir = join_path(BUILD_DIR, "ripgrep-" + ctx.version);
+    ctx
 }
 ```
 
-### 4. `install()` - Installation Phase (Required)
+### 4. `install(ctx)` - Installation Phase (Required)
 
-**Purpose:** Copy final artifacts to their destination in PREFIX.
+**Purpose:** Copy/move final artifacts to their destination paths (often under a prefix/sysroot).
 
 **Why Last:**
 - Requires built/extracted artifacts from previous phases
 - Final step - only runs if everything succeeded
-- Modifications to PREFIX should be atomic
+- Modifications should be atomic (A/B/sysroot composition adds more rules; see `tools/recipe/REQUIREMENTS.md`)
 
-**Helpers:**
-- `install_bin(pattern)` - Install to `PREFIX/bin` with 0755 permissions
-- `install_lib(pattern)` - Install to `PREFIX/lib` with 0644 permissions
-- `install_man(pattern)` - Install to `PREFIX/share/man/manN/`
-
-For anything more complex, use `run()` directly (e.g., `run("make install")`).
+**Helpers (current implementation):**
+- Filesystem: `mkdir`, `mv`, `ln`, `chmod`, `rm`, `write_file`, etc.
+- Or run an installer via `shell`/`shell_in`.
 
 **Example:**
 ```rhai
-fn install() {
-    install_bin("rg");
-    install_man("doc/*.1");
+fn install(ctx) {
+    let bin_dir = join_path(ctx.prefix, "bin");
+    mkdir(bin_dir);
+
+    let src = join_path(ctx.src_dir, "rg");
+    let dst = join_path(bin_dir, "rg");
+    mv(src, dst);
+    chmod(dst, 0o755);
+
+    ctx.installed = true;
+    ctx
 }
 ```
 
@@ -120,37 +148,35 @@ Each phase has a clear responsibility:
 
 | Phase | Input | Output | Side Effects |
 |-------|-------|--------|--------------|
-| is_installed | PREFIX state | boolean | none |
+| is_installed | ctx + filesystem | ctx | none |
 | acquire | URLs/paths | files in BUILD_DIR | network, disk |
-| build | source files | artifacts | disk, CPU |
-| install | artifacts | files in PREFIX | PREFIX modified |
+| build | acquired inputs | artifacts in BUILD_DIR | disk, CPU |
+| install | artifacts | files in destination paths | destination modified |
 
 ### Transactional Safety
 
-- PREFIX is only modified in the final `install()` phase
-- If any earlier phase fails, PREFIX remains unchanged
+- Destination paths are only modified in the final `install()` phase
+- If any earlier phase fails, destination paths remain unchanged
 - Makes rollback trivial (just re-run with clean BUILD_DIR)
 
 ## Phase Dependencies
 
 ```
-is_installed: reads PREFIX
+is_installed: reads ctx + filesystem
          ↓
-   acquire: writes BUILD_DIR, sets last_downloaded
+   acquire: writes BUILD_DIR
          ↓
-     build: reads BUILD_DIR, writes BUILD_DIR, uses current_dir
+     build: reads/writes BUILD_DIR
          ↓
-   install: reads BUILD_DIR/current_dir, writes PREFIX
+   install: writes destination paths (often derived from ctx/defines)
 ```
 
 ## File Layout
 
 ```
-recipe/src/engine/
-├── phases/
-│   ├── acquire.rs    # download, copy, verify_sha256
-│   ├── build.rs      # extract, cd, run
-│   └── install.rs    # install_bin, install_lib, install_man
-├── lifecycle.rs      # Orchestrates phase execution order
-└── context.rs        # Shared state (PREFIX, BUILD_DIR, current_dir, last_downloaded)
+tools/recipe/src/
+├── bin/recipe.rs         # CLI wrapper
+├── core/executor.rs      # phase orchestration
+├── core/ctx.rs           # ctx block persistence
+└── helpers/              # Rhai helper API (see HELPERS_AUDIT.md)
 ```
