@@ -9,6 +9,7 @@ use super::{build_deps, ctx, lock::acquire_recipe_lock, output};
 use anyhow::{Context, Result, anyhow};
 use rhai::{AST, Engine, Scope};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Parse `//! extends: <path>` from leading comments.
@@ -594,7 +595,55 @@ fn persist_ctx(
     err_ctx: &'static str,
 ) -> Result<()> {
     *source = ctx::persist(source, ctx_map)?;
-    fs::write(recipe_path, source).with_context(|| err_ctx)?;
+
+    let parent = recipe_path
+        .parent()
+        .ok_or_else(|| {
+            anyhow!(
+                "Recipe path has no parent directory: {}",
+                recipe_path.display()
+            )
+        })
+        .with_context(|| err_ctx)?;
+
+    // Preserve existing file permissions where possible.
+    let existing_perms = fs::metadata(recipe_path).map(|m| m.permissions()).ok();
+
+    // Write to a sibling temp file so the final rename is atomic on Unix.
+    let mut tmp = tempfile::Builder::new()
+        .prefix(".recipe-ctx.")
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .with_context(|| err_ctx)?;
+
+    tmp.as_file_mut()
+        .write_all(source.as_bytes())
+        .with_context(|| err_ctx)?;
+    tmp.as_file().sync_all().with_context(|| err_ctx)?;
+
+    if let Some(perms) = existing_perms {
+        // Best-effort; failure should still abort to avoid surprising permission changes.
+        fs::set_permissions(tmp.path(), perms).with_context(|| err_ctx)?;
+    }
+
+    // Keep temp file on drop so we can rename it into place. If the rename fails,
+    // explicitly remove it to avoid leaving junk behind.
+    let (_f, tmp_path) = tmp.keep().with_context(|| err_ctx)?;
+    drop(_f);
+
+    if let Err(e) = fs::rename(&tmp_path, recipe_path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e).with_context(|| err_ctx);
+    }
+
+    // Ensure the directory entry update is durable on Unix.
+    #[cfg(unix)]
+    {
+        use std::fs::File;
+        File::open(parent)
+            .and_then(|d| d.sync_all())
+            .with_context(|| err_ctx)?;
+    }
     Ok(())
 }
 
@@ -711,24 +760,24 @@ mod tests {
         fs::write(
             &recipe_path,
             r#"
-let ctx = #{
-    name: "test",
-    installed: false,
-};
+	let ctx = #{
+	    name: "test",
+	    installed: false,
+	};
 
-fn is_installed(ctx) {
-    if !ctx.installed { throw "not installed"; }
-    ctx
-}
+	fn is_installed(ctx) {
+	    if !ctx.installed { throw "not installed"; }
+	    ctx
+	}
 
-fn acquire(ctx) { ctx }
-fn install(ctx) {
-    ctx.installed = true;
-    ctx
-}
+	fn acquire(ctx) { ctx }
+	fn install(ctx) {
+	    ctx.installed = true;
+	    ctx
+	}
 
-fn cleanup(ctx, reason) { ctx }
-"#,
+	fn cleanup(ctx, reason) { ctx }
+	"#,
         )
         .unwrap();
 
@@ -739,6 +788,51 @@ fn cleanup(ctx, reason) { ctx }
         // Check ctx was persisted
         let content = fs::read_to_string(&recipe_path).unwrap();
         assert!(content.contains("installed: true"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_persist_ctx_preserves_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let build_dir = dir.path().join("build");
+        fs::create_dir_all(&build_dir).unwrap();
+
+        let recipe_path = dir.path().join("test.rhai");
+        fs::write(
+            &recipe_path,
+            r#"
+    let ctx = #{
+        name: "test",
+        installed: false,
+    };
+
+    fn is_installed(ctx) {
+        if !ctx.installed { throw "not installed"; }
+        ctx
+    }
+
+    fn acquire(ctx) { ctx }
+    fn install(ctx) {
+        ctx.installed = true;
+        ctx
+    }
+
+    fn cleanup(ctx, reason) { ctx }
+    "#,
+        )
+        .unwrap();
+
+        fs::set_permissions(&recipe_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let before = fs::metadata(&recipe_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(before, 0o600);
+
+        let engine = create_engine();
+        install(&engine, &build_dir, &recipe_path, &[], None).unwrap();
+
+        let after = fs::metadata(&recipe_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(after, 0o600);
     }
 
     #[test]
