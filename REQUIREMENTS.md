@@ -187,20 +187,24 @@ implementation-defined extension for the scripting language.
 **REQ-FORMAT-008**: Every recipe MUST define the following functions:
 
 ```
-fn acquire()  // Download or copy source materials
-fn install()  // Copy files to prefix
+fn acquire(ctx)  // Download or copy source materials into BUILD_DIR
+fn install(ctx)  // Copy files to PREFIX (staging during install)
 ```
 
 **REQ-FORMAT-009**: The acquire function MUST be called before install.
 
-**REQ-FORMAT-010**: Lifecycle phase functions and hooks MUST NOT return values
-(unit/void return type):
-- `acquire()`, `build()` (if defined), `install()`
-- `pre_install()`, `post_install()`
-- `pre_remove()`, `post_remove()`
-- `remove()` (if defined)
+**REQ-FORMAT-010**: Lifecycle phase functions and hooks MUST return the updated
+`ctx` map:
+- `acquire(ctx)`, `build(ctx)` (if defined), `install(ctx)`
+- `pre_install(ctx)`, `post_install(ctx)`
+- `pre_remove(ctx)`, `post_remove(ctx)`
+- `remove(ctx)` (if defined)
+- `cleanup(ctx, reason)` (if defined; see Cleanup Lifecycle)
 
-Exceptions: `check_update()` and `refresh_recipe()` are allowed to return values
+**REQ-FORMAT-010A**: Lifecycle phase functions and hooks MUST NOT return any type
+other than a map-compatible `ctx` object.
+
+Exceptions: `check_update()` and `refresh_recipe()` return values
 as specified below.
 
 ### 3.5 Optional Functions
@@ -209,15 +213,16 @@ as specified below.
 
 | Function | Purpose | When Called |
 |----------|---------|-------------|
-| `build()` | Extract, compile, transform | After acquire, before install |
-| `is_installed()` | Custom installation check | Before any phase |
+| `build(ctx)` | Extract, compile, transform | After acquire, before install |
+| `is_installed(ctx)` | Custom installation check | Before any phase |
 | `check_update()` | Query for newer versions | During update command |
 | `refresh_recipe()` | Propose recipe maintenance changes | During refresh command |
-| `remove()` | Custom removal logic | During remove command |
-| `pre_install()` | Hook before install phase | After build, before install |
-| `post_install()` | Hook after install phase | After install completes |
-| `pre_remove()` | Hook before removal | Before remove starts |
-| `post_remove()` | Hook after removal | After files deleted |
+| `remove(ctx)` | Custom removal logic | During remove command |
+| `pre_install(ctx)` | Hook before install phase | After build, before install |
+| `post_install(ctx)` | Hook after install phase | After install completes |
+| `pre_remove(ctx)` | Hook before removal | Before remove starts |
+| `post_remove(ctx)` | Hook after removal | After files deleted |
+| `cleanup(ctx, reason)` | Build artifact hygiene | Automatically invoked (see Cleanup Lifecycle) |
 
 ### 3.5.1 Update vs Refresh Hook Semantics
 
@@ -264,20 +269,23 @@ let description = "An example package";
 let deps = ["dependency-a", "dependency-b >= 2.0"];
 let installed = false;
 
-fn acquire() {
+fn acquire(ctx) {
     download("https://example.com/example-1.0.0.tar.gz");
     verify_sha256("abc123def456...");
+    ctx
 }
 
-fn build() {
+fn build(ctx) {
     extract("tar.gz");
     cd("example-1.0.0");
     run("./configure --prefix=" + PREFIX);
     run("make -j" + NPROC);
+    ctx
 }
 
-fn install() {
+fn install(ctx) {
     run("make install");
+    ctx
 }
 
 fn check_update() {
@@ -409,6 +417,49 @@ committed to the actual prefix atomically.
 **REQ-PHASE-052**: If commit fails, staging directory MUST be cleaned up.
 
 **REQ-PHASE-053**: Commit failure MUST NOT leave partial files in prefix.
+
+### 4.8 Cleanup Lifecycle
+
+`cleanup()` is a dedicated hygiene hook for removing temporary/partial build artifacts.
+It is intentionally invoked by the engine, not as an ad-hoc manual step.
+
+**REQ-PHASE-CLEANUP-001**: Recipes MUST define a cleanup lifecycle hook:
+`fn cleanup(ctx, reason) { ...; ctx }`
+
+**REQ-PHASE-CLEANUP-002**: `reason` MUST be provided as an enum-like string value.
+It MUST be either:
+- `manual`
+- `auto.<phase>.<outcome>`
+
+Where:
+- `<phase>` MUST be one of: `acquire`, `build`, `install`
+- `<outcome>` MUST be one of: `success`, `failure`
+
+Examples:
+- `auto.acquire.success`
+- `auto.build.failure`
+- `auto.install.success`
+
+**REQ-PHASE-CLEANUP-003**: If a recipe defines `cleanup(ctx, reason)`, the engine
+MUST invoke it automatically:
+- after acquire succeeds: `auto.acquire.success`
+- after build succeeds: `auto.build.success`
+- after install succeeds: `auto.install.success`
+- after acquire fails: `auto.acquire.failure`
+- after build fails: `auto.build.failure`
+- after install fails: `auto.install.failure`
+
+**REQ-PHASE-CLEANUP-004**: The CLI `recipe cleanup <recipe>` command, if present,
+MUST invoke the same hook with `reason = manual`.
+
+**REQ-PHASE-CLEANUP-004A**: Implementations MUST NOT support legacy `cleanup(ctx)`
+hooks. `cleanup` MUST take the `reason` parameter.
+
+**REQ-PHASE-CLEANUP-005**: Cleanup MUST be safe to run even when earlier phases
+did not run (best-effort; it SHOULD NOT assume artifacts exist).
+
+**REQ-PHASE-CLEANUP-006**: Cleanup MUST NOT modify the committed install prefix
+directly. It MAY modify `BUILD_DIR` and other temporary/staging areas owned by the recipe.
 
 ---
 
@@ -1831,7 +1882,9 @@ error: SHA256 integrity check failed
 
 **REQ-ATOMIC-031**: BUILD_DIR MAY be preserved for caching.
 
-**REQ-ATOMIC-032**: BUILD_DIR cleanup is user's responsibility.
+**REQ-ATOMIC-032**: BUILD_DIR hygiene SHOULD be performed via the recipe's
+`cleanup(ctx, reason)` hook when present (see Cleanup Lifecycle). Implementations
+MUST NOT require users to manually delete BUILD_DIR to recover from failures.
 
 ---
 
@@ -1850,11 +1903,18 @@ Implementations MUST pass the following test categories:
 
 #### 20.1.2 Lifecycle Tests
 
-- [ ] acquire() called before build()
-- [ ] build() called before install()
-- [ ] Skipped if is_installed() returns true
+- [ ] acquire(ctx) called before build(ctx)
+- [ ] build(ctx) called before install(ctx)
+- [ ] Skipped if is_installed(ctx) returns true
 - [ ] State updated after successful install
 - [ ] State unchanged after failed install
+- [ ] cleanup(ctx, auto.acquire.success) invoked after successful acquire (if defined)
+- [ ] cleanup(ctx, auto.build.success) invoked after successful build (if defined)
+- [ ] cleanup(ctx, auto.install.success) invoked after successful install (if defined)
+- [ ] cleanup(ctx, auto.acquire.failure) invoked after failed acquire (if defined)
+- [ ] cleanup(ctx, auto.build.failure) invoked after failed build (if defined)
+- [ ] cleanup(ctx, auto.install.failure) invoked after failed install (if defined)
+- [ ] recipe cleanup invokes cleanup(ctx, manual) (if defined)
 
 #### 20.1.3 Helper Tests
 
@@ -1910,20 +1970,23 @@ let name = "conformance-test";
 let version = "1.0.0";
 let installed = false;
 
-fn acquire() {
+fn acquire(ctx) {
     // Create a test file
     run("echo 'test' > " + BUILD_DIR + "/test.txt");
+    ctx
 }
 
-fn build() {
+fn build(ctx) {
     // Optional build step
+    ctx
 }
 
-fn install() {
+fn install(ctx) {
     install_to_dir(BUILD_DIR + "/test.txt", "share/conformance");
+    ctx
 }
 
-fn is_installed() {
+fn is_installed(ctx) {
     file_exists(PREFIX + "/share/conformance/test.txt")
 }
 ```

@@ -106,21 +106,75 @@ impl<'a> BuildDepsResolver<'a> {
 
         // Run acquire → install (simplified, no locking or persistence)
         let needs_acquire = Self::check_throws(self.engine, &ast, &scope, "is_acquired", &ctx_map);
+        let has_cleanup = Self::has_fn(&ast, "cleanup");
 
         let mut ctx = ctx_map;
         if needs_acquire && Self::has_fn(&ast, "acquire") {
             output::sub_action("acquire");
-            ctx = self
+            let ctx_before = ctx.clone();
+            match self
                 .engine
                 .call_fn::<rhai::Map>(&mut scope, &ast, "acquire", (ctx,))
-                .map_err(|e| anyhow!("build-dep {} acquire failed: {}", name, e))?;
+            {
+                Ok(new_ctx) => {
+                    ctx = new_ctx;
+                    if has_cleanup {
+                        ctx = maybe_cleanup(
+                            self.engine,
+                            &ast,
+                            &mut scope,
+                            ctx,
+                            "auto.acquire.success",
+                        );
+                    }
+                }
+                Err(e) => {
+                    if has_cleanup {
+                        let _ = maybe_cleanup(
+                            self.engine,
+                            &ast,
+                            &mut scope,
+                            ctx_before,
+                            "auto.acquire.failure",
+                        );
+                    }
+                    return Err(anyhow!("build-dep {} acquire failed: {}", name, e));
+                }
+            }
         }
 
         if Self::has_fn(&ast, "install") {
             output::sub_action("install");
-            self.engine
+            let ctx_before = ctx.clone();
+            match self
+                .engine
                 .call_fn::<rhai::Map>(&mut scope, &ast, "install", (ctx,))
-                .map_err(|e| anyhow!("build-dep {} install failed: {}", name, e))?;
+            {
+                Ok(new_ctx) => {
+                    ctx = new_ctx;
+                    if has_cleanup {
+                        let _ = maybe_cleanup(
+                            self.engine,
+                            &ast,
+                            &mut scope,
+                            ctx,
+                            "auto.install.success",
+                        );
+                    }
+                }
+                Err(e) => {
+                    if has_cleanup {
+                        let _ = maybe_cleanup(
+                            self.engine,
+                            &ast,
+                            &mut scope,
+                            ctx_before,
+                            "auto.install.failure",
+                        );
+                    }
+                    return Err(anyhow!("build-dep {} install failed: {}", name, e));
+                }
+            }
         }
 
         output::success(&format!("build-dep {} installed", name));
@@ -162,5 +216,34 @@ impl<'a> BuildDepsResolver<'a> {
 
     fn has_fn(ast: &rhai::AST, name: &str) -> bool {
         ast.iter_functions().any(|f| f.name == name)
+    }
+}
+
+fn has_fn_arity(ast: &rhai::AST, name: &str, arity: usize) -> bool {
+    ast.iter_functions()
+        .any(|f| f.name == name && f.params.len() == arity)
+}
+
+fn maybe_cleanup(
+    engine: &Engine,
+    ast: &rhai::AST,
+    scope: &mut Scope,
+    ctx: rhai::Map,
+    reason: &str,
+) -> rhai::Map {
+    if !has_fn_arity(ast, "cleanup", 2) {
+        output::warning("cleanup hook must be cleanup(ctx, reason); skipping cleanup");
+        return ctx;
+    }
+
+    let result =
+        engine.call_fn::<rhai::Map>(scope, ast, "cleanup", (ctx.clone(), reason.to_string()));
+
+    match result {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            output::warning(&format!("cleanup hook failed (reason={reason}): {e}"));
+            ctx
+        }
     }
 }

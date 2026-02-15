@@ -17,6 +17,15 @@ fn create_test_env() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
     (dir, recipes_dir, build_dir)
 }
 
+fn write_recipe(path: &std::path::Path, content: &str) {
+    let mut content = content.to_string();
+    // Cleanup is required by repo policy; helper tests default to a no-op stub.
+    if !content.contains("fn cleanup(") {
+        content.push_str("\nfn cleanup(ctx, reason) { ctx }\n");
+    }
+    std::fs::write(path, content).unwrap();
+}
+
 // =============================================================================
 // Filesystem Helper Tests
 // =============================================================================
@@ -61,7 +70,7 @@ fn install(ctx) {
 "#;
 
     let recipe_path = recipes_dir.join("mkdir-test.rhai");
-    std::fs::write(&recipe_path, recipe_content).unwrap();
+    write_recipe(&recipe_path, recipe_content);
 
     let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
@@ -124,7 +133,7 @@ fn install(ctx) {
 "#;
 
     let recipe_path = recipes_dir.join("glob-test.rhai");
-    std::fs::write(&recipe_path, recipe_content).unwrap();
+    write_recipe(&recipe_path, recipe_content);
 
     let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
@@ -178,7 +187,7 @@ fn install(ctx) {
 "#;
 
     let recipe_path = recipes_dir.join("mv-ln-test.rhai");
-    std::fs::write(&recipe_path, recipe_content).unwrap();
+    write_recipe(&recipe_path, recipe_content);
 
     let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
@@ -231,7 +240,7 @@ fn install(ctx) {
 "#;
 
     let recipe_path = recipes_dir.join("shell-test.rhai");
-    std::fs::write(&recipe_path, recipe_content).unwrap();
+    write_recipe(&recipe_path, recipe_content);
 
     let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
@@ -279,7 +288,7 @@ fn install(ctx) {
 "#;
 
     let recipe_path = recipes_dir.join("exec-test.rhai");
-    std::fs::write(&recipe_path, recipe_content).unwrap();
+    write_recipe(&recipe_path, recipe_content);
 
     let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
@@ -333,7 +342,7 @@ fn install(ctx) {
 "#;
 
     let recipe_path = recipes_dir.join("env-test.rhai");
-    std::fs::write(&recipe_path, recipe_content).unwrap();
+    write_recipe(&recipe_path, recipe_content);
 
     let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
@@ -387,7 +396,7 @@ fn install(ctx) {
 "#;
 
     let recipe_path = recipes_dir.join("extract-test.rhai");
-    std::fs::write(&recipe_path, recipe_content).unwrap();
+    write_recipe(&recipe_path, recipe_content);
 
     let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
@@ -447,7 +456,7 @@ fn install(ctx) {
 "#;
 
     let recipe_path = recipes_dir.join("download-test.rhai");
-    std::fs::write(&recipe_path, recipe_content).unwrap();
+    write_recipe(&recipe_path, recipe_content);
 
     let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
@@ -488,7 +497,7 @@ fn install(ctx) {
 "#;
 
     let recipe_path = recipes_dir.join("http-get-test.rhai");
-    std::fs::write(&recipe_path, recipe_content).unwrap();
+    write_recipe(&recipe_path, recipe_content);
 
     let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
@@ -529,7 +538,7 @@ fn install(ctx) {
 "#;
 
     let recipe_path = recipes_dir.join("git-clone-test.rhai");
-    std::fs::write(&recipe_path, recipe_content).unwrap();
+    write_recipe(&recipe_path, recipe_content);
 
     let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);

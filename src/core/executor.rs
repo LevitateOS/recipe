@@ -192,10 +192,20 @@ pub fn install(
     let needs_install = check_throws(engine, &ast, &scope, "is_installed", &ctx_map);
     let needs_build = needs_install && check_throws(engine, &ast, &scope, "is_built", &ctx_map);
     let needs_acquire = needs_build && check_throws(engine, &ast, &scope, "is_acquired", &ctx_map);
+    let cleanup_auto_supported = has_fn_arity(&ast, "cleanup", 2);
 
     if !needs_install {
         output::skip(&format!("{} already installed, skipping", name));
         return Ok(ctx_map);
+    }
+
+    // Cleanup is required in this repository: it provides the hygiene hooks needed
+    // for consistent build dir behavior (especially on failure paths).
+    if !cleanup_auto_supported {
+        return Err(anyhow!(
+            "{} missing required cleanup(ctx, reason) hook (found no 2-arg cleanup)",
+            name
+        ));
     }
 
     // Resolve dependencies declared in scope.
@@ -237,14 +247,57 @@ pub fn install(
     // Execute needed phases
     if needs_acquire {
         output::sub_action("acquire");
-        ctx_map = run_phase(engine, &ast, &mut scope, "acquire", ctx_map)?;
-        source = ctx::persist(&source, &ctx_map)?;
-        fs::write(&recipe_path, &source).with_context(|| "Failed to persist ctx after acquire")?;
+        let ctx_before = ctx_map.clone();
+        match run_phase(engine, &ast, &mut scope, "acquire", ctx_map) {
+            Ok(new_ctx) => {
+                ctx_map = new_ctx;
+                persist_ctx(
+                    &recipe_path,
+                    &mut source,
+                    &ctx_map,
+                    "Failed to persist ctx after acquire",
+                )?;
+
+                // Hygiene: allow recipes to clean up intermediate acquire artifacts.
+                if cleanup_auto_supported {
+                    ctx_map = maybe_cleanup(
+                        engine,
+                        &ast,
+                        &mut scope,
+                        ctx_map,
+                        "auto.acquire.success",
+                        /* best_effort */ true,
+                        /* require_defined */ false,
+                    )?;
+                    persist_ctx(
+                        &recipe_path,
+                        &mut source,
+                        &ctx_map,
+                        "Failed to persist ctx after cleanup",
+                    )?;
+                }
+            }
+            Err(e) => {
+                // Best-effort failure hygiene: don't mask the original error.
+                if cleanup_auto_supported {
+                    let _ = maybe_cleanup(
+                        engine,
+                        &ast,
+                        &mut scope,
+                        ctx_before,
+                        "auto.acquire.failure",
+                        /* best_effort */ true,
+                        /* require_defined */ false,
+                    );
+                }
+                return Err(e);
+            }
+        }
     }
 
     if needs_build && has_fn(&ast, "build") {
         // Re-check: does the recipe still need building after acquire ran?
-        // (acquire may have set ctx.stolen=true, making is_built pass now)
+        // (acquire may have updated ctx such that is_built now passes)
         let still_needs_build = check_throws(engine, &ast, &scope, "is_built", &ctx_map);
 
         // Resolve build_deps only when actually building
@@ -262,18 +315,99 @@ pub fn install(
 
         if still_needs_build {
             output::sub_action("build");
-            ctx_map = run_phase(engine, &ast, &mut scope, "build", ctx_map)?;
-            source = ctx::persist(&source, &ctx_map)?;
-            fs::write(&recipe_path, &source)
-                .with_context(|| "Failed to persist ctx after build")?;
+            let ctx_before = ctx_map.clone();
+            match run_phase(engine, &ast, &mut scope, "build", ctx_map) {
+                Ok(new_ctx) => {
+                    ctx_map = new_ctx;
+                    persist_ctx(
+                        &recipe_path,
+                        &mut source,
+                        &ctx_map,
+                        "Failed to persist ctx after build",
+                    )?;
+
+                    if cleanup_auto_supported {
+                        ctx_map = maybe_cleanup(
+                            engine,
+                            &ast,
+                            &mut scope,
+                            ctx_map,
+                            "auto.build.success",
+                            /* best_effort */ true,
+                            /* require_defined */ false,
+                        )?;
+                        persist_ctx(
+                            &recipe_path,
+                            &mut source,
+                            &ctx_map,
+                            "Failed to persist ctx after cleanup",
+                        )?;
+                    }
+                }
+                Err(e) => {
+                    if cleanup_auto_supported {
+                        let _ = maybe_cleanup(
+                            engine,
+                            &ast,
+                            &mut scope,
+                            ctx_before,
+                            "auto.build.failure",
+                            /* best_effort */ true,
+                            /* require_defined */ false,
+                        );
+                    }
+                    return Err(e);
+                }
+            }
         }
     }
 
     if needs_install {
         output::sub_action("install");
-        ctx_map = run_phase(engine, &ast, &mut scope, "install", ctx_map)?;
-        source = ctx::persist(&source, &ctx_map)?;
-        fs::write(&recipe_path, &source).with_context(|| "Failed to persist ctx after install")?;
+        let ctx_before = ctx_map.clone();
+        match run_phase(engine, &ast, &mut scope, "install", ctx_map) {
+            Ok(new_ctx) => {
+                ctx_map = new_ctx;
+                persist_ctx(
+                    &recipe_path,
+                    &mut source,
+                    &ctx_map,
+                    "Failed to persist ctx after install",
+                )?;
+
+                if cleanup_auto_supported {
+                    ctx_map = maybe_cleanup(
+                        engine,
+                        &ast,
+                        &mut scope,
+                        ctx_map,
+                        "auto.install.success",
+                        /* best_effort */ true,
+                        /* require_defined */ false,
+                    )?;
+                    persist_ctx(
+                        &recipe_path,
+                        &mut source,
+                        &ctx_map,
+                        "Failed to persist ctx after cleanup",
+                    )?;
+                }
+            }
+            Err(e) => {
+                if cleanup_auto_supported {
+                    let _ = maybe_cleanup(
+                        engine,
+                        &ast,
+                        &mut scope,
+                        ctx_before,
+                        "auto.install.failure",
+                        /* best_effort */ true,
+                        /* require_defined */ false,
+                    );
+                }
+                return Err(e);
+            }
+        }
     }
 
     output::success(&format!("{} installed", name));
@@ -384,7 +518,10 @@ pub fn cleanup(
     output::action(&format!("Cleaning up {}", name));
     output::sub_action("cleanup");
 
-    ctx_map = run_phase(engine, &ast, &mut scope, "cleanup", ctx_map)?;
+    ctx_map = maybe_cleanup(
+        engine, &ast, &mut scope, ctx_map, "manual", /* best_effort */ false,
+        /* require_defined */ true,
+    )?;
     source = ctx::persist(&source, &ctx_map)?;
     fs::write(&recipe_path, &source)?;
 
@@ -413,6 +550,52 @@ fn run_phase(
     engine
         .call_fn::<rhai::Map>(scope, ast, fn_name, (ctx,))
         .map_err(|e| anyhow!("{} failed: {}", fn_name, e))
+}
+
+fn maybe_cleanup(
+    engine: &Engine,
+    ast: &AST,
+    scope: &mut Scope,
+    ctx: rhai::Map,
+    reason: &str,
+    best_effort: bool,
+    require_defined: bool,
+) -> Result<rhai::Map> {
+    if !has_fn(ast, "cleanup") {
+        if require_defined {
+            return Err(anyhow!("Recipe has no cleanup function"));
+        }
+        return Ok(ctx);
+    }
+
+    if !has_fn_arity(ast, "cleanup", 2) {
+        return Err(anyhow!(
+            "cleanup hook must be cleanup(ctx, reason) (found non-2-arg cleanup)"
+        ));
+    }
+
+    let result =
+        engine.call_fn::<rhai::Map>(scope, ast, "cleanup", (ctx.clone(), reason.to_string()));
+
+    match result {
+        Ok(ctx) => Ok(ctx),
+        Err(e) if best_effort => {
+            output::warning(&format!("cleanup hook failed (reason={reason}): {e}"));
+            Ok(ctx)
+        }
+        Err(e) => Err(anyhow!("cleanup failed: {}", e)),
+    }
+}
+
+fn persist_ctx(
+    recipe_path: &Path,
+    source: &mut String,
+    ctx_map: &rhai::Map,
+    err_ctx: &'static str,
+) -> Result<()> {
+    *source = ctx::persist(source, ctx_map)?;
+    fs::write(recipe_path, source).with_context(|| err_ctx)?;
+    Ok(())
 }
 
 /// Resolve dependency recipes, install tools, and set up PATH + env vars.
@@ -501,6 +684,11 @@ fn has_fn(ast: &AST, name: &str) -> bool {
     ast.iter_functions().any(|f| f.name == name)
 }
 
+fn has_fn_arity(ast: &AST, name: &str, arity: usize) -> bool {
+    ast.iter_functions()
+        .any(|f| f.name == name && f.params.len() == arity)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,6 +726,8 @@ fn install(ctx) {
     ctx.installed = true;
     ctx
 }
+
+fn cleanup(ctx, reason) { ctx }
 "#,
         )
         .unwrap();
@@ -640,6 +830,8 @@ fn install(ctx) {
     ctx.installed = true;
     ctx
 }
+
+fn cleanup(ctx, reason) { ctx }
 "#,
         )
         .unwrap();
@@ -662,6 +854,8 @@ fn install(ctx) {
     ctx.child_ran = true;
     ctx
 }
+
+fn cleanup(ctx, reason) { ctx }
 "#,
         )
         .unwrap();

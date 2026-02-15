@@ -71,7 +71,7 @@ fn install(ctx) {
 ```bash
 recipe install <name-or-path>   # Execute acquire/build/install
 recipe remove <name-or-path>    # Execute remove(ctx) (if present)
-recipe cleanup <name-or-path>   # Execute cleanup(ctx) (if present)
+recipe cleanup <name-or-path>   # Execute cleanup(ctx, reason=manual) (if present)
 recipe list                     # List *.rhai in recipes dir
 recipe info <name-or-path>      # Show basic metadata from ctx
 recipe hash <file>              # Compute sha256/sha512/blake3

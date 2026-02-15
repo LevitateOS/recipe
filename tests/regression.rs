@@ -18,6 +18,11 @@ fn create_test_env() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
 
 fn write_recipe(recipes_dir: &Path, name: &str, content: &str) -> std::path::PathBuf {
     let path = recipes_dir.join(format!("{}.rhai", name));
+    let mut content = content.to_string();
+    // Cleanup is required by repo policy; regression tests default to a no-op stub.
+    if !content.contains("fn cleanup(") {
+        content.push_str("\nfn cleanup(ctx, reason) { ctx }\n");
+    }
     std::fs::write(&path, content).unwrap();
     path
 }

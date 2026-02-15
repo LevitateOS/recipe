@@ -19,6 +19,18 @@
 //! fn acquire(ctx) { ctx.source = download(...); ctx }
 //! fn build(ctx) { run(...); ctx }
 //! fn install(ctx) { ctx.installed = true; ctx }
+//!
+//! # Cleanup Lifecycle
+//!
+//! Recipes may optionally define:
+//! - `fn cleanup(ctx, reason) { ...; ctx }`
+//!
+//! `reason` is an enum-like string:
+//! - `manual`
+//! - `auto.<phase>.<outcome>` (examples: `auto.acquire.success`, `auto.build.failure`)
+//!
+//! The intent is that cleanup is an engine-invoked hygiene hook (not an ad-hoc
+//! manual step), and `recipe cleanup` is just a manual trigger with `reason=manual`.
 //! ```
 //!
 //! # Phase Lifecycle
@@ -218,6 +230,8 @@ fn install(ctx) {
     ctx.installed = true;
     ctx
 }
+
+fn cleanup(ctx, reason) { ctx }
 "#,
         )
         .unwrap();

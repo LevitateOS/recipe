@@ -20,6 +20,11 @@ fn create_test_env() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
 /// Write a recipe file and return its path
 fn write_recipe(recipes_dir: &Path, name: &str, content: &str) -> std::path::PathBuf {
     let path = recipes_dir.join(format!("{}.rhai", name));
+    let mut content = content.to_string();
+    // Cleanup is required by repo policy; tests default to a no-op stub.
+    if !content.contains("fn cleanup(") {
+        content.push_str("\nfn cleanup(ctx, reason) { ctx }\n");
+    }
     std::fs::write(&path, content).unwrap();
     path
 }
@@ -457,10 +462,12 @@ fn test_cleanup_basic() {
 let ctx = #{
     name: "cleanable",
     cache_path: "/tmp/cache",
+    cleanup_reason: "",
 };
 
-fn cleanup(ctx) {
+fn cleanup(ctx, reason) {
     ctx.cache_path = "";
+    ctx.cleanup_reason = reason;
     ctx
 }
 "#,
@@ -472,6 +479,7 @@ fn cleanup(ctx) {
 
     let content = std::fs::read_to_string(&recipe_path).unwrap();
     assert!(content.contains("cache_path: \"\""));
+    assert!(content.contains("cleanup_reason: \"manual\""));
 }
 
 // =============================================================================
