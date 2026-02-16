@@ -184,4 +184,4 @@ Primary sources:
 
 - `tools/recipe/REQUIREMENTS.md` (helpers, sysroot, state tracking)
 - `tools/recipe/OS_UPGRADES_BRAINDUMP.md` (A/B composition model)
-- `docs/ab-default-plan.md` and `checkpoints.md` (A/B default + CP7 trial boot)
+- `docs/ab-default-plan.md` and `stages.md` (A/B default + Stage 07 trial boot)

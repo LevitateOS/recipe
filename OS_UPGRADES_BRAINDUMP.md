@@ -76,7 +76,7 @@ When A/B is enabled (default in this direction):
 3. Boot slot `B` once (trial boot) and run minimal health checks.
 4. Commit slot `B` or rollback to `A`.
 
-This is why we added an explicit checkpoint for "successful `B` boot".
+This is why we added an explicit stage for "successful `B` boot".
 
 ## Security / Product Constraints
 
