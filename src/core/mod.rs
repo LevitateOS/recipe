@@ -2,6 +2,7 @@
 //!
 //! Minimal executor that handles ctx-based recipes.
 
+mod autofix;
 pub mod build_deps;
 pub mod ctx;
 pub mod executor;

@@ -93,12 +93,42 @@
 
 mod core;
 pub mod helpers;
+mod llm;
 
 pub use core::output;
 
 use anyhow::Result;
 use rhai::{Engine, module_resolvers::FileModuleResolver};
 use std::path::{Path, PathBuf};
+
+/// Configure Recipe's automatic LLM-based repair loop for failed installs.
+///
+/// When enabled, Recipe will (on selected failures) ask the configured LLM provider to return a
+/// unified diff, apply it, and retry the install.
+#[derive(Debug, Clone)]
+pub struct AutoFixConfig {
+    /// Maximum number of patch attempts per failing `recipe install`.
+    pub attempts: u8,
+    /// Working directory used for patch application and LLM invocation. If unset, Recipe will try
+    /// to detect the git repo root and fall back to the recipe's directory.
+    pub cwd: Option<PathBuf>,
+    /// Optional extra instructions appended to the built-in autofix prompt.
+    pub prompt_file: Option<PathBuf>,
+    /// Allowed roots for patched file paths. If empty, defaults to the detected repo root (or
+    /// `cwd`/recipe dir fallback).
+    pub allow_paths: Vec<PathBuf>,
+}
+
+impl Default for AutoFixConfig {
+    fn default() -> Self {
+        Self {
+            attempts: 2,
+            cwd: None,
+            prompt_file: None,
+            allow_paths: Vec::new(),
+        }
+    }
+}
 
 /// Recipe execution engine
 pub struct RecipeEngine {
@@ -107,6 +137,8 @@ pub struct RecipeEngine {
     recipes_path: Option<PathBuf>,
     /// User-defined scope constants (injected via --define KEY=VALUE)
     defines: Vec<(String, String)>,
+    llm_profile: Option<String>,
+    autofix: Option<AutoFixConfig>,
 }
 
 impl RecipeEngine {
@@ -126,6 +158,8 @@ impl RecipeEngine {
             build_dir,
             recipes_path: None,
             defines: Vec::new(),
+            llm_profile: None,
+            autofix: None,
         }
     }
 
@@ -135,6 +169,18 @@ impl RecipeEngine {
         resolver.set_base_path(&path);
         self.engine.set_module_resolver(resolver);
         self.recipes_path = Some(path);
+        self
+    }
+
+    /// Select an LLM profile (from XDG `recipe/llm.toml`) for this engine execution.
+    pub fn with_llm_profile(mut self, profile: Option<String>) -> Self {
+        self.llm_profile = profile;
+        self
+    }
+
+    /// Enable Recipe's automatic LLM-based repair loop for this engine execution.
+    pub fn with_autofix(mut self, cfg: Option<AutoFixConfig>) -> Self {
+        self.autofix = cfg;
         self
     }
 
@@ -154,32 +200,39 @@ impl RecipeEngine {
     ///
     /// Returns the final ctx map containing all recipe state.
     pub fn execute(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        core::executor::install(
-            &self.engine,
-            &self.build_dir,
-            recipe_path,
-            &self.defines,
-            self.recipes_path.as_deref(),
-        )
+        llm::with_llm_profile(self.llm_profile.as_deref(), || {
+            core::executor::install_with_autofix(
+                &self.engine,
+                &self.build_dir,
+                recipe_path,
+                &self.defines,
+                self.recipes_path.as_deref(),
+                self.autofix.as_ref(),
+            )
+        })
     }
 
     /// Remove an installed package
     ///
     /// Returns the final ctx map after removal.
     pub fn remove(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        core::executor::remove(&self.engine, recipe_path, self.recipes_path.as_deref())
+        llm::with_llm_profile(self.llm_profile.as_deref(), || {
+            core::executor::remove(&self.engine, recipe_path, self.recipes_path.as_deref())
+        })
     }
 
     /// Clean up build artifacts
     ///
     /// Returns the final ctx map after cleanup.
     pub fn cleanup(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        core::executor::cleanup(
-            &self.engine,
-            &self.build_dir,
-            recipe_path,
-            self.recipes_path.as_deref(),
-        )
+        llm::with_llm_profile(self.llm_profile.as_deref(), || {
+            core::executor::cleanup(
+                &self.engine,
+                &self.build_dir,
+                recipe_path,
+                self.recipes_path.as_deref(),
+            )
+        })
     }
 
     /// Get the recipes path

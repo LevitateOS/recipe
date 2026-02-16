@@ -11,6 +11,16 @@ use rhai::{Engine, Scope};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[derive(Debug)]
+enum DepAttemptError {
+    Fatal(anyhow::Error),
+    Phase {
+        reason: &'static str,
+        phase: &'static str,
+        error: anyhow::Error,
+    },
+}
+
 /// Resolves and installs build dependencies into a `.tools/` prefix.
 pub struct BuildDepsResolver<'a> {
     engine: &'a Engine,
@@ -18,6 +28,7 @@ pub struct BuildDepsResolver<'a> {
     recipes_path: Option<&'a Path>,
     defines: &'a [(String, String)],
     execution_stack: Vec<String>,
+    autofix: Option<crate::AutoFixConfig>,
 }
 
 impl<'a> BuildDepsResolver<'a> {
@@ -26,6 +37,7 @@ impl<'a> BuildDepsResolver<'a> {
         build_dir: &'a Path,
         recipes_path: Option<&'a Path>,
         defines: &'a [(String, String)],
+        autofix: Option<&crate::AutoFixConfig>,
     ) -> Self {
         Self {
             engine,
@@ -33,6 +45,7 @@ impl<'a> BuildDepsResolver<'a> {
             recipes_path,
             defines,
             execution_stack: Vec::new(),
+            autofix: autofix.cloned(),
         }
     }
 
@@ -60,8 +73,63 @@ impl<'a> BuildDepsResolver<'a> {
     fn install_dep(&self, name: &str, tools_prefix: &Path) -> Result<()> {
         let recipe_path = self.find_recipe(name)?;
 
-        let (ast, _source, base_dir) =
-            super::executor::compile_recipe(self.engine, &recipe_path, self.recipes_path)?;
+        let max_attempts = self
+            .autofix
+            .as_ref()
+            .map(|c| c.attempts as usize)
+            .unwrap_or(0);
+
+        for attempt in 0..=max_attempts {
+            match self.install_dep_once(name, tools_prefix, &recipe_path) {
+                Ok(()) => return Ok(()),
+                Err(DepAttemptError::Fatal(e)) => return Err(e),
+                Err(DepAttemptError::Phase {
+                    reason,
+                    phase,
+                    error,
+                }) => {
+                    let Some(cfg) = self.autofix.as_ref() else {
+                        return Err(error);
+                    };
+                    if attempt >= max_attempts {
+                        return Err(error);
+                    }
+
+                    output::warning(&format!(
+                        "[autofix] build-dep {name} failed ({reason} in {phase}); running LLM (attempt {}/{})",
+                        attempt + 1,
+                        max_attempts
+                    ));
+
+                    let failure = format!("{error:#}");
+                    super::autofix::run_and_apply(
+                        cfg,
+                        &recipe_path,
+                        self.recipes_path,
+                        self.defines,
+                        reason,
+                        &failure,
+                    )
+                    .with_context(|| {
+                        format!("autofix failed for build-dep {name} ({reason} in {phase})")
+                    })?;
+                }
+            }
+        }
+
+        unreachable!("attempt loop returns on success or final failure");
+    }
+
+    fn install_dep_once(
+        &self,
+        name: &str,
+        tools_prefix: &Path,
+        recipe_path: &Path,
+    ) -> std::result::Result<(), DepAttemptError> {
+        let compiled = super::executor::compile_recipe(self.engine, recipe_path, self.recipes_path)
+            .map_err(DepAttemptError::Fatal)?;
+        let ast = compiled.ast;
+        let base_dir = compiled.base_dir;
 
         let recipe_dir = recipe_path
             .parent()
@@ -70,7 +138,8 @@ impl<'a> BuildDepsResolver<'a> {
 
         let dep_build_dir = self.build_dir.join(format!(".deps/{}", name));
         fs::create_dir_all(&dep_build_dir)
-            .with_context(|| format!("Failed to create dep build dir for {}", name))?;
+            .with_context(|| format!("Failed to create dep build dir for {}", name))
+            .map_err(DepAttemptError::Fatal)?;
 
         let mut scope = Scope::new();
         scope.push_constant("RECIPE_DIR", recipe_dir);
@@ -89,11 +158,13 @@ impl<'a> BuildDepsResolver<'a> {
         // Run top-level to populate ctx
         self.engine
             .run_ast_with_scope(&mut scope, &ast)
-            .map_err(|e| anyhow!("Failed to run build dep {}: {}", name, e))?;
+            .map_err(|e| {
+                DepAttemptError::Fatal(anyhow!("Failed to run build dep {}: {}", name, e))
+            })?;
 
         let ctx_map: rhai::Map = scope
             .get_value("ctx")
-            .ok_or_else(|| anyhow!("Build dep {} missing ctx", name))?;
+            .ok_or_else(|| DepAttemptError::Fatal(anyhow!("Build dep {} missing ctx", name)))?;
 
         // Check if already installed
         let needs_install = Self::check_throws(self.engine, &ast, &scope, "is_installed", &ctx_map);
@@ -138,7 +209,11 @@ impl<'a> BuildDepsResolver<'a> {
                             "auto.acquire.failure",
                         );
                     }
-                    return Err(anyhow!("build-dep {} acquire failed: {}", name, e));
+                    return Err(DepAttemptError::Phase {
+                        reason: "auto.acquire.failure",
+                        phase: "acquire",
+                        error: anyhow!("build-dep {} acquire failed: {}", name, e),
+                    });
                 }
             }
         }
@@ -172,7 +247,11 @@ impl<'a> BuildDepsResolver<'a> {
                             "auto.install.failure",
                         );
                     }
-                    return Err(anyhow!("build-dep {} install failed: {}", name, e));
+                    return Err(DepAttemptError::Phase {
+                        reason: "auto.install.failure",
+                        phase: "install",
+                        error: anyhow!("build-dep {} install failed: {}", name, e),
+                    });
                 }
             }
         }

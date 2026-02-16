@@ -64,25 +64,44 @@ fn resolve_base_path(
     )
 }
 
+#[derive(Debug)]
+pub(crate) struct CompiledRecipe {
+    pub ast: AST,
+    /// The "main" recipe file (the one the user invoked).
+    pub recipe_path: PathBuf,
+    pub recipe_source: String,
+    /// Optional base recipe from `//! extends:`.
+    pub base_path: Option<PathBuf>,
+    pub base_source: Option<String>,
+    pub base_dir: Option<PathBuf>,
+}
+
 /// Compile a recipe with `//! extends:` resolution.
 ///
 /// If the child recipe declares `//! extends: <base>`, the base is compiled first
 /// and merged with the child AST. Child functions with the same name+arity replace
 /// base functions. Top-level statements run base-first, then child.
 ///
-/// Returns (merged_ast, child_source, Option<base_dir>).
+/// Returns the merged AST plus the source texts/paths needed for ctx persistence.
 pub(crate) fn compile_recipe(
     engine: &Engine,
     recipe_path: &Path,
     search_path: Option<&Path>,
-) -> Result<(AST, String, Option<PathBuf>)> {
-    let source = fs::read_to_string(recipe_path)
+) -> Result<CompiledRecipe> {
+    let recipe_path = recipe_path
+        .canonicalize()
+        .unwrap_or_else(|_| recipe_path.to_path_buf());
+
+    let source = fs::read_to_string(&recipe_path)
         .with_context(|| format!("Failed to read recipe: {}", recipe_path.display()))?;
 
     let extends = parse_extends(&source);
 
     if let Some(base_rel) = extends {
-        let base_path = resolve_base_path(&base_rel, recipe_path, search_path)?;
+        let base_path = resolve_base_path(&base_rel, &recipe_path, search_path)?;
+        let base_path = base_path
+            .canonicalize()
+            .unwrap_or_else(|_| base_path.to_path_buf());
         let base_source = fs::read_to_string(&base_path)
             .with_context(|| format!("Failed to read base recipe: {}", base_path.display()))?;
 
@@ -111,12 +130,26 @@ pub(crate) fn compile_recipe(
         base_ast += child_ast;
 
         let base_dir = base_path.parent().map(|p| p.to_path_buf());
-        Ok((base_ast, source, base_dir))
+        Ok(CompiledRecipe {
+            ast: base_ast,
+            recipe_path,
+            recipe_source: source,
+            base_path: Some(base_path),
+            base_source: Some(base_source),
+            base_dir,
+        })
     } else {
         let ast = engine
             .compile(&source)
             .map_err(|e| anyhow!("Failed to compile recipe: {}", e))?;
-        Ok((ast, source, None))
+        Ok(CompiledRecipe {
+            ast,
+            recipe_path,
+            recipe_source: source,
+            base_path: None,
+            base_source: None,
+            base_dir: None,
+        })
     }
 }
 
@@ -137,13 +170,103 @@ pub fn install(
     defines: &[(String, String)],
     search_path: Option<&Path>,
 ) -> Result<rhai::Map> {
+    install_with_autofix(
+        engine,
+        build_dir,
+        recipe_path,
+        defines,
+        search_path,
+        /* autofix */ None,
+    )
+}
+
+#[derive(Debug)]
+enum InstallAttemptError {
+    Fatal(anyhow::Error),
+    Phase {
+        reason: &'static str,
+        phase: &'static str,
+        error: anyhow::Error,
+    },
+}
+
+pub fn install_with_autofix(
+    engine: &Engine,
+    build_dir: &Path,
+    recipe_path: &Path,
+    defines: &[(String, String)],
+    search_path: Option<&Path>,
+    autofix: Option<&crate::AutoFixConfig>,
+) -> Result<rhai::Map> {
     let recipe_path = recipe_path
         .canonicalize()
         .unwrap_or_else(|_| recipe_path.to_path_buf());
 
     let _lock = acquire_recipe_lock(&recipe_path)?;
 
-    let (ast, mut source, base_dir) = compile_recipe(engine, &recipe_path, search_path)?;
+    let max_attempts = autofix.map(|c| c.attempts as usize).unwrap_or(0);
+
+    for attempt in 0..=max_attempts {
+        match install_once(
+            engine,
+            build_dir,
+            &recipe_path,
+            defines,
+            search_path,
+            autofix,
+        ) {
+            Ok(ctx) => return Ok(ctx),
+            Err(InstallAttemptError::Fatal(e)) => return Err(e),
+            Err(InstallAttemptError::Phase {
+                reason,
+                phase,
+                error,
+            }) => {
+                let Some(cfg) = autofix else {
+                    return Err(error);
+                };
+
+                // Only try to autofix build/install failures (not acquire/network/etc).
+                let eligible = matches!(reason, "auto.build.failure" | "auto.install.failure");
+                if !eligible || attempt >= max_attempts {
+                    return Err(error);
+                }
+
+                output::warning(&format!(
+                    "[autofix] install failed ({reason} in {phase}); running LLM (attempt {}/{})",
+                    attempt + 1,
+                    max_attempts
+                ));
+
+                let failure = format!("{error:#}");
+                super::autofix::run_and_apply(
+                    cfg,
+                    &recipe_path,
+                    search_path,
+                    defines,
+                    reason,
+                    &failure,
+                )
+                .with_context(|| format!("autofix failed ({reason} in {phase})"))?;
+            }
+        }
+    }
+
+    unreachable!("attempt loop returns on success or final failure");
+}
+
+fn install_once(
+    engine: &Engine,
+    build_dir: &Path,
+    recipe_path: &Path,
+    defines: &[(String, String)],
+    search_path: Option<&Path>,
+    autofix: Option<&crate::AutoFixConfig>,
+) -> std::result::Result<rhai::Map, InstallAttemptError> {
+    let autofix_enabled = autofix.is_some();
+    let mut compiled =
+        compile_recipe(engine, recipe_path, search_path).map_err(InstallAttemptError::Fatal)?;
+    let ast = compiled.ast.clone();
 
     // Derive RECIPE_DIR from the recipe file's parent directory
     let recipe_dir = recipe_path
@@ -154,7 +277,7 @@ pub fn install(
     // Set up scope with constants
     let mut scope = Scope::new();
     scope.push_constant("RECIPE_DIR", recipe_dir);
-    if let Some(ref bd) = base_dir {
+    if let Some(ref bd) = compiled.base_dir {
         scope.push_constant("BASE_RECIPE_DIR", bd.to_string_lossy().to_string());
     }
     scope.push_constant("BUILD_DIR", build_dir.to_string_lossy().to_string());
@@ -170,12 +293,12 @@ pub fn install(
     // Run script to populate scope (this sets up ctx)
     engine
         .run_ast_with_scope(&mut scope, &ast)
-        .map_err(|e| anyhow!("Failed to run recipe: {}", e))?;
+        .map_err(|e| InstallAttemptError::Fatal(anyhow!("Failed to run recipe: {}", e)))?;
 
     // Extract ctx from scope
-    let mut ctx_map: rhai::Map = scope
-        .get_value("ctx")
-        .ok_or_else(|| anyhow!("Recipe missing 'let ctx = #{{...}}'"))?;
+    let mut ctx_map: rhai::Map = scope.get_value("ctx").ok_or_else(|| {
+        InstallAttemptError::Fatal(anyhow!("Recipe missing 'let ctx = #{{...}}'"))
+    })?;
 
     // Get package name for logging
     let name = ctx_map
@@ -189,10 +312,27 @@ pub fn install(
                 .to_string()
         });
 
-    // Check phases (reverse order) - throw means "needs this phase"
-    let needs_install = check_throws(engine, &ast, &scope, "is_installed", &ctx_map);
-    let needs_build = needs_install && check_throws(engine, &ast, &scope, "is_built", &ctx_map);
-    let needs_acquire = needs_build && check_throws(engine, &ast, &scope, "is_acquired", &ctx_map);
+    // Check phases (reverse order) - throw means "needs this phase".
+    //
+    // IMPORTANT: `is_*` checks may also *return an updated ctx* (e.g. setting
+    // `ctx.source_path` or `ctx.build_dir`). When the check passes, we must carry
+    // the returned ctx forward even if the phase is skipped.
+    let (needs_install, checked_ctx) = check_phase(engine, &ast, &scope, "is_installed", &ctx_map);
+    ctx_map = checked_ctx;
+
+    let mut needs_build = false;
+    let mut needs_acquire = false;
+    if needs_install {
+        let (nb, checked_ctx) = check_phase(engine, &ast, &scope, "is_built", &ctx_map);
+        needs_build = nb;
+        ctx_map = checked_ctx;
+
+        if needs_build {
+            let (na, checked_ctx) = check_phase(engine, &ast, &scope, "is_acquired", &ctx_map);
+            needs_acquire = na;
+            ctx_map = checked_ctx;
+        }
+    }
     let cleanup_auto_supported = has_fn_arity(&ast, "cleanup", 2);
 
     if !needs_install {
@@ -203,10 +343,10 @@ pub fn install(
     // Cleanup is required in this repository: it provides the hygiene hooks needed
     // for consistent build dir behavior (especially on failure paths).
     if !cleanup_auto_supported {
-        return Err(anyhow!(
+        return Err(InstallAttemptError::Fatal(anyhow!(
             "{} missing required cleanup(ctx, reason) hook (found no 2-arg cleanup)",
             name
-        ));
+        )));
     }
 
     // Resolve dependencies declared in scope.
@@ -232,13 +372,10 @@ pub fn install(
 
     // Resolve `deps` immediately (needed for all phases)
     let _env_guard = if !deps.is_empty() {
-        Some(resolve_deps(
-            engine,
-            build_dir,
-            search_path,
-            defines,
-            &deps,
-        )?)
+        Some(
+            resolve_deps(engine, build_dir, search_path, defines, &deps, autofix)
+                .map_err(InstallAttemptError::Fatal)?,
+        )
     } else {
         None
     };
@@ -253,11 +390,11 @@ pub fn install(
             Ok(new_ctx) => {
                 ctx_map = new_ctx;
                 persist_ctx(
-                    &recipe_path,
-                    &mut source,
+                    &mut compiled,
                     &ctx_map,
                     "Failed to persist ctx after acquire",
-                )?;
+                )
+                .map_err(InstallAttemptError::Fatal)?;
 
                 // Hygiene: allow recipes to clean up intermediate acquire artifacts.
                 if cleanup_auto_supported {
@@ -269,13 +406,14 @@ pub fn install(
                         "auto.acquire.success",
                         /* best_effort */ true,
                         /* require_defined */ false,
-                    )?;
+                    )
+                    .map_err(InstallAttemptError::Fatal)?;
                     persist_ctx(
-                        &recipe_path,
-                        &mut source,
+                        &mut compiled,
                         &ctx_map,
                         "Failed to persist ctx after cleanup",
-                    )?;
+                    )
+                    .map_err(InstallAttemptError::Fatal)?;
                 }
             }
             Err(e) => {
@@ -291,7 +429,11 @@ pub fn install(
                         /* require_defined */ false,
                     );
                 }
-                return Err(e);
+                return Err(InstallAttemptError::Phase {
+                    reason: "auto.acquire.failure",
+                    phase: "acquire",
+                    error: e,
+                });
             }
         }
     }
@@ -299,17 +441,23 @@ pub fn install(
     if needs_build && has_fn(&ast, "build") {
         // Re-check: does the recipe still need building after acquire ran?
         // (acquire may have updated ctx such that is_built now passes)
-        let still_needs_build = check_throws(engine, &ast, &scope, "is_built", &ctx_map);
+        let (still_needs_build, checked_ctx) =
+            check_phase(engine, &ast, &scope, "is_built", &ctx_map);
+        ctx_map = checked_ctx;
 
         // Resolve build_deps only when actually building
         let _build_env_guard = if still_needs_build && !build_deps.is_empty() {
-            Some(resolve_deps(
-                engine,
-                build_dir,
-                search_path,
-                defines,
-                &build_deps,
-            )?)
+            Some(
+                resolve_deps(
+                    engine,
+                    build_dir,
+                    search_path,
+                    defines,
+                    &build_deps,
+                    autofix,
+                )
+                .map_err(InstallAttemptError::Fatal)?,
+            )
         } else {
             None
         };
@@ -320,12 +468,8 @@ pub fn install(
             match run_phase(engine, &ast, &mut scope, "build", ctx_map) {
                 Ok(new_ctx) => {
                     ctx_map = new_ctx;
-                    persist_ctx(
-                        &recipe_path,
-                        &mut source,
-                        &ctx_map,
-                        "Failed to persist ctx after build",
-                    )?;
+                    persist_ctx(&mut compiled, &ctx_map, "Failed to persist ctx after build")
+                        .map_err(InstallAttemptError::Fatal)?;
 
                     if cleanup_auto_supported {
                         ctx_map = maybe_cleanup(
@@ -336,13 +480,14 @@ pub fn install(
                             "auto.build.success",
                             /* best_effort */ true,
                             /* require_defined */ false,
-                        )?;
+                        )
+                        .map_err(InstallAttemptError::Fatal)?;
                         persist_ctx(
-                            &recipe_path,
-                            &mut source,
+                            &mut compiled,
                             &ctx_map,
                             "Failed to persist ctx after cleanup",
-                        )?;
+                        )
+                        .map_err(InstallAttemptError::Fatal)?;
                     }
                 }
                 Err(e) => {
@@ -357,7 +502,11 @@ pub fn install(
                             /* require_defined */ false,
                         );
                     }
-                    return Err(e);
+                    return Err(InstallAttemptError::Phase {
+                        reason: "auto.build.failure",
+                        phase: "build",
+                        error: e,
+                    });
                 }
             }
         }
@@ -370,11 +519,11 @@ pub fn install(
             Ok(new_ctx) => {
                 ctx_map = new_ctx;
                 persist_ctx(
-                    &recipe_path,
-                    &mut source,
+                    &mut compiled,
                     &ctx_map,
                     "Failed to persist ctx after install",
-                )?;
+                )
+                .map_err(InstallAttemptError::Fatal)?;
 
                 if cleanup_auto_supported {
                     ctx_map = maybe_cleanup(
@@ -385,13 +534,14 @@ pub fn install(
                         "auto.install.success",
                         /* best_effort */ true,
                         /* require_defined */ false,
-                    )?;
+                    )
+                    .map_err(InstallAttemptError::Fatal)?;
                     persist_ctx(
-                        &recipe_path,
-                        &mut source,
+                        &mut compiled,
                         &ctx_map,
                         "Failed to persist ctx after cleanup",
-                    )?;
+                    )
+                    .map_err(InstallAttemptError::Fatal)?;
                 }
             }
             Err(e) => {
@@ -406,8 +556,42 @@ pub fn install(
                         /* require_defined */ false,
                     );
                 }
-                return Err(e);
+                return Err(InstallAttemptError::Phase {
+                    reason: "auto.install.failure",
+                    phase: "install",
+                    error: e,
+                });
             }
+        }
+    }
+
+    // Anti-reward-hack / correctness: if autofix mode is enabled, require the recipe's
+    // `is_installed(ctx)` check to pass after install completes.
+    if autofix_enabled && has_fn_arity(&ast, "is_installed", 1) {
+        if let Err(e) = engine.call_fn::<rhai::Map>(
+            &mut scope.clone(),
+            &ast,
+            "is_installed",
+            (ctx_map.clone(),),
+        ) {
+            // Allow best-effort failure hygiene.
+            if cleanup_auto_supported {
+                let _ = maybe_cleanup(
+                    engine,
+                    &ast,
+                    &mut scope,
+                    ctx_map.clone(),
+                    "auto.install.failure",
+                    /* best_effort */ true,
+                    /* require_defined */ false,
+                );
+            }
+
+            return Err(InstallAttemptError::Phase {
+                reason: "auto.install.failure",
+                phase: "is_installed",
+                error: anyhow!("is_installed failed after install: {e}"),
+            });
         }
     }
 
@@ -429,7 +613,8 @@ pub fn remove(
 
     let _lock = acquire_recipe_lock(&recipe_path)?;
 
-    let (ast, mut source, base_dir) = compile_recipe(engine, &recipe_path, search_path)?;
+    let mut compiled = compile_recipe(engine, &recipe_path, search_path)?;
+    let ast = compiled.ast.clone();
 
     // Derive RECIPE_DIR from the recipe file's parent directory
     let recipe_dir = recipe_path
@@ -439,7 +624,7 @@ pub fn remove(
 
     let mut scope = Scope::new();
     scope.push_constant("RECIPE_DIR", recipe_dir);
-    if let Some(ref bd) = base_dir {
+    if let Some(ref bd) = compiled.base_dir {
         scope.push_constant("BASE_RECIPE_DIR", bd.to_string_lossy().to_string());
     }
 
@@ -463,8 +648,11 @@ pub fn remove(
     output::sub_action("remove");
 
     ctx_map = run_phase(engine, &ast, &mut scope, "remove", ctx_map)?;
-    source = ctx::persist(&source, &ctx_map)?;
-    fs::write(&recipe_path, &source)?;
+    persist_ctx(
+        &mut compiled,
+        &ctx_map,
+        "Failed to persist ctx after remove",
+    )?;
 
     output::success(&format!("{} removed", name));
     Ok(ctx_map)
@@ -485,7 +673,8 @@ pub fn cleanup(
 
     let _lock = acquire_recipe_lock(&recipe_path)?;
 
-    let (ast, mut source, base_dir) = compile_recipe(engine, &recipe_path, search_path)?;
+    let mut compiled = compile_recipe(engine, &recipe_path, search_path)?;
+    let ast = compiled.ast.clone();
 
     // Derive RECIPE_DIR from the recipe file's parent directory
     let recipe_dir = recipe_path
@@ -495,7 +684,7 @@ pub fn cleanup(
 
     let mut scope = Scope::new();
     scope.push_constant("RECIPE_DIR", recipe_dir);
-    if let Some(ref bd) = base_dir {
+    if let Some(ref bd) = compiled.base_dir {
         scope.push_constant("BASE_RECIPE_DIR", bd.to_string_lossy().to_string());
     }
     scope.push_constant("BUILD_DIR", build_dir.to_string_lossy().to_string());
@@ -523,21 +712,34 @@ pub fn cleanup(
         engine, &ast, &mut scope, ctx_map, "manual", /* best_effort */ false,
         /* require_defined */ true,
     )?;
-    source = ctx::persist(&source, &ctx_map)?;
-    fs::write(&recipe_path, &source)?;
+    persist_ctx(
+        &mut compiled,
+        &ctx_map,
+        "Failed to persist ctx after cleanup",
+    )?;
 
     output::success(&format!("{} cleaned", name));
     Ok(ctx_map)
 }
 
-/// Check if a phase check function throws (meaning the phase is needed)
-fn check_throws(engine: &Engine, ast: &AST, scope: &Scope, fn_name: &str, ctx: &rhai::Map) -> bool {
+/// Check whether a phase is needed (true when the check throws).
+///
+/// If the check passes, returns the ctx value that the check returned.
+fn check_phase(
+    engine: &Engine,
+    ast: &AST,
+    scope: &Scope,
+    fn_name: &str,
+    ctx: &rhai::Map,
+) -> (bool, rhai::Map) {
     if !has_fn(ast, fn_name) {
-        return true; // No check function = needs the phase
+        return (true, ctx.clone()); // No check function = needs the phase.
     }
-    engine
-        .call_fn::<rhai::Map>(&mut scope.clone(), ast, fn_name, (ctx.clone(),))
-        .is_err()
+
+    match engine.call_fn::<rhai::Map>(&mut scope.clone(), ast, fn_name, (ctx.clone(),)) {
+        Ok(new_ctx) => (false, new_ctx),
+        Err(_) => (true, ctx.clone()),
+    }
 }
 
 /// Run a phase function and return the updated ctx
@@ -589,25 +791,44 @@ fn maybe_cleanup(
 }
 
 fn persist_ctx(
-    recipe_path: &Path,
-    source: &mut String,
+    compiled: &mut CompiledRecipe,
     ctx_map: &rhai::Map,
     err_ctx: &'static str,
 ) -> Result<()> {
-    *source = ctx::persist(source, ctx_map)?;
+    // Prefer persisting to the main recipe. If it doesn't declare ctx (common when
+    // using `//! extends:` for shared logic), fall back to the base recipe.
+    let (path, source) = if ctx::find_ctx_block(&compiled.recipe_source).is_some() {
+        (&compiled.recipe_path, &mut compiled.recipe_source)
+    } else if let (Some(base_path), Some(base_source)) =
+        (&compiled.base_path, &mut compiled.base_source)
+    {
+        if ctx::find_ctx_block(base_source).is_some() {
+            (base_path, base_source)
+        } else {
+            return Err(anyhow!(
+                "ctx block not found in recipe {} or base {:?}",
+                compiled.recipe_path.display(),
+                base_path.display()
+            ))
+            .with_context(|| err_ctx);
+        }
+    } else {
+        return Err(anyhow!(
+            "ctx block not found in recipe {} (no base recipe)",
+            compiled.recipe_path.display()
+        ))
+        .with_context(|| err_ctx);
+    };
 
-    let parent = recipe_path
+    *source = ctx::persist(source, ctx_map).with_context(|| err_ctx)?;
+
+    let parent = path
         .parent()
-        .ok_or_else(|| {
-            anyhow!(
-                "Recipe path has no parent directory: {}",
-                recipe_path.display()
-            )
-        })
+        .ok_or_else(|| anyhow!("Recipe path has no parent directory: {}", path.display()))
         .with_context(|| err_ctx)?;
 
     // Preserve existing file permissions where possible.
-    let existing_perms = fs::metadata(recipe_path).map(|m| m.permissions()).ok();
+    let existing_perms = fs::metadata(path).map(|m| m.permissions()).ok();
 
     // Write to a sibling temp file so the final rename is atomic on Unix.
     let mut tmp = tempfile::Builder::new()
@@ -631,7 +852,7 @@ fn persist_ctx(
     let (_f, tmp_path) = tmp.keep().with_context(|| err_ctx)?;
     drop(_f);
 
-    if let Err(e) = fs::rename(&tmp_path, recipe_path) {
+    if let Err(e) = fs::rename(&tmp_path, path) {
         let _ = fs::remove_file(&tmp_path);
         return Err(e).with_context(|| err_ctx);
     }
@@ -655,9 +876,11 @@ fn resolve_deps(
     search_path: Option<&Path>,
     defines: &[(String, String)],
     dep_names: &[String],
+    autofix: Option<&crate::AutoFixConfig>,
 ) -> Result<EnvRestoreGuard> {
     let original_path = std::env::var("PATH").unwrap_or_default();
-    let mut resolver = build_deps::BuildDepsResolver::new(engine, build_dir, search_path, defines);
+    let mut resolver =
+        build_deps::BuildDepsResolver::new(engine, build_dir, search_path, defines, autofix);
     let tools_prefix = resolver.resolve_and_install(dep_names)?;
 
     // Safety: we're single-threaded during recipe execution
@@ -862,6 +1085,56 @@ fn install(ctx) { throw "should not run"; }
     }
 
     #[test]
+    fn test_is_check_updates_ctx_used_by_later_phases() {
+        let dir = TempDir::new().unwrap();
+        let build_dir = dir.path().join("build");
+        fs::create_dir_all(&build_dir).unwrap();
+
+        // If `is_acquired(ctx)` passes and updates ctx (e.g. `ctx.source_path`),
+        // that updated ctx must flow into `build(ctx)`.
+        let recipe_path = dir.path().join("test.rhai");
+        fs::write(
+            &recipe_path,
+            r#"
+let ctx = #{
+    name: "test",
+    source_path: "",
+    built: false,
+    installed: false,
+};
+
+fn is_installed(ctx) { throw "not installed"; }
+fn is_built(ctx) { throw "not built"; }
+
+fn is_acquired(ctx) {
+    // Simulate "already acquired" detection populating derived state.
+    ctx.source_path = "/tmp/source-tree";
+    ctx
+}
+
+fn build(ctx) {
+    if ctx.source_path == "" { throw "missing source_path"; }
+    ctx.built = true;
+    ctx
+}
+
+fn install(ctx) {
+    if !ctx.built { throw "not built"; }
+    ctx.installed = true;
+    ctx
+}
+
+fn cleanup(ctx, reason) { ctx }
+"#,
+        )
+        .unwrap();
+
+        let engine = create_engine();
+        let result = install(&engine, &build_dir, &recipe_path, &[], None);
+        assert!(result.is_ok(), "Failed: {:?}", result);
+    }
+
+    #[test]
     fn test_has_fn() {
         let engine = Engine::new();
         let ast = engine.compile("fn foo() {} fn bar(x) { x }").unwrap();
@@ -998,5 +1271,63 @@ fn cleanup(ctx, reason) { ctx }
         let engine = create_engine();
         let result = compile_recipe(&engine, &child, None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extends_persists_ctx_in_base_when_child_has_no_ctx() {
+        let dir = TempDir::new().unwrap();
+        let build_dir = dir.path().join("build");
+        fs::create_dir_all(&build_dir).unwrap();
+
+        let base_path = dir.path().join("base.rhai");
+        fs::write(
+            &base_path,
+            r#"
+let ctx = #{
+    name: "base",
+    acquired: false,
+    installed: false,
+};
+
+fn is_installed(ctx) {
+    if !ctx.installed { throw "not installed"; }
+    ctx
+}
+
+fn acquire(ctx) {
+    ctx.acquired = true;
+    ctx
+}
+
+fn install(ctx) {
+    ctx.installed = true;
+    ctx
+}
+
+fn cleanup(ctx, reason) { ctx }
+"#,
+        )
+        .unwrap();
+
+        // Child extends base but does not declare ctx; this is valid as long as
+        // ctx persistence targets the file that actually contains `let ctx = #{...};`.
+        let child_path = dir.path().join("child.rhai");
+        fs::write(
+            &child_path,
+            r#"//! extends: base.rhai
+
+fn cleanup(ctx, reason) { ctx }
+"#,
+        )
+        .unwrap();
+
+        let engine = create_engine();
+        let result = install(&engine, &build_dir, &child_path, &[], None);
+        assert!(result.is_ok(), "Failed: {:?}", result);
+
+        // Ensure ctx was persisted into base (acquired/installed should be true).
+        let persisted = fs::read_to_string(&base_path).unwrap();
+        assert!(persisted.contains("acquired: true"));
+        assert!(persisted.contains("installed: true"));
     }
 }

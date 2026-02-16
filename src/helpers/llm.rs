@@ -1,33 +1,110 @@
 //! LLM utilities for recipe scripts
 //!
-//! Provides helpers for using a local LLM to extract structured information
-//! from web pages or text when parsing is non-trivial.
+//! These helpers shell out to an external agent CLI (Codex or Claude) to do
+//! non-deterministic extraction when parsing is genuinely hard.
 //!
-//! ## Use Cases
+//! Recipe does not try to interpret the model output. It only runs the chosen
+//! CLI non-interactively, enforces timeouts/size limits, and returns the final
+//! text.
 //!
-//! - Finding the "latest version" when the page structure is complex
-//! - Extracting download URLs from pages that don't have a predictable format
-//! - Parsing changelogs or release notes
+//! ## Configuration (XDG)
+//! Create `recipe/llm.toml` under your XDG config dirs:
+//! - User: `$XDG_CONFIG_HOME/recipe/llm.toml` (default `~/.config/recipe/llm.toml`)
+//! - System: `$XDG_CONFIG_DIRS/recipe/llm.toml` (default `/etc/xdg/recipe/llm.toml`)
 //!
-//! ## Configuration
+//! A `default_provider` is required (equal footing; no implicit fallback).
 //!
-//! Set `RECIPE_LLM_ENDPOINT` to point to your local LLM server:
-//! ```bash
-//! export RECIPE_LLM_ENDPOINT="http://localhost:11434/api/generate"  # Ollama
-//! ```
-//!
-//! ## Philosophy
-//!
-//! The LLM is a TOOL, not the identity. Recipes should:
-//! 1. Try deterministic parsing first (regex, JSON, etc.)
-//! 2. Fall back to LLM only when structure is unpredictable
-//! 3. Always validate LLM output before using it
+//! You can define named LLM profiles under `[profiles.<name>]` in `llm.toml`, and select a profile
+//! per `recipe` invocation using `recipe --llm-profile <name> ...`.
 
 use rhai::EvalAltResult;
 
-/// Get LLM endpoint from environment, if configured.
-fn _get_llm_endpoint() -> Option<String> {
-    std::env::var("RECIPE_LLM_ENDPOINT").ok()
+fn current_working_dir() -> Result<std::path::PathBuf, Box<EvalAltResult>> {
+    std::env::current_dir().map_err(|e| format!("Failed to resolve cwd: {e}").into())
+}
+
+fn to_eval_err(e: String) -> Box<EvalAltResult> {
+    e.into()
+}
+
+fn extract_recipe_file_hint(content: &str) -> Option<String> {
+    // Try to extract `recipe_file: "/path/to/file.rhai"` from ctx for better prompts.
+    let key = "recipe_file:";
+    let idx = content.find(key)?;
+    let rest = &content[idx + key.len()..];
+    let quote_start = rest.find('"')?;
+    let rest2 = &rest[quote_start + 1..];
+    let quote_end = rest2.find('"')?;
+    let path = &rest2[..quote_end];
+    let trimmed = path.trim();
+    (!trimmed.is_empty()).then_some(trimmed.to_owned())
+}
+
+fn strip_outer_code_fence(s: String) -> String {
+    let trimmed = s.trim();
+    if !trimmed.starts_with("```") {
+        return trimmed.to_owned();
+    }
+
+    // Handle:
+    // ```rhai
+    // ...
+    // ```
+    let after_open = match trimmed.find('\n') {
+        Some(i) => &trimmed[i + 1..],
+        None => return trimmed.to_owned(),
+    };
+    let after_open = after_open.trim_end();
+    if !after_open.ends_with("```") {
+        return trimmed.to_owned();
+    }
+    let without_close = after_open[..after_open.len() - 3].trim_end_matches('\n');
+    without_close.trim().to_owned()
+}
+
+fn build_extract_prompt(content: &str, task: &str) -> String {
+    let mut header = String::new();
+    header.push_str("You are a precise extraction and editing tool for Rhai recipe files.\n");
+    header.push_str("The complete relevant content is provided below.\n");
+    header
+        .push_str("Do NOT run commands, do NOT browse, and do NOT try to locate files on disk.\n");
+    header.push_str("Return ONLY the requested output. No prose. No markdown. No code fences.\n");
+
+    if let Some(path) = extract_recipe_file_hint(content) {
+        header.push_str(&format!("\nTARGET FILE PATH:\n{path}\n"));
+    }
+
+    format!(
+        "{header}\nTASK:\n{task}\n\nCONTENT (complete):\n{content}\n",
+        header = header,
+        task = task,
+        content = content
+    )
+}
+
+fn run_provider(prompt: String) -> Result<String, Box<EvalAltResult>> {
+    let cfg = crate::llm::resolve_config_for_call().map_err(to_eval_err)?;
+    let cwd = current_working_dir()?;
+
+    let stdin = prompt.into_bytes();
+
+    let out = match cfg.default_provider {
+        crate::llm::LlmProviderId::Codex => {
+            let inv =
+                crate::llm::providers::codex::build(&cfg, &cwd, stdin).map_err(to_eval_err)?;
+            let res = crate::llm::run_call(inv.cmd, inv.call).map_err(to_eval_err)?;
+            crate::llm::providers::codex::finalize(res, inv.last_message_file.path())
+                .map_err(to_eval_err)
+        }
+        crate::llm::LlmProviderId::Claude => {
+            let inv =
+                crate::llm::providers::claude::build(&cfg, &cwd, stdin).map_err(to_eval_err)?;
+            let res = crate::llm::run_call(inv.cmd, inv.call).map_err(to_eval_err)?;
+            crate::llm::providers::claude::finalize(res).map_err(to_eval_err)
+        }
+    }?;
+
+    Ok(strip_outer_code_fence(out))
 }
 
 /// Ask the LLM to extract structured information from text.
@@ -45,15 +122,7 @@ fn _get_llm_endpoint() -> Option<String> {
 /// let version = llm_extract(html, "What is the latest stable version number? Reply with just the version.");
 /// ```
 pub fn llm_extract(_content: &str, _prompt: &str) -> Result<String, Box<EvalAltResult>> {
-    // TODO: Implement when LLM endpoint design is finalized
-    //
-    // Design considerations:
-    // - Should support multiple backends (Ollama, llama.cpp, etc.)
-    // - Needs timeout handling for slow inference
-    // - Should cache responses for identical content+prompt
-    // - May need structured output format (JSON mode)
-
-    Err("llm_extract not yet implemented - set RECIPE_LLM_ENDPOINT".into())
+    run_provider(build_extract_prompt(_content, _prompt))
 }
 
 /// Ask the LLM to find the latest version from a downloads page.
@@ -71,13 +140,16 @@ pub fn llm_find_latest_version(
     _url: &str,
     _project_name: &str,
 ) -> Result<String, Box<EvalAltResult>> {
-    // TODO: Implement
-    // 1. Fetch the URL
-    // 2. Strip HTML to text (reduce token usage)
-    // 3. Ask LLM: "What is the latest stable version of {project_name}? Reply with just the version number."
-    // 4. Validate response looks like a version (semver-ish)
-
-    Err("llm_find_latest_version not yet implemented".into())
+    let content = crate::helpers::acquire::http::http_get(_url)?;
+    let task = format!(
+        "Project: {project}\nReturn ONLY the latest stable version string. No prose.",
+        project = _project_name
+    );
+    let prompt = build_extract_prompt(
+        &content,
+        &format!("(source url: {url})\n{task}", url = _url, task = task),
+    );
+    run_provider(prompt)
 }
 
 /// Ask the LLM to extract a download URL matching criteria.
@@ -92,10 +164,9 @@ pub fn llm_find_download_url(
     _content: &str,
     _criteria: &str,
 ) -> Result<String, Box<EvalAltResult>> {
-    // TODO: Implement
-    // 1. Ask LLM to find URL matching criteria
-    // 2. Validate response is a valid URL
-    // 3. Optionally verify URL is reachable (HEAD request)
-
-    Err("llm_find_download_url not yet implemented".into())
+    let task = format!(
+        "Return ONLY the matching URL. No prose.\nCriteria: {c}",
+        c = _criteria
+    );
+    run_provider(build_extract_prompt(_content, &task))
 }

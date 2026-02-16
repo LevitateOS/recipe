@@ -9,7 +9,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use levitate_recipe::{RecipeEngine, output};
+use levitate_recipe::{AutoFixConfig, RecipeEngine, output};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -119,6 +119,10 @@ struct Cli {
     /// Write JSON output to file instead of stdout (keeps stdout clean for build output)
     #[arg(long, global = true)]
     json_output: Option<PathBuf>,
+
+    /// Select an LLM profile from XDG `recipe/llm.toml` (under `[profiles.<name>]`).
+    #[arg(long, global = true)]
+    llm_profile: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -127,6 +131,26 @@ enum Commands {
     Install {
         /// Path to recipe file
         recipe: PathBuf,
+
+        /// Automatically attempt to fix build/install failures using the configured LLM provider.
+        #[arg(long)]
+        autofix: bool,
+
+        /// Maximum number of patch attempts per failing install.
+        #[arg(long, default_value_t = 2)]
+        autofix_attempts: u8,
+
+        /// Working directory used for LLM invocation and patch application.
+        #[arg(long)]
+        autofix_cwd: Option<PathBuf>,
+
+        /// Optional extra instructions appended to the built-in autofix prompt.
+        #[arg(long)]
+        autofix_prompt_file: Option<PathBuf>,
+
+        /// Allowed roots for patched file paths (repeatable). If omitted, defaults to repo root.
+        #[arg(long = "autofix-allow-path")]
+        autofix_allow_path: Vec<PathBuf>,
     },
 
     /// Remove an installed package
@@ -193,26 +217,58 @@ fn main() -> Result<()> {
     let json_output = cli.json_output;
 
     match cli.command {
-        Commands::Install { recipe } => {
+        Commands::Install {
+            recipe,
+            autofix,
+            autofix_attempts,
+            autofix_cwd,
+            autofix_prompt_file,
+            autofix_allow_path,
+        } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
-            let engine =
-                create_engine(cli.build_dir.as_deref(), Some(&recipes_path), &cli.defines)?;
+            let autofix_cfg = if autofix {
+                Some(AutoFixConfig {
+                    attempts: autofix_attempts.max(1),
+                    cwd: autofix_cwd,
+                    prompt_file: autofix_prompt_file,
+                    allow_paths: autofix_allow_path,
+                })
+            } else {
+                None
+            };
+            let engine = create_engine(
+                cli.build_dir.as_deref(),
+                Some(&recipes_path),
+                &cli.defines,
+                cli.llm_profile.clone(),
+                autofix_cfg,
+            )?;
             let ctx = engine.execute(&recipe_path)?;
             emit_json(&ctx, json_output.as_deref())?;
         }
 
         Commands::Remove { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
-            let engine =
-                create_engine(cli.build_dir.as_deref(), Some(&recipes_path), &cli.defines)?;
+            let engine = create_engine(
+                cli.build_dir.as_deref(),
+                Some(&recipes_path),
+                &cli.defines,
+                cli.llm_profile.clone(),
+                None,
+            )?;
             let ctx = engine.remove(&recipe_path)?;
             emit_json(&ctx, json_output.as_deref())?;
         }
 
         Commands::Cleanup { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
-            let engine =
-                create_engine(cli.build_dir.as_deref(), Some(&recipes_path), &cli.defines)?;
+            let engine = create_engine(
+                cli.build_dir.as_deref(),
+                Some(&recipes_path),
+                &cli.defines,
+                cli.llm_profile.clone(),
+                None,
+            )?;
             let ctx = engine.cleanup(&recipe_path)?;
             emit_json(&ctx, json_output.as_deref())?;
         }
@@ -263,6 +319,8 @@ fn create_engine(
     build_dir: Option<&Path>,
     recipes_path: Option<&Path>,
     defines: &[String],
+    llm_profile: Option<String>,
+    autofix: Option<AutoFixConfig>,
 ) -> Result<RecipeEngine> {
     let build_dir = match build_dir {
         Some(dir) => {
@@ -278,7 +336,9 @@ fn create_engine(
         }
     };
 
-    let mut engine = RecipeEngine::new(build_dir);
+    let mut engine = RecipeEngine::new(build_dir)
+        .with_llm_profile(llm_profile)
+        .with_autofix(autofix);
 
     if let Some(rp) = recipes_path {
         engine = engine.with_recipes_path(rp.to_path_buf());

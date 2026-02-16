@@ -38,7 +38,7 @@ walkdir = "2"
 owo-colors = "4"
 indicatif = "0.17"
 librqbit = { version = "8.1.1", default-features = false, features = ["rust-tls", "disable-upload"] }
-tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "process", "io-util", "io-std"] }
 
 # Native archive extraction (no external tools needed)
 tar = "0.4"
