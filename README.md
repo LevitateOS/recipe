@@ -131,7 +131,10 @@ The resolver:
 ```bash
 recipe install <name-or-path>
 recipe remove <name-or-path>
-recipe cleanup <name-or-path>
+recipe cleanup <name-or-path> [--reason <reason>]
+recipe isinstalled <name-or-path>
+recipe isbuilt <name-or-path>
+recipe isacquired <name-or-path>
 recipe list
 recipe info <name-or-path>
 recipe hash <file>
@@ -146,9 +149,14 @@ Resolution for `<name-or-path>`:
 
 - `-r, --recipes-path <dir>`: where to search for `<name>.rhai` and resolve `//! extends:`
 - `-b, --build-dir <dir>`: where downloads/build artifacts go (otherwise a kept temp dir)
-- `--define KEY=VALUE`: inject constants into the Rhai scope before execution (repeatable)
+- `--define KEY=VALUE`: inject constants into the Rhai scope before execution (repeatable; available to install/remove/cleanup/is*)
 - `--json-output <file>`: write the final ctx JSON to a file (stdout stays quiet)
 - `--llm-profile <name>`: select a profile from XDG `recipe/llm.toml` (see below)
+
+### Cleanup Reason
+
+- `recipe cleanup` defaults to `reason = "manual"`.
+- Use `recipe cleanup <name-or-path> --reason <reason>` to pass a custom manual lifecycle reason.
 
 ### Install Flags (Autofix)
 

@@ -217,7 +217,12 @@ impl RecipeEngine {
     /// Returns the final ctx map after removal.
     pub fn remove(&self, recipe_path: &Path) -> Result<rhai::Map> {
         llm::with_llm_profile(self.llm_profile.as_deref(), || {
-            core::executor::remove(&self.engine, recipe_path, self.recipes_path.as_deref())
+            core::executor::remove(
+                &self.engine,
+                recipe_path,
+                self.recipes_path.as_deref(),
+                &self.defines,
+            )
         })
     }
 
@@ -225,12 +230,60 @@ impl RecipeEngine {
     ///
     /// Returns the final ctx map after cleanup.
     pub fn cleanup(&self, recipe_path: &Path) -> Result<rhai::Map> {
+        self.cleanup_with_reason(recipe_path, "manual")
+    }
+
+    /// Clean up build artifacts with an explicit reason.
+    ///
+    /// Returns the final ctx map after cleanup.
+    pub fn cleanup_with_reason(&self, recipe_path: &Path, reason: &str) -> Result<rhai::Map> {
         llm::with_llm_profile(self.llm_profile.as_deref(), || {
             core::executor::cleanup(
                 &self.engine,
                 &self.build_dir,
                 recipe_path,
                 self.recipes_path.as_deref(),
+                &self.defines,
+                reason,
+            )
+        })
+    }
+
+    /// Execute `is_installed(ctx)` manually.
+    pub fn is_installed(&self, recipe_path: &Path) -> Result<rhai::Map> {
+        llm::with_llm_profile(self.llm_profile.as_deref(), || {
+            core::executor::is_installed(
+                &self.engine,
+                &self.build_dir,
+                recipe_path,
+                self.recipes_path.as_deref(),
+                &self.defines,
+            )
+        })
+    }
+
+    /// Execute `is_built(ctx)` manually.
+    pub fn is_built(&self, recipe_path: &Path) -> Result<rhai::Map> {
+        llm::with_llm_profile(self.llm_profile.as_deref(), || {
+            core::executor::is_built(
+                &self.engine,
+                &self.build_dir,
+                recipe_path,
+                self.recipes_path.as_deref(),
+                &self.defines,
+            )
+        })
+    }
+
+    /// Execute `is_acquired(ctx)` manually.
+    pub fn is_acquired(&self, recipe_path: &Path) -> Result<rhai::Map> {
+        llm::with_llm_profile(self.llm_profile.as_deref(), || {
+            core::executor::is_acquired(
+                &self.engine,
+                &self.build_dir,
+                recipe_path,
+                self.recipes_path.as_deref(),
+                &self.defines,
             )
         })
     }

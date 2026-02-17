@@ -606,6 +606,7 @@ pub fn remove(
     engine: &Engine,
     recipe_path: &Path,
     search_path: Option<&Path>,
+    defines: &[(String, String)],
 ) -> Result<rhai::Map> {
     let recipe_path = recipe_path
         .canonicalize()
@@ -626,6 +627,9 @@ pub fn remove(
     scope.push_constant("RECIPE_DIR", recipe_dir);
     if let Some(ref bd) = compiled.base_dir {
         scope.push_constant("BASE_RECIPE_DIR", bd.to_string_lossy().to_string());
+    }
+    for (key, value) in defines {
+        scope.push_constant(key.as_str(), value.clone());
     }
 
     // Run script to populate scope
@@ -666,6 +670,8 @@ pub fn cleanup(
     build_dir: &Path,
     recipe_path: &Path,
     search_path: Option<&Path>,
+    defines: &[(String, String)],
+    reason: &str,
 ) -> Result<rhai::Map> {
     let recipe_path = recipe_path
         .canonicalize()
@@ -688,6 +694,9 @@ pub fn cleanup(
         scope.push_constant("BASE_RECIPE_DIR", bd.to_string_lossy().to_string());
     }
     scope.push_constant("BUILD_DIR", build_dir.to_string_lossy().to_string());
+    for (key, value) in defines {
+        scope.push_constant(key.as_str(), value.clone());
+    }
 
     // Run script to populate scope
     engine.run_ast_with_scope(&mut scope, &ast)?;
@@ -709,7 +718,7 @@ pub fn cleanup(
     output::sub_action("cleanup");
 
     ctx_map = maybe_cleanup(
-        engine, &ast, &mut scope, ctx_map, "manual", /* best_effort */ false,
+        engine, &ast, &mut scope, ctx_map, reason, /* best_effort */ false,
         /* require_defined */ true,
     )?;
     persist_ctx(
@@ -720,6 +729,126 @@ pub fn cleanup(
 
     output::success(&format!("{} cleaned", name));
     Ok(ctx_map)
+}
+
+/// Execute `is_installed(ctx)` manually.
+///
+/// Returns the updated ctx map on success.
+pub fn is_installed(
+    engine: &Engine,
+    build_dir: &Path,
+    recipe_path: &Path,
+    search_path: Option<&Path>,
+    defines: &[(String, String)],
+) -> Result<rhai::Map> {
+    run_check(
+        engine,
+        build_dir,
+        recipe_path,
+        search_path,
+        defines,
+        "is_installed",
+    )
+}
+
+/// Execute `is_built(ctx)` manually.
+///
+/// Returns the updated ctx map on success.
+pub fn is_built(
+    engine: &Engine,
+    build_dir: &Path,
+    recipe_path: &Path,
+    search_path: Option<&Path>,
+    defines: &[(String, String)],
+) -> Result<rhai::Map> {
+    run_check(
+        engine,
+        build_dir,
+        recipe_path,
+        search_path,
+        defines,
+        "is_built",
+    )
+}
+
+/// Execute `is_acquired(ctx)` manually.
+///
+/// Returns the updated ctx map on success.
+pub fn is_acquired(
+    engine: &Engine,
+    build_dir: &Path,
+    recipe_path: &Path,
+    search_path: Option<&Path>,
+    defines: &[(String, String)],
+) -> Result<rhai::Map> {
+    run_check(
+        engine,
+        build_dir,
+        recipe_path,
+        search_path,
+        defines,
+        "is_acquired",
+    )
+}
+
+fn run_check(
+    engine: &Engine,
+    build_dir: &Path,
+    recipe_path: &Path,
+    search_path: Option<&Path>,
+    defines: &[(String, String)],
+    check_name: &str,
+) -> Result<rhai::Map> {
+    let recipe_path = recipe_path
+        .canonicalize()
+        .unwrap_or_else(|_| recipe_path.to_path_buf());
+
+    let _lock = acquire_recipe_lock(&recipe_path)?;
+
+    let compiled = compile_recipe(engine, &recipe_path, search_path)?;
+    let ast = compiled.ast.clone();
+
+    // Derive RECIPE_DIR from the recipe file's parent directory
+    let recipe_dir = recipe_path
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".to_string());
+
+    let mut scope = Scope::new();
+    scope.push_constant("RECIPE_DIR", recipe_dir);
+    if let Some(ref bd) = compiled.base_dir {
+        scope.push_constant("BASE_RECIPE_DIR", bd.to_string_lossy().to_string());
+    }
+    scope.push_constant("BUILD_DIR", build_dir.to_string_lossy().to_string());
+    for (key, value) in defines {
+        scope.push_constant(key.clone(), value.clone());
+    }
+
+    // Run script to populate scope
+    engine.run_ast_with_scope(&mut scope, &ast)?;
+
+    let ctx_map: rhai::Map = scope
+        .get_value("ctx")
+        .ok_or_else(|| anyhow!("Recipe missing ctx"))?;
+
+    let name = ctx_map
+        .get("name")
+        .and_then(|v| v.clone().into_string().ok())
+        .unwrap_or_else(|| "package".to_string());
+
+    if !has_fn(&ast, check_name) {
+        return Err(anyhow!("{} has no {} function", name, check_name));
+    }
+
+    output::action(&format!("Checking {} ({})", name, check_name));
+    output::sub_action(check_name);
+
+    let checked_ctx = engine
+        .call_fn::<rhai::Map>(&mut scope, &ast, check_name, (ctx_map,))
+        .map_err(|e| anyhow!("{check_name} failed: {e}"))?;
+
+    output::success(&format!("{} passed {}", name, check_name));
+    Ok(checked_ctx)
 }
 
 /// Check whether a phase is needed (true when the check throws).

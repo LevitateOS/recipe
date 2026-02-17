@@ -4,6 +4,9 @@
 //!   recipe install <path>           Install a recipe
 //!   recipe remove <path>            Remove an installed package
 //!   recipe cleanup <path>           Clean up build artifacts
+//!   recipe isinstalled <path>       Execute is_installed(ctx)
+//!   recipe isbuilt <path>           Execute is_built(ctx)
+//!   recipe isacquired <path>        Execute is_acquired(ctx)
 //!   recipe list                     List recipes in directory
 //!   recipe info <path>              Show recipe info
 
@@ -163,6 +166,31 @@ enum Commands {
     Cleanup {
         /// Path to recipe file
         recipe: PathBuf,
+
+        /// Cleanup reason passed to cleanup(ctx, reason)
+        #[arg(long)]
+        reason: Option<String>,
+    },
+
+    /// Run is_installed(ctx) manually
+    #[command(name = "isinstalled")]
+    IsInstalled {
+        /// Path to recipe file
+        recipe: PathBuf,
+    },
+
+    /// Run is_built(ctx) manually
+    #[command(name = "isbuilt")]
+    IsBuilt {
+        /// Path to recipe file
+        recipe: PathBuf,
+    },
+
+    /// Run is_acquired(ctx) manually
+    #[command(name = "isacquired")]
+    IsAcquired {
+        /// Path to recipe file
+        recipe: PathBuf,
     },
 
     /// List recipes in directory
@@ -260,7 +288,7 @@ fn main() -> Result<()> {
             emit_json(&ctx, json_output.as_deref())?;
         }
 
-        Commands::Cleanup { recipe } => {
+        Commands::Cleanup { recipe, reason } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(
                 cli.build_dir.as_deref(),
@@ -269,7 +297,51 @@ fn main() -> Result<()> {
                 cli.llm_profile.clone(),
                 None,
             )?;
-            let ctx = engine.cleanup(&recipe_path)?;
+            let cleanup_reason = reason
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("manual");
+            let ctx = engine.cleanup_with_reason(&recipe_path, cleanup_reason)?;
+            emit_json(&ctx, json_output.as_deref())?;
+        }
+
+        Commands::IsInstalled { recipe } => {
+            let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
+            let engine = create_engine(
+                cli.build_dir.as_deref(),
+                Some(&recipes_path),
+                &cli.defines,
+                cli.llm_profile.clone(),
+                None,
+            )?;
+            let ctx = engine.is_installed(&recipe_path)?;
+            emit_json(&ctx, json_output.as_deref())?;
+        }
+
+        Commands::IsBuilt { recipe } => {
+            let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
+            let engine = create_engine(
+                cli.build_dir.as_deref(),
+                Some(&recipes_path),
+                &cli.defines,
+                cli.llm_profile.clone(),
+                None,
+            )?;
+            let ctx = engine.is_built(&recipe_path)?;
+            emit_json(&ctx, json_output.as_deref())?;
+        }
+
+        Commands::IsAcquired { recipe } => {
+            let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
+            let engine = create_engine(
+                cli.build_dir.as_deref(),
+                Some(&recipes_path),
+                &cli.defines,
+                cli.llm_profile.clone(),
+                None,
+            )?;
+            let ctx = engine.is_acquired(&recipe_path)?;
             emit_json(&ctx, json_output.as_deref())?;
         }
 
