@@ -4,7 +4,20 @@
 
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use owo_colors::OwoColorize;
+use serde_json::json;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
+static MACHINE_EVENTS_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Enable or disable machine-friendly hook events.
+pub fn set_machine_events(enabled: bool) {
+    MACHINE_EVENTS_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+fn machine_events() -> bool {
+    MACHINE_EVENTS_ENABLED.load(Ordering::Relaxed)
+}
 
 /// Print an action header (blue, bold)
 /// Example: "==> Installing ripgrep"
@@ -59,6 +72,47 @@ pub fn error(message: &str) {
 /// Example: "==> ripgrep already installed, skipping"
 pub fn skip(message: &str) {
     eprintln!("{} {}", "==>".dimmed(), message.dimmed());
+}
+
+/// Emit a recipe hook event.
+/// When machine events are enabled, outputs JSON:
+/// {"event":"recipe-hook","recipe":"...","hook":"...","status":"...","msg":"..."}
+/// Otherwise outputs parser-friendly text:
+/// [recipe-hook] recipe=<name> hook=<name> status=<status> msg="<msg>"
+pub fn hook_event(recipe: &str, hook: &str, status: &str, msg: &str) {
+    let escape = |value: &str| {
+        value
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', " ")
+    };
+
+    if machine_events() {
+        match serde_json::to_string(&json!({
+            "event": "recipe-hook",
+            "recipe": recipe,
+            "hook": hook,
+            "status": status,
+            "msg": msg,
+        })) {
+            Ok(payload) => eprintln!("{}", payload),
+            Err(_) => eprintln!(
+                "[recipe-hook] recipe=\"{}\" hook=\"{}\" status=\"{}\" msg=\"{}\"",
+                escape(recipe),
+                escape(hook),
+                escape(status),
+                escape(msg)
+            ),
+        }
+    } else {
+        eprintln!(
+            "[recipe-hook] recipe=\"{}\" hook=\"{}\" status=\"{}\" msg=\"{}\"",
+            escape(recipe),
+            escape(hook),
+            escape(status),
+            escape(msg)
+        );
+    }
 }
 
 /// Print package status in list output

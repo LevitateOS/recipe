@@ -96,7 +96,7 @@ impl<'a> BuildDepsResolver<'a> {
                     }
 
                     output::warning(&format!(
-                        "[autofix] build-dep {name} failed ({reason} in {phase}); running LLM (attempt {}/{})",
+                        "[autofix] recipe dependency {name} failed ({reason} in {phase}); running LLM (attempt {}/{})",
                         attempt + 1,
                         max_attempts
                     ));
@@ -111,7 +111,7 @@ impl<'a> BuildDepsResolver<'a> {
                         &failure,
                     )
                     .with_context(|| {
-                        format!("autofix failed for build-dep {name} ({reason} in {phase})")
+                        format!("autofix failed for recipe dependency {name} ({reason} in {phase})")
                     })?;
                 }
             }
@@ -159,21 +159,33 @@ impl<'a> BuildDepsResolver<'a> {
         self.engine
             .run_ast_with_scope(&mut scope, &ast)
             .map_err(|e| {
-                DepAttemptError::Fatal(anyhow!("Failed to run build dep {}: {}", name, e))
+                DepAttemptError::Fatal(anyhow!("Failed to run dependency recipe {}: {}", name, e))
             })?;
 
-        let ctx_map: rhai::Map = scope
-            .get_value("ctx")
-            .ok_or_else(|| DepAttemptError::Fatal(anyhow!("Build dep {} missing ctx", name)))?;
+        let ctx_map: rhai::Map = scope.get_value("ctx").ok_or_else(|| {
+            DepAttemptError::Fatal(anyhow!("Dependency recipe {} missing ctx", name))
+        })?;
 
         // Check if already installed
         let needs_install = Self::check_throws(self.engine, &ast, &scope, "is_installed", &ctx_map);
         if !needs_install {
-            output::skip(&format!("build-dep {} already satisfied", name));
+            output::hook_event(
+                name,
+                "dependency.check.is_installed",
+                "satisfied",
+                "dependency already prepared",
+            );
+            output::skip(&format!("Tool dependency {} already prepared", name));
             return Ok(());
         }
 
-        output::action(&format!("Installing build-dep: {}", name));
+        output::action(&format!("Preparing tool recipe: {}", name));
+        output::hook_event(
+            name,
+            "dependency.prepare",
+            "requested",
+            "tool recipe execution requested",
+        );
 
         // Run acquire → install (simplified, no locking or persistence)
         let needs_acquire = Self::check_throws(self.engine, &ast, &scope, "is_acquired", &ctx_map);
@@ -182,6 +194,13 @@ impl<'a> BuildDepsResolver<'a> {
         let mut ctx = ctx_map;
         if needs_acquire && Self::has_fn(&ast, "acquire") {
             output::sub_action("acquire");
+            output::detail("Preparing tool sources");
+            output::hook_event(
+                name,
+                "dependency.acquire",
+                "running",
+                "executing dependency acquire hook",
+            );
             let ctx_before = ctx.clone();
             match self
                 .engine
@@ -189,6 +208,13 @@ impl<'a> BuildDepsResolver<'a> {
             {
                 Ok(new_ctx) => {
                     ctx = new_ctx;
+                    output::hook_event(
+                        name,
+                        "dependency.acquire",
+                        "success",
+                        "acquire hook finished",
+                    );
+                    output::success(&format!("{}: source prep step finished", name));
                     if has_cleanup {
                         ctx = maybe_cleanup(
                             self.engine,
@@ -200,6 +226,12 @@ impl<'a> BuildDepsResolver<'a> {
                     }
                 }
                 Err(e) => {
+                    output::hook_event(name, "dependency.acquire", "failed", &format!("{e}"));
+                    output::error(&format!("{}: source prep step failed", name));
+                    output::detail(&format!("  reason: {e}"));
+                    output::detail(
+                        "  action: fix acquire() in dependency recipe and rerun with RECIPE_TRACE_HELPERS=1",
+                    );
                     if has_cleanup {
                         let _ = maybe_cleanup(
                             self.engine,
@@ -212,7 +244,7 @@ impl<'a> BuildDepsResolver<'a> {
                     return Err(DepAttemptError::Phase {
                         reason: "auto.acquire.failure",
                         phase: "acquire",
-                        error: anyhow!("build-dep {} acquire failed: {}", name, e),
+                        error: anyhow!("tool dependency {} source prep failed: {}", name, e),
                     });
                 }
             }
@@ -220,6 +252,13 @@ impl<'a> BuildDepsResolver<'a> {
 
         if Self::has_fn(&ast, "install") {
             output::sub_action("install");
+            output::detail("Applying tool recipe outputs");
+            output::hook_event(
+                name,
+                "dependency.install",
+                "running",
+                "executing dependency install hook",
+            );
             let ctx_before = ctx.clone();
             match self
                 .engine
@@ -227,6 +266,13 @@ impl<'a> BuildDepsResolver<'a> {
             {
                 Ok(new_ctx) => {
                     ctx = new_ctx;
+                    output::hook_event(
+                        name,
+                        "dependency.install",
+                        "success",
+                        "install hook finished",
+                    );
+                    output::success(&format!("{}: install step finished", name));
                     if has_cleanup {
                         let _ = maybe_cleanup(
                             self.engine,
@@ -238,6 +284,10 @@ impl<'a> BuildDepsResolver<'a> {
                     }
                 }
                 Err(e) => {
+                    output::hook_event(name, "dependency.install", "failed", &format!("{e}"));
+                    output::error(&format!("{}: install step failed", name));
+                    output::detail(&format!("  reason: {e}"));
+                    output::detail("  action: fix install() in dependency recipe and rerun.");
                     if has_cleanup {
                         let _ = maybe_cleanup(
                             self.engine,
@@ -250,13 +300,19 @@ impl<'a> BuildDepsResolver<'a> {
                     return Err(DepAttemptError::Phase {
                         reason: "auto.install.failure",
                         phase: "install",
-                        error: anyhow!("build-dep {} install failed: {}", name, e),
+                        error: anyhow!("tool dependency {} install failed: {}", name, e),
                     });
                 }
             }
         }
 
-        output::success(&format!("build-dep {} installed", name));
+        output::hook_event(
+            name,
+            "dependency.ready",
+            "success",
+            "tool dependency prepared",
+        );
+        output::success(&format!("Tool dependency {} ready", name));
         Ok(())
     }
 
@@ -272,7 +328,7 @@ impl<'a> BuildDepsResolver<'a> {
         }
 
         anyhow::bail!(
-            "Build dep recipe '{}' not found (search_path: {:?})",
+            "Dependency recipe '{}' not found (search_path: {:?})",
             filename,
             self.recipes_path
         )

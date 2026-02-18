@@ -123,6 +123,10 @@ struct Cli {
     #[arg(long, global = true)]
     json_output: Option<PathBuf>,
 
+    /// Emit machine-readable hook events (JSON objects) for wrappers.
+    #[arg(long, global = true)]
+    machine_events: bool,
+
     /// Select an LLM profile from XDG `recipe/llm.toml` (under `[profiles.<name>]`).
     #[arg(long, global = true)]
     llm_profile: Option<String>,
@@ -231,6 +235,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let recipes_path = cli.recipes_path.unwrap_or_else(default_recipes_path);
+    output::set_machine_events(cli.machine_events);
 
     // Ensure recipes directory exists
     if !recipes_path.exists() {

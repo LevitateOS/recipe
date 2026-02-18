@@ -64,6 +64,18 @@ fn test_cli_help() {
 }
 
 #[test]
+fn test_cli_help_includes_machine_events_flag() {
+    let output = Command::new(recipe_bin())
+        .arg("--help")
+        .output()
+        .expect("Failed to run recipe --help");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--machine-events"));
+}
+
+#[test]
 fn test_cli_version() {
     let output = Command::new(recipe_bin())
         .arg("--version")
@@ -809,4 +821,168 @@ fn install(ctx) {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("install") || stderr.contains("Install failed"));
+}
+
+#[test]
+fn test_cli_install_emits_legacy_recipe_hook_logs() {
+    let (_dir, recipes) = create_test_env();
+
+    write_recipe(
+        &recipes,
+        "hooklog",
+        r#"
+let ctx = #{
+    name: "hooklog",
+    version: "1.0.0",
+    installed: false,
+};
+
+fn is_installed(ctx) {
+    if !ctx.installed { throw "not installed"; }
+    ctx
+}
+
+fn acquire(ctx) { ctx }
+
+fn install(ctx) { ctx }
+"#,
+    );
+
+    let output = run_recipe(&["install", "hooklog"], &recipes);
+    assert!(
+        output.status.success(),
+        "install failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(stderr.contains("[recipe-hook]"));
+    assert!(stderr.contains(r#"recipe="hooklog""#));
+    assert!(stderr.contains(r#"hook="prepare""#));
+    assert!(stderr.contains(r#"hook="acquire""#));
+    assert!(stderr.contains(r#"hook="install""#));
+    assert!(stderr.contains(r#"status="success""#) || stderr.contains(r#"status="running""#));
+}
+
+#[test]
+fn test_cli_install_emits_machine_recipe_hook_events_json() {
+    let (_dir, recipes) = create_test_env();
+
+    write_recipe(
+        &recipes,
+        "hooklog-json",
+        r#"
+let ctx = #{
+    name: "hooklog-json",
+    version: "1.0.0",
+    installed: false,
+};
+
+fn is_installed(ctx) {
+    if !ctx.installed { throw "not installed"; }
+    ctx
+}
+
+fn acquire(ctx) { ctx }
+
+fn build(ctx) { ctx }
+
+fn install(ctx) { ctx }
+"#,
+    );
+
+    let output = run_recipe(&["--machine-events", "install", "hooklog-json"], &recipes);
+    assert!(
+        output.status.success(),
+        "install failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    let mut saw_hook_events = 0;
+    let mut saw_success = false;
+    let mut saw_running = false;
+
+    for line in stderr.lines() {
+        if let Ok(event) = serde_json::from_str::<serde_json::Value>(line) {
+            if event.get("event").and_then(|v| v.as_str()) == Some("recipe-hook") {
+                saw_hook_events += 1;
+                assert_eq!(
+                    event.get("recipe").and_then(|v| v.as_str()),
+                    Some("hooklog-json")
+                );
+                match event.get("status").and_then(|v| v.as_str()) {
+                    Some("running") => saw_running = true,
+                    Some("success") => saw_success = true,
+                    _ => {}
+                }
+            }
+            continue;
+        }
+        if line.contains("recipe-hook") {
+            panic!("Expected JSON-only recipe-hook events in machine-events mode, got: {line}");
+        }
+    }
+
+    assert!(saw_hook_events > 0, "no machine recipe-hook events found");
+    assert!(saw_running, "expected at least one running hook event");
+    assert!(saw_success, "expected at least one success hook event");
+}
+
+#[test]
+fn test_cli_install_machine_events_failure_contains_reason() {
+    let (_dir, recipes) = create_test_env();
+
+    write_recipe(
+        &recipes,
+        "hooklog-fail",
+        r#"
+let ctx = #{
+    name: "hooklog-fail",
+    version: "1.0.0",
+    installed: false,
+};
+
+fn is_installed(ctx) {
+    if !ctx.installed { throw "not installed"; }
+    ctx
+}
+
+fn acquire(ctx) {
+    throw "Download failed!";
+}
+
+fn install(ctx) { ctx }
+"#,
+    );
+
+    let output = run_recipe(&["--machine-events", "install", "hooklog-fail"], &recipes);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    let mut saw_failed = false;
+    let mut saw_reason = false;
+
+    for line in stderr.lines() {
+        if let Ok(event) = serde_json::from_str::<serde_json::Value>(line) {
+            if event.get("event").and_then(|v| v.as_str()) == Some("recipe-hook") {
+                if event.get("status").and_then(|v| v.as_str()) == Some("failed") {
+                    saw_failed = true;
+                    if event
+                        .get("msg")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|msg| msg.contains("Download failed!"))
+                    {
+                        saw_reason = true;
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(saw_failed, "expected machine failed hook event");
+    assert!(
+        saw_reason,
+        "expected failed hook msg to include actionable reason"
+    );
 }

@@ -155,12 +155,12 @@ pub(crate) fn compile_recipe(
 
 /// Install a package by executing its recipe
 ///
-/// Follows the lifecycle:
+/// Follows the recipe workflow:
 /// 1. Check is_installed(ctx) - skip if doesn't throw
 /// 2. Check is_built(ctx) - skip build if doesn't throw
 /// 3. Check is_acquired(ctx) - skip acquire if doesn't throw
-/// 4. Execute needed phases (acquire, build, install)
-/// 5. Persist ctx after each phase
+/// 4. Execute needed steps (acquire, build, install)
+/// 5. Persist ctx after each step
 ///
 /// Returns the final ctx map containing all recipe state.
 pub fn install(
@@ -216,7 +216,14 @@ pub fn install_with_autofix(
             autofix,
         ) {
             Ok(ctx) => return Ok(ctx),
-            Err(InstallAttemptError::Fatal(e)) => return Err(e),
+            Err(InstallAttemptError::Fatal(e)) => {
+                output::error(&format!("Fatal install failure: {}", recipe_path.display()));
+                output::detail(&format!("  reason: {e}"));
+                output::detail(
+                    "  action: inspect recipe loading/validation and ensure required helper functions are present.",
+                );
+                return Err(e);
+            }
             Err(InstallAttemptError::Phase {
                 reason,
                 phase,
@@ -253,6 +260,74 @@ pub fn install_with_autofix(
     }
 
     unreachable!("attempt loop returns on success or final failure");
+}
+
+fn friendly_reason(phase: &str, reason: &str, attempt: &rhai::Map) -> String {
+    let mut snippet = String::new();
+    if let Some(ctx_name) = attempt
+        .get("name")
+        .and_then(|v| v.clone().into_string().ok())
+    {
+        snippet.push_str(&format!("{ctx_name}: "));
+    }
+    snippet.push_str(&format!("{phase} check reported: work still needed"));
+    if !reason.is_empty() {
+        snippet.push_str(&format!(" ({reason})"));
+    }
+    snippet
+}
+
+fn report_phase_failure(name: &str, phase: &str, error: &anyhow::Error) {
+    output::hook_event(name, phase, "failed", &format!("{error}"));
+    output::error(&format!("{name}: {phase} recipe step failed"));
+    output::detail(&format!("  reason: {error}"));
+    output::detail(
+        "  action: check the corresponding recipe function, then rerun with RECIPE_TRACE_HELPERS=1 for helper-level traces.",
+    );
+    output::detail(
+        "  action: if this fails on shell command output, reproduce that command manually and fix the underlying environment/network/path issue first.",
+    );
+}
+
+fn report_phase_success(name: &str, phase: &str) {
+    output::hook_event(name, phase, "success", "step finished");
+    output::success(&format!("{name}: {phase} step finished"));
+}
+
+fn report_check_result(name: &str, check: &str, needs_phase: bool, reason: Option<&str>) {
+    if needs_phase {
+        if let Some(reason) = reason {
+            output::detail(&format!(
+                "{name}: {check} check says recipe still needs this step ({reason})"
+            ));
+            output::hook_event(
+                name,
+                &format!("check.{check}"),
+                "required",
+                &format!("{reason}"),
+            );
+        } else {
+            output::detail(&format!(
+                "{name}: {check} check says recipe still needs this step"
+            ));
+            output::hook_event(
+                name,
+                &format!("check.{check}"),
+                "required",
+                "check returned failure",
+            );
+        }
+    } else {
+        output::detail(&format!(
+            "{name}: {check} check says recipe step is already complete"
+        ));
+        output::hook_event(
+            name,
+            &format!("check.{check}"),
+            "satisfied",
+            "check returned success",
+        );
+    }
 }
 
 fn install_once(
@@ -312,30 +387,63 @@ fn install_once(
                 .to_string()
         });
 
-    // Check phases (reverse order) - throw means "needs this phase".
+    output::action(&format!("Preparing recipe for {}", name));
+    output::hook_event(&name, "prepare", "running", "starting recipe execution");
+    output::detail(&format!("Recipe: {}", recipe_path.display()));
+    if let Some(base_path) = &compiled.base_path {
+        output::detail(&format!("Extends base recipe: {}", base_path.display()));
+    }
+
+    // Check steps (reverse order) - throw means "needs this step".
     //
     // IMPORTANT: `is_*` checks may also *return an updated ctx* (e.g. setting
     // `ctx.source_path` or `ctx.build_dir`). When the check passes, we must carry
     // the returned ctx forward even if the phase is skipped.
-    let (needs_install, checked_ctx) = check_phase(engine, &ast, &scope, "is_installed", &ctx_map);
+    let (needs_install, checked_ctx, needs_install_reason) =
+        check_phase_with_reason(engine, &ast, &scope, "is_installed", &ctx_map);
+    report_check_result(
+        &name,
+        "is_installed",
+        needs_install,
+        needs_install_reason.as_deref(),
+    );
     ctx_map = checked_ctx;
 
     let mut needs_build = false;
     let mut needs_acquire = false;
     if needs_install {
-        let (nb, checked_ctx) = check_phase(engine, &ast, &scope, "is_built", &ctx_map);
+        let (nb, checked_ctx, build_reason) =
+            check_phase_with_reason(engine, &ast, &scope, "is_built", &ctx_map);
+        report_check_result(&name, "is_built", nb, build_reason.as_deref());
         needs_build = nb;
         ctx_map = checked_ctx;
 
         if needs_build {
-            let (na, checked_ctx) = check_phase(engine, &ast, &scope, "is_acquired", &ctx_map);
+            let (na, checked_ctx, acquire_reason) =
+                check_phase_with_reason(engine, &ast, &scope, "is_acquired", &ctx_map);
+            report_check_result(&name, "is_acquired", na, acquire_reason.as_deref());
             needs_acquire = na;
             ctx_map = checked_ctx;
         }
     }
+
+    if needs_install {
+        let mut planned = Vec::new();
+        if needs_acquire {
+            planned.push("acquire");
+        }
+        if needs_build && has_fn(&ast, "build") {
+            planned.push("build");
+        }
+        planned.push("install");
+        output::detail(&format!("Recipe flow: {}", planned.join(" → ")));
+    }
+
     let cleanup_auto_supported = has_fn_arity(&ast, "cleanup", 2);
 
     if !needs_install {
+        output::hook_event(&name, "install", "skipped", "already installed");
+        output::detail("All checks passed; nothing to do.");
         output::skip(&format!("{} already installed, skipping", name));
         return Ok(ctx_map);
     }
@@ -343,6 +451,22 @@ fn install_once(
     // Cleanup is required in this repository: it provides the hygiene hooks needed
     // for consistent build dir behavior (especially on failure paths).
     if !cleanup_auto_supported {
+        output::hook_event(
+            &name,
+            "cleanup",
+            "missing",
+            "required cleanup(ctx, reason) hook missing",
+        );
+        output::error(&format!(
+            "{} requires cleanup(ctx, reason) for this repo and it is missing.",
+            name
+        ));
+        output::detail(&format!(
+            "Expected signature: fn cleanup(ctx, reason) -> {{ ... }}"
+        ));
+        output::detail(
+            "Action: add a cleanup hook to your recipe or temporarily run in a test environment that allows skipping it.",
+        );
         return Err(InstallAttemptError::Fatal(anyhow!(
             "{} missing required cleanup(ctx, reason) hook (found no 2-arg cleanup)",
             name
@@ -370,6 +494,21 @@ fn install_once(
         })
         .unwrap_or_default();
 
+    if deps.is_empty() {
+        output::detail("No runtime dependency recipes declared (`deps`).");
+    } else {
+        output::detail(&format!("Runtime dependencies: {}", deps.join(", ")));
+    }
+
+    if build_deps.is_empty() {
+        output::detail("No build-time dependency recipes declared (`build_deps`).");
+    } else {
+        output::detail(&format!(
+            "Build-time dependencies: {}",
+            build_deps.join(", ")
+        ));
+    }
+
     // Resolve `deps` immediately (needed for all phases)
     let _env_guard = if !deps.is_empty() {
         Some(
@@ -381,14 +520,18 @@ fn install_once(
     };
 
     output::action(&format!("Installing {}", name));
+    output::hook_event(&name, "install", "requested", "hook execution queued");
 
     // Execute needed phases
     if needs_acquire {
         output::sub_action("acquire");
+        output::detail("Checking/refreshing source artifacts");
+        output::hook_event(&name, "acquire", "running", "executing recipe hook");
         let ctx_before = ctx_map.clone();
         match run_phase(engine, &ast, &mut scope, "acquire", ctx_map) {
             Ok(new_ctx) => {
                 ctx_map = new_ctx;
+                report_phase_success(&name, "acquire");
                 persist_ctx(
                     &mut compiled,
                     &ctx_map,
@@ -417,6 +560,7 @@ fn install_once(
                 }
             }
             Err(e) => {
+                report_phase_failure(&name, "acquire", &e);
                 // Best-effort failure hygiene: don't mask the original error.
                 if cleanup_auto_supported {
                     let _ = maybe_cleanup(
@@ -441,8 +585,15 @@ fn install_once(
     if needs_build && has_fn(&ast, "build") {
         // Re-check: does the recipe still need building after acquire ran?
         // (acquire may have updated ctx such that is_built now passes)
-        let (still_needs_build, checked_ctx) =
-            check_phase(engine, &ast, &scope, "is_built", &ctx_map);
+        let (still_needs_build, checked_ctx, post_acquire_build_reason) =
+            check_phase_with_reason(engine, &ast, &scope, "is_built", &ctx_map);
+        if let Some(reason) = post_acquire_build_reason {
+            output::detail(&friendly_reason(
+                "is_built (post acquire)",
+                &reason,
+                &ctx_map,
+            ));
+        }
         ctx_map = checked_ctx;
 
         // Resolve build_deps only when actually building
@@ -464,10 +615,13 @@ fn install_once(
 
         if still_needs_build {
             output::sub_action("build");
+            output::detail("Compiling or assembling build products");
+            output::hook_event(&name, "build", "running", "executing recipe hook");
             let ctx_before = ctx_map.clone();
             match run_phase(engine, &ast, &mut scope, "build", ctx_map) {
                 Ok(new_ctx) => {
                     ctx_map = new_ctx;
+                    report_phase_success(&name, "build");
                     persist_ctx(&mut compiled, &ctx_map, "Failed to persist ctx after build")
                         .map_err(InstallAttemptError::Fatal)?;
 
@@ -491,6 +645,7 @@ fn install_once(
                     }
                 }
                 Err(e) => {
+                    report_phase_failure(&name, "build", &e);
                     if cleanup_auto_supported {
                         let _ = maybe_cleanup(
                             engine,
@@ -514,10 +669,13 @@ fn install_once(
 
     if needs_install {
         output::sub_action("install");
+        output::detail("Applying package files to destination");
+        output::hook_event(&name, "install", "running", "executing recipe hook");
         let ctx_before = ctx_map.clone();
         match run_phase(engine, &ast, &mut scope, "install", ctx_map) {
             Ok(new_ctx) => {
                 ctx_map = new_ctx;
+                report_phase_success(&name, "install");
                 persist_ctx(
                     &mut compiled,
                     &ctx_map,
@@ -545,6 +703,7 @@ fn install_once(
                 }
             }
             Err(e) => {
+                report_phase_failure(&name, "install", &e);
                 if cleanup_auto_supported {
                     let _ = maybe_cleanup(
                         engine,
@@ -574,6 +733,11 @@ fn install_once(
             "is_installed",
             (ctx_map.clone(),),
         ) {
+            report_phase_failure(
+                &name,
+                "post-install verification",
+                &anyhow!("is_installed failed after install: {e}"),
+            );
             // Allow best-effort failure hygiene.
             if cleanup_auto_supported {
                 let _ = maybe_cleanup(
@@ -596,6 +760,7 @@ fn install_once(
     }
 
     output::success(&format!("{} installed", name));
+    output::hook_event(&name, "install", "success", "recipe completed");
     Ok(ctx_map)
 }
 
@@ -645,13 +810,19 @@ pub fn remove(
         .unwrap_or_else(|| "package".to_string());
 
     if !has_fn(&ast, "remove") {
+        output::hook_event(&name, "remove", "missing", "required remove hook missing");
         return Err(anyhow!("{} has no remove function", name));
     }
 
     output::action(&format!("Removing {}", name));
     output::sub_action("remove");
+    output::hook_event(&name, "remove", "running", "executing recipe hook");
 
-    ctx_map = run_phase(engine, &ast, &mut scope, "remove", ctx_map)?;
+    ctx_map = run_phase(engine, &ast, &mut scope, "remove", ctx_map).map_err(|e| {
+        report_phase_failure(&name, "remove", &e);
+        e
+    })?;
+    report_phase_success(&name, "remove");
     persist_ctx(
         &mut compiled,
         &ctx_map,
@@ -711,16 +882,23 @@ pub fn cleanup(
         .unwrap_or_else(|| "package".to_string());
 
     if !has_fn(&ast, "cleanup") {
+        output::hook_event(&name, "cleanup", "missing", "required cleanup hook missing");
         return Err(anyhow!("{} has no cleanup function", name));
     }
 
     output::action(&format!("Cleaning up {}", name));
     output::sub_action("cleanup");
+    output::hook_event(&name, "cleanup", "running", "executing recipe hook");
 
     ctx_map = maybe_cleanup(
         engine, &ast, &mut scope, ctx_map, reason, /* best_effort */ false,
         /* require_defined */ true,
-    )?;
+    )
+    .map_err(|e| {
+        report_phase_failure(&name, "cleanup", &e);
+        e
+    })?;
+    report_phase_success(&name, "cleanup");
     persist_ctx(
         &mut compiled,
         &ctx_map,
@@ -837,37 +1015,74 @@ fn run_check(
         .unwrap_or_else(|| "package".to_string());
 
     if !has_fn(&ast, check_name) {
+        output::hook_event(
+            &name,
+            &format!("check.{check_name}"),
+            "missing",
+            "required check function missing",
+        );
+        output::error(&format!(
+            "{name} is missing required check function `{check_name}(ctx)`",
+        ));
+        output::detail(
+            "Action: define this check function and return an updated ctx map when the check passes.",
+        );
         return Err(anyhow!("{} has no {} function", name, check_name));
     }
 
-    output::action(&format!("Checking {} ({})", name, check_name));
-    output::sub_action(check_name);
+    output::action(&format!("Checking recipe {}", name));
+    output::sub_action(&format!("{check_name} check"));
+    output::hook_event(
+        &name,
+        &format!("check.{check_name}"),
+        "manual",
+        "manual check requested",
+    );
 
     let checked_ctx = engine
         .call_fn::<rhai::Map>(&mut scope, &ast, check_name, (ctx_map,))
-        .map_err(|e| anyhow!("{check_name} failed: {e}"))?;
+        .map_err(|e| {
+            output::hook_event(&name, &format!("check.{check_name}"), "failed", &format!("{e}"));
+            output::error(&format!("{name}: {check_name} check failed"));
+            output::detail(&format!("  reason: {e}"));
+            output::detail("  action: check that function and return ctx on success path; rerun with RECIPE_TRACE_HELPERS=1.");
+            anyhow!("{check_name} failed: {e}")
+        })?;
 
-    output::success(&format!("{} passed {}", name, check_name));
+    output::success(&format!("{}: {} check complete", name, check_name));
+    output::hook_event(
+        &name,
+        &format!("check.{check_name}"),
+        "success",
+        "manual check complete",
+    );
     Ok(checked_ctx)
 }
 
-/// Check whether a phase is needed (true when the check throws).
+/// Check whether a step is needed (true when the check throws).
 ///
 /// If the check passes, returns the ctx value that the check returned.
-fn check_phase(
+fn check_phase_with_reason(
     engine: &Engine,
     ast: &AST,
     scope: &Scope,
     fn_name: &str,
     ctx: &rhai::Map,
-) -> (bool, rhai::Map) {
+) -> (bool, rhai::Map, Option<String>) {
     if !has_fn(ast, fn_name) {
-        return (true, ctx.clone()); // No check function = needs the phase.
+        return (
+            true,
+            ctx.clone(),
+            Some("check function is missing (default: needs work)".to_string()),
+        );
     }
 
     match engine.call_fn::<rhai::Map>(&mut scope.clone(), ast, fn_name, (ctx.clone(),)) {
-        Ok(new_ctx) => (false, new_ctx),
-        Err(_) => (true, ctx.clone()),
+        Ok(new_ctx) => (false, new_ctx, None),
+        Err(e) => {
+            let msg = format!("{e}");
+            (true, ctx.clone(), Some(msg))
+        }
     }
 }
 
