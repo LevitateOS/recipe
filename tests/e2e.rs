@@ -902,10 +902,13 @@ fn install(ctx) { ctx }
     let mut saw_hook_events = 0;
     let mut saw_success = false;
     let mut saw_running = false;
+    let mut saw_human = false;
+    let mut saw_machine = false;
 
     for line in stderr.lines() {
         if let Ok(event) = serde_json::from_str::<serde_json::Value>(line) {
             if event.get("event").and_then(|v| v.as_str()) == Some("recipe-hook") {
+                saw_machine = true;
                 saw_hook_events += 1;
                 assert_eq!(
                     event.get("recipe").and_then(|v| v.as_str()),
@@ -919,14 +922,16 @@ fn install(ctx) { ctx }
             }
             continue;
         }
-        if line.contains("recipe-hook") {
-            panic!("Expected JSON-only recipe-hook events in machine-events mode, got: {line}");
+        if line.contains("[recipe-hook]") {
+            saw_human = true;
         }
     }
 
     assert!(saw_hook_events > 0, "no machine recipe-hook events found");
     assert!(saw_running, "expected at least one running hook event");
     assert!(saw_success, "expected at least one success hook event");
+    assert!(saw_machine, "expected machine-readable hook events");
+    assert!(saw_human, "expected human-readable hook events");
 }
 
 #[test]

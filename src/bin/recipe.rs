@@ -123,7 +123,7 @@ struct Cli {
     #[arg(long, global = true)]
     json_output: Option<PathBuf>,
 
-    /// Emit machine-readable hook events (JSON objects) for wrappers.
+    /// Emit machine-readable hook events (JSON objects) in addition to human-readable hook logs.
     #[arg(long, global = true)]
     machine_events: bool,
 

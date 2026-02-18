@@ -75,10 +75,12 @@ pub fn skip(message: &str) {
 }
 
 /// Emit a recipe hook event.
-/// When machine events are enabled, outputs JSON:
-/// {"event":"recipe-hook","recipe":"...","hook":"...","status":"...","msg":"..."}
-/// Otherwise outputs parser-friendly text:
-/// [recipe-hook] recipe=<name> hook=<name> status=<status> msg="<msg>"
+/// Emit one machine event payload (when enabled) and one human-readable line.
+///
+/// Machine payload example:
+///   {"event":"recipe-hook","recipe":"name","hook":"install","status":"running","msg":"..."}
+/// Human line example:
+///   [recipe-hook] recipe="name" hook="install" status="running" msg="..."
 pub fn hook_event(recipe: &str, hook: &str, status: &str, msg: &str) {
     let escape = |value: &str| {
         value
@@ -87,32 +89,32 @@ pub fn hook_event(recipe: &str, hook: &str, status: &str, msg: &str) {
             .replace('\n', " ")
     };
 
+    let human = format!(
+        "[recipe-hook] recipe=\"{}\" hook=\"{}\" status=\"{}\" msg=\"{}\"",
+        escape(recipe),
+        escape(hook),
+        escape(status),
+        escape(msg)
+    );
+
     if machine_events() {
-        match serde_json::to_string(&json!({
+        let payload = json!({
             "event": "recipe-hook",
             "recipe": recipe,
             "hook": hook,
             "status": status,
             "msg": msg,
-        })) {
-            Ok(payload) => eprintln!("{}", payload),
-            Err(_) => eprintln!(
-                "[recipe-hook] recipe=\"{}\" hook=\"{}\" status=\"{}\" msg=\"{}\"",
-                escape(recipe),
-                escape(hook),
-                escape(status),
-                escape(msg)
-            ),
+        });
+
+        if let Ok(payload) = serde_json::to_string(&payload) {
+            eprintln!("{}", payload);
+        } else {
+            // Keep human line as the authoritative fallback if serialization fails.
+            eprintln!("{}", human);
         }
-    } else {
-        eprintln!(
-            "[recipe-hook] recipe=\"{}\" hook=\"{}\" status=\"{}\" msg=\"{}\"",
-            escape(recipe),
-            escape(hook),
-            escape(status),
-            escape(msg)
-        );
     }
+
+    eprintln!("{}", human);
 }
 
 /// Print package status in list output
