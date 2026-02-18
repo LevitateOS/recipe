@@ -170,14 +170,7 @@ pub fn install(
     defines: &[(String, String)],
     search_path: Option<&Path>,
 ) -> Result<rhai::Map> {
-    install_with_autofix(
-        engine,
-        build_dir,
-        recipe_path,
-        defines,
-        search_path,
-        /* autofix */ None,
-    )
+    install_internal(engine, build_dir, recipe_path, defines, search_path, None)
 }
 
 #[derive(Debug)]
@@ -191,6 +184,24 @@ enum InstallAttemptError {
 }
 
 pub fn install_with_autofix(
+    engine: &Engine,
+    build_dir: &Path,
+    recipe_path: &Path,
+    defines: &[(String, String)],
+    search_path: Option<&Path>,
+    autofix: Option<&crate::AutoFixConfig>,
+) -> Result<rhai::Map> {
+    install_internal(
+        engine,
+        build_dir,
+        recipe_path,
+        defines,
+        search_path,
+        autofix,
+    )
+}
+
+fn install_internal(
     engine: &Engine,
     build_dir: &Path,
     recipe_path: &Path,
