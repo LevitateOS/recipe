@@ -483,8 +483,9 @@ mod tests {
     #[test]
     fn test_timeout_is_reasonable() {
         // Default timeout should be between 5 and 120 seconds
-        assert!(DEFAULT_HTTP_TIMEOUT_SECS >= 5);
-        assert!(DEFAULT_HTTP_TIMEOUT_SECS <= 120);
+        let timeout = get_http_timeout();
+        assert!(timeout >= std::time::Duration::from_secs(5));
+        assert!(timeout <= std::time::Duration::from_secs(120));
     }
 
     #[cheat_reviewed("API test - get_http_timeout returns valid Duration")]

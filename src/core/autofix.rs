@@ -62,10 +62,10 @@ fn detect_cwd(cfg: &crate::AutoFixConfig, recipe_path: &Path) -> Result<PathBuf>
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
 
-    if let Ok(here) = std::env::current_dir() {
-        if let Some(root) = git_repo_root(&here) {
-            return Ok(root);
-        }
+    if let Ok(here) = std::env::current_dir()
+        && let Some(root) = git_repo_root(&here)
+    {
+        return Ok(root);
     }
     if let Some(root) = git_repo_root(&recipe_dir) {
         return Ok(root);
@@ -168,6 +168,7 @@ fn read_extra_prompt(prompt_file: Option<&Path>) -> Result<Option<String>> {
     Ok((!trimmed.is_empty()).then_some(trimmed.to_owned()))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_prompt(
     cwd: &Path,
     allow_paths: &[PathBuf],
@@ -431,14 +432,14 @@ fn protected_fn_ranges(source: &str) -> Vec<ProtectedFnRange> {
         };
 
         for (want, label) in protected {
-            if name == want {
-                if let Some(end_line) = find_fn_end_line(source, offset, line_no) {
-                    out.push(ProtectedFnRange {
-                        name: label,
-                        start_line: line_no,
-                        end_line,
-                    });
-                }
+            if name == want
+                && let Some(end_line) = find_fn_end_line(source, offset, line_no)
+            {
+                out.push(ProtectedFnRange {
+                    name: label,
+                    start_line: line_no,
+                    end_line,
+                });
             }
         }
 
@@ -725,10 +726,10 @@ pub(crate) fn run_and_apply(
         Some(p) => Some(read_file(p)?),
         None => None,
     };
-    if comment_prompt.is_none() {
-        if let Some(bs) = base_source.as_deref() {
-            comment_prompt = extract_autofix_prompt_block(bs);
-        }
+    if comment_prompt.is_none()
+        && let Some(bs) = base_source.as_deref()
+    {
+        comment_prompt = extract_autofix_prompt_block(bs);
     }
 
     // Kernel-specific context: if we can find linux-deps, include it too.

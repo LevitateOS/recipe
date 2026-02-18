@@ -964,18 +964,17 @@ fn install(ctx) { ctx }
     let mut saw_reason = false;
 
     for line in stderr.lines() {
-        if let Ok(event) = serde_json::from_str::<serde_json::Value>(line) {
-            if event.get("event").and_then(|v| v.as_str()) == Some("recipe-hook") {
-                if event.get("status").and_then(|v| v.as_str()) == Some("failed") {
-                    saw_failed = true;
-                    if event
-                        .get("msg")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|msg| msg.contains("Download failed!"))
-                    {
-                        saw_reason = true;
-                    }
-                }
+        if let Ok(event) = serde_json::from_str::<serde_json::Value>(line)
+            && event.get("event").and_then(|v| v.as_str()) == Some("recipe-hook")
+            && event.get("status").and_then(|v| v.as_str()) == Some("failed")
+        {
+            saw_failed = true;
+            if event
+                .get("msg")
+                .and_then(|v| v.as_str())
+                .is_some_and(|msg| msg.contains("Download failed!"))
+            {
+                saw_reason = true;
             }
         }
     }

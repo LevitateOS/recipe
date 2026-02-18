@@ -300,12 +300,7 @@ fn report_check_result(name: &str, check: &str, needs_phase: bool, reason: Optio
             output::detail(&format!(
                 "{name}: {check} check says recipe still needs this step ({reason})"
             ));
-            output::hook_event(
-                name,
-                &format!("check.{check}"),
-                "required",
-                &format!("{reason}"),
-            );
+            output::hook_event(name, &format!("check.{check}"), "required", reason);
         } else {
             output::detail(&format!(
                 "{name}: {check} check says recipe still needs this step"
@@ -461,9 +456,7 @@ fn install_once(
             "{} requires cleanup(ctx, reason) for this repo and it is missing.",
             name
         ));
-        output::detail(&format!(
-            "Expected signature: fn cleanup(ctx, reason) -> {{ ... }}"
-        ));
+        output::detail("Expected signature: fn cleanup(ctx, reason) -> { ... }");
         output::detail(
             "Action: add a cleanup hook to your recipe or temporarily run in a test environment that allows skipping it.",
         );
@@ -726,37 +719,38 @@ fn install_once(
 
     // Anti-reward-hack / correctness: if autofix mode is enabled, require the recipe's
     // `is_installed(ctx)` check to pass after install completes.
-    if autofix_enabled && has_fn_arity(&ast, "is_installed", 1) {
-        if let Err(e) = engine.call_fn::<rhai::Map>(
+    if autofix_enabled
+        && has_fn_arity(&ast, "is_installed", 1)
+        && let Err(e) = engine.call_fn::<rhai::Map>(
             &mut scope.clone(),
             &ast,
             "is_installed",
             (ctx_map.clone(),),
-        ) {
-            report_phase_failure(
-                &name,
-                "post-install verification",
-                &anyhow!("is_installed failed after install: {e}"),
+        )
+    {
+        report_phase_failure(
+            &name,
+            "post-install verification",
+            &anyhow!("is_installed failed after install: {e}"),
+        );
+        // Allow best-effort failure hygiene.
+        if cleanup_auto_supported {
+            let _ = maybe_cleanup(
+                engine,
+                &ast,
+                &mut scope,
+                ctx_map.clone(),
+                "auto.install.failure",
+                /* best_effort */ true,
+                /* require_defined */ false,
             );
-            // Allow best-effort failure hygiene.
-            if cleanup_auto_supported {
-                let _ = maybe_cleanup(
-                    engine,
-                    &ast,
-                    &mut scope,
-                    ctx_map.clone(),
-                    "auto.install.failure",
-                    /* best_effort */ true,
-                    /* require_defined */ false,
-                );
-            }
-
-            return Err(InstallAttemptError::Phase {
-                reason: "auto.install.failure",
-                phase: "is_installed",
-                error: anyhow!("is_installed failed after install: {e}"),
-            });
         }
+
+        return Err(InstallAttemptError::Phase {
+            reason: "auto.install.failure",
+            phase: "is_installed",
+            error: anyhow!("is_installed failed after install: {e}"),
+        });
     }
 
     output::success(&format!("{} installed", name));
@@ -818,9 +812,8 @@ pub fn remove(
     output::sub_action("remove");
     output::hook_event(&name, "remove", "running", "executing recipe hook");
 
-    ctx_map = run_phase(engine, &ast, &mut scope, "remove", ctx_map).map_err(|e| {
-        report_phase_failure(&name, "remove", &e);
-        e
+    ctx_map = run_phase(engine, &ast, &mut scope, "remove", ctx_map).inspect_err(|e| {
+        report_phase_failure(&name, "remove", e);
     })?;
     report_phase_success(&name, "remove");
     persist_ctx(
@@ -894,9 +887,8 @@ pub fn cleanup(
         engine, &ast, &mut scope, ctx_map, reason, /* best_effort */ false,
         /* require_defined */ true,
     )
-    .map_err(|e| {
-        report_phase_failure(&name, "cleanup", &e);
-        e
+    .inspect_err(|e| {
+        report_phase_failure(&name, "cleanup", e);
     })?;
     report_phase_success(&name, "cleanup");
     persist_ctx(
@@ -1577,9 +1569,9 @@ fn cleanup(ctx, reason) { ctx }
 
         let ctx = result.unwrap();
         // Child's install ran (child_ran = true)
-        assert_eq!(ctx.get("child_ran").unwrap().as_bool().unwrap(), true);
+        assert!(ctx.get("child_ran").unwrap().as_bool().unwrap());
         // Base's acquire ran (acquired = true)
-        assert_eq!(ctx.get("acquired").unwrap().as_bool().unwrap(), true);
+        assert!(ctx.get("acquired").unwrap().as_bool().unwrap());
         // Name should be "child" (child ctx wins)
         assert_eq!(
             ctx.get("name").unwrap().clone().into_string().unwrap(),

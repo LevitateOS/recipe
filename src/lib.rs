@@ -201,14 +201,24 @@ impl RecipeEngine {
     /// Returns the final ctx map containing all recipe state.
     pub fn execute(&self, recipe_path: &Path) -> Result<rhai::Map> {
         llm::with_llm_profile(self.llm_profile.as_deref(), || {
-            core::executor::install_with_autofix(
-                &self.engine,
-                &self.build_dir,
-                recipe_path,
-                &self.defines,
-                self.recipes_path.as_deref(),
-                self.autofix.as_ref(),
-            )
+            if let Some(autofix) = self.autofix.as_ref() {
+                core::executor::install_with_autofix(
+                    &self.engine,
+                    &self.build_dir,
+                    recipe_path,
+                    &self.defines,
+                    self.recipes_path.as_deref(),
+                    Some(autofix),
+                )
+            } else {
+                core::executor::install(
+                    &self.engine,
+                    &self.build_dir,
+                    recipe_path,
+                    &self.defines,
+                    self.recipes_path.as_deref(),
+                )
+            }
         })
     }
 
