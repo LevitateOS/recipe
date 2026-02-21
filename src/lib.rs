@@ -94,8 +94,13 @@
 mod core;
 pub mod helpers;
 mod llm;
+pub mod logging;
 
 pub use core::output;
+pub use logging::{
+    RECIPE_HOOK_EVENT, RecipeHookEvent, RecipeHookSink, emit_hook_event, emit_hook_event_struct,
+    make_machine_hook_event, set_event_sink, set_event_sink_handler, set_machine_events,
+};
 
 use anyhow::Result;
 use rhai::{Engine, module_resolvers::FileModuleResolver};
@@ -202,7 +207,7 @@ impl RecipeEngine {
     pub fn execute(&self, recipe_path: &Path) -> Result<rhai::Map> {
         llm::with_llm_profile(self.llm_profile.as_deref(), || {
             if let Some(autofix) = self.autofix.as_ref() {
-                core::executor::install_with_autofix(
+                core::executor::install_with_options(
                     &self.engine,
                     &self.build_dir,
                     recipe_path,

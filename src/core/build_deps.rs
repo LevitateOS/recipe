@@ -6,6 +6,7 @@
 //! `.tools/` bin dirs to PATH before the build phase.
 
 use super::output;
+use super::runner;
 use anyhow::{Context, Result, anyhow};
 use rhai::{Engine, Scope};
 use std::fs;
@@ -167,7 +168,8 @@ impl<'a> BuildDepsResolver<'a> {
         })?;
 
         // Check if already installed
-        let needs_install = Self::check_throws(self.engine, &ast, &scope, "is_installed", &ctx_map);
+        let needs_install =
+            runner::check_throws(self.engine, &ast, &scope, "is_installed", &ctx_map);
         if !needs_install {
             output::hook_event(
                 name,
@@ -188,11 +190,12 @@ impl<'a> BuildDepsResolver<'a> {
         );
 
         // Run acquire → install (simplified, no locking or persistence)
-        let needs_acquire = Self::check_throws(self.engine, &ast, &scope, "is_acquired", &ctx_map);
-        let has_cleanup = Self::has_fn(&ast, "cleanup");
+        let needs_acquire =
+            runner::check_throws(self.engine, &ast, &scope, "is_acquired", &ctx_map);
+        let has_cleanup = runner::has_fn(&ast, "cleanup");
 
         let mut ctx = ctx_map;
-        if needs_acquire && Self::has_fn(&ast, "acquire") {
+        if needs_acquire && runner::has_fn(&ast, "acquire") {
             output::sub_action("acquire");
             output::detail("Preparing tool sources");
             output::hook_event(
@@ -216,7 +219,7 @@ impl<'a> BuildDepsResolver<'a> {
                     );
                     output::success(&format!("{}: source prep step finished", name));
                     if has_cleanup {
-                        ctx = maybe_cleanup(
+                        ctx = cleanup_hook(
                             self.engine,
                             &ast,
                             &mut scope,
@@ -233,7 +236,7 @@ impl<'a> BuildDepsResolver<'a> {
                         "  action: fix acquire() in dependency recipe and rerun with RECIPE_TRACE_HELPERS=1",
                     );
                     if has_cleanup {
-                        let _ = maybe_cleanup(
+                        let _ = cleanup_hook(
                             self.engine,
                             &ast,
                             &mut scope,
@@ -250,7 +253,7 @@ impl<'a> BuildDepsResolver<'a> {
             }
         }
 
-        if Self::has_fn(&ast, "install") {
+        if runner::has_fn(&ast, "install") {
             output::sub_action("install");
             output::detail("Applying tool recipe outputs");
             output::hook_event(
@@ -274,7 +277,7 @@ impl<'a> BuildDepsResolver<'a> {
                     );
                     output::success(&format!("{}: install step finished", name));
                     if has_cleanup {
-                        let _ = maybe_cleanup(
+                        let _ = cleanup_hook(
                             self.engine,
                             &ast,
                             &mut scope,
@@ -289,7 +292,7 @@ impl<'a> BuildDepsResolver<'a> {
                     output::detail(&format!("  reason: {e}"));
                     output::detail("  action: fix install() in dependency recipe and rerun.");
                     if has_cleanup {
-                        let _ = maybe_cleanup(
+                        let _ = cleanup_hook(
                             self.engine,
                             &ast,
                             &mut scope,
@@ -333,40 +336,16 @@ impl<'a> BuildDepsResolver<'a> {
             self.recipes_path
         )
     }
-
-    fn check_throws(
-        engine: &Engine,
-        ast: &rhai::AST,
-        scope: &Scope,
-        fn_name: &str,
-        ctx: &rhai::Map,
-    ) -> bool {
-        if !Self::has_fn(ast, fn_name) {
-            return true;
-        }
-        engine
-            .call_fn::<rhai::Map>(&mut scope.clone(), ast, fn_name, (ctx.clone(),))
-            .is_err()
-    }
-
-    fn has_fn(ast: &rhai::AST, name: &str) -> bool {
-        ast.iter_functions().any(|f| f.name == name)
-    }
 }
 
-fn has_fn_arity(ast: &rhai::AST, name: &str, arity: usize) -> bool {
-    ast.iter_functions()
-        .any(|f| f.name == name && f.params.len() == arity)
-}
-
-fn maybe_cleanup(
+fn cleanup_hook(
     engine: &Engine,
     ast: &rhai::AST,
     scope: &mut Scope,
     ctx: rhai::Map,
     reason: &str,
 ) -> rhai::Map {
-    if !has_fn_arity(ast, "cleanup", 2) {
+    if !runner::has_fn_arity(ast, "cleanup", 2) {
         output::warning("cleanup hook must be cleanup(ctx, reason); skipping cleanup");
         return ctx;
     }
