@@ -20,7 +20,7 @@ use crate::core::output;
 use indicatif::{ProgressBar, ProgressStyle};
 use rhai::EvalAltResult;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufRead, BufReader, Cursor, Read};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
@@ -247,6 +247,47 @@ fn extract_tar_plain(archive_path: &Path, dest: &Path) -> Result<(), Box<EvalAlt
     extract_tar(reader, dest)
 }
 
+/// Extract an Alpine APK package.
+///
+/// APK packages are not a single tar.gz stream; they are concatenated gzip
+/// members (signature/control/data tar streams). We must iterate each gzip
+/// member and unpack every tar payload.
+fn extract_apk(archive_path: &Path, dest: &Path) -> Result<(), Box<EvalAltResult>> {
+    let file = File::open(archive_path)
+        .map_err(|e| format!("cannot open {}: {}", archive_path.display(), e))?;
+    let mut source = BufReader::new(file);
+
+    let mut extracted_members = 0usize;
+    while !source
+        .fill_buf()
+        .map_err(|e| format!("cannot read {}: {}", archive_path.display(), e))?
+        .is_empty()
+    {
+        let mut gz = flate2::bufread::GzDecoder::new(source);
+        let mut tar_bytes = Vec::new();
+        gz.read_to_end(&mut tar_bytes)
+            .map_err(|e| format!("apk gzip stream decode failed: {}", e))?;
+        source = gz.into_inner();
+
+        if tar_bytes.is_empty() {
+            break;
+        }
+
+        extract_tar(Cursor::new(tar_bytes), dest)?;
+        extracted_members += 1;
+    }
+
+    if extracted_members == 0 {
+        return Err(format!(
+            "apk extraction failed for '{}': no gzip members extracted",
+            archive_path.display()
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
 /// Extract a zip archive
 pub(crate) fn extract_zip(archive_path: &Path, dest: &Path) -> Result<(), Box<EvalAltResult>> {
     let file = File::open(archive_path)
@@ -318,8 +359,7 @@ pub fn detect_format(archive: &str) -> Option<&'static str> {
     } else if path.ends_with(".tar") {
         Some("tar")
     } else if path.ends_with(".apk") {
-        // Alpine APK packages are gzipped tarballs
-        Some("tar.gz")
+        Some("apk")
     } else {
         None
     }
@@ -386,6 +426,7 @@ pub fn extract_with_format(
         "tar.zst" | "tzst" => extract_tar_zst(archive_path, dest_path),
         "tar" => extract_tar_plain(archive_path, dest_path),
         "zip" => extract_zip(archive_path, dest_path),
+        "apk" => extract_apk(archive_path, dest_path),
         _ => {
             pb.finish_and_clear();
             return Err(format!("unknown archive format: {}", format).into());

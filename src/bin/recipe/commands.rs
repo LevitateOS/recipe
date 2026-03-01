@@ -48,6 +48,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 cli.build_dir.as_deref(),
                 Some(&recipes_path),
                 &cli.defines,
+                cli.no_persist_ctx,
                 cli.llm_profile.clone(),
                 autofix_cfg,
             )?;
@@ -61,6 +62,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 cli.build_dir.as_deref(),
                 Some(&recipes_path),
                 &cli.defines,
+                cli.no_persist_ctx,
                 cli.llm_profile.clone(),
                 None,
             )?;
@@ -74,6 +76,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 cli.build_dir.as_deref(),
                 Some(&recipes_path),
                 &cli.defines,
+                cli.no_persist_ctx,
                 cli.llm_profile.clone(),
                 None,
             )?;
@@ -92,6 +95,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 cli.build_dir.as_deref(),
                 Some(&recipes_path),
                 &cli.defines,
+                cli.no_persist_ctx,
                 cli.llm_profile.clone(),
                 None,
             )?;
@@ -105,6 +109,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 cli.build_dir.as_deref(),
                 Some(&recipes_path),
                 &cli.defines,
+                cli.no_persist_ctx,
                 cli.llm_profile.clone(),
                 None,
             )?;
@@ -118,6 +123,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 cli.build_dir.as_deref(),
                 Some(&recipes_path),
                 &cli.defines,
+                cli.no_persist_ctx,
                 cli.llm_profile.clone(),
                 None,
             )?;
@@ -184,6 +190,7 @@ fn create_engine(
     build_dir: Option<&Path>,
     recipes_path: Option<&Path>,
     defines: &[String],
+    no_persist_ctx: bool,
     llm_profile: Option<String>,
     autofix: Option<AutoFixConfig>,
 ) -> Result<RecipeEngine> {
@@ -200,6 +207,7 @@ fn create_engine(
     };
 
     let mut engine = RecipeEngine::new(build_dir)
+        .with_ctx_persistence(!no_persist_ctx)
         .with_llm_profile(llm_profile)
         .with_autofix(autofix);
 

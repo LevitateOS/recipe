@@ -1,5 +1,7 @@
 mod tests {
-    use crate::helpers::build::extract::extract_api::{detect_format, extract_tar_gz, extract_zip};
+    use crate::helpers::build::extract::extract_api::{
+        detect_format, extract_tar_gz, extract_with_format, extract_zip,
+    };
     use std::fs::File;
     use std::io::Write;
 
@@ -15,7 +17,7 @@ mod tests {
         assert_eq!(detect_format("foo.tzst"), Some("tar.zst"));
         assert_eq!(detect_format("foo.zip"), Some("zip"));
         assert_eq!(detect_format("foo.tar"), Some("tar"));
-        assert_eq!(detect_format("foo.apk"), Some("tar.gz"));
+        assert_eq!(detect_format("foo.apk"), Some("apk"));
         assert_eq!(detect_format("foo.unknown"), None);
     }
 
@@ -225,5 +227,53 @@ mod tests {
             std::fs::read_to_string(extracted_file).unwrap(),
             "nested zip content"
         );
+    }
+
+    #[test]
+    fn test_extract_apk_multistream_extracts_data_payload() {
+        fn tar_gz_member(path: &str, content: &[u8]) -> Vec<u8> {
+            let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            {
+                let mut builder = tar::Builder::new(&mut gz);
+                let mut header = tar::Header::new_gnu();
+                header.set_size(content.len() as u64);
+                header.set_mode(0o755);
+                header.set_cksum();
+                builder
+                    .append_data(&mut header, path, content)
+                    .expect("append tar member");
+                builder.finish().expect("finish tar builder");
+            }
+            gz.finish().expect("finish gzip encoder")
+        }
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let apk_path = temp_dir.path().join("test.apk");
+        let extract_dir = temp_dir.path().join("extracted");
+
+        // Simulate APK layout: signature stream, control stream, data stream.
+        let sig_member = tar_gz_member(
+            ".SIGN.RSA.alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub",
+            b"sig",
+        );
+        let ctl_member = tar_gz_member(".PKGINFO", b"pkginfo");
+        let data_member = tar_gz_member("sbin/apk.static", b"#!/bin/sh\necho apk\n");
+
+        let mut apk_file = File::create(&apk_path).unwrap();
+        apk_file.write_all(&sig_member).unwrap();
+        apk_file.write_all(&ctl_member).unwrap();
+        apk_file.write_all(&data_member).unwrap();
+        apk_file.flush().unwrap();
+
+        std::fs::create_dir_all(&extract_dir).unwrap();
+        extract_with_format(
+            apk_path.to_str().unwrap(),
+            extract_dir.to_str().unwrap(),
+            "apk",
+        )
+        .unwrap();
+
+        assert!(extract_dir.join(".PKGINFO").exists());
+        assert!(extract_dir.join("sbin/apk.static").exists());
     }
 }

@@ -22,9 +22,18 @@ pub(crate) fn install(
     build_dir: &Path,
     recipe_path: &Path,
     defines: &[(String, String)],
+    persist_ctx: bool,
     search_path: Option<&Path>,
 ) -> Result<rhai::Map> {
-    install_with_options(engine, build_dir, recipe_path, defines, search_path, None)
+    install_with_options(
+        engine,
+        build_dir,
+        recipe_path,
+        defines,
+        persist_ctx,
+        search_path,
+        None,
+    )
 }
 
 pub(crate) fn install_with_options(
@@ -32,6 +41,7 @@ pub(crate) fn install_with_options(
     build_dir: &Path,
     recipe_path: &Path,
     defines: &[(String, String)],
+    persist_ctx: bool,
     search_path: Option<&Path>,
     autofix: Option<&crate::AutoFixConfig>,
 ) -> Result<rhai::Map> {
@@ -49,6 +59,7 @@ pub(crate) fn install_with_options(
             build_dir,
             &recipe_path,
             defines,
+            persist_ctx,
             search_path,
             autofix,
         ) {

@@ -44,12 +44,52 @@ mod private_tests {
         .unwrap();
 
         let engine = create_engine();
-        let result = install(&engine, &build_dir, &recipe_path, &[], None);
+        let result = install(&engine, &build_dir, &recipe_path, &[], true, None);
         assert!(result.is_ok(), "Failed: {:?}", result);
 
         // Check ctx was persisted
         let content = fs::read_to_string(&recipe_path).unwrap();
         assert!(content.contains("installed: true"));
+    }
+
+    #[test]
+    fn test_install_can_disable_ctx_persistence() {
+        let dir = TempDir::new().unwrap();
+        let build_dir = dir.path().join("build");
+        fs::create_dir_all(&build_dir).unwrap();
+
+        let recipe_path = dir.path().join("test.rhai");
+        fs::write(
+            &recipe_path,
+            r#"
+let ctx = #{
+    name: "test",
+    installed: false,
+};
+
+fn is_installed(ctx) {
+    if !ctx.installed { throw "not installed"; }
+    ctx
+}
+
+fn acquire(ctx) { ctx }
+fn install(ctx) {
+    ctx.installed = true;
+    ctx
+}
+
+fn cleanup(ctx, reason) { ctx }
+"#,
+        )
+        .unwrap();
+
+        let original = fs::read_to_string(&recipe_path).unwrap();
+        let engine = create_engine();
+        let result = install(&engine, &build_dir, &recipe_path, &[], false, None);
+        assert!(result.is_ok(), "Failed: {:?}", result);
+
+        let after = fs::read_to_string(&recipe_path).unwrap();
+        assert_eq!(after, original);
     }
 
     #[cfg(unix)]
@@ -91,7 +131,7 @@ mod private_tests {
         assert_eq!(before, 0o600);
 
         let engine = create_engine();
-        install(&engine, &build_dir, &recipe_path, &[], None).unwrap();
+        install(&engine, &build_dir, &recipe_path, &[], true, None).unwrap();
 
         let after = fs::metadata(&recipe_path).unwrap().permissions().mode() & 0o777;
         assert_eq!(after, 0o600);
@@ -119,7 +159,7 @@ fn install(ctx) { throw "should not run"; }
         .unwrap();
 
         let engine = create_engine();
-        let result = install(&engine, &build_dir, &recipe_path, &[], None);
+        let result = install(&engine, &build_dir, &recipe_path, &[], true, None);
         assert!(result.is_ok());
     }
 
@@ -169,7 +209,7 @@ fn cleanup(ctx, reason) { ctx }
         .unwrap();
 
         let engine = create_engine();
-        let result = install(&engine, &build_dir, &recipe_path, &[], None);
+        let result = install(&engine, &build_dir, &recipe_path, &[], true, None);
         assert!(result.is_ok(), "Failed: {:?}", result);
     }
 
@@ -267,7 +307,7 @@ fn cleanup(ctx, reason) { ctx }
         .unwrap();
 
         let engine = create_engine();
-        let result = install(&engine, &build_dir, &child_path, &[], None);
+        let result = install(&engine, &build_dir, &child_path, &[], true, None);
         assert!(result.is_ok(), "Failed: {:?}", result);
 
         let ctx = result.unwrap();
@@ -361,7 +401,7 @@ fn cleanup(ctx, reason) { ctx }
         .unwrap();
 
         let engine = create_engine();
-        let result = install(&engine, &build_dir, &child_path, &[], None);
+        let result = install(&engine, &build_dir, &child_path, &[], true, None);
         assert!(result.is_ok(), "Failed: {:?}", result);
 
         // Ensure ctx was persisted into base (acquired/installed should be true).

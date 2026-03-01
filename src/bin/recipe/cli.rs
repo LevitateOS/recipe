@@ -32,6 +32,10 @@ pub(crate) struct Cli {
     /// Select an LLM profile from XDG `recipe/llm.toml` (under `[profiles.<name>]`).
     #[arg(long, global = true)]
     pub(crate) llm_profile: Option<String>,
+
+    /// Do not persist updated ctx back into recipe source files.
+    #[arg(long, global = true, default_value_t = false)]
+    pub(crate) no_persist_ctx: bool,
 }
 
 #[derive(Subcommand)]

@@ -3,7 +3,7 @@
 //! Executes recipes using the ctx pattern where:
 //! - `is_acquired(ctx)`, `is_built(ctx)`, `is_installed(ctx)` throw if phase needed
 //! - `acquire(ctx)`, `build(ctx)`, `install(ctx)` return updated ctx
-//! - `ctx` is persisted to the recipe file after each phase
+//! - `ctx` is persisted to the recipe file after each phase (unless disabled)
 
 use anyhow::{Context, Result, anyhow};
 use rhai::{AST, Engine};
@@ -168,9 +168,17 @@ pub fn install(
     build_dir: &Path,
     recipe_path: &Path,
     defines: &[(String, String)],
+    persist_ctx: bool,
     search_path: Option<&Path>,
 ) -> Result<rhai::Map> {
-    private::install(engine, build_dir, recipe_path, defines, search_path)
+    private::install(
+        engine,
+        build_dir,
+        recipe_path,
+        defines,
+        persist_ctx,
+        search_path,
+    )
 }
 
 pub(crate) fn install_with_options(
@@ -178,6 +186,7 @@ pub(crate) fn install_with_options(
     build_dir: &Path,
     recipe_path: &Path,
     defines: &[(String, String)],
+    persist_ctx: bool,
     search_path: Option<&Path>,
     autofix: Option<&crate::AutoFixConfig>,
 ) -> Result<rhai::Map> {
@@ -186,6 +195,7 @@ pub(crate) fn install_with_options(
         build_dir,
         recipe_path,
         defines,
+        persist_ctx,
         search_path,
         autofix,
     )
@@ -199,8 +209,9 @@ pub fn remove(
     recipe_path: &Path,
     search_path: Option<&Path>,
     defines: &[(String, String)],
+    persist_ctx: bool,
 ) -> Result<rhai::Map> {
-    private::remove(engine, recipe_path, search_path, defines)
+    private::remove(engine, recipe_path, search_path, defines, persist_ctx)
 }
 
 /// Clean up build artifacts
@@ -213,8 +224,17 @@ pub fn cleanup(
     search_path: Option<&Path>,
     defines: &[(String, String)],
     reason: &str,
+    persist_ctx: bool,
 ) -> Result<rhai::Map> {
-    private::cleanup(engine, build_dir, recipe_path, search_path, defines, reason)
+    private::cleanup(
+        engine,
+        build_dir,
+        recipe_path,
+        search_path,
+        defines,
+        reason,
+        persist_ctx,
+    )
 }
 
 /// Execute `is_installed(ctx)` manually.

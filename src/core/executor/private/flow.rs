@@ -16,6 +16,7 @@ pub(crate) fn install_once(
     build_dir: &Path,
     recipe_path: &Path,
     defines: &[(String, String)],
+    persist_ctx_enabled: bool,
     search_path: Option<&Path>,
     autofix: Option<&crate::AutoFixConfig>,
 ) -> std::result::Result<rhai::Map, InstallAttemptError> {
@@ -211,12 +212,14 @@ pub(crate) fn install_once(
             Ok(new_ctx) => {
                 ctx_map = new_ctx;
                 report_phase_success(&name, "acquire");
-                persist_ctx(
-                    &mut compiled,
-                    &ctx_map,
-                    "Failed to persist ctx after acquire",
-                )
-                .map_err(InstallAttemptError::Fatal)?;
+                if persist_ctx_enabled {
+                    persist_ctx(
+                        &mut compiled,
+                        &ctx_map,
+                        "Failed to persist ctx after acquire",
+                    )
+                    .map_err(InstallAttemptError::Fatal)?;
+                }
 
                 // Hygiene: allow recipes to clean up intermediate acquire artifacts.
                 if cleanup_auto_supported {
@@ -230,12 +233,14 @@ pub(crate) fn install_once(
                         /* require_defined */ false,
                     )
                     .map_err(InstallAttemptError::Fatal)?;
-                    persist_ctx(
-                        &mut compiled,
-                        &ctx_map,
-                        "Failed to persist ctx after cleanup",
-                    )
-                    .map_err(InstallAttemptError::Fatal)?;
+                    if persist_ctx_enabled {
+                        persist_ctx(
+                            &mut compiled,
+                            &ctx_map,
+                            "Failed to persist ctx after cleanup",
+                        )
+                        .map_err(InstallAttemptError::Fatal)?;
+                    }
                 }
             }
             Err(e) => {
@@ -301,8 +306,10 @@ pub(crate) fn install_once(
                 Ok(new_ctx) => {
                     ctx_map = new_ctx;
                     report_phase_success(&name, "build");
-                    persist_ctx(&mut compiled, &ctx_map, "Failed to persist ctx after build")
-                        .map_err(InstallAttemptError::Fatal)?;
+                    if persist_ctx_enabled {
+                        persist_ctx(&mut compiled, &ctx_map, "Failed to persist ctx after build")
+                            .map_err(InstallAttemptError::Fatal)?;
+                    }
 
                     if cleanup_auto_supported {
                         ctx_map = maybe_cleanup(
@@ -315,12 +322,14 @@ pub(crate) fn install_once(
                             /* require_defined */ false,
                         )
                         .map_err(InstallAttemptError::Fatal)?;
-                        persist_ctx(
-                            &mut compiled,
-                            &ctx_map,
-                            "Failed to persist ctx after cleanup",
-                        )
-                        .map_err(InstallAttemptError::Fatal)?;
+                        if persist_ctx_enabled {
+                            persist_ctx(
+                                &mut compiled,
+                                &ctx_map,
+                                "Failed to persist ctx after cleanup",
+                            )
+                            .map_err(InstallAttemptError::Fatal)?;
+                        }
                     }
                 }
                 Err(e) => {
@@ -355,12 +364,14 @@ pub(crate) fn install_once(
             Ok(new_ctx) => {
                 ctx_map = new_ctx;
                 report_phase_success(&name, "install");
-                persist_ctx(
-                    &mut compiled,
-                    &ctx_map,
-                    "Failed to persist ctx after install",
-                )
-                .map_err(InstallAttemptError::Fatal)?;
+                if persist_ctx_enabled {
+                    persist_ctx(
+                        &mut compiled,
+                        &ctx_map,
+                        "Failed to persist ctx after install",
+                    )
+                    .map_err(InstallAttemptError::Fatal)?;
+                }
 
                 if cleanup_auto_supported {
                     ctx_map = maybe_cleanup(
@@ -373,12 +384,14 @@ pub(crate) fn install_once(
                         /* require_defined */ false,
                     )
                     .map_err(InstallAttemptError::Fatal)?;
-                    persist_ctx(
-                        &mut compiled,
-                        &ctx_map,
-                        "Failed to persist ctx after cleanup",
-                    )
-                    .map_err(InstallAttemptError::Fatal)?;
+                    if persist_ctx_enabled {
+                        persist_ctx(
+                            &mut compiled,
+                            &ctx_map,
+                            "Failed to persist ctx after cleanup",
+                        )
+                        .map_err(InstallAttemptError::Fatal)?;
+                    }
                 }
             }
             Err(e) => {

@@ -142,6 +142,7 @@ pub struct RecipeEngine {
     recipes_path: Option<PathBuf>,
     /// User-defined scope constants (injected via --define KEY=VALUE)
     defines: Vec<(String, String)>,
+    persist_ctx: bool,
     llm_profile: Option<String>,
     autofix: Option<AutoFixConfig>,
 }
@@ -163,6 +164,7 @@ impl RecipeEngine {
             build_dir,
             recipes_path: None,
             defines: Vec::new(),
+            persist_ctx: true,
             llm_profile: None,
             autofix: None,
         }
@@ -180,6 +182,14 @@ impl RecipeEngine {
     /// Select an LLM profile (from XDG `recipe/llm.toml`) for this engine execution.
     pub fn with_llm_profile(mut self, profile: Option<String>) -> Self {
         self.llm_profile = profile;
+        self
+    }
+
+    /// Configure whether recipe execution persists ctx back to source files.
+    ///
+    /// Default is `true`.
+    pub fn with_ctx_persistence(mut self, persist: bool) -> Self {
+        self.persist_ctx = persist;
         self
     }
 
@@ -212,6 +222,7 @@ impl RecipeEngine {
                     &self.build_dir,
                     recipe_path,
                     &self.defines,
+                    self.persist_ctx,
                     self.recipes_path.as_deref(),
                     Some(autofix),
                 )
@@ -221,6 +232,7 @@ impl RecipeEngine {
                     &self.build_dir,
                     recipe_path,
                     &self.defines,
+                    self.persist_ctx,
                     self.recipes_path.as_deref(),
                 )
             }
@@ -237,6 +249,7 @@ impl RecipeEngine {
                 recipe_path,
                 self.recipes_path.as_deref(),
                 &self.defines,
+                self.persist_ctx,
             )
         })
     }
@@ -260,6 +273,7 @@ impl RecipeEngine {
                 self.recipes_path.as_deref(),
                 &self.defines,
                 reason,
+                self.persist_ctx,
             )
         })
     }

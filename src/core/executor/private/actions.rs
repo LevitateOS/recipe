@@ -13,6 +13,7 @@ pub(crate) fn remove(
     recipe_path: &Path,
     search_path: Option<&Path>,
     defines: &[(String, String)],
+    persist_ctx_enabled: bool,
 ) -> Result<rhai::Map> {
     let recipe_path = recipe_path
         .canonicalize()
@@ -64,11 +65,13 @@ pub(crate) fn remove(
         report_phase_failure(&name, "remove", e);
     })?;
     report_phase_success(&name, "remove");
-    persist_ctx(
-        &mut compiled,
-        &ctx_map,
-        "Failed to persist ctx after remove",
-    )?;
+    if persist_ctx_enabled {
+        persist_ctx(
+            &mut compiled,
+            &ctx_map,
+            "Failed to persist ctx after remove",
+        )?;
+    }
 
     output::success(&format!("{} removed", name));
     Ok(ctx_map)
@@ -84,6 +87,7 @@ pub(crate) fn cleanup(
     search_path: Option<&Path>,
     defines: &[(String, String)],
     reason: &str,
+    persist_ctx_enabled: bool,
 ) -> Result<rhai::Map> {
     let recipe_path = recipe_path
         .canonicalize()
@@ -140,11 +144,13 @@ pub(crate) fn cleanup(
         report_phase_failure(&name, "cleanup", e);
     })?;
     report_phase_success(&name, "cleanup");
-    persist_ctx(
-        &mut compiled,
-        &ctx_map,
-        "Failed to persist ctx after cleanup",
-    )?;
+    if persist_ctx_enabled {
+        persist_ctx(
+            &mut compiled,
+            &ctx_map,
+            "Failed to persist ctx after cleanup",
+        )?;
+    }
 
     output::success(&format!("{} cleaned", name));
     Ok(ctx_map)
