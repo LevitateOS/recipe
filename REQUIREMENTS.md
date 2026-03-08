@@ -9,6 +9,11 @@ It is implementation and language agnostic. Any conforming implementation MUST
 satisfy all requirements marked as MUST/SHALL. Requirements marked SHOULD are
 strongly recommended. Requirements marked MAY are optional enhancements.
 
+> Note: this file is the target specification, not a guarantee that the current
+> implementation already exposes every feature described below. For current
+> bootstrap instructions, host requirements, and the actual CLI surface, start
+> with `README.md`.
+
 ---
 
 ## Table of Contents

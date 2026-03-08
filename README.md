@@ -8,9 +8,10 @@ Local-first package recipe executor for LevitateOS.
 
 If you are looking for deeper docs:
 
-- Spec and design requirements: `tools/recipe/REQUIREMENTS.md`
-- Current helper API surface (authoritative): `tools/recipe/HELPERS_AUDIT.md`
-- Lifecycle notes: `tools/recipe/PHASES.md`
+- Recipe authoring guide (current implementation): `WRITING_RECIPES.md`
+- Spec and design requirements: `REQUIREMENTS.md`
+- Current helper API surface (authoritative): `HELPERS_AUDIT.md`
+- Lifecycle notes: `PHASES.md`
 
 ## Status
 
@@ -30,6 +31,87 @@ Not implemented yet (still in the spec):
 - Atomic staging/commit and `installed_files` tracking
 - Higher-level install helpers (`install_bin`, `install_to_dir`, etc.)
 - Update/upgrade lifecycle commands
+
+## Current Implementation Reality
+
+`REQUIREMENTS.md` is the target specification. The current binary is narrower.
+
+- There are no `--sysroot` or `--prefix` CLI flags yet.
+- The current CLI supports `install`, `remove`, `cleanup`, `isinstalled`, `isbuilt`, `isacquired`, `list`, `info`, and `hash`.
+- Recipes currently get `RECIPE_DIR`, `BUILD_DIR`, `ARCH`, `NPROC`, and `RPM_PATH`.
+- Base/dependency execution may also provide `BASE_RECIPE_DIR` and `TOOLS_PREFIX`.
+- Filesystem helpers operate on explicit paths. Higher-level helpers such as `install_bin` and `install_to_dir` are not implemented yet.
+- `cleanup(ctx, reason)` with two arguments is required by this repository's install flow.
+
+If you are debugging behavior, trust the current source and this README before you trust the broader spec.
+
+## Host Requirements
+
+To build and run the current implementation, assume at least:
+
+- Rust toolchain: `cargo`, `rustc`
+- `git`
+- POSIX `sh`
+- A working C toolchain for Rust crates with native code
+
+On fresh Fedora minimal, the minimum known bootstrap is:
+
+```bash
+sudo dnf install -y rust cargo gcc git pkgconf-pkg-config
+```
+
+`recipe` itself is mostly Rust, but the current dependency set includes native archive/compression crates (`bzip2`, `xz2`, `zstd`), so a compiler toolchain is part of the practical bootstrap.
+
+### Optional External Commands by Feature
+
+| Command | When it is needed |
+|---------|-------------------|
+| `git` | `git_clone*` helpers, autofix patch application, git repo root detection |
+| `sh` | `shell*` helpers |
+| `tar` | `extract_from_tarball()` helper only |
+| `df` | `check_disk_space()` helper only |
+| `codex` / `claude` | LLM helpers and `recipe install --autofix` only |
+| arbitrary host commands | when a recipe uses `exec*` or `shell*` to call them |
+
+Important: the core `extract()` helper is native Rust and does not rely on host `tar`/`unzip`.
+
+## Bootstrap on a Fresh Machine
+
+If you cloned LevitateOS and only need this submodule:
+
+```bash
+git submodule update --init -- tools/recipe
+```
+
+Build from the submodule itself:
+
+```bash
+cd tools/recipe
+cargo build
+./target/debug/recipe --help
+```
+
+Build from the LevitateOS repo root:
+
+```bash
+cargo build --manifest-path tools/recipe/Cargo.toml
+```
+
+Optional local install:
+
+```bash
+cd tools/recipe
+cargo install --path .
+```
+
+Tests are not standalone today. `Cargo.toml` has a path dev-dependency on `../../testing/cheat-test`, so `cargo test` expects a normal LevitateOS checkout around this submodule.
+
+## Operational Defaults
+
+- If `--recipes-path` is not set, Recipe uses `$RECIPE_PATH`, otherwise `~/.local/share/recipe/recipes`.
+- The recipes directory is created automatically if it does not exist.
+- If `--build-dir` is not set, Recipe creates a temporary build directory and keeps it instead of auto-deleting it.
+- `--json-output <file>` is the safest way to consume result JSON in scripts, because recipe logs and helper output are sent to stderr.
 
 ## Output Discipline (Important)
 
@@ -261,7 +343,18 @@ If `--recipes-path` is not provided, the CLI uses:
 ## Building
 
 ```bash
-cargo build -p levitate-recipe
+cd tools/recipe
+cargo build
+
+# or from the LevitateOS repo root
+cargo build --manifest-path tools/recipe/Cargo.toml
+```
+
+Install the binary into Cargo's bin directory:
+
+```bash
+cd tools/recipe
+cargo install --path .
 ```
 
 ## License
