@@ -1,6 +1,6 @@
 [package]
 name = "levitate-recipe"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "Rhai-based package recipe executor for LevitateOS"
 license = "MIT OR Apache-2.0"
@@ -54,3 +54,11 @@ wiremock = "0.6"
 tokio = { version = "1", features = ["rt", "macros"] }
 leviso-cheat-test = { path = "../../testing/cheat-test" }
 filetime = "0.2"
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/recipe", dest = "/usr/bin/recipe", mode = "0755" },
+    { source = "README.md", dest = "/usr/share/doc/levitate-recipe/README.md", mode = "0644", doc = true },
+    { source = "LICENSE-MIT", dest = "/usr/share/licenses/levitate-recipe/LICENSE-MIT", mode = "0644" },
+    { source = "LICENSE-APACHE", dest = "/usr/share/licenses/levitate-recipe/LICENSE-APACHE", mode = "0644" },
+]

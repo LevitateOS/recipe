@@ -10,8 +10,13 @@ pub(crate) struct Cli {
     pub(crate) command: Commands,
 
     /// Path to recipes directory
-    #[arg(short = 'r', long, global = true)]
-    pub(crate) recipes_path: Option<PathBuf>,
+    #[arg(
+        short = 'r',
+        long,
+        global = true,
+        default_value_os_t = super::metadata::default_recipes_path()
+    )]
+    pub(crate) recipes_path: PathBuf,
 
     /// Build directory (uses temp dir if not specified)
     #[arg(short, long, global = true)]

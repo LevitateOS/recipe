@@ -6,11 +6,11 @@ use std::path::PathBuf;
 
 use super::{
     cli::{Cli, Commands},
-    metadata::{RecipeMetadata, default_recipes_path, enumerate_recipes},
+    metadata::{RecipeMetadata, enumerate_recipes},
 };
 
 pub(crate) fn execute(cli: Cli) -> Result<()> {
-    let recipes_path = cli.recipes_path.unwrap_or_else(default_recipes_path);
+    let recipes_path = cli.recipes_path;
     output::set_machine_events(cli.machine_events);
 
     if !recipes_path.exists() {

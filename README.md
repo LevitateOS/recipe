@@ -113,6 +113,18 @@ Tests are not standalone today. `Cargo.toml` has a path dev-dependency on `../..
 - If `--build-dir` is not set, Recipe creates a temporary build directory and keeps it instead of auto-deleting it.
 - `--json-output <file>` is the safest way to consume result JSON in scripts, because recipe logs and helper output are sent to stderr.
 
+## RPM Packaging (Rust Native)
+
+This crate is configured for `cargo-generate-rpm`.
+
+```bash
+cargo install cargo-generate-rpm
+cargo build --release
+cargo generate-rpm
+```
+
+By default, the RPM is written under `target/generate-rpm/`.
+
 ## Output Discipline (Important)
 
 The `recipe` CLI prints the final `ctx` JSON to stdout (or writes it to `--json-output <file>`).
