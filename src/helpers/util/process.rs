@@ -129,6 +129,25 @@ fn normalize_packages(packages: rhai::Array) -> Result<Vec<String>, Box<EvalAltR
     Ok(out)
 }
 
+fn normalize_strings(
+    values: rhai::Array,
+    empty_message: &str,
+) -> Result<Vec<String>, Box<EvalAltResult>> {
+    let mut out = Vec::new();
+    for item in values {
+        let value = item.to_string();
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        out.push(trimmed.to_owned());
+    }
+    if out.is_empty() {
+        return Err(empty_message.into());
+    }
+    Ok(out)
+}
+
 fn dnf_install_impl(packages: rhai::Array, allow_erasing: bool) -> Result<(), Box<EvalAltResult>> {
     let package_args = normalize_packages(packages)?;
     let mut args = sudo_dnf_args(&["install", "-y"]);
@@ -153,4 +172,68 @@ pub fn dnf_install_allow_erasing(packages: rhai::Array) -> Result<(), Box<EvalAl
 pub fn dnf_add_repo(url: &str) -> Result<(), Box<EvalAltResult>> {
     let args = sudo_dnf_args(&["config-manager", "--add-repo", url]);
     run_checked("sudo", &args)
+}
+
+fn list_rpm_files(dir: &str) -> Result<Vec<String>, Box<EvalAltResult>> {
+    let mut files: Vec<String> = std::fs::read_dir(dir)
+        .map_err(|e| format!("dnf_download read_dir failed for {}: {}", dir, e))?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "rpm"))
+        .map(|path| path.to_string_lossy().to_string())
+        .collect();
+    files.sort();
+    Ok(files)
+}
+
+fn dnf_download_impl(
+    packages: rhai::Array,
+    dest_dir: &str,
+    arches: rhai::Array,
+    resolve: bool,
+) -> Result<rhai::Array, Box<EvalAltResult>> {
+    let package_args = normalize_packages(packages)?;
+    let arch_args = normalize_strings(arches, "architecture list is empty")?;
+    std::fs::create_dir_all(dest_dir)
+        .map_err(|e| format!("dnf_download mkdir failed for {}: {}", dest_dir, e))?;
+
+    let before = list_rpm_files(dest_dir)?;
+    let mut args = sudo_dnf_args(&["download", "-q"]);
+    if resolve {
+        args.push("--resolve".to_owned());
+    }
+    args.push(format!("--destdir={dest_dir}"));
+    for arch in arch_args {
+        args.push("--arch".to_owned());
+        args.push(arch);
+    }
+    args.extend(package_args);
+    run_checked("sudo", &args)?;
+
+    let after = list_rpm_files(dest_dir)?;
+    let before_set: std::collections::BTreeSet<String> = before.into_iter().collect();
+    let downloaded: rhai::Array = after
+        .into_iter()
+        .filter(|path| !before_set.contains(path))
+        .map(rhai::Dynamic::from)
+        .collect();
+    Ok(downloaded)
+}
+
+pub fn dnf_download(
+    packages: rhai::Array,
+    dest_dir: &str,
+    arches: rhai::Array,
+) -> Result<rhai::Array, Box<EvalAltResult>> {
+    dnf_download_impl(packages, dest_dir, arches, true)
+}
+
+pub fn dnf_download_with_resolve(
+    packages: rhai::Array,
+    dest_dir: &str,
+    arches: rhai::Array,
+    resolve: bool,
+) -> Result<rhai::Array, Box<EvalAltResult>> {
+    dnf_download_impl(packages, dest_dir, arches, resolve)
 }

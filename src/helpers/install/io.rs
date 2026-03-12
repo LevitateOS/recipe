@@ -36,6 +36,27 @@ pub fn append_file(path: &str, content: &str) -> Result<(), Box<EvalAltResult>> 
         .map_err(|e| format!("write failed: {}", e).into())
 }
 
+/// Append a line only if it does not already exist in the file
+pub fn append_line_if_missing(path: &str, line: &str) -> Result<bool, Box<EvalAltResult>> {
+    if line.contains('\n') {
+        return Err("append_line_if_missing requires a single line without newline".into());
+    }
+
+    let existing = read_file_or_empty(path);
+    if existing.lines().any(|candidate| candidate == line) {
+        return Ok(false);
+    }
+
+    let mut to_append = String::new();
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        to_append.push('\n');
+    }
+    to_append.push_str(line);
+    to_append.push('\n');
+    append_file(path, &to_append)?;
+    Ok(true)
+}
+
 /// Replace all occurrences of a string inside a file
 pub fn replace_in_file(path: &str, from: &str, to: &str) -> Result<(), Box<EvalAltResult>> {
     if from.is_empty() {
@@ -43,8 +64,13 @@ pub fn replace_in_file(path: &str, from: &str, to: &str) -> Result<(), Box<EvalA
     }
 
     let file_path = Path::new(path);
-    let content = std::fs::read_to_string(file_path)
-        .map_err(|e| format!("replace_in_file read failed for {}: {}", file_path.display(), e))?;
+    let content = std::fs::read_to_string(file_path).map_err(|e| {
+        format!(
+            "replace_in_file read failed for {}: {}",
+            file_path.display(),
+            e
+        )
+    })?;
     let updated = content.replace(from, to);
     std::fs::write(file_path, updated).map_err(|e| {
         format!(

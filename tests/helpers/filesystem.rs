@@ -175,6 +175,105 @@ fn install(ctx) {
 }
 
 #[test]
+fn test_copy_helpers_and_append_line_if_missing() {
+    let (_dir, recipes_dir, build_dir) = create_test_env();
+
+    let recipe_content = r#"
+let ctx = #{
+    name: "copy-helpers-test",
+    installed: false,
+};
+
+fn is_installed(ctx) {
+    if !ctx.installed { throw "not installed"; }
+    ctx
+}
+
+fn acquire(ctx) { ctx }
+
+fn build(ctx) {
+    let src = `${BUILD_DIR}/tree-src`;
+    let dst = `${BUILD_DIR}/tree-dst`;
+    mkdir(join_path(src, "nested"));
+    mkdir(dst);
+
+    write_file(join_path(src, "top.txt"), "alpha");
+    write_file(join_path(src, "nested/child.txt"), "beta");
+
+    let copied = `${BUILD_DIR}/exact-copy.txt`;
+    copy_file(join_path(src, "top.txt"), copied);
+    if read_file(copied) != "alpha" {
+        throw "copy_file did not preserve content";
+    }
+
+    let reflink_copy = `${BUILD_DIR}/reflink-copy.txt`;
+    copy_file_reflink(join_path(src, "top.txt"), reflink_copy);
+    if read_file(reflink_copy) != "alpha" {
+        throw "copy_file_reflink did not preserve content";
+    }
+
+    copy_tree_contents(src, dst);
+    if read_file(join_path(dst, "top.txt")) != "alpha" {
+        throw "copy_tree_contents missed top-level file";
+    }
+    if read_file(join_path(dst, "nested/child.txt")) != "beta" {
+        throw "copy_tree_contents missed nested file";
+    }
+
+    let selected = copy_first_existing(
+        [
+            join_path(src, "missing.txt"),
+            join_path(src, "nested/child.txt"),
+            join_path(src, "top.txt"),
+        ],
+        `${BUILD_DIR}/selected.txt`
+    );
+    if selected != join_path(src, "nested/child.txt") {
+        throw `copy_first_existing chose wrong source: ${selected}`;
+    }
+    if read_file(`${BUILD_DIR}/selected.txt`) != "beta" {
+        throw "copy_first_existing did not copy selected file";
+    }
+
+    let lines = `${BUILD_DIR}/lines.txt`;
+    write_file(lines, "alpha\n");
+    if append_line_if_missing(lines, "alpha") {
+        throw "append_line_if_missing reported change for existing line";
+    }
+    if !append_line_if_missing(lines, "beta") {
+        throw "append_line_if_missing did not report append";
+    }
+    if append_line_if_missing(lines, "beta") {
+        throw "append_line_if_missing appended duplicate line";
+    }
+
+    let final_lines = read_file(lines);
+    if final_lines != "alpha\nbeta\n" {
+        throw `append_line_if_missing produced wrong content: ${final_lines}`;
+    }
+    ctx
+}
+
+fn install(ctx) {
+    ctx.installed = true;
+    ctx
+}
+"#;
+
+    let recipe_path = recipes_dir.join("copy-helpers-test.rhai");
+    write_recipe(&recipe_path, recipe_content);
+
+    let engine = RecipeEngine::new(build_dir);
+    let result = engine.execute(&recipe_path);
+
+    assert!(
+        result.is_ok(),
+        "copy helper test failed: {:?}",
+        result.err()
+    );
+}
+
+#[test]
 fn test_mv_and_ln_helpers() {
     let (_dir, recipes_dir, build_dir) = create_test_env();
 
@@ -367,7 +466,9 @@ fn acquire(ctx) { ctx }
 fn build(ctx) {
     let bin_dir = `${BUILD_DIR}/fake-bin`;
     let log_file = `${BUILD_DIR}/dnf.log`;
+    let downloads_dir = `${BUILD_DIR}/downloads`;
     mkdir(bin_dir);
+    mkdir(downloads_dir);
 
     write_file(join_path(bin_dir, "sudo"), "#!/bin/sh\nif [ \"$1\" = \"-n\" ]; then shift; fi\nexec \"$@\"\n");
     write_file(
@@ -376,7 +477,7 @@ fn build(ctx) {
     );
     write_file(
         join_path(bin_dir, "dnf"),
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + log_file + "\"\nif [ \"$1\" = \"-q\" ] && [ \"$2\" = \"info\" ] && [ \"$3\" = \"fakepkg\" ]; then exit 0; fi\nif [ \"$1\" = \"-q\" ] && [ \"$2\" = \"info\" ] && [ \"$3\" = \"missingpkg\" ]; then exit 1; fi\nif [ \"$1\" = \"config-manager\" ] && [ \"$2\" = \"--add-repo\" ]; then exit 0; fi\nif [ \"$1\" = \"install\" ] && [ \"$2\" = \"-y\" ]; then exit 0; fi\nexit 1\n"
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + log_file + "\"\nif [ \"$1\" = \"-q\" ] && [ \"$2\" = \"info\" ] && [ \"$3\" = \"fakepkg\" ]; then exit 0; fi\nif [ \"$1\" = \"-q\" ] && [ \"$2\" = \"info\" ] && [ \"$3\" = \"missingpkg\" ]; then exit 1; fi\nif [ \"$1\" = \"config-manager\" ] && [ \"$2\" = \"--add-repo\" ]; then exit 0; fi\nif [ \"$1\" = \"install\" ] && [ \"$2\" = \"-y\" ]; then exit 0; fi\nif [ \"$1\" = \"download\" ]; then\n  destdir=\"\"\n  while [ $# -gt 0 ]; do\n    case \"$1\" in\n      --destdir=*) destdir=${1#--destdir=} ;;\n    esac\n    shift\n  done\n  : \"${destdir:?missing destdir}\"\n  touch \"$destdir/alpha-1.0.noarch.rpm\" \"$destdir/beta-2.0.x86_64.rpm\"\n  exit 0\nfi\nexit 1\n"
     );
     shell(`chmod +x ${bin_dir}/sudo ${bin_dir}/rpm ${bin_dir}/dnf`);
     set_env("PATH", bin_dir + ":" + env("PATH"));
@@ -390,6 +491,14 @@ fn build(ctx) {
     dnf_add_repo("https://example.invalid/repo");
     dnf_install(["alpha", "beta"]);
     dnf_install_allow_erasing(["gamma"]);
+    let downloaded = dnf_download(["alpha", "beta"], downloads_dir, ["x86_64", "noarch"]);
+    if downloaded.len() != 2 {
+        throw `dnf_download expected 2 files, got ${downloaded.len()}`;
+    }
+    let downloaded_no_resolve = dnf_download(["alpha"], downloads_dir, ["x86_64"], false);
+    if downloaded_no_resolve.len() != 0 {
+        throw `dnf_download second pass expected 0 new files, got ${downloaded_no_resolve.len()}`;
+    }
 
     let log = read_file(log_file);
     if !contains(log, "config-manager --add-repo https://example.invalid/repo") {
@@ -400,6 +509,18 @@ fn build(ctx) {
     }
     if !contains(log, "install -y --allowerasing gamma") {
         throw "dnf_install_allow_erasing missing flag";
+    }
+    if !contains(log, "download -q --resolve") {
+        throw "dnf_download missing resolve call";
+    }
+    if !contains(log, "--destdir=" + downloads_dir) {
+        throw "dnf_download missing destination directory";
+    }
+    if !contains(log, "--arch x86_64 --arch noarch alpha beta") {
+        throw "dnf_download missing arch/package args";
+    }
+    if !contains(log, "download -q --destdir=" + downloads_dir + " --arch x86_64 alpha") {
+        throw "dnf_download(false) missing non-resolve call";
     }
     ctx
 }

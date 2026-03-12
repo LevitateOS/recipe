@@ -42,9 +42,14 @@ These names are the Rhai function names.
 | `read_file_or_empty` | `helpers/install/io.rs` | `read_file_or_empty(path) -> String` |  |
 | `write_file` | `helpers/install/io.rs` | `write_file(path, content) -> ()` |  |
 | `append_file` | `helpers/install/io.rs` | `append_file(path, content) -> ()` |  |
+| `append_line_if_missing` | `helpers/install/io.rs` | `append_line_if_missing(path, line) -> bool` | appends exact line once |
 | `glob_list` | `helpers/install/io.rs` | `glob_list(pattern) -> Array` | returns string paths |
 | `glob_exists` | `helpers/install/filesystem.rs` | `glob_exists(pattern) -> bool` | true if any match |
 | `copy_into_dir` | `helpers/install/filesystem.rs` | `copy_into_dir(pattern, dest_dir) -> ()` | copies matching files into directory |
+| `copy_file` | `helpers/install/filesystem.rs` | `copy_file(src, dst) -> ()` | exact destination path |
+| `copy_file_reflink` | `helpers/install/filesystem.rs` | `copy_file_reflink(src, dst) -> ()` | reflink when available, fallback copy |
+| `copy_tree_contents` | `helpers/install/filesystem.rs` | `copy_tree_contents(src_dir, dst_dir) -> ()` | recursive contents copy |
+| `copy_first_existing` | `helpers/install/filesystem.rs` | `copy_first_existing(sources:Array, dst) -> String` | copies first existing source |
 | `exists` | `helpers/install/filesystem.rs` | `exists(path) -> bool` |  |
 | `file_exists` | `helpers/install/filesystem.rs` | `file_exists(path) -> bool` |  |
 | `is_file` | `helpers/install/filesystem.rs` | `is_file(path) -> bool` | alias |
@@ -81,6 +86,7 @@ These names are the Rhai function names.
 | `dnf_install` | `helpers/util/process.rs` | `dnf_install(packages:Array) -> ()` | runs `sudo -n dnf install -y` |
 | `dnf_install_allow_erasing` | `helpers/util/process.rs` | `dnf_install_allow_erasing(packages:Array) -> ()` | adds `--allowerasing` |
 | `dnf_add_repo` | `helpers/util/process.rs` | `dnf_add_repo(url) -> ()` | runs `dnf config-manager --add-repo` |
+| `dnf_download` | `helpers/util/process.rs` | `dnf_download(packages:Array, dest_dir, arches:Array[, resolve]) -> Array` | runs `sudo -n dnf download` |
 | `git_clone` | `helpers/acquire/git.rs` | `git_clone(url, dest_dir) -> String` | clones into dest_dir/<repo> |
 | `git_clone_depth` | `helpers/acquire/git.rs` | `git_clone_depth(url, dest_dir, depth) -> String` | shallow clone |
 | `torrent` | `helpers/acquire/torrent.rs` | `torrent(url, dest_dir) -> String` | pure Rust (librqbit) |

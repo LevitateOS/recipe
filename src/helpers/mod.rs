@@ -172,6 +172,10 @@ pub fn register_all(engine: &mut Engine) {
         trace_helper("append_file");
         install::append_file(path, content)
     });
+    engine.register_fn("append_line_if_missing", |path: &str, line: &str| {
+        trace_helper("append_line_if_missing");
+        install::append_line_if_missing(path, line)
+    });
     engine.register_fn("glob_list", |pattern: &str| {
         trace_helper("glob_list");
         install::glob_list(pattern)
@@ -183,6 +187,22 @@ pub fn register_all(engine: &mut Engine) {
     engine.register_fn("copy_into_dir", |pattern: &str, dest_dir: &str| {
         trace_helper("copy_into_dir");
         install::copy_into_dir(pattern, dest_dir)
+    });
+    engine.register_fn("copy_file", |src: &str, dst: &str| {
+        trace_helper("copy_file");
+        install::copy_file(src, dst)
+    });
+    engine.register_fn("copy_file_reflink", |src: &str, dst: &str| {
+        trace_helper("copy_file_reflink");
+        install::copy_file_reflink(src, dst)
+    });
+    engine.register_fn("copy_tree_contents", |src_dir: &str, dst_dir: &str| {
+        trace_helper("copy_tree_contents");
+        install::copy_tree_contents(src_dir, dst_dir)
+    });
+    engine.register_fn("copy_first_existing", |sources: rhai::Array, dst: &str| {
+        trace_helper("copy_first_existing");
+        install::copy_first_existing(sources, dst)
     });
 
     // Filesystem utilities (install/filesystem)
@@ -359,6 +379,20 @@ pub fn register_all(engine: &mut Engine) {
         trace_helper("dnf_add_repo");
         util::dnf_add_repo(url)
     });
+    engine.register_fn(
+        "dnf_download",
+        |packages: rhai::Array, dest_dir: &str, arches: rhai::Array| {
+            trace_helper("dnf_download");
+            util::dnf_download(packages, dest_dir, arches)
+        },
+    );
+    engine.register_fn(
+        "dnf_download",
+        |packages: rhai::Array, dest_dir: &str, arches: rhai::Array, resolve: bool| {
+            trace_helper("dnf_download");
+            util::dnf_download_with_resolve(packages, dest_dir, arches, resolve)
+        },
+    );
 
     // Git utilities (acquire/git)
     // git_clone(url, dest_dir) -> path string
