@@ -39,6 +39,7 @@ jobs:
     uses: LevitateOS/LevitateOS/.github/workflows/rust-release.yml@master
     with:
       create-binary-artifact: true
+      create-rpm-artifact: true
       binary-name: 'recipe'
     secrets:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
