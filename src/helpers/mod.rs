@@ -176,6 +176,14 @@ pub fn register_all(engine: &mut Engine) {
         trace_helper("glob_list");
         install::glob_list(pattern)
     });
+    engine.register_fn("glob_exists", |pattern: &str| {
+        trace_helper("glob_exists");
+        install::glob_exists(pattern)
+    });
+    engine.register_fn("copy_into_dir", |pattern: &str, dest_dir: &str| {
+        trace_helper("copy_into_dir");
+        install::copy_into_dir(pattern, dest_dir)
+    });
 
     // Filesystem utilities (install/filesystem)
     engine.register_fn("exists", |path: &str| {
@@ -214,9 +222,17 @@ pub fn register_all(engine: &mut Engine) {
         trace_helper("ln");
         install::symlink(target, link)
     });
+    engine.register_fn("ln_force", |target: &str, link: &str| {
+        trace_helper("ln_force");
+        install::symlink_force(target, link)
+    });
     engine.register_fn("chmod", |path: &str, mode: i64| {
         trace_helper("chmod");
         install::chmod_file(path, mode)
+    });
+    engine.register_fn("replace_in_file", |path: &str, from: &str, to: &str| {
+        trace_helper("replace_in_file");
+        install::replace_in_file(path, from, to)
     });
 
     // Acquire helpers (acquire/download, acquire/verify)
@@ -318,6 +334,30 @@ pub fn register_all(engine: &mut Engine) {
     engine.register_fn("exec_output", |cmd: &str, args: rhai::Array| {
         trace_helper("exec_output");
         util::exec_output(cmd, args)
+    });
+    engine.register_fn("rpm_installed", |name: &str| {
+        trace_helper("rpm_installed");
+        util::rpm_installed(name)
+    });
+    engine.register_fn("rpm_version", |name: &str| {
+        trace_helper("rpm_version");
+        util::rpm_version(name)
+    });
+    engine.register_fn("dnf_package_available", |name: &str| {
+        trace_helper("dnf_package_available");
+        util::dnf_package_available(name)
+    });
+    engine.register_fn("dnf_install", |packages: rhai::Array| {
+        trace_helper("dnf_install");
+        util::dnf_install(packages)
+    });
+    engine.register_fn("dnf_install_allow_erasing", |packages: rhai::Array| {
+        trace_helper("dnf_install_allow_erasing");
+        util::dnf_install_allow_erasing(packages)
+    });
+    engine.register_fn("dnf_add_repo", |url: &str| {
+        trace_helper("dnf_add_repo");
+        util::dnf_add_repo(url)
     });
 
     // Git utilities (acquire/git)

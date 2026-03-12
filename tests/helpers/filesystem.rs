@@ -112,6 +112,69 @@ fn install(ctx) {
 }
 
 #[test]
+fn test_glob_exists_and_copy_into_dir() {
+    let (_dir, recipes_dir, build_dir) = create_test_env();
+
+    let recipe_content = r#"
+let ctx = #{
+    name: "glob-copy-test",
+    installed: false,
+};
+
+fn is_installed(ctx) {
+    if !ctx.installed { throw "not installed"; }
+    ctx
+}
+
+fn acquire(ctx) { ctx }
+
+fn build(ctx) {
+    let src = `${BUILD_DIR}/copy-src`;
+    let dst = `${BUILD_DIR}/copy-dst`;
+    mkdir(src);
+    mkdir(dst);
+
+    write_file(join_path(src, "a.txt"), "alpha");
+    write_file(join_path(src, "b.txt"), "beta");
+    write_file(join_path(src, "skip.log"), "log");
+
+    if !glob_exists(join_path(src, "*.txt")) {
+        throw "glob_exists did not find txt files";
+    }
+    if glob_exists(join_path(src, "*.rpm")) {
+        throw "glob_exists reported false positive";
+    }
+
+    copy_into_dir(join_path(src, "*.txt"), dst);
+    if !is_file(join_path(dst, "a.txt")) || !is_file(join_path(dst, "b.txt")) {
+        throw "copy_into_dir did not copy expected files";
+    }
+    if is_file(join_path(dst, "skip.log")) {
+        throw "copy_into_dir copied an unexpected file";
+    }
+    ctx
+}
+
+fn install(ctx) {
+    ctx.installed = true;
+    ctx
+}
+"#;
+
+    let recipe_path = recipes_dir.join("glob-copy-test.rhai");
+    write_recipe(&recipe_path, recipe_content);
+
+    let engine = RecipeEngine::new(build_dir);
+    let result = engine.execute(&recipe_path);
+
+    assert!(
+        result.is_ok(),
+        "glob_exists/copy_into_dir test failed: {:?}",
+        result.err()
+    );
+}
+
+#[test]
 fn test_mv_and_ln_helpers() {
     let (_dir, recipes_dir, build_dir) = create_test_env();
 
@@ -163,6 +226,68 @@ fn install(ctx) {
     let result = engine.execute(&recipe_path);
 
     assert!(result.is_ok(), "mv/ln test failed: {:?}", result.err());
+}
+
+#[test]
+fn test_ln_force_and_replace_in_file() {
+    let (_dir, recipes_dir, build_dir) = create_test_env();
+
+    let recipe_content = r#"
+let ctx = #{
+    name: "ln-force-replace-test",
+    installed: false,
+};
+
+fn is_installed(ctx) {
+    if !ctx.installed { throw "not installed"; }
+    ctx
+}
+
+fn acquire(ctx) { ctx }
+
+fn build(ctx) {
+    let src = `${BUILD_DIR}/ln-src`;
+    mkdir(src);
+    write_file(join_path(src, "one.txt"), "one");
+    write_file(join_path(src, "two.txt"), "two");
+
+    let link = `${BUILD_DIR}/current.txt`;
+    ln(join_path(src, "one.txt"), link);
+    ln_force(join_path(src, "two.txt"), link);
+
+    let resolved = shell_output(`readlink ${link}`);
+    if trim(resolved) != join_path(src, "two.txt") {
+        throw `ln_force did not replace link target: ${resolved}`;
+    }
+
+    let desktop = `${BUILD_DIR}/sample.desktop`;
+    write_file(desktop, "Exec=kitty\nTryExec=kitty\n");
+    replace_in_file(desktop, "Exec=kitty", "Exec=/tmp/kitty");
+    replace_in_file(desktop, "TryExec=kitty", "TryExec=/tmp/kitty");
+    let updated = read_file(desktop);
+    if !contains(updated, "Exec=/tmp/kitty") || !contains(updated, "TryExec=/tmp/kitty") {
+        throw "replace_in_file did not rewrite desktop file";
+    }
+    ctx
+}
+
+fn install(ctx) {
+    ctx.installed = true;
+    ctx
+}
+"#;
+
+    let recipe_path = recipes_dir.join("ln-force-replace-test.rhai");
+    write_recipe(&recipe_path, recipe_content);
+
+    let engine = RecipeEngine::new(build_dir);
+    let result = engine.execute(&recipe_path);
+
+    assert!(
+        result.is_ok(),
+        "ln_force/replace_in_file test failed: {:?}",
+        result.err()
+    );
 }
 
 #[test]
@@ -218,6 +343,82 @@ fn install(ctx) {
     assert!(
         result.is_ok(),
         "shell_output/shell_status test failed: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn test_package_helpers() {
+    let (_dir, recipes_dir, build_dir) = create_test_env();
+
+    let recipe_content = r##"
+let ctx = #{
+    name: "package-helpers-test",
+    installed: false,
+};
+
+fn is_installed(ctx) {
+    if !ctx.installed { throw "not installed"; }
+    ctx
+}
+
+fn acquire(ctx) { ctx }
+
+fn build(ctx) {
+    let bin_dir = `${BUILD_DIR}/fake-bin`;
+    let log_file = `${BUILD_DIR}/dnf.log`;
+    mkdir(bin_dir);
+
+    write_file(join_path(bin_dir, "sudo"), "#!/bin/sh\nif [ \"$1\" = \"-n\" ]; then shift; fi\nexec \"$@\"\n");
+    write_file(
+        join_path(bin_dir, "rpm"),
+        "#!/bin/sh\nif [ \"$1\" = \"-q\" ] && [ \"$2\" = \"fakepkg\" ]; then exit 0; fi\nif [ \"$1\" = \"-q\" ] && [ \"$2\" = \"missingpkg\" ]; then exit 1; fi\nif [ \"$1\" = \"-q\" ] && [ \"$2\" = \"--qf\" ] && [ \"$4\" = \"fakepkg\" ]; then printf '1.2.3'; exit 0; fi\nexit 1\n"
+    );
+    write_file(
+        join_path(bin_dir, "dnf"),
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + log_file + "\"\nif [ \"$1\" = \"-q\" ] && [ \"$2\" = \"info\" ] && [ \"$3\" = \"fakepkg\" ]; then exit 0; fi\nif [ \"$1\" = \"-q\" ] && [ \"$2\" = \"info\" ] && [ \"$3\" = \"missingpkg\" ]; then exit 1; fi\nif [ \"$1\" = \"config-manager\" ] && [ \"$2\" = \"--add-repo\" ]; then exit 0; fi\nif [ \"$1\" = \"install\" ] && [ \"$2\" = \"-y\" ]; then exit 0; fi\nexit 1\n"
+    );
+    shell(`chmod +x ${bin_dir}/sudo ${bin_dir}/rpm ${bin_dir}/dnf`);
+    set_env("PATH", bin_dir + ":" + env("PATH"));
+
+    if !rpm_installed("fakepkg") { throw "rpm_installed false negative"; }
+    if rpm_installed("missingpkg") { throw "rpm_installed false positive"; }
+    if rpm_version("fakepkg") != "1.2.3" { throw "rpm_version wrong"; }
+    if !dnf_package_available("fakepkg") { throw "dnf_package_available false negative"; }
+    if dnf_package_available("missingpkg") { throw "dnf_package_available false positive"; }
+
+    dnf_add_repo("https://example.invalid/repo");
+    dnf_install(["alpha", "beta"]);
+    dnf_install_allow_erasing(["gamma"]);
+
+    let log = read_file(log_file);
+    if !contains(log, "config-manager --add-repo https://example.invalid/repo") {
+        throw "dnf_add_repo did not invoke config-manager";
+    }
+    if !contains(log, "install -y alpha beta") {
+        throw "dnf_install did not pass packages";
+    }
+    if !contains(log, "install -y --allowerasing gamma") {
+        throw "dnf_install_allow_erasing missing flag";
+    }
+    ctx
+}
+
+fn install(ctx) {
+    ctx.installed = true;
+    ctx
+}
+"##;
+
+    let recipe_path = recipes_dir.join("package-helpers-test.rhai");
+    write_recipe(&recipe_path, recipe_content);
+
+    let engine = RecipeEngine::new(build_dir);
+    let result = engine.execute(&recipe_path);
+
+    assert!(
+        result.is_ok(),
+        "package helper test failed: {:?}",
         result.err()
     );
 }

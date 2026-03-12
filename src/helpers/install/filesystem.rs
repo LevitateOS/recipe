@@ -51,6 +51,57 @@ pub fn rm_files(pattern: &str) -> Result<(), Box<EvalAltResult>> {
     Ok(())
 }
 
+/// Check if a glob pattern matches at least one path
+pub fn glob_exists(pattern: &str) -> Result<bool, Box<EvalAltResult>> {
+    let mut entries = glob::glob(pattern).map_err(|e| format!("invalid pattern: {}", e))?;
+    Ok(entries.any(|entry| entry.is_ok()))
+}
+
+/// Copy files matching a glob pattern into a directory
+pub fn copy_into_dir(pattern: &str, dest_dir: &str) -> Result<(), Box<EvalAltResult>> {
+    let dest_dir = Path::new(dest_dir);
+    if !dest_dir.is_dir() {
+        return Err(
+            format!(
+                "copy_into_dir destination is not a directory: {}",
+                dest_dir.display()
+            )
+            .into(),
+        );
+    }
+
+    let mut matched = false;
+    for path in glob::glob(pattern).map_err(|e| format!("invalid pattern: {}", e))? {
+        let path = path.map_err(|e| format!("glob error: {}", e))?;
+        if !path.is_file() {
+            continue;
+        }
+        matched = true;
+        let Some(name) = path.file_name() else {
+            return Err(
+                format!("copy_into_dir source has no file name: {}", path.display()).into(),
+            );
+        };
+        let dest = dest_dir.join(name);
+        output::detail(&format!("cp {} {}", path.display(), dest.display()));
+        std::fs::copy(&path, &dest).map_err(|e| -> Box<EvalAltResult> {
+            format!(
+                "copy_into_dir failed: {} -> {}: {}",
+                path.display(),
+                dest.display(),
+                e
+            )
+            .into()
+        })?;
+    }
+
+    if !matched {
+        return Err(format!("copy_into_dir matched no files: {}", pattern).into());
+    }
+
+    Ok(())
+}
+
 /// Move/rename a file
 pub fn move_file(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>> {
     output::detail(&format!("mv {} -> {}", src, dest));
@@ -64,8 +115,33 @@ pub fn symlink(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>> {
     std::os::unix::fs::symlink(src, dest).map_err(|e| format!("symlink failed: {}", e).into())
 }
 
+/// Create or replace a symbolic link
+#[cfg(unix)]
+pub fn symlink_force(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>> {
+    let dest_path = Path::new(dest);
+    output::detail(&format!("ln -sfn {} {}", src, dest));
+
+    match std::fs::remove_file(dest_path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) if e.kind() == std::io::ErrorKind::IsADirectory => {
+            return Err(format!("ln_force destination is an existing directory: {}", dest).into());
+        }
+        Err(e) => {
+            return Err(format!("failed to remove existing link target {}: {}", dest, e).into());
+        }
+    }
+
+    std::os::unix::fs::symlink(src, dest).map_err(|e| format!("symlink failed: {}", e).into())
+}
+
 #[cfg(not(unix))]
 pub fn symlink(_src: &str, _dest: &str) -> Result<(), Box<EvalAltResult>> {
+    Err("symlinks not supported on this platform".into())
+}
+
+#[cfg(not(unix))]
+pub fn symlink_force(_src: &str, _dest: &str) -> Result<(), Box<EvalAltResult>> {
     Err("symlinks not supported on this platform".into())
 }
 

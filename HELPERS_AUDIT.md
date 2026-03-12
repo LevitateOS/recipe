@@ -1,6 +1,6 @@
 # recipe Helper Audit
 
-**Last Updated:** 2026-02-14  
+**Last Updated:** 2026-03-12  
 **Scope:** Rhai helpers exposed by `tools/recipe/src/helpers/mod.rs` (what recipe authors can call).
 
 This document audits:
@@ -10,7 +10,7 @@ This document audits:
 - What is missing to support safe A/B composition into an inactive slot sysroot
 
 **Verification note:** The helper list below is derived from
-`tools/recipe/src/helpers/mod.rs` `register_all()` (currently 58 helpers).
+`tools/recipe/src/helpers/mod.rs` `register_all()` (currently 68 helpers).
 
 ---
 
@@ -43,6 +43,8 @@ These names are the Rhai function names.
 | `write_file` | `helpers/install/io.rs` | `write_file(path, content) -> ()` |  |
 | `append_file` | `helpers/install/io.rs` | `append_file(path, content) -> ()` |  |
 | `glob_list` | `helpers/install/io.rs` | `glob_list(pattern) -> Array` | returns string paths |
+| `glob_exists` | `helpers/install/filesystem.rs` | `glob_exists(pattern) -> bool` | true if any match |
+| `copy_into_dir` | `helpers/install/filesystem.rs` | `copy_into_dir(pattern, dest_dir) -> ()` | copies matching files into directory |
 | `exists` | `helpers/install/filesystem.rs` | `exists(path) -> bool` |  |
 | `file_exists` | `helpers/install/filesystem.rs` | `file_exists(path) -> bool` |  |
 | `is_file` | `helpers/install/filesystem.rs` | `is_file(path) -> bool` | alias |
@@ -52,7 +54,9 @@ These names are the Rhai function names.
 | `rm` | `helpers/install/filesystem.rs` | `rm(pattern) -> ()` | glob delete |
 | `mv` | `helpers/install/filesystem.rs` | `mv(src, dst) -> ()` | rename |
 | `ln` | `helpers/install/filesystem.rs` | `ln(target, link) -> ()` | symlink (unix) |
+| `ln_force` | `helpers/install/filesystem.rs` | `ln_force(target, link) -> ()` | replace existing link/path |
 | `chmod` | `helpers/install/filesystem.rs` | `chmod(path, mode) -> ()` | unix mode |
+| `replace_in_file` | `helpers/install/io.rs` | `replace_in_file(path, from, to) -> ()` | whole-file text replacement |
 | `download` | `helpers/acquire/download.rs` | `download(url, dest) -> String` | explicit destination |
 | `verify_sha256` | `helpers/acquire/verify.rs` | `verify_sha256(path, expected) -> ()` | explicit file |
 | `fetch_sha256` | `helpers/acquire/verify.rs` | `fetch_sha256(url, filename) -> String` | parse checksum file |
@@ -71,6 +75,12 @@ These names are the Rhai function names.
 | `check_disk_space` | `helpers/install/disk.rs` | `check_disk_space(path, required_bytes) -> ()` | `df -k` based |
 | `exec` | `helpers/util/process.rs` | `exec(cmd, args:Array) -> int` | no shell, explicit args |
 | `exec_output` | `helpers/util/process.rs` | `exec_output(cmd, args:Array) -> String` | no shell, explicit args |
+| `rpm_installed` | `helpers/util/process.rs` | `rpm_installed(name) -> bool` | rpm query |
+| `rpm_version` | `helpers/util/process.rs` | `rpm_version(name) -> String` | rpm `%{VERSION}` |
+| `dnf_package_available` | `helpers/util/process.rs` | `dnf_package_available(name) -> bool` | `dnf -q info` |
+| `dnf_install` | `helpers/util/process.rs` | `dnf_install(packages:Array) -> ()` | runs `sudo -n dnf install -y` |
+| `dnf_install_allow_erasing` | `helpers/util/process.rs` | `dnf_install_allow_erasing(packages:Array) -> ()` | adds `--allowerasing` |
+| `dnf_add_repo` | `helpers/util/process.rs` | `dnf_add_repo(url) -> ()` | runs `dnf config-manager --add-repo` |
 | `git_clone` | `helpers/acquire/git.rs` | `git_clone(url, dest_dir) -> String` | clones into dest_dir/<repo> |
 | `git_clone_depth` | `helpers/acquire/git.rs` | `git_clone_depth(url, dest_dir, depth) -> String` | shallow clone |
 | `torrent` | `helpers/acquire/torrent.rs` | `torrent(url, dest_dir) -> String` | pure Rust (librqbit) |
@@ -127,13 +137,23 @@ These helpers exist today, but do not appear in the spec helper list:
 
 - `read_file_or_empty(path) -> String` (convenience)
 - `append_file(path, content) -> ()`
+- `replace_in_file(path, from, to) -> ()`
 - `shell_in(dir, cmd) -> ()`
 - `shell_status_in(dir, cmd) -> int`
 - `shell_output_in(dir, cmd) -> String`
+- `glob_exists(pattern) -> bool`
+- `copy_into_dir(pattern, dest_dir) -> ()`
 - `is_file(path) -> bool` (alias of `file_exists`)
 - `is_dir(path) -> bool` (alias of `dir_exists`)
+- `ln_force(target, link) -> ()`
 - `extract_with_format(archive, dest, format) -> ()`
 - `fetch_sha256(url, filename) -> String`
+- `rpm_installed(name) -> bool`
+- `rpm_version(name) -> String`
+- `dnf_package_available(name) -> bool`
+- `dnf_install(packages:Array) -> ()`
+- `dnf_install_allow_erasing(packages:Array) -> ()`
+- `dnf_add_repo(url) -> ()`
 - `torrent(url, dest_dir) -> String` (pure Rust, `librqbit`)
 - `download_with_resume(url, dest) -> String` (pure Rust HTTP Range resume)
 - `llm_extract/llm_find_latest_version/llm_find_download_url(...) -> String` (currently TODO backend)
