@@ -1,0 +1,186 @@
+.TH RECIPE 1 "2026-03-12" "recipe 0.1.3" "Recipe Manual"
+.SH NAME
+recipe \- local-first package recipe executor for LevitateOS
+.SH SYNOPSIS
+.B recipe
+[\fIGLOBAL OPTIONS\fR] <\fICOMMAND\fR> [\fICOMMAND OPTIONS\fR]
+.br
+.B recipe install
+[\fIGLOBAL OPTIONS\fR] [\fIINSTALL OPTIONS\fR] <\fIRECIPE\fR>
+.br
+.B recipe remove
+[\fIGLOBAL OPTIONS\fR] <\fIRECIPE\fR>
+.br
+.B recipe cleanup
+[\fIGLOBAL OPTIONS\fR] [\fB\-\-reason\fR \fIREASON\fR] <\fIRECIPE\fR>
+.br
+.B recipe isinstalled
+[\fIGLOBAL OPTIONS\fR] <\fIRECIPE\fR>
+.br
+.B recipe isbuilt
+[\fIGLOBAL OPTIONS\fR] <\fIRECIPE\fR>
+.br
+.B recipe isacquired
+[\fIGLOBAL OPTIONS\fR] <\fIRECIPE\fR>
+.br
+.B recipe list
+[\fIGLOBAL OPTIONS\fR]
+.br
+.B recipe info
+[\fIGLOBAL OPTIONS\fR] <\fIRECIPE\fR>
+.br
+.B recipe hash
+[\fIGLOBAL OPTIONS\fR] <\fIFILE\fR>
+.SH DESCRIPTION
+\fBrecipe\fR executes Rhai-based package recipes. Recipes persist state in a
+top-level \fBctx\fR map inside the recipe source file itself. The current executor
+is explicit and local-first: recipes call helpers with concrete paths and phase
+functions return an updated \fBctx\fR map.
+.PP
+The CLI is designed to keep stdout machine-readable. Final \fBctx\fR JSON is
+written to stdout by default, while logs, helper progress, shell output, and
+other human-oriented diagnostics go to stderr.
+.SH DEFAULT PATHS
+.TP
+\fBRecipes directory\fR
+\fB~/.local/share/recipe/recipes\fR
+.br
+The exact default follows XDG rules:
+\fB$RECIPE_PATH\fR if set, otherwise
+\fB$XDG_DATA_HOME/recipe/recipes\fR, otherwise
+\fB~/.local/share/recipe/recipes\fR.
+.TP
+\fBBuild directory\fR
+Temporary directory if \fB\-\-build-dir\fR is not set.
+.TP
+\fBLLM profiles\fR
+\fB$XDG_CONFIG_HOME/recipe/llm.toml\fR or
+\fB~/.config/recipe/llm.toml\fR.
+.SH RECIPE RESOLUTION
+Commands that take \fI<RECIPE>\fR resolve it in this order:
+.IP "1." 4
+Absolute path, if it exists.
+.IP "2." 4
+Relative path from the current working directory, if it exists.
+.IP "3." 4
+Path joined under \fB\-\-recipes-path\fR.
+.IP "4." 4
+Same name with \fB.rhai\fR appended under \fB\-\-recipes-path\fR.
+.PP
+Example: \fBrecipe install kitty\fR will look for
+\fB~/.local/share/recipe/recipes/kitty\fR and then
+\fB~/.local/share/recipe/recipes/kitty.rhai\fR unless
+\fB\-\-recipes-path\fR overrides that directory.
+.SH COMMANDS
+.TP
+\fBinstall\fR
+Run the normal install flow for a recipe. This is the main command for recipe
+authoring and debugging.
+.TP
+\fBremove\fR
+Run the recipe's \fBremove(ctx)\fR hook and persist the resulting \fBctx\fR.
+.TP
+\fBcleanup\fR
+Run the recipe's \fBcleanup(ctx, reason)\fR hook manually.
+.TP
+\fBisinstalled\fR
+Evaluate \fBis_installed(ctx)\fR manually.
+.TP
+\fBisbuilt\fR
+Evaluate \fBis_built(ctx)\fR manually.
+.TP
+\fBisacquired\fR
+Evaluate \fBis_acquired(ctx)\fR manually.
+.TP
+\fBlist\fR
+List recipes under the recipes directory.
+.TP
+\fBinfo\fR
+Show recipe metadata derived from the recipe's \fBctx\fR block.
+.TP
+\fBhash\fR
+Compute \fBsha256\fR, \fBsha512\fR, and \fBblake3\fR hashes for a file.
+.SH GLOBAL OPTIONS
+.TP
+\fB\-r\fR, \fB\-\-recipes-path\fR \fIPATH\fR
+Recipes directory used for name lookup, listing, and default recipe resolution.
+.TP
+\fB\-b\fR, \fB\-\-build-dir\fR \fIPATH\fR
+Build directory used for acquire/build/install work. If omitted, a temporary
+directory is created.
+.TP
+\fB\-d\fR, \fB\-\-define\fR \fIKEY=VALUE\fR
+Inject a define into Rhai scope before execution. Repeatable.
+.TP
+\fB\-\-json-output\fR \fIPATH\fR
+Write final \fBctx\fR JSON to a file instead of stdout.
+.TP
+\fB\-\-machine-events\fR
+Emit machine-readable hook events as JSON objects.
+.TP
+\fB\-\-llm-profile\fR \fINAME\fR
+Select an LLM profile from \fBrecipe/llm.toml\fR.
+.TP
+\fB\-\-no-persist-ctx\fR
+Do not write updated \fBctx\fR back into the recipe source file.
+.SH INSTALL OPTIONS
+.TP
+\fB\-\-autofix\fR
+Attempt to patch build/install failures using the configured LLM provider.
+.TP
+\fB\-\-autofix-attempts\fR \fIN\fR
+Maximum number of patch attempts per failing install step. Default: \fB2\fR.
+.TP
+\fB\-\-autofix-cwd\fR \fIPATH\fR
+Working directory used for LLM invocation and patch application.
+.TP
+\fB\-\-autofix-prompt-file\fR \fIPATH\fR
+Extra instructions appended to the built-in autofix prompt.
+.TP
+\fB\-\-autofix-allow-path\fR \fIPATH\fR
+Allowed root for patched file paths. Repeatable. If omitted, the repo root is
+used.
+.SH OUTPUT CONTRACT
+.TP
+\fBstdout\fR
+Final \fBctx\fR JSON, unless \fB\-\-json-output\fR is used.
+.TP
+\fBstderr\fR
+Progress logs, phase banners, helper traces, shell output, and other
+human-readable diagnostics.
+.PP
+For machine use, prefer \fB\-\-json-output\fR when running recipes that call
+\fBshell*\fR helpers or external commands.
+.SH HOOK MODEL
+Recipes are Rhai scripts with a top-level \fBctx\fR map and optional lifecycle
+hooks. The normal install flow is:
+.IP "1." 4
+\fBis_installed(ctx)\fR
+.IP "2." 4
+\fBis_built(ctx)\fR
+.IP "3." 4
+\fBis_acquired(ctx)\fR
+.IP "4." 4
+\fBacquire(ctx)\fR if needed
+.IP "5." 4
+\fBbuild(ctx)\fR if needed and defined
+.IP "6." 4
+\fBinstall(ctx)\fR
+.IP "7." 4
+\fBcleanup(ctx, reason)\fR on success or failure
+.PP
+Checks are throw-based gates, not boolean predicates. A check should return an
+updated \fBctx\fR when the phase is already satisfied, and \fBthrow\fR when work
+is still needed.
+.SH EXAMPLES
+.nf
+recipe install kitty
+recipe install ./recipes/kitty.rhai --define VERSION=1.2.3
+recipe install kitty --autofix --autofix-attempts 3
+recipe isbuilt kitty --no-persist-ctx
+recipe list
+recipe hash ./downloads/foo.tar.xz
+.fi
+.SH SEE ALSO
+\fBrecipe-recipe\fR(5),
+\fBrecipe-helpers\fR(7)

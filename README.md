@@ -11,6 +11,7 @@ If you are looking for deeper docs:
 - Recipe authoring guide (current implementation): `WRITING_RECIPES.md`
 - Spec and design requirements: `REQUIREMENTS.md`
 - Current helper API surface (authoritative): `HELPERS_AUDIT.md`
+- Installed man pages: `recipe(1)`, `recipe-recipe(5)`, `recipe-helpers(7)`
 - Lifecycle notes: `PHASES.md`
 
 ## Status

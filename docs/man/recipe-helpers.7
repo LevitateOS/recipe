@@ -1,0 +1,683 @@
+.TH RECIPE-HELPERS 7 "2026-03-12" "recipe 0.1.3" "Recipe Helpers"
+.SH NAME
+recipe-helpers \- current helper surface exposed to Rhai recipes
+.SH OVERVIEW
+This page documents the helper names currently registered by
+\fBtools/recipe/src/helpers/mod.rs\fR. It is intended as a stable LLM-oriented
+catalog: each helper entry uses the same schema and describes current behavior
+rather than future spec intent.
+.PP
+Schema used below:
+.IP "\[bu]" 4
+\fBSignature\fR: Rhai call shape
+.IP "\[bu]" 4
+\fBReturns\fR: result value
+.IP "\[bu]" 4
+\fBFails when\fR: common failure modes
+.IP "\[bu]" 4
+\fBExample\fR: minimal concrete invocation
+.SH PATH HELPERS
+.TP
+\fBjoin_path\fR
+Signature: \fBjoin_path(a, b)\fR
+.br
+Returns: joined path string
+.br
+Fails when: never for ordinary string inputs
+.br
+Example: \fBjoin_path(BUILD_DIR, "src")\fR
+.TP
+\fBbasename\fR
+Signature: \fBbasename(path)\fR
+.br
+Returns: final path component as string
+.br
+Fails when: never for ordinary string inputs
+.br
+Example: \fBbasename("/tmp/foo.tar.xz")\fR
+.TP
+\fBdirname\fR
+Signature: \fBdirname(path)\fR
+.br
+Returns: parent path as string
+.br
+Fails when: never for ordinary string inputs
+.br
+Example: \fBdirname("/tmp/foo.tar.xz")\fR
+.SH STRING HELPERS
+.TP
+\fBtrim\fR
+Signature: \fBtrim(s)\fR
+.br
+Returns: trimmed string
+.br
+Fails when: never
+.br
+Example: \fBtrim("  hello  ")\fR
+.TP
+\fBstarts_with\fR
+Signature: \fBstarts_with(s, prefix)\fR
+.br
+Returns: boolean
+.br
+Fails when: never
+.br
+Example: \fBstarts_with(url, "https://")\fR
+.TP
+\fBends_with\fR
+Signature: \fBends_with(s, suffix)\fR
+.br
+Returns: boolean
+.br
+Fails when: never
+.br
+Example: \fBends_with(archive, ".tar.xz")\fR
+.TP
+\fBcontains\fR
+Signature: \fBcontains(s, pat)\fR
+.br
+Returns: boolean
+.br
+Fails when: never
+.br
+Example: \fBcontains(text, "Release")\fR
+.TP
+\fBreplace\fR
+Signature: \fBreplace(s, from, to)\fR
+.br
+Returns: replaced string
+.br
+Fails when: never
+.br
+Example: \fBreplace(version, "v", "")\fR
+.TP
+\fBsplit\fR
+Signature: \fBsplit(s, sep)\fR
+.br
+Returns: array of strings
+.br
+Fails when: never
+.br
+Example: \fBsplit("a:b:c", ":")\fR
+.SH LOGGING HELPERS
+.TP
+\fBlog\fR
+Signature: \fBlog(msg)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: stderr formatting fails
+.br
+Example: \fBlog("building kernel")\fR
+.TP
+\fBdebug\fR
+Signature: \fBdebug(msg)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: stderr formatting fails
+.br
+Example: \fBdebug("checking build cache")\fR
+.TP
+\fBwarn\fR
+Signature: \fBwarn(msg)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: stderr formatting fails
+.br
+Example: \fBwarn("falling back to plain copy")\fR
+.SH SHELL HELPERS
+.TP
+\fBshell\fR
+Signature: \fBshell(cmd)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: \fBsh -c\fR execution fails or exits non-zero
+.br
+Example: \fBshell("make -j$(nproc)")\fR
+.TP
+\fBshell_in\fR
+Signature: \fBshell_in(dir, cmd)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: directory change or shell command fails
+.br
+Example: \fBshell_in(ctx.src_dir, "./configure")\fR
+.TP
+\fBshell_status\fR
+Signature: \fBshell_status(cmd)\fR
+.br
+Returns: integer exit code
+.br
+Fails when: the shell process cannot be started
+.br
+Example: \fBshell_status("test -f /usr/bin/bash")\fR
+.TP
+\fBshell_status_in\fR
+Signature: \fBshell_status_in(dir, cmd)\fR
+.br
+Returns: integer exit code
+.br
+Fails when: directory change or shell startup fails
+.br
+Example: \fBshell_status_in(ctx.src_dir, "make test")\fR
+.TP
+\fBshell_output\fR
+Signature: \fBshell_output(cmd)\fR
+.br
+Returns: stdout string
+.br
+Fails when: shell command fails
+.br
+Example: \fBtrim(shell_output("uname -m"))\fR
+.TP
+\fBshell_output_in\fR
+Signature: \fBshell_output_in(dir, cmd)\fR
+.br
+Returns: stdout string
+.br
+Fails when: directory change or shell command fails
+.br
+Example: \fBshell_output_in(ctx.src_dir, "git rev-parse HEAD")\fR
+.SH FILE AND TEXT HELPERS
+.TP
+\fBread_file\fR
+Signature: \fBread_file(path)\fR
+.br
+Returns: file contents as string
+.br
+Fails when: file does not exist or cannot be read
+.br
+Example: \fBread_file("/etc/os-release")\fR
+.TP
+\fBread_file_or_empty\fR
+Signature: \fBread_file_or_empty(path)\fR
+.br
+Returns: file contents or empty string
+.br
+Fails when: never for missing files
+.br
+Example: \fBread_file_or_empty("/etc/hostname")\fR
+.TP
+\fBwrite_file\fR
+Signature: \fBwrite_file(path, content)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: parent path is unwritable or file creation fails
+.br
+Example: \fBwrite_file(join_path(BUILD_DIR, "config"), "x=1\\n")\fR
+.TP
+\fBappend_file\fR
+Signature: \fBappend_file(path, content)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: file open or append fails
+.br
+Example: \fBappend_file("/etc/profile", "export FOO=1\\n")\fR
+.TP
+\fBappend_line_if_missing\fR
+Signature: \fBappend_line_if_missing(path, line)\fR
+.br
+Returns: boolean indicating whether a line was appended
+.br
+Fails when: file read or append fails
+.br
+Example: \fBappend_line_if_missing(passwd, "builder:x:1000:1000::/home/builder:/bin/bash")\fR
+.TP
+\fBreplace_in_file\fR
+Signature: \fBreplace_in_file(path, from, to)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: file read or write fails
+.br
+Example: \fBreplace_in_file(desktop, "Exec=kitty", "Exec=/usr/bin/kitty")\fR
+.TP
+\fBglob_list\fR
+Signature: \fBglob_list(pattern)\fR
+.br
+Returns: array of matching string paths
+.br
+Fails when: the glob pattern is invalid
+.br
+Example: \fBglob_list(join_path(font_dir, "*.ttf"))\fR
+.TP
+\fBglob_exists\fR
+Signature: \fBglob_exists(pattern)\fR
+.br
+Returns: boolean
+.br
+Fails when: the glob pattern is invalid
+.br
+Example: \fBglob_exists(join_path(font_dir, "*.otf"))\fR
+.SH FILESYSTEM HELPERS
+.TP
+\fBexists\fR
+Signature: \fBexists(path)\fR
+.br
+Returns: boolean, including dangling symlinks
+.br
+Fails when: never
+.br
+Example: \fBexists("/tmp/link")\fR
+.TP
+\fBfile_exists\fR, \fBis_file\fR
+Signature: \fBfile_exists(path)\fR
+.br
+Returns: boolean
+.br
+Fails when: never
+.br
+Example: \fBis_file(ctx.archive)\fR
+.TP
+\fBdir_exists\fR, \fBis_dir\fR
+Signature: \fBdir_exists(path)\fR
+.br
+Returns: boolean
+.br
+Fails when: never
+.br
+Example: \fBis_dir(ctx.src_dir)\fR
+.TP
+\fBmkdir\fR
+Signature: \fBmkdir(path)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: directory creation fails
+.br
+Example: \fBmkdir(join_path(env("HOME"), ".local/bin"))\fR
+.TP
+\fBrm\fR
+Signature: \fBrm(pattern)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: glob expansion or removal fails
+.br
+Example: \fBrm(join_path(BUILD_DIR, "*"))\fR
+.TP
+\fBmv\fR
+Signature: \fBmv(src, dst)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: rename fails
+.br
+Example: \fBmv(ctx.downloaded, dst)\fR
+.TP
+\fBln\fR
+Signature: \fBln(target, link)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: symlinks are unsupported or link creation fails
+.br
+Example: \fBln("/usr/bin/python3", "/usr/bin/python")\fR
+.TP
+\fBln_force\fR
+Signature: \fBln_force(target, link)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: destination is a directory, symlinks are unsupported, or replacement fails
+.br
+Example: \fBln_force("/usr/bin/kitty", join_path(bin_dir, "xterm"))\fR
+.TP
+\fBchmod\fR
+Signature: \fBchmod(path, mode)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: chmod fails on Unix
+.br
+Example: \fBchmod(dst, 0o755)\fR
+.TP
+\fBcopy_into_dir\fR
+Signature: \fBcopy_into_dir(pattern, dest_dir)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: destination is not a directory, pattern is invalid, or no files match
+.br
+Example: \fBcopy_into_dir(join_path(src_dir, "*.ttf"), fonts_dir)\fR
+.TP
+\fBcopy_file\fR
+Signature: \fBcopy_file(src, dst)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: source is not a file or copy fails
+.br
+Example: \fBcopy_file(ctx.kernel_image, join_path(boot_dir, "vmlinuz"))\fR
+.TP
+\fBcopy_file_reflink\fR
+Signature: \fBcopy_file_reflink(src, dst)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: source is not a file or fallback copy fails
+.br
+Example: \fBcopy_file_reflink(preseed, join_path(staging_dir, "ks.cfg"))\fR
+.TP
+\fBcopy_tree_contents\fR
+Signature: \fBcopy_tree_contents(src_dir, dst_dir)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: source or destination is not a directory, or recursive copy fails
+.br
+Example: \fBcopy_tree_contents(rootfs_seed, slot_root)\fR
+.TP
+\fBcopy_first_existing\fR
+Signature: \fBcopy_first_existing(sources, dst)\fR
+.br
+Returns: string path of the source that was copied
+.br
+Fails when: no listed source exists as a file or the copy fails
+.br
+Example: \fBcopy_first_existing([a, b], join_path(bin_dir, "mkisofs"))\fR
+.SH ACQUIRE HELPERS
+.TP
+\fBdownload\fR
+Signature: \fBdownload(url, dest)\fR
+.br
+Returns: destination path string
+.br
+Fails when: download fails or destination cannot be written
+.br
+Example: \fBdownload(ctx.url, join_path(BUILD_DIR, "src.tar.xz"))\fR
+.TP
+\fBverify_sha256\fR
+Signature: \fBverify_sha256(path, expected)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: hash mismatch or file read fails
+.br
+Example: \fBverify_sha256(archive, ctx.sha256)\fR
+.TP
+\fBfetch_sha256\fR
+Signature: \fBfetch_sha256(url, filename)\fR
+.br
+Returns: matching checksum string
+.br
+Fails when: checksum file cannot be fetched or parsed
+.br
+Example: \fBfetch_sha256(checksums_url, "foo.tar.xz")\fR
+.TP
+\fBverify_sha512\fR
+Signature: \fBverify_sha512(path, expected)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: hash mismatch or file read fails
+.br
+Example: \fBverify_sha512(archive, ctx.sha512)\fR
+.TP
+\fBverify_blake3\fR
+Signature: \fBverify_blake3(path, expected)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: hash mismatch or file read fails
+.br
+Example: \fBverify_blake3(archive, ctx.blake3)\fR
+.TP
+\fBhttp_get\fR
+Signature: \fBhttp_get(url)\fR
+.br
+Returns: response body string
+.br
+Fails when: request fails
+.br
+Example: \fBhttp_get(releases_url)\fR
+.TP
+\fBgithub_latest_release\fR
+Signature: \fBgithub_latest_release(repo)\fR
+.br
+Returns: latest release version string with common prefixes stripped
+.br
+Fails when: GitHub request fails or response shape is invalid
+.br
+Example: \fBgithub_latest_release("sharkdp/bat")\fR
+.TP
+\fBgithub_latest_tag\fR
+Signature: \fBgithub_latest_tag(repo)\fR
+.br
+Returns: latest tag string with common prefixes stripped
+.br
+Fails when: GitHub request fails or response shape is invalid
+.br
+Example: \fBgithub_latest_tag("BurntSushi/ripgrep")\fR
+.TP
+\fBparse_version\fR
+Signature: \fBparse_version(s)\fR
+.br
+Returns: normalized version string
+.br
+Fails when: never
+.br
+Example: \fBparse_version("release-1.2.3")\fR
+.TP
+\fBgithub_download_release\fR
+Signature: \fBgithub_download_release(repo, pattern, dest_dir)\fR
+.br
+Returns: downloaded asset path
+.br
+Fails when: release discovery or download fails
+.br
+Example: \fBgithub_download_release("owner/proj", "x86_64.rpm", BUILD_DIR)\fR
+.TP
+\fBextract_from_tarball\fR
+Signature: \fBextract_from_tarball(url, pattern, dest)\fR
+.br
+Returns: extracted path
+.br
+Fails when: download, tar extraction, or match selection fails
+.br
+Example: \fBextract_from_tarball(url, "bin/tool", BUILD_DIR)\fR
+.TP
+\fBgit_clone\fR
+Signature: \fBgit_clone(url, dest_dir)\fR
+.br
+Returns: clone path
+.br
+Fails when: git invocation fails
+.br
+Example: \fBgit_clone(ctx.repo, BUILD_DIR)\fR
+.TP
+\fBgit_clone_depth\fR
+Signature: \fBgit_clone_depth(url, dest_dir, depth)\fR
+.br
+Returns: clone path
+.br
+Fails when: git invocation fails
+.br
+Example: \fBgit_clone_depth(ctx.repo, BUILD_DIR, 1)\fR
+.TP
+\fBtorrent\fR
+Signature: \fBtorrent(url, dest_dir)\fR
+.br
+Returns: downloaded path
+.br
+Fails when: torrent download fails
+.br
+Example: \fBtorrent(ctx.magnet, BUILD_DIR)\fR
+.TP
+\fBdownload_with_resume\fR
+Signature: \fBdownload_with_resume(url, dest)\fR
+.br
+Returns: destination path
+.br
+Fails when: HTTP range download fails
+.br
+Example: \fBdownload_with_resume(ctx.url, join_path(BUILD_DIR, "iso"))\fR
+.SH BUILD HELPERS
+.TP
+\fBextract\fR
+Signature: \fBextract(archive, dest)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: archive type is unsupported or extraction fails
+.br
+Example: \fBextract(archive, BUILD_DIR)\fR
+.TP
+\fBextract_with_format\fR
+Signature: \fBextract_with_format(archive, dest, format)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: format is unsupported or extraction fails
+.br
+Example: \fBextract_with_format(archive, BUILD_DIR, "tar.xz")\fR
+.SH PROCESS AND PACKAGE HELPERS
+.TP
+\fBenv\fR
+Signature: \fBenv(name)\fR
+.br
+Returns: environment variable value or empty string
+.br
+Fails when: never
+.br
+Example: \fBenv("HOME")\fR
+.TP
+\fBset_env\fR
+Signature: \fBset_env(name, value)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: environment mutation fails
+.br
+Example: \fBset_env("PATH", new_path)\fR
+.TP
+\fBcheck_disk_space\fR
+Signature: \fBcheck_disk_space(path, required_bytes)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: available space is below requirement or \fBdf\fR invocation fails
+.br
+Example: \fBcheck_disk_space(BUILD_DIR, 20 * 1024 * 1024 * 1024)\fR
+.TP
+\fBexec\fR
+Signature: \fBexec(cmd, args)\fR
+.br
+Returns: integer exit code
+.br
+Fails when: process startup fails
+.br
+Example: \fBexec("make", ["-j8"])\fR
+.TP
+\fBexec_output\fR
+Signature: \fBexec_output(cmd, args)\fR
+.br
+Returns: stdout string
+.br
+Fails when: process startup fails or exits non-zero
+.br
+Example: \fBtrim(exec_output("pkg-config", ["--modversion", "glib-2.0"]))\fR
+.TP
+\fBrpm_installed\fR
+Signature: \fBrpm_installed(name)\fR
+.br
+Returns: boolean
+.br
+Fails when: never; returns false if \fBrpm\fR cannot be queried
+.br
+Example: \fBrpm_installed("git")\fR
+.TP
+\fBrpm_version\fR
+Signature: \fBrpm_version(name)\fR
+.br
+Returns: installed version string
+.br
+Fails when: package is absent or rpm query fails
+.br
+Example: \fBrpm_version("bash")\fR
+.TP
+\fBdnf_package_available\fR
+Signature: \fBdnf_package_available(name)\fR
+.br
+Returns: boolean
+.br
+Fails when: never; returns false if \fBdnf\fR query fails
+.br
+Example: \fBdnf_package_available("ripgrep")\fR
+.TP
+\fBdnf_install\fR
+Signature: \fBdnf_install(packages)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: package list is empty or \fBsudo -n dnf install -y\fR fails
+.br
+Example: \fBdnf_install(["gcc", "make"])\fR
+.TP
+\fBdnf_install_allow_erasing\fR
+Signature: \fBdnf_install_allow_erasing(packages)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: package list is empty or DNF invocation fails
+.br
+Example: \fBdnf_install_allow_erasing(["mesa-libGL"])\fR
+.TP
+\fBdnf_add_repo\fR
+Signature: \fBdnf_add_repo(url)\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: \fBsudo -n dnf config-manager --add-repo\fR fails
+.br
+Example: \fBdnf_add_repo("https://download.example.invalid/repo.repo")\fR
+.TP
+\fBdnf_download\fR
+Signature: \fBdnf_download(packages, dest_dir, arches[, resolve])\fR
+.br
+Returns: array of downloaded RPM file paths created by the invocation
+.br
+Fails when: package list or arch list is empty, destination setup fails, or DNF download fails
+.br
+Example: \fBdnf_download(["kernel-devel"], BUILD_DIR, ["x86_64"], true)\fR
+.SH LLM HELPERS
+.TP
+\fBllm_extract\fR
+Signature: \fBllm_extract(content, prompt)\fR
+.br
+Returns: string
+.br
+Fails when: backend is unavailable
+.br
+Example: \fBllm_extract(html, "extract the latest stable version")\fR
+.TP
+\fBllm_find_latest_version\fR
+Signature: \fBllm_find_latest_version(url, project)\fR
+.br
+Returns: string
+.br
+Fails when: backend is unavailable
+.br
+Example: \fBllm_find_latest_version(releases_url, "ripgrep")\fR
+.TP
+\fBllm_find_download_url\fR
+Signature: \fBllm_find_download_url(content, criteria)\fR
+.br
+Returns: string
+.br
+Fails when: backend is unavailable
+.br
+Example: \fBllm_find_download_url(html, "linux x86_64 tar.xz")\fR
+.SH SOURCE OF TRUTH
+The canonical helper registration path is
+\fBtools/recipe/src/helpers/mod.rs\fR. If this page and the code disagree, trust
+the code and refresh the helper catalog.
+.SH SEE ALSO
+\fBrecipe\fR(1),
+\fBrecipe-recipe\fR(5)

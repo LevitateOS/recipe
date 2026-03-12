@@ -1,0 +1,205 @@
+.TH RECIPE-RECIPE 5 "2026-03-12" "recipe 0.1.3" "Recipe File Format"
+.SH NAME
+recipe-recipe \- authoring format and lifecycle model for recipe files
+.SH OVERVIEW
+A recipe file is a Rhai script that declares a top-level \fBctx\fR map and one or
+more lifecycle hooks. The executor persists updated \fBctx\fR state back into the
+recipe source file after successful phases.
+.PP
+This page documents the behavior implemented by the current executor, not the
+broader future-facing requirements spec.
+.SH RECIPE STRUCTURE
+The minimum useful recipe shape is:
+.nf
+let ctx = #{
+    name: "jq",
+    version: "1.7.1",
+    url: "https://example.invalid/jq",
+    sha256: "replace-me",
+    downloaded: "",
+};
+
+fn is_installed(ctx) {
+    if !is_file(join_path(env("HOME"), ".local/bin/jq")) { throw "not installed"; }
+    ctx
+}
+
+fn is_acquired(ctx) {
+    if ctx.downloaded == "" || !is_file(ctx.downloaded) { throw "not acquired"; }
+    ctx
+}
+
+fn acquire(ctx) {
+    mkdir(BUILD_DIR);
+    let downloaded = download(ctx.url, join_path(BUILD_DIR, "jq"));
+    verify_sha256(downloaded, ctx.sha256);
+    ctx.downloaded = downloaded;
+    ctx
+}
+
+fn install(ctx) {
+    let dst = join_path(join_path(env("HOME"), ".local"), "bin/jq");
+    copy_file(ctx.downloaded, dst);
+    chmod(dst, 0o755);
+    ctx
+}
+
+fn cleanup(ctx, reason) {
+    ctx
+}
+.fi
+.SH CTX CONTRACT
+.TP
+\fBCanonical declaration\fR
+The persistence layer looks for the exact byte sequence:
+.br
+\fBlet ctx = #{\fR
+.PP
+\fBlet ctx=#{\fR and other variants can execute, but persistence will not find
+them.
+.TP
+\fBPersistent value types\fR
+Strings, integers, booleans, and \fB()\fR round-trip cleanly. Richer values may be
+stringified and written back as strings. Keep persistent \fBctx\fR values simple.
+.TP
+\fBPersistence behavior\fR
+The executor writes updated \fBctx\fR back into the recipe source file after
+successful phases. This allows resume behavior across repeated runs.
+.SH LIFECYCLE HOOKS
+.TP
+\fBis_installed(ctx)\fR
+Return updated \fBctx\fR when the install state is already satisfied. Throw to
+request install work.
+.TP
+\fBis_built(ctx)\fR
+Return updated \fBctx\fR when build outputs are already present. Throw to request
+build work.
+.TP
+\fBis_acquired(ctx)\fR
+Return updated \fBctx\fR when sources or downloads are already present. Throw to
+request acquire work.
+.TP
+\fBacquire(ctx)\fR
+Download or otherwise fetch source material.
+.TP
+\fBbuild(ctx)\fR
+Transform acquired inputs into installable outputs.
+.TP
+\fBinstall(ctx)\fR
+Place files, symlinks, configuration, or other install state.
+.TP
+\fBremove(ctx)\fR
+Undo install state for \fBrecipe remove\fR.
+.TP
+\fBcleanup(ctx, reason)\fR
+Cleanup hook used by both automatic phase cleanup and manual
+\fBrecipe cleanup\fR.
+.SH HOOK ORDER
+Normal install flow:
+.IP "1." 4
+Run \fBis_installed(ctx)\fR.
+.IP "2." 4
+If it passes, stop.
+.IP "3." 4
+Run \fBis_built(ctx)\fR.
+.IP "4." 4
+If it passes, skip both \fBbuild(ctx)\fR and \fBis_acquired(ctx)\fR.
+.IP "5." 4
+If it throws, run \fBis_acquired(ctx)\fR.
+.IP "6." 4
+Run \fBacquire(ctx)\fR only if acquire is needed or the hook is missing.
+.IP "7." 4
+If \fBbuild(ctx)\fR exists, rerun \fBis_built(ctx)\fR after acquire.
+.IP "8." 4
+Run \fBbuild(ctx)\fR only if build is still needed.
+.IP "9." 4
+Run \fBinstall(ctx)\fR.
+.IP "10." 4
+Run \fBcleanup(ctx, reason)\fR on success and failure paths.
+.SH RETURN VALUES AND STATE
+Checks and phases return an updated \fBctx\fR map. The executor uses that returned
+map as the input to the next phase. A check can therefore rediscover paths or
+recompute derived state even when it skips work.
+.PP
+Missing checks mean work is needed:
+.IP "\[bu]" 4
+missing \fBis_installed\fR means install is needed
+.IP "\[bu]" 4
+missing \fBis_built\fR means build is needed
+.IP "\[bu]" 4
+missing \fBis_acquired\fR means acquire is needed
+.PP
+Missing phases:
+.IP "\[bu]" 4
+missing \fBbuild(ctx)\fR is allowed for prebuilt payload
+.IP "\[bu]" 4
+missing \fBremove(ctx)\fR means \fBrecipe remove\fR will fail
+.IP "\[bu]" 4
+missing \fBcleanup(ctx, reason)\fR is not appropriate for normal repo usage; use
+a no-op hook if no cleanup is required
+.SH PATHS AND FILES
+Recipes currently receive these commonly used bindings and environment-derived
+values through the executor:
+.TP
+\fBBUILD_DIR\fR
+Work directory for acquire/build/install steps.
+.TP
+\fBRECIPE_DIR\fR
+Directory containing the current recipe.
+.TP
+\fBARCH\fR
+Current architecture string.
+.TP
+\fBNPROC\fR
+Available CPU count.
+.TP
+\fBRPM_PATH\fR
+RPM path string used by some package-oriented recipes.
+.PP
+Dependency and base-recipe execution may also expose \fBBASE_RECIPE_DIR\fR and
+\fBTOOLS_PREFIX\fR.
+.SH FAILURE SEMANTICS
+Checks must \fBthrow\fR to request work. Returning \fBfalse\fR is not the contract.
+.PP
+Helpers generally raise an evaluation error on failure. Shelling out with
+\fBshell()\fR or \fBexec()\fR does not silently suppress failure; recipes should
+check return codes or use helpers that fail directly when required.
+.SH MINIMAL EXAMPLE
+.nf
+let ctx = #{
+    name: "hello",
+    installed: false,
+};
+
+fn is_installed(ctx) {
+    if !ctx.installed { throw "not installed"; }
+    ctx
+}
+
+fn install(ctx) {
+    ctx.installed = true;
+    ctx
+}
+
+fn cleanup(ctx, reason) {
+    ctx
+}
+.fi
+.SH EXTENDS
+Recipes may declare:
+.nf
+//! extends: linux-base.rhai
+.fi
+.PP
+Behavior:
+.IP "\[bu]" 4
+Base recipe is compiled first, then merged with the child AST.
+.IP "\[bu]" 4
+Child functions with the same name and arity override base functions.
+.IP "\[bu]" 4
+Top-level statements run base-first, then child.
+.IP "\[bu]" 4
+Recursive \fBextends\fR is rejected.
+.SH SEE ALSO
+\fBrecipe\fR(1),
+\fBrecipe-helpers\fR(7)

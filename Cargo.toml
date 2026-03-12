@@ -60,6 +60,9 @@ filetime = "0.2"
 assets = [
     { source = "target/release/recipe", dest = "/usr/bin/recipe", mode = "0755" },
     { source = "README.md", dest = "/usr/share/doc/levitate-recipe/README.md", mode = "0644", doc = true },
+    { source = "docs/man/recipe.1", dest = "/usr/share/man/man1/recipe.1", mode = "0644", doc = true },
+    { source = "docs/man/recipe-recipe.5", dest = "/usr/share/man/man5/recipe-recipe.5", mode = "0644", doc = true },
+    { source = "docs/man/recipe-helpers.7", dest = "/usr/share/man/man7/recipe-helpers.7", mode = "0644", doc = true },
     { source = "LICENSE-MIT", dest = "/usr/share/licenses/levitate-recipe/LICENSE-MIT", mode = "0644" },
     { source = "LICENSE-APACHE", dest = "/usr/share/licenses/levitate-recipe/LICENSE-APACHE", mode = "0644" },
 ]
