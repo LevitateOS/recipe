@@ -107,6 +107,17 @@ cargo install --path .
 
 Tests are not standalone today. `Cargo.toml` has a path dev-dependency on `../../testing/cheat-test`, so `cargo test` expects a normal LevitateOS checkout around this submodule.
 
+For reproducible distro-native container runs, use the checked-in Podman runner:
+
+```bash
+tools/recipe/scripts/podman-test.sh alpine
+tools/recipe/scripts/podman-test.sh fedora
+tools/recipe/scripts/podman-test.sh rocky
+tools/recipe/scripts/podman-test.sh all
+```
+
+This script mounts `tools/recipe` and `testing/cheat-test`, bootstraps upstream `rustup` inside the container, and runs the full suite with an isolated `CARGO_TARGET_DIR=/tmp/recipe-target` so container results are not polluted by host build artifacts.
+
 ## Operational Defaults
 
 - If `--recipes-path` is not set, Recipe uses `$RECIPE_PATH`, otherwise `~/.local/share/recipe/recipes`.
