@@ -40,7 +40,7 @@ fn install(ctx) {
 "#;
 
     let recipe_path = recipes_dir.join("mkdir-test.rhai");
-    write_recipe(&recipe_path, recipe_content);
+    write_recipe(&recipe_path, &recipe_content);
 
     let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
@@ -103,7 +103,7 @@ fn install(ctx) {
 "#;
 
     let recipe_path = recipes_dir.join("glob-test.rhai");
-    write_recipe(&recipe_path, recipe_content);
+    write_recipe(&recipe_path, &recipe_content);
 
     let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
@@ -162,7 +162,7 @@ fn install(ctx) {
 "#;
 
     let recipe_path = recipes_dir.join("glob-copy-test.rhai");
-    write_recipe(&recipe_path, recipe_content);
+    write_recipe(&recipe_path, &recipe_content);
 
     let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
@@ -261,7 +261,7 @@ fn install(ctx) {
 "#;
 
     let recipe_path = recipes_dir.join("copy-helpers-test.rhai");
-    write_recipe(&recipe_path, recipe_content);
+    write_recipe(&recipe_path, &recipe_content);
 
     let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
@@ -319,7 +319,7 @@ fn install(ctx) {
 "#;
 
     let recipe_path = recipes_dir.join("mv-ln-test.rhai");
-    write_recipe(&recipe_path, recipe_content);
+    write_recipe(&recipe_path, &recipe_content);
 
     let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
@@ -377,7 +377,7 @@ fn install(ctx) {
 "#;
 
     let recipe_path = recipes_dir.join("ln-force-replace-test.rhai");
-    write_recipe(&recipe_path, recipe_content);
+    write_recipe(&recipe_path, &recipe_content);
 
     let engine = RecipeEngine::new(build_dir);
     let result = engine.execute(&recipe_path);
@@ -467,6 +467,7 @@ fn build(ctx) {
     let bin_dir = `${BUILD_DIR}/fake-bin`;
     let log_file = `${BUILD_DIR}/dnf.log`;
     let downloads_dir = `${BUILD_DIR}/downloads`;
+    let original_path = env("PATH");
     mkdir(bin_dir);
     mkdir(downloads_dir);
 
@@ -480,7 +481,7 @@ fn build(ctx) {
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + log_file + "\"\nif [ \"$1\" = \"-q\" ] && [ \"$2\" = \"info\" ] && [ \"$3\" = \"fakepkg\" ]; then exit 0; fi\nif [ \"$1\" = \"-q\" ] && [ \"$2\" = \"info\" ] && [ \"$3\" = \"missingpkg\" ]; then exit 1; fi\nif [ \"$1\" = \"config-manager\" ] && [ \"$2\" = \"--add-repo\" ]; then exit 0; fi\nif [ \"$1\" = \"install\" ] && [ \"$2\" = \"-y\" ]; then exit 0; fi\nif [ \"$1\" = \"download\" ]; then\n  destdir=\"\"\n  while [ $# -gt 0 ]; do\n    case \"$1\" in\n      --destdir=*) destdir=${1#--destdir=} ;;\n    esac\n    shift\n  done\n  : \"${destdir:?missing destdir}\"\n  touch \"$destdir/alpha-1.0.noarch.rpm\" \"$destdir/beta-2.0.x86_64.rpm\"\n  exit 0\nfi\nexit 1\n"
     );
     shell(`chmod +x ${bin_dir}/sudo ${bin_dir}/rpm ${bin_dir}/dnf`);
-    set_env("PATH", bin_dir + ":" + env("PATH"));
+    set_env("PATH", bin_dir + ":" + original_path);
 
     if !rpm_installed("fakepkg") { throw "rpm_installed false negative"; }
     if rpm_installed("missingpkg") { throw "rpm_installed false positive"; }

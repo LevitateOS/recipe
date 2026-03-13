@@ -78,15 +78,16 @@ These names are the Rhai function names.
 | `github_download_release` | `helpers/acquire/http.rs` | `github_download_release(repo, pattern, dest_dir) -> String` | downloads latest asset |
 | `extract_from_tarball` | `helpers/acquire/http.rs` | `extract_from_tarball(url, pattern, dest) -> String` | downloads + extracts file |
 | `check_disk_space` | `helpers/install/disk.rs` | `check_disk_space(path, required_bytes) -> ()` | `df -k` based |
+| `command_exists` | `helpers/util/process.rs` | `command_exists(name) -> bool` | host command probe |
 | `exec` | `helpers/util/process.rs` | `exec(cmd, args:Array) -> int` | no shell, explicit args |
 | `exec_output` | `helpers/util/process.rs` | `exec_output(cmd, args:Array) -> String` | no shell, explicit args |
-| `rpm_installed` | `helpers/util/process.rs` | `rpm_installed(name) -> bool` | rpm query |
-| `rpm_version` | `helpers/util/process.rs` | `rpm_version(name) -> String` | rpm `%{VERSION}` |
-| `dnf_package_available` | `helpers/util/process.rs` | `dnf_package_available(name) -> bool` | `dnf -q info` |
-| `dnf_install` | `helpers/util/process.rs` | `dnf_install(packages:Array) -> ()` | runs `sudo -n dnf install -y` |
-| `dnf_install_allow_erasing` | `helpers/util/process.rs` | `dnf_install_allow_erasing(packages:Array) -> ()` | adds `--allowerasing` |
-| `dnf_add_repo` | `helpers/util/process.rs` | `dnf_add_repo(url) -> ()` | runs `dnf config-manager --add-repo` |
-| `dnf_download` | `helpers/util/process.rs` | `dnf_download(packages:Array, dest_dir, arches:Array[, resolve]) -> Array` | runs `sudo -n dnf download` |
+| `rpm_installed` | `helpers/util/process.rs` | `rpm_installed(name) -> bool` | fails fast if `rpm` is absent |
+| `rpm_version` | `helpers/util/process.rs` | `rpm_version(name) -> String` | fails fast if `rpm` is absent |
+| `dnf_package_available` | `helpers/util/process.rs` | `dnf_package_available(name) -> bool` | fails fast if `dnf` is absent |
+| `dnf_install` | `helpers/util/process.rs` | `dnf_install(packages:Array) -> ()` | fails fast if `dnf` or `sudo` is absent |
+| `dnf_install_allow_erasing` | `helpers/util/process.rs` | `dnf_install_allow_erasing(packages:Array) -> ()` | fails fast if `dnf` or `sudo` is absent |
+| `dnf_add_repo` | `helpers/util/process.rs` | `dnf_add_repo(url) -> ()` | fails fast if `dnf` or `sudo` is absent |
+| `dnf_download` | `helpers/util/process.rs` | `dnf_download(packages:Array, dest_dir, arches:Array[, resolve]) -> Array` | fails fast if `dnf` or `sudo` is absent |
 | `git_clone` | `helpers/acquire/git.rs` | `git_clone(url, dest_dir) -> String` | clones into dest_dir/<repo> |
 | `git_clone_depth` | `helpers/acquire/git.rs` | `git_clone_depth(url, dest_dir, depth) -> String` | shallow clone |
 | `torrent` | `helpers/acquire/torrent.rs` | `torrent(url, dest_dir) -> String` | pure Rust (librqbit) |

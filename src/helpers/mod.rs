@@ -355,6 +355,10 @@ pub fn register_all(engine: &mut Engine) {
         trace_helper("exec_output");
         util::exec_output(cmd, args)
     });
+    engine.register_fn("command_exists", |name: &str| {
+        trace_helper("command_exists");
+        util::command_exists(name)
+    });
     engine.register_fn("rpm_installed", |name: &str| {
         trace_helper("rpm_installed");
         util::rpm_installed(name)

@@ -127,15 +127,11 @@ pub(crate) enum Commands {
     },
 
     /// List recipes in directory
-    #[command(
-        after_help = "Examples:\n  recipe list\n  recipe list --recipes-path ./recipes"
-    )]
+    #[command(after_help = "Examples:\n  recipe list\n  recipe list --recipes-path ./recipes")]
     List,
 
     /// Show recipe information
-    #[command(
-        after_help = "Examples:\n  recipe info kitty\n  recipe info ./recipes/kitty.rhai"
-    )]
+    #[command(after_help = "Examples:\n  recipe info kitty\n  recipe info ./recipes/kitty.rhai")]
     Info {
         /// Recipe path or recipe name. Name lookup follows the same rules as `recipe install`.
         recipe: PathBuf,
