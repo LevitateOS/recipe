@@ -105,7 +105,8 @@ fn clone_file_reflink(src: &Path, dest: &Path) -> std::io::Result<()> {
         .truncate(true)
         .open(dest)?;
 
-    let rc = unsafe { libc::ioctl(dest_file.as_raw_fd(), FICLONE, src_file.as_raw_fd()) };
+    let request = FICLONE as libc::Ioctl;
+    let rc = unsafe { libc::ioctl(dest_file.as_raw_fd(), request, src_file.as_raw_fd()) };
     if rc == -1 {
         return Err(std::io::Error::last_os_error());
     }

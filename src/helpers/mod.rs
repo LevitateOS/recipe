@@ -359,6 +359,30 @@ pub fn register_all(engine: &mut Engine) {
         trace_helper("command_exists");
         util::command_exists(name)
     });
+    engine.register_fn("apk_installed", |name: &str| {
+        trace_helper("apk_installed");
+        util::apk_installed(name)
+    });
+    engine.register_fn("apk_version", |name: &str| {
+        trace_helper("apk_version");
+        util::apk_version(name)
+    });
+    engine.register_fn("apk_package_available", |name: &str| {
+        trace_helper("apk_package_available");
+        util::apk_package_available(name)
+    });
+    engine.register_fn("apk_install", |packages: rhai::Array| {
+        trace_helper("apk_install");
+        util::apk_install(packages)
+    });
+    engine.register_fn("apk_add_repo", |url: &str| {
+        trace_helper("apk_add_repo");
+        util::apk_add_repo(url)
+    });
+    engine.register_fn("apk_download", |packages: rhai::Array, dest_dir: &str| {
+        trace_helper("apk_download");
+        util::apk_download(packages, dest_dir)
+    });
     engine.register_fn("rpm_installed", |name: &str| {
         trace_helper("rpm_installed");
         util::rpm_installed(name)

@@ -1,6 +1,6 @@
 # recipe Helper Audit
 
-**Last Updated:** 2026-03-12  
+**Last Updated:** 2026-03-13  
 **Scope:** Rhai helpers exposed by `tools/recipe/src/helpers/mod.rs` (what recipe authors can call).
 
 This document audits:
@@ -10,7 +10,7 @@ This document audits:
 - What is missing to support safe A/B composition into an inactive slot sysroot
 
 **Verification note:** The helper list below is derived from
-`tools/recipe/src/helpers/mod.rs` `register_all()` (currently 68 helpers).
+`tools/recipe/src/helpers/mod.rs` `register_all()` (currently 74 helpers).
 
 ---
 
@@ -79,15 +79,21 @@ These names are the Rhai function names.
 | `extract_from_tarball` | `helpers/acquire/http.rs` | `extract_from_tarball(url, pattern, dest) -> String` | downloads + extracts file |
 | `check_disk_space` | `helpers/install/disk.rs` | `check_disk_space(path, required_bytes) -> ()` | `df -k` based |
 | `command_exists` | `helpers/util/process.rs` | `command_exists(name) -> bool` | host command probe |
+| `apk_installed` | `helpers/util/process.rs` | `apk_installed(name) -> bool` | fails fast if `apk` is absent |
+| `apk_version` | `helpers/util/process.rs` | `apk_version(name) -> String` | fails fast if `apk` is absent |
+| `apk_package_available` | `helpers/util/process.rs` | `apk_package_available(name) -> bool` | fails fast if `apk` is absent |
+| `apk_install` | `helpers/util/process.rs` | `apk_install(packages:Array) -> ()` | fails fast if `apk` is absent or no `sudo`/`doas` privilege runner is available |
+| `apk_add_repo` | `helpers/util/process.rs` | `apk_add_repo(url) -> ()` | fails fast if `apk` is absent or no `sudo`/`doas` privilege runner is available |
+| `apk_download` | `helpers/util/process.rs` | `apk_download(packages:Array, dest_dir) -> Array` | fails fast if `apk` is absent |
 | `exec` | `helpers/util/process.rs` | `exec(cmd, args:Array) -> int` | no shell, explicit args |
 | `exec_output` | `helpers/util/process.rs` | `exec_output(cmd, args:Array) -> String` | no shell, explicit args |
 | `rpm_installed` | `helpers/util/process.rs` | `rpm_installed(name) -> bool` | fails fast if `rpm` is absent |
 | `rpm_version` | `helpers/util/process.rs` | `rpm_version(name) -> String` | fails fast if `rpm` is absent |
 | `dnf_package_available` | `helpers/util/process.rs` | `dnf_package_available(name) -> bool` | fails fast if `dnf` is absent |
-| `dnf_install` | `helpers/util/process.rs` | `dnf_install(packages:Array) -> ()` | fails fast if `dnf` or `sudo` is absent |
-| `dnf_install_allow_erasing` | `helpers/util/process.rs` | `dnf_install_allow_erasing(packages:Array) -> ()` | fails fast if `dnf` or `sudo` is absent |
-| `dnf_add_repo` | `helpers/util/process.rs` | `dnf_add_repo(url) -> ()` | fails fast if `dnf` or `sudo` is absent |
-| `dnf_download` | `helpers/util/process.rs` | `dnf_download(packages:Array, dest_dir, arches:Array[, resolve]) -> Array` | fails fast if `dnf` or `sudo` is absent |
+| `dnf_install` | `helpers/util/process.rs` | `dnf_install(packages:Array) -> ()` | fails fast if `dnf` is absent or no `sudo`/`doas` privilege runner is available |
+| `dnf_install_allow_erasing` | `helpers/util/process.rs` | `dnf_install_allow_erasing(packages:Array) -> ()` | fails fast if `dnf` is absent or no `sudo`/`doas` privilege runner is available |
+| `dnf_add_repo` | `helpers/util/process.rs` | `dnf_add_repo(url) -> ()` | fails fast if `dnf` is absent or no `sudo`/`doas` privilege runner is available |
+| `dnf_download` | `helpers/util/process.rs` | `dnf_download(packages:Array, dest_dir, arches:Array[, resolve]) -> Array` | fails fast if `dnf` is absent or no `sudo`/`doas` privilege runner is available |
 | `git_clone` | `helpers/acquire/git.rs` | `git_clone(url, dest_dir) -> String` | clones into dest_dir/<repo> |
 | `git_clone_depth` | `helpers/acquire/git.rs` | `git_clone_depth(url, dest_dir, depth) -> String` | shallow clone |
 | `torrent` | `helpers/acquire/torrent.rs` | `torrent(url, dest_dir) -> String` | pure Rust (librqbit) |

@@ -29,6 +29,7 @@ pub use shell::{shell, shell_in, shell_output, shell_output_in, shell_status, sh
 
 // Re-export commonly used items from process
 pub use process::{
+    apk_add_repo, apk_download, apk_install, apk_installed, apk_package_available, apk_version,
     command_exists, dnf_add_repo, dnf_download, dnf_download_with_resolve, dnf_install,
     dnf_install_allow_erasing, dnf_package_available, exec, exec_output, rpm_installed,
     rpm_version,

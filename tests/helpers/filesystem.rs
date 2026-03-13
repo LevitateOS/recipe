@@ -467,9 +467,11 @@ fn build(ctx) {
     let bin_dir = `${BUILD_DIR}/fake-bin`;
     let log_file = `${BUILD_DIR}/dnf.log`;
     let downloads_dir = `${BUILD_DIR}/downloads`;
+    let apk_downloads_dir = `${BUILD_DIR}/apk-downloads`;
     let original_path = env("PATH");
     mkdir(bin_dir);
     mkdir(downloads_dir);
+    mkdir(apk_downloads_dir);
 
     write_file(join_path(bin_dir, "sudo"), "#!/bin/sh\nif [ \"$1\" = \"-n\" ]; then shift; fi\nexec \"$@\"\n");
     write_file(
@@ -480,7 +482,11 @@ fn build(ctx) {
         join_path(bin_dir, "dnf"),
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + log_file + "\"\nif [ \"$1\" = \"-q\" ] && [ \"$2\" = \"info\" ] && [ \"$3\" = \"fakepkg\" ]; then exit 0; fi\nif [ \"$1\" = \"-q\" ] && [ \"$2\" = \"info\" ] && [ \"$3\" = \"missingpkg\" ]; then exit 1; fi\nif [ \"$1\" = \"config-manager\" ] && [ \"$2\" = \"--add-repo\" ]; then exit 0; fi\nif [ \"$1\" = \"install\" ] && [ \"$2\" = \"-y\" ]; then exit 0; fi\nif [ \"$1\" = \"download\" ]; then\n  destdir=\"\"\n  while [ $# -gt 0 ]; do\n    case \"$1\" in\n      --destdir=*) destdir=${1#--destdir=} ;;\n    esac\n    shift\n  done\n  : \"${destdir:?missing destdir}\"\n  touch \"$destdir/alpha-1.0.noarch.rpm\" \"$destdir/beta-2.0.x86_64.rpm\"\n  exit 0\nfi\nexit 1\n"
     );
-    shell(`chmod +x ${bin_dir}/sudo ${bin_dir}/rpm ${bin_dir}/dnf`);
+    write_file(
+        join_path(bin_dir, "apk"),
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + log_file + "\"\nif [ \"$1\" = \"policy\" ] && [ \"$2\" = \"fakepkg\" ]; then\n  printf 'fakepkg policy:\\n  1.2.3-r0:\\n    lib/apk/db/installed\\n    https://example.invalid/alpine\\n';\n  exit 0\nfi\nif [ \"$1\" = \"policy\" ]; then\n  printf '%s policy:\\n' \"$2\";\n  exit 0\nfi\nif [ \"$1\" = \"search\" ] && [ \"$2\" = \"-v\" ] && [ \"$3\" = \"fakepkg\" ]; then\n  printf 'fakepkg-1.2.3-r0 description\\n';\n  exit 0\nfi\nif [ \"$1\" = \"search\" ] && [ \"$2\" = \"-v\" ]; then\n  exit 0\nfi\nif [ \"$1\" = \"add\" ] && [ \"$2\" = \"--update-cache\" ]; then exit 0; fi\nif [ \"$1\" = \"fetch\" ] && [ \"$2\" = \"--output\" ]; then\n  destdir=\"$3\"\n  shift 3\n  for pkg in \"$@\"; do\n    touch \"$destdir/$pkg-1.2.3-r0.apk\"\n  done\n  exit 0\nfi\nexit 1\n"
+    );
+    shell(`chmod +x ${bin_dir}/sudo ${bin_dir}/rpm ${bin_dir}/dnf ${bin_dir}/apk`);
     set_env("PATH", bin_dir + ":" + original_path);
 
     if !rpm_installed("fakepkg") { throw "rpm_installed false negative"; }
@@ -488,10 +494,16 @@ fn build(ctx) {
     if rpm_version("fakepkg") != "1.2.3" { throw "rpm_version wrong"; }
     if !dnf_package_available("fakepkg") { throw "dnf_package_available false negative"; }
     if dnf_package_available("missingpkg") { throw "dnf_package_available false positive"; }
+    if !apk_installed("fakepkg") { throw "apk_installed false negative"; }
+    if apk_installed("missingpkg") { throw "apk_installed false positive"; }
+    if apk_version("fakepkg") != "1.2.3-r0" { throw "apk_version wrong"; }
+    if !apk_package_available("fakepkg") { throw "apk_package_available false negative"; }
+    if apk_package_available("missingpkg") { throw "apk_package_available false positive"; }
 
     dnf_add_repo("https://example.invalid/repo");
     dnf_install(["alpha", "beta"]);
     dnf_install_allow_erasing(["gamma"]);
+    apk_install(["alpha", "beta"]);
     let downloaded = dnf_download(["alpha", "beta"], downloads_dir, ["x86_64", "noarch"]);
     if downloaded.len() != 2 {
         throw `dnf_download expected 2 files, got ${downloaded.len()}`;
@@ -499,6 +511,10 @@ fn build(ctx) {
     let downloaded_no_resolve = dnf_download(["alpha"], downloads_dir, ["x86_64"], false);
     if downloaded_no_resolve.len() != 0 {
         throw `dnf_download second pass expected 0 new files, got ${downloaded_no_resolve.len()}`;
+    }
+    let apk_downloaded = apk_download(["alpha", "beta"], apk_downloads_dir);
+    if apk_downloaded.len() != 2 {
+        throw `apk_download expected 2 files, got ${apk_downloaded.len()}`;
     }
 
     let log = read_file(log_file);
@@ -522,6 +538,12 @@ fn build(ctx) {
     }
     if !contains(log, "download -q --destdir=" + downloads_dir + " --arch x86_64 alpha") {
         throw "dnf_download(false) missing non-resolve call";
+    }
+    if !contains(log, "add --update-cache alpha beta") {
+        throw "apk_install did not pass packages";
+    }
+    if !contains(log, "fetch --output " + apk_downloads_dir + " alpha beta") {
+        throw "apk_download missing fetch call";
     }
     ctx
 }
