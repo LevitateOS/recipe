@@ -137,6 +137,16 @@ cargo generate-rpm
 
 By default, the RPM is written under `target/generate-rpm/`.
 
+## Alpine APK Packaging
+
+Build a release `.apk` in an Alpine 3.23 container:
+
+```bash
+tools/recipe/scripts/build-apk.sh
+```
+
+By default, the APK is written under `target/packages/apk/`.
+
 ## Output Discipline (Important)
 
 The `recipe` CLI prints the final `ctx` JSON to stdout (or writes it to `--json-output <file>`).

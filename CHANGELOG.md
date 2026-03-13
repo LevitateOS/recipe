@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-03-13
+
+### Added
+
+- Reproducible Podman test runners for Alpine, Fedora, and Rocky
+- Alpine `.apk` packaging script for release artifacts
+
+### Changed
+
+- Added LLM-oriented man pages and improved CLI help coverage
+- Added pure file and package helper coverage, including Alpine `apk_*` helpers
+- Package-manager helpers now fail fast on missing host tooling and support `doas`
+
 ## [0.1.0] - 2026-01-16
 
 ### Added
