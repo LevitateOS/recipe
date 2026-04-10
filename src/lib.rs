@@ -140,6 +140,8 @@ pub struct RecipeEngine {
     engine: Engine,
     build_dir: PathBuf,
     recipes_path: Option<PathBuf>,
+    sysroot: PathBuf,
+    prefix: PathBuf,
     /// User-defined scope constants (injected via --define KEY=VALUE)
     defines: Vec<(String, String)>,
     persist_ctx: bool,
@@ -163,6 +165,8 @@ impl RecipeEngine {
             engine,
             build_dir,
             recipes_path: None,
+            sysroot: PathBuf::from("/"),
+            prefix: PathBuf::from("/usr/local"),
             defines: Vec::new(),
             persist_ctx: true,
             llm_profile: None,
@@ -176,6 +180,18 @@ impl RecipeEngine {
         resolver.set_base_path(&path);
         self.engine.set_module_resolver(resolver);
         self.recipes_path = Some(path);
+        self
+    }
+
+    /// Set the target system root used for absolute install/remove paths.
+    pub fn with_sysroot(mut self, sysroot: PathBuf) -> Self {
+        self.sysroot = sysroot;
+        self
+    }
+
+    /// Set the logical installation prefix inside the target sysroot.
+    pub fn with_prefix(mut self, prefix: PathBuf) -> Self {
+        self.prefix = prefix;
         self
     }
 
@@ -220,6 +236,8 @@ impl RecipeEngine {
                 core::executor::install_with_options(
                     &self.engine,
                     &self.build_dir,
+                    &self.sysroot,
+                    &self.prefix,
                     recipe_path,
                     &self.defines,
                     self.persist_ctx,
@@ -230,6 +248,8 @@ impl RecipeEngine {
                 core::executor::install(
                     &self.engine,
                     &self.build_dir,
+                    &self.sysroot,
+                    &self.prefix,
                     recipe_path,
                     &self.defines,
                     self.persist_ctx,
@@ -246,6 +266,9 @@ impl RecipeEngine {
         llm::with_llm_profile(self.llm_profile.as_deref(), || {
             core::executor::remove(
                 &self.engine,
+                &self.build_dir,
+                &self.sysroot,
+                &self.prefix,
                 recipe_path,
                 self.recipes_path.as_deref(),
                 &self.defines,
@@ -269,6 +292,8 @@ impl RecipeEngine {
             core::executor::cleanup(
                 &self.engine,
                 &self.build_dir,
+                &self.sysroot,
+                &self.prefix,
                 recipe_path,
                 self.recipes_path.as_deref(),
                 &self.defines,
@@ -284,6 +309,8 @@ impl RecipeEngine {
             core::executor::is_installed(
                 &self.engine,
                 &self.build_dir,
+                &self.sysroot,
+                &self.prefix,
                 recipe_path,
                 self.recipes_path.as_deref(),
                 &self.defines,
@@ -297,6 +324,8 @@ impl RecipeEngine {
             core::executor::is_built(
                 &self.engine,
                 &self.build_dir,
+                &self.sysroot,
+                &self.prefix,
                 recipe_path,
                 self.recipes_path.as_deref(),
                 &self.defines,
@@ -310,6 +339,8 @@ impl RecipeEngine {
             core::executor::is_acquired(
                 &self.engine,
                 &self.build_dir,
+                &self.sysroot,
+                &self.prefix,
                 recipe_path,
                 self.recipes_path.as_deref(),
                 &self.defines,

@@ -8,12 +8,17 @@ use std::path::Path;
 use super::{
     attempt::InstallAttemptError,
     reporting::{friendly_reason, report_check_result, report_phase_failure, report_phase_success},
-    state::{check_phase_with_reason, maybe_cleanup, persist_ctx, resolve_deps},
+    state::{
+        check_phase_with_reason, configure_execution_scope, maybe_cleanup, persist_ctx,
+        resolve_deps, scoped_execution_roots,
+    },
 };
 
 pub(crate) fn install_once(
     engine: &Engine,
     build_dir: &Path,
+    sysroot: &Path,
+    prefix: &Path,
     recipe_path: &Path,
     defines: &[(String, String)],
     persist_ctx_enabled: bool,
@@ -31,21 +36,19 @@ pub(crate) fn install_once(
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| ".".to_string());
 
-    // Set up scope with constants
     let mut scope = Scope::new();
-    scope.push_constant("RECIPE_DIR", recipe_dir);
-    if let Some(ref bd) = compiled.base_dir {
-        scope.push_constant("BASE_RECIPE_DIR", bd.to_string_lossy().to_string());
-    }
-    scope.push_constant("BUILD_DIR", build_dir.to_string_lossy().to_string());
+    configure_execution_scope(
+        &mut scope,
+        &recipe_dir,
+        compiled.base_dir.as_deref(),
+        Some(build_dir),
+        sysroot,
+        prefix,
+        defines,
+    );
     scope.push_constant("ARCH", std::env::consts::ARCH);
     scope.push_constant("NPROC", num_cpus::get() as i64);
     scope.push_constant("RPM_PATH", std::env::var("RPM_PATH").unwrap_or_default());
-
-    // Inject user-defined constants (from --define KEY=VALUE)
-    for (key, value) in defines {
-        scope.push_constant(key.as_str(), value.clone());
-    }
 
     // Run script to populate scope (this sets up ctx)
     engine
@@ -72,9 +75,14 @@ pub(crate) fn install_once(
     output::action(&format!("Preparing recipe for {}", name));
     output::hook_event(&name, "prepare", "running", "starting recipe execution");
     output::detail(&format!("Recipe: {}", recipe_path.display()));
+    output::detail(&format!("Target sysroot: {}", sysroot.display()));
+    output::detail(&format!("Target prefix: {}", prefix.display()));
     if let Some(base_path) = &compiled.base_path {
         output::detail(&format!("Extends base recipe: {}", base_path.display()));
     }
+
+    let _execution_roots = scoped_execution_roots(build_dir, sysroot, prefix, &[])
+        .map_err(InstallAttemptError::Fatal)?;
 
     // Check steps (reverse order) - throw means "needs this step".
     //
@@ -192,8 +200,17 @@ pub(crate) fn install_once(
     // Resolve `deps` immediately (needed for all phases)
     let _env_guard = if !deps.is_empty() {
         Some(
-            resolve_deps(engine, build_dir, search_path, defines, &deps, autofix)
-                .map_err(InstallAttemptError::Fatal)?,
+            resolve_deps(
+                engine,
+                build_dir,
+                sysroot,
+                prefix,
+                search_path,
+                defines,
+                &deps,
+                autofix,
+            )
+            .map_err(InstallAttemptError::Fatal)?,
         )
     } else {
         None
@@ -286,6 +303,8 @@ pub(crate) fn install_once(
                 resolve_deps(
                     engine,
                     build_dir,
+                    sysroot,
+                    prefix,
                     search_path,
                     defines,
                     &build_deps,

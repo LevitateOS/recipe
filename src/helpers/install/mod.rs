@@ -12,6 +12,7 @@
 pub mod disk;
 pub mod filesystem;
 pub mod io;
+pub(crate) mod roots;
 
 // Re-export commonly used items from filesystem
 pub use filesystem::{

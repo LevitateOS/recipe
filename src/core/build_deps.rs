@@ -7,6 +7,7 @@
 
 use super::output;
 use super::runner;
+use crate::helpers::install::roots::{ExecutionRoots, ScopedExecutionRoots};
 use anyhow::{Context, Result, anyhow};
 use rhai::{Engine, Scope};
 use std::fs;
@@ -26,6 +27,8 @@ enum DepAttemptError {
 pub struct BuildDepsResolver<'a> {
     engine: &'a Engine,
     build_dir: &'a Path,
+    sysroot: &'a Path,
+    prefix: &'a Path,
     recipes_path: Option<&'a Path>,
     defines: &'a [(String, String)],
     execution_stack: Vec<String>,
@@ -36,6 +39,8 @@ impl<'a> BuildDepsResolver<'a> {
     pub fn new(
         engine: &'a Engine,
         build_dir: &'a Path,
+        sysroot: &'a Path,
+        prefix: &'a Path,
         recipes_path: Option<&'a Path>,
         defines: &'a [(String, String)],
         autofix: Option<&crate::AutoFixConfig>,
@@ -43,6 +48,8 @@ impl<'a> BuildDepsResolver<'a> {
         Self {
             engine,
             build_dir,
+            sysroot,
+            prefix,
             recipes_path,
             defines,
             execution_stack: Vec::new(),
@@ -149,12 +156,23 @@ impl<'a> BuildDepsResolver<'a> {
         }
         scope.push_constant("BUILD_DIR", dep_build_dir.to_string_lossy().to_string());
         scope.push_constant("TOOLS_PREFIX", tools_prefix.to_string_lossy().to_string());
+        scope.push_constant("SYSROOT", self.sysroot.to_string_lossy().to_string());
+        scope.push_constant("PREFIX", self.prefix.to_string_lossy().to_string());
         scope.push_constant("ARCH", std::env::consts::ARCH);
         scope.push_constant("NPROC", num_cpus::get() as i64);
 
         for (key, value) in self.defines {
             scope.push_constant(key.as_str(), value.clone());
         }
+
+        let execution_roots =
+            ExecutionRoots::new(self.sysroot.to_path_buf(), self.prefix.to_path_buf())
+                .map_err(|e| DepAttemptError::Fatal(anyhow!(e)))?
+                .with_passthrough_root(dep_build_dir.clone())
+                .map_err(|e| DepAttemptError::Fatal(anyhow!(e)))?
+                .with_passthrough_root(tools_prefix.to_path_buf())
+                .map_err(|e| DepAttemptError::Fatal(anyhow!(e)))?;
+        let _execution_roots = ScopedExecutionRoots::push(execution_roots);
 
         // Run top-level to populate ctx
         self.engine

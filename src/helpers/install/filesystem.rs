@@ -1,18 +1,25 @@
 //! Filesystem operation helpers
 
 use crate::core::output;
+use crate::helpers::install::roots::{resolve_glob_pattern, resolve_host_path};
 use rhai::EvalAltResult;
 use std::path::{Path, PathBuf};
 
 /// Check if a path exists
 pub fn exists(path: &str) -> bool {
+    let Ok(path) = resolve_host_path(path) else {
+        return false;
+    };
     // Use symlink_metadata to detect dangling symlinks too
-    Path::new(path).symlink_metadata().is_ok()
+    path.symlink_metadata().is_ok()
 }
 
 /// Check if a file exists
 pub fn file_exists(path: &str) -> bool {
-    Path::new(path).is_file()
+    let Ok(path) = resolve_host_path(path) else {
+        return false;
+    };
+    path.is_file()
 }
 
 /// Check if a file exists (alias for file_exists)
@@ -22,7 +29,10 @@ pub fn is_file(path: &str) -> bool {
 
 /// Check if a directory exists
 pub fn dir_exists(path: &str) -> bool {
-    Path::new(path).is_dir()
+    let Ok(path) = resolve_host_path(path) else {
+        return false;
+    };
+    path.is_dir()
 }
 
 /// Check if a directory exists (alias for dir_exists)
@@ -32,13 +42,15 @@ pub fn is_dir(path: &str) -> bool {
 
 /// Create a directory and all parent directories
 pub fn mkdir(path: &str) -> Result<(), Box<EvalAltResult>> {
-    output::detail(&format!("mkdir {}", path));
-    std::fs::create_dir_all(path).map_err(|e| format!("mkdir failed: {}", e).into())
+    let path = resolve_host_path(path).map_err(|e| -> Box<EvalAltResult> { e.into() })?;
+    output::detail(&format!("mkdir {}", path.display()));
+    std::fs::create_dir_all(&path).map_err(|e| format!("mkdir failed: {}", e).into())
 }
 
 /// Remove files matching a glob pattern
 pub fn rm_files(pattern: &str) -> Result<(), Box<EvalAltResult>> {
-    for path in glob::glob(pattern).map_err(|e| format!("invalid pattern: {}", e))? {
+    let pattern = resolve_glob_pattern(pattern).map_err(|e| -> Box<EvalAltResult> { e.into() })?;
+    for path in glob::glob(&pattern).map_err(|e| format!("invalid pattern: {}", e))? {
         let path = path.map_err(|e| format!("glob error: {}", e))?;
         output::detail(&format!("rm {}", path.display()));
         if path.is_dir() {
@@ -53,7 +65,8 @@ pub fn rm_files(pattern: &str) -> Result<(), Box<EvalAltResult>> {
 
 /// Check if a glob pattern matches at least one path
 pub fn glob_exists(pattern: &str) -> Result<bool, Box<EvalAltResult>> {
-    let mut entries = glob::glob(pattern).map_err(|e| format!("invalid pattern: {}", e))?;
+    let pattern = resolve_glob_pattern(pattern).map_err(|e| -> Box<EvalAltResult> { e.into() })?;
+    let mut entries = glob::glob(&pattern).map_err(|e| format!("invalid pattern: {}", e))?;
     Ok(entries.any(|entry| entry.is_ok()))
 }
 
@@ -78,7 +91,7 @@ fn copy_file_impl(src: &Path, dest: &Path) -> Result<(), Box<EvalAltResult>> {
     if !src.is_file() {
         return Err(format!("copy_file source is not a file: {}", src.display()).into());
     }
-    ensure_parent_dir(dest)?;
+    ensure_parent_dir(&dest)?;
     output::detail(&format!("cp {} {}", src.display(), dest.display()));
     std::fs::copy(src, dest).map(|_| ()).map_err(|e| {
         format!(
@@ -131,7 +144,9 @@ fn copy_path_to_dir(src: &Path, dest_dir: &Path) -> Result<(), Box<EvalAltResult
 
 /// Copy files matching a glob pattern into a directory
 pub fn copy_into_dir(pattern: &str, dest_dir: &str) -> Result<(), Box<EvalAltResult>> {
-    let dest_dir = Path::new(dest_dir);
+    let pattern = resolve_glob_pattern(pattern).map_err(|e| -> Box<EvalAltResult> { e.into() })?;
+    let dest_dir = resolve_host_path(dest_dir).map_err(|e| -> Box<EvalAltResult> { e.into() })?;
+    let dest_dir = dest_dir.as_path();
     if !dest_dir.is_dir() {
         return Err(format!(
             "copy_into_dir destination is not a directory: {}",
@@ -141,7 +156,7 @@ pub fn copy_into_dir(pattern: &str, dest_dir: &str) -> Result<(), Box<EvalAltRes
     }
 
     let mut matched = false;
-    for path in glob::glob(pattern).map_err(|e| format!("invalid pattern: {}", e))? {
+    for path in glob::glob(&pattern).map_err(|e| format!("invalid pattern: {}", e))? {
         let path = path.map_err(|e| format!("glob error: {}", e))?;
         if !path.is_file() {
             continue;
@@ -159,25 +174,27 @@ pub fn copy_into_dir(pattern: &str, dest_dir: &str) -> Result<(), Box<EvalAltRes
 
 /// Copy a file to an exact destination path
 pub fn copy_file(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>> {
-    copy_file_impl(Path::new(src), Path::new(dest))
+    let src = resolve_host_path(src).map_err(|e| -> Box<EvalAltResult> { e.into() })?;
+    let dest = resolve_host_path(dest).map_err(|e| -> Box<EvalAltResult> { e.into() })?;
+    copy_file_impl(&src, &dest)
 }
 
 /// Copy a file using reflink semantics when available, falling back to a plain copy
 pub fn copy_file_reflink(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>> {
-    let src = Path::new(src);
-    let dest = Path::new(dest);
+    let src = resolve_host_path(src).map_err(|e| -> Box<EvalAltResult> { e.into() })?;
+    let dest = resolve_host_path(dest).map_err(|e| -> Box<EvalAltResult> { e.into() })?;
     if !src.is_file() {
         return Err(format!("copy_file_reflink source is not a file: {}", src.display()).into());
     }
-    ensure_parent_dir(dest)?;
+    ensure_parent_dir(&dest)?;
     output::detail(&format!(
         "cp --reflink=auto {} {}",
         src.display(),
         dest.display()
     ));
-    match clone_file_reflink(src, dest) {
+    match clone_file_reflink(&src, &dest) {
         Ok(()) => Ok(()),
-        Err(_) => copy_file_impl(src, dest),
+        Err(_) => copy_file_impl(&src, &dest),
     }
 }
 
@@ -222,8 +239,10 @@ fn copy_symlink(_link_path: &Path, _dest_path: &Path) -> Result<(), Box<EvalAltR
 pub fn copy_tree_contents(src_dir: &str, dst_dir: &str) -> Result<(), Box<EvalAltResult>> {
     use walkdir::WalkDir;
 
-    let src_root = Path::new(src_dir);
-    let dst_root = Path::new(dst_dir);
+    let src_root = resolve_host_path(src_dir).map_err(|e| -> Box<EvalAltResult> { e.into() })?;
+    let dst_root = resolve_host_path(dst_dir).map_err(|e| -> Box<EvalAltResult> { e.into() })?;
+    let src_root = src_root.as_path();
+    let dst_root = dst_root.as_path();
 
     if !src_root.is_dir() {
         return Err(format!(
@@ -296,7 +315,8 @@ pub fn copy_tree_contents(src_dir: &str, dst_dir: &str) -> Result<(), Box<EvalAl
 
 /// Copy the first existing source file to an exact destination path
 pub fn copy_first_existing(sources: rhai::Array, dest: &str) -> Result<String, Box<EvalAltResult>> {
-    let dest = Path::new(dest);
+    let dest = resolve_host_path(dest).map_err(|e| -> Box<EvalAltResult> { e.into() })?;
+    let dest = dest.as_path();
     let mut candidates = Vec::new();
 
     for item in sources {
@@ -306,9 +326,11 @@ pub fn copy_first_existing(sources: rhai::Array, dest: &str) -> Result<String, B
             continue;
         }
         candidates.push(trimmed.to_owned());
-        let src_path = Path::new(trimmed);
+        let Ok(src_path) = resolve_host_path(trimmed) else {
+            continue;
+        };
         if src_path.is_file() {
-            copy_file_impl(src_path, dest)?;
+            copy_file_impl(&src_path, dest)?;
             return Ok(trimmed.to_owned());
         }
     }
@@ -323,35 +345,48 @@ pub fn copy_first_existing(sources: rhai::Array, dest: &str) -> Result<String, B
 
 /// Move/rename a file
 pub fn move_file(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>> {
-    output::detail(&format!("mv {} -> {}", src, dest));
+    let src = resolve_host_path(src).map_err(|e| -> Box<EvalAltResult> { e.into() })?;
+    let dest = resolve_host_path(dest).map_err(|e| -> Box<EvalAltResult> { e.into() })?;
+    output::detail(&format!("mv {} -> {}", src.display(), dest.display()));
     std::fs::rename(src, dest).map_err(|e| format!("mv failed: {}", e).into())
 }
 
 /// Create a symbolic link
 #[cfg(unix)]
 pub fn symlink(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>> {
-    output::detail(&format!("ln -s {} {}", src, dest));
-    std::os::unix::fs::symlink(src, dest).map_err(|e| format!("symlink failed: {}", e).into())
+    let dest = resolve_host_path(dest).map_err(|e| -> Box<EvalAltResult> { e.into() })?;
+    output::detail(&format!("ln -s {} {}", src, dest.display()));
+    std::os::unix::fs::symlink(src, &dest).map_err(|e| format!("symlink failed: {}", e).into())
 }
 
 /// Create or replace a symbolic link
 #[cfg(unix)]
 pub fn symlink_force(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>> {
-    let dest_path = Path::new(dest);
-    output::detail(&format!("ln -sfn {} {}", src, dest));
+    let dest_path = resolve_host_path(dest).map_err(|e| -> Box<EvalAltResult> { e.into() })?;
+    let dest_path = dest_path.as_path();
+    output::detail(&format!("ln -sfn {} {}", src, dest_path.display()));
 
     match std::fs::remove_file(dest_path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) if e.kind() == std::io::ErrorKind::IsADirectory => {
-            return Err(format!("ln_force destination is an existing directory: {}", dest).into());
+            return Err(format!(
+                "ln_force destination is an existing directory: {}",
+                dest_path.display()
+            )
+            .into());
         }
         Err(e) => {
-            return Err(format!("failed to remove existing link target {}: {}", dest, e).into());
+            return Err(format!(
+                "failed to remove existing link target {}: {}",
+                dest_path.display(),
+                e
+            )
+            .into());
         }
     }
 
-    std::os::unix::fs::symlink(src, dest).map_err(|e| format!("symlink failed: {}", e).into())
+    std::os::unix::fs::symlink(src, dest_path).map_err(|e| format!("symlink failed: {}", e).into())
 }
 
 #[cfg(not(unix))]
@@ -368,8 +403,9 @@ pub fn symlink_force(_src: &str, _dest: &str) -> Result<(), Box<EvalAltResult>> 
 #[cfg(unix)]
 pub fn chmod_file(path: &str, mode: i64) -> Result<(), Box<EvalAltResult>> {
     use std::os::unix::fs::PermissionsExt;
-    output::detail(&format!("chmod {:o} {}", mode, path));
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode as u32))
+    let path = resolve_host_path(path).map_err(|e| -> Box<EvalAltResult> { e.into() })?;
+    output::detail(&format!("chmod {:o} {}", mode, path.display()));
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode as u32))
         .map_err(|e| format!("chmod failed: {}", e).into())
 }
 

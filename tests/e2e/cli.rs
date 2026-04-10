@@ -31,6 +31,19 @@ fn test_cli_help_includes_machine_events_flag() {
 }
 
 #[test]
+fn test_cli_help_includes_sysroot_and_prefix_flags() {
+    let output = Command::new(recipe_bin())
+        .arg("--help")
+        .output()
+        .expect("Failed to run recipe --help");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--sysroot"));
+    assert!(stdout.contains("--prefix"));
+}
+
+#[test]
 fn test_cli_version() {
     let output = Command::new(recipe_bin())
         .arg("--version")
@@ -111,6 +124,63 @@ fn install(ctx) {
     // Verify ctx was persisted
     let content = std::fs::read_to_string(recipes.join("simple.rhai")).unwrap();
     assert!(content.contains("installed: true"));
+}
+
+#[test]
+fn test_cli_install_maps_prefix_under_sysroot() {
+    let (dir, recipes) = create_test_env();
+    let sysroot = dir.path().join("sysroot");
+    std::fs::create_dir_all(&sysroot).unwrap();
+
+    write_recipe(
+        &recipes,
+        "sysrooted",
+        r#"
+let ctx = #{
+    name: "sysrooted",
+    version: "1.0.0",
+    installed: false,
+};
+
+fn is_installed(ctx) {
+    if !is_file("/usr/bin/sysrooted-demo") { throw "not installed"; }
+    ctx.installed = true;
+    ctx
+}
+
+fn acquire(ctx) { ctx }
+fn install(ctx) {
+    mkdir(join_path(PREFIX, "bin"));
+    write_file(join_path(PREFIX, "bin/sysrooted-demo"), "demo");
+    if !is_file("/usr/bin/sysrooted-demo") {
+        throw "sysroot mapping did not expose target path";
+    }
+    ctx.installed = true;
+    ctx
+}
+"#,
+    );
+
+    let output = Command::new(recipe_bin())
+        .args([
+            "--sysroot",
+            sysroot.to_str().unwrap(),
+            "--prefix",
+            "/usr",
+            "install",
+            "sysrooted",
+            "--recipes-path",
+            recipes.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute recipe command");
+
+    assert!(
+        output.status.success(),
+        "Install failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(sysroot.join("usr/bin/sysrooted-demo").is_file());
 }
 
 #[test]

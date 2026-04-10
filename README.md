@@ -24,24 +24,24 @@ Implemented:
 - `//! extends: <base.rhai>` (AST merge: base runs first, child overrides)
 - Per-recipe execution lock (`.rhai.lock`)
 - Build dependency resolver (`deps` and `build_deps`) that installs tool recipes into `BUILD_DIR/.tools`
+- Global `--sysroot` / `--prefix` execution roots with absolute helper-path mapping under the target sysroot
 - LLM helpers (`llm_extract`, etc) and an opt-in LLM-based repair loop (`--autofix`)
 
 Not implemented yet (still in the spec):
 
-- Sysroot/prefix confinement for safe A/B composition
 - Atomic staging/commit and `installed_files` tracking
 - Higher-level install helpers (`install_bin`, `install_to_dir`, etc.)
 - Update/upgrade lifecycle commands
 
 ## Current Implementation Reality
 
-`REQUIREMENTS.md` is the target specification. The current binary is narrower.
+`REQUIREMENTS.md` is the target specification. The current binary is still narrower than the full target.
 
-- There are no `--sysroot` or `--prefix` CLI flags yet.
 - The current CLI supports `install`, `remove`, `cleanup`, `isinstalled`, `isbuilt`, `isacquired`, `list`, `info`, and `hash`.
-- Recipes currently get `RECIPE_DIR`, `BUILD_DIR`, `ARCH`, `NPROC`, and `RPM_PATH`.
+- Recipes currently get `RECIPE_DIR`, `BUILD_DIR`, `SYSROOT`, `PREFIX`, `ARCH`, `NPROC`, and `RPM_PATH`.
 - Base/dependency execution may also provide `BASE_RECIPE_DIR` and `TOOLS_PREFIX`.
-- Filesystem helpers operate on explicit paths. Higher-level helpers such as `install_bin` and `install_to_dir` are not implemented yet.
+- Absolute filesystem helper paths resolve under `SYSROOT`, while `BUILD_DIR` and tool-prefix paths remain host-side passthrough roots.
+- Higher-level helpers such as `install_bin` and `install_to_dir` are not implemented yet.
 - `cleanup(ctx, reason)` with two arguments is required by this repository's install flow.
 
 If you are debugging behavior, trust the current source and this README before you trust the broader spec.
@@ -121,6 +121,8 @@ This script mounts `tools/recipe` and `testing/cheat-test`, bootstraps upstream 
 ## Operational Defaults
 
 - If `--recipes-path` is not set, Recipe uses `$RECIPE_PATH`, otherwise `~/.local/share/recipe/recipes`.
+- If `--sysroot` is not set, Recipe targets `/`.
+- If `--prefix` is not set, Recipe uses `/usr/local` as the logical install prefix inside the target sysroot.
 - The recipes directory is created automatically if it does not exist.
 - If `--build-dir` is not set, Recipe creates a temporary build directory and keeps it instead of auto-deleting it.
 - `--json-output <file>` is the safest way to consume result JSON in scripts, because recipe logs and helper output are sent to stderr.

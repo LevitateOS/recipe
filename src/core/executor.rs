@@ -166,6 +166,8 @@ pub(crate) fn compile_recipe(
 pub fn install(
     engine: &Engine,
     build_dir: &Path,
+    sysroot: &Path,
+    prefix: &Path,
     recipe_path: &Path,
     defines: &[(String, String)],
     persist_ctx: bool,
@@ -174,6 +176,8 @@ pub fn install(
     private::install(
         engine,
         build_dir,
+        sysroot,
+        prefix,
         recipe_path,
         defines,
         persist_ctx,
@@ -184,6 +188,8 @@ pub fn install(
 pub(crate) fn install_with_options(
     engine: &Engine,
     build_dir: &Path,
+    sysroot: &Path,
+    prefix: &Path,
     recipe_path: &Path,
     defines: &[(String, String)],
     persist_ctx: bool,
@@ -193,6 +199,8 @@ pub(crate) fn install_with_options(
     private::install_with_options(
         engine,
         build_dir,
+        sysroot,
+        prefix,
         recipe_path,
         defines,
         persist_ctx,
@@ -206,12 +214,24 @@ pub(crate) fn install_with_options(
 /// Returns the final ctx map after removal.
 pub fn remove(
     engine: &Engine,
+    build_dir: &Path,
+    sysroot: &Path,
+    prefix: &Path,
     recipe_path: &Path,
     search_path: Option<&Path>,
     defines: &[(String, String)],
     persist_ctx: bool,
 ) -> Result<rhai::Map> {
-    private::remove(engine, recipe_path, search_path, defines, persist_ctx)
+    private::remove(
+        engine,
+        build_dir,
+        sysroot,
+        prefix,
+        recipe_path,
+        search_path,
+        defines,
+        persist_ctx,
+    )
 }
 
 /// Clean up build artifacts
@@ -220,6 +240,8 @@ pub fn remove(
 pub fn cleanup(
     engine: &Engine,
     build_dir: &Path,
+    sysroot: &Path,
+    prefix: &Path,
     recipe_path: &Path,
     search_path: Option<&Path>,
     defines: &[(String, String)],
@@ -229,6 +251,8 @@ pub fn cleanup(
     private::cleanup(
         engine,
         build_dir,
+        sysroot,
+        prefix,
         recipe_path,
         search_path,
         defines,
@@ -243,11 +267,21 @@ pub fn cleanup(
 pub fn is_installed(
     engine: &Engine,
     build_dir: &Path,
+    sysroot: &Path,
+    prefix: &Path,
     recipe_path: &Path,
     search_path: Option<&Path>,
     defines: &[(String, String)],
 ) -> Result<rhai::Map> {
-    private::is_installed(engine, build_dir, recipe_path, search_path, defines)
+    private::is_installed(
+        engine,
+        build_dir,
+        sysroot,
+        prefix,
+        recipe_path,
+        search_path,
+        defines,
+    )
 }
 
 /// Execute `is_built(ctx)` manually.
@@ -256,11 +290,21 @@ pub fn is_installed(
 pub fn is_built(
     engine: &Engine,
     build_dir: &Path,
+    sysroot: &Path,
+    prefix: &Path,
     recipe_path: &Path,
     search_path: Option<&Path>,
     defines: &[(String, String)],
 ) -> Result<rhai::Map> {
-    private::is_built(engine, build_dir, recipe_path, search_path, defines)
+    private::is_built(
+        engine,
+        build_dir,
+        sysroot,
+        prefix,
+        recipe_path,
+        search_path,
+        defines,
+    )
 }
 
 /// Execute `is_acquired(ctx)` manually.
@@ -269,9 +313,19 @@ pub fn is_built(
 pub fn is_acquired(
     engine: &Engine,
     build_dir: &Path,
+    sysroot: &Path,
+    prefix: &Path,
     recipe_path: &Path,
     search_path: Option<&Path>,
     defines: &[(String, String)],
 ) -> Result<rhai::Map> {
-    private::is_acquired(engine, build_dir, recipe_path, search_path, defines)
+    private::is_acquired(
+        engine,
+        build_dir,
+        sysroot,
+        prefix,
+        recipe_path,
+        search_path,
+        defines,
+    )
 }
