@@ -20,6 +20,8 @@ pub(crate) enum InstallAttemptError {
 pub(crate) fn install(
     engine: &Engine,
     build_dir: &Path,
+    sysroot: &Path,
+    prefix: &Path,
     recipe_path: &Path,
     defines: &[(String, String)],
     persist_ctx: bool,
@@ -28,6 +30,8 @@ pub(crate) fn install(
     install_with_options(
         engine,
         build_dir,
+        sysroot,
+        prefix,
         recipe_path,
         defines,
         persist_ctx,
@@ -39,6 +43,8 @@ pub(crate) fn install(
 pub(crate) fn install_with_options(
     engine: &Engine,
     build_dir: &Path,
+    sysroot: &Path,
+    prefix: &Path,
     recipe_path: &Path,
     defines: &[(String, String)],
     persist_ctx: bool,
@@ -57,6 +63,8 @@ pub(crate) fn install_with_options(
         match install_once(
             engine,
             build_dir,
+            sysroot,
+            prefix,
             &recipe_path,
             defines,
             persist_ctx,

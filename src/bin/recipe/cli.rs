@@ -22,6 +22,24 @@ pub(crate) struct Cli {
     #[arg(short, long, global = true)]
     pub(crate) build_dir: Option<PathBuf>,
 
+    /// Target system root for install/remove checks and filesystem helper resolution.
+    #[arg(
+        short = 'R',
+        long,
+        global = true,
+        default_value_os_t = PathBuf::from("/")
+    )]
+    pub(crate) sysroot: PathBuf,
+
+    /// Logical installation prefix inside the target sysroot.
+    #[arg(
+        short = 'p',
+        long,
+        global = true,
+        default_value_os_t = PathBuf::from("/usr/local")
+    )]
+    pub(crate) prefix: PathBuf,
+
     /// Define scope constants (KEY=VALUE), injected into Rhai scope before execution
     #[arg(short, long = "define", global = true, value_name = "KEY=VALUE")]
     pub(crate) defines: Vec<String>,

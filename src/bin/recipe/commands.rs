@@ -46,6 +46,8 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             };
             let engine = create_engine(
                 cli.build_dir.as_deref(),
+                &cli.sysroot,
+                &cli.prefix,
                 Some(&recipes_path),
                 &cli.defines,
                 cli.no_persist_ctx,
@@ -60,6 +62,8 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(
                 cli.build_dir.as_deref(),
+                &cli.sysroot,
+                &cli.prefix,
                 Some(&recipes_path),
                 &cli.defines,
                 cli.no_persist_ctx,
@@ -74,6 +78,8 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(
                 cli.build_dir.as_deref(),
+                &cli.sysroot,
+                &cli.prefix,
                 Some(&recipes_path),
                 &cli.defines,
                 cli.no_persist_ctx,
@@ -93,6 +99,8 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(
                 cli.build_dir.as_deref(),
+                &cli.sysroot,
+                &cli.prefix,
                 Some(&recipes_path),
                 &cli.defines,
                 cli.no_persist_ctx,
@@ -107,6 +115,8 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(
                 cli.build_dir.as_deref(),
+                &cli.sysroot,
+                &cli.prefix,
                 Some(&recipes_path),
                 &cli.defines,
                 cli.no_persist_ctx,
@@ -121,6 +131,8 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(
                 cli.build_dir.as_deref(),
+                &cli.sysroot,
+                &cli.prefix,
                 Some(&recipes_path),
                 &cli.defines,
                 cli.no_persist_ctx,
@@ -188,6 +200,8 @@ fn emit_json(ctx: &rhai::Map, path: Option<&Path>) -> Result<()> {
 
 fn create_engine(
     build_dir: Option<&Path>,
+    sysroot: &Path,
+    prefix: &Path,
     recipes_path: Option<&Path>,
     defines: &[String],
     no_persist_ctx: bool,
@@ -207,6 +221,8 @@ fn create_engine(
     };
 
     let mut engine = RecipeEngine::new(build_dir)
+        .with_sysroot(sysroot.to_path_buf())
+        .with_prefix(prefix.to_path_buf())
         .with_ctx_persistence(!no_persist_ctx)
         .with_llm_profile(llm_profile)
         .with_autofix(autofix);

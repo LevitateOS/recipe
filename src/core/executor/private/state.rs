@@ -1,10 +1,58 @@
 use crate::core::executor::CompiledRecipe;
 use crate::core::{build_deps, ctx, output};
+use crate::helpers::install::roots::{ExecutionRoots, ScopedExecutionRoots};
 use anyhow::{Context, Result, anyhow};
 use rhai::{AST, Engine, Scope};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+pub(crate) fn configure_execution_scope(
+    scope: &mut Scope<'_>,
+    recipe_dir: &str,
+    base_dir: Option<&Path>,
+    build_dir: Option<&Path>,
+    sysroot: &Path,
+    prefix: &Path,
+    defines: &[(String, String)],
+) {
+    scope.push_constant("RECIPE_DIR", recipe_dir.to_string());
+    if let Some(base_dir) = base_dir {
+        scope.push_constant("BASE_RECIPE_DIR", base_dir.to_string_lossy().to_string());
+    }
+    if let Some(build_dir) = build_dir {
+        scope.push_constant("BUILD_DIR", build_dir.to_string_lossy().to_string());
+    }
+    scope.push_constant("SYSROOT", sysroot.to_string_lossy().to_string());
+    scope.push_constant("PREFIX", prefix.to_string_lossy().to_string());
+
+    for (key, value) in defines {
+        scope.push_constant(key.as_str(), value.clone());
+    }
+}
+
+pub(crate) fn scoped_execution_roots(
+    build_dir: &Path,
+    sysroot: &Path,
+    prefix: &Path,
+    extra_passthrough_roots: &[PathBuf],
+) -> Result<ScopedExecutionRoots> {
+    let mut roots = ExecutionRoots::new(sysroot.to_path_buf(), prefix.to_path_buf())
+        .map_err(|e| anyhow!(e))
+        .with_context(|| "invalid recipe execution roots")?
+        .with_passthrough_root(build_dir.to_path_buf())
+        .map_err(|e| anyhow!(e))
+        .with_context(|| "invalid recipe build directory root")?;
+
+    for root in extra_passthrough_roots {
+        roots = roots
+            .with_passthrough_root(root.clone())
+            .map_err(|e| anyhow!(e))
+            .with_context(|| format!("invalid passthrough root {}", root.display()))?;
+    }
+
+    Ok(ScopedExecutionRoots::push(roots))
+}
 
 /// Check whether a step is needed (true when the check throws).
 ///
@@ -153,14 +201,23 @@ pub(crate) fn persist_ctx(
 pub(crate) fn resolve_deps(
     engine: &Engine,
     build_dir: &Path,
+    sysroot: &Path,
+    prefix: &Path,
     search_path: Option<&Path>,
     defines: &[(String, String)],
     dep_names: &[String],
     autofix: Option<&crate::AutoFixConfig>,
 ) -> Result<EnvRestoreGuard> {
     let original_path = std::env::var("PATH").unwrap_or_default();
-    let mut resolver =
-        build_deps::BuildDepsResolver::new(engine, build_dir, search_path, defines, autofix);
+    let mut resolver = build_deps::BuildDepsResolver::new(
+        engine,
+        build_dir,
+        sysroot,
+        prefix,
+        search_path,
+        defines,
+        autofix,
+    );
     let tools_prefix = resolver.resolve_and_install(dep_names)?;
 
     // Safety: we're single-threaded during recipe execution

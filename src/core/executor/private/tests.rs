@@ -4,12 +4,21 @@ mod private_tests {
     use crate::helpers;
     use rhai::Engine;
     use std::fs;
+    use std::path::Path;
     use tempfile::TempDir;
 
     fn create_engine() -> Engine {
         let mut engine = Engine::new();
         helpers::register_all(&mut engine);
         engine
+    }
+
+    fn default_sysroot() -> &'static Path {
+        Path::new("/")
+    }
+
+    fn default_prefix() -> &'static Path {
+        Path::new("/usr/local")
     }
 
     #[test]
@@ -44,7 +53,16 @@ mod private_tests {
         .unwrap();
 
         let engine = create_engine();
-        let result = install(&engine, &build_dir, &recipe_path, &[], true, None);
+        let result = install(
+            &engine,
+            &build_dir,
+            default_sysroot(),
+            default_prefix(),
+            &recipe_path,
+            &[],
+            true,
+            None,
+        );
         assert!(result.is_ok(), "Failed: {:?}", result);
 
         // Check ctx was persisted
@@ -85,7 +103,16 @@ fn cleanup(ctx, reason) { ctx }
 
         let original = fs::read_to_string(&recipe_path).unwrap();
         let engine = create_engine();
-        let result = install(&engine, &build_dir, &recipe_path, &[], false, None);
+        let result = install(
+            &engine,
+            &build_dir,
+            default_sysroot(),
+            default_prefix(),
+            &recipe_path,
+            &[],
+            false,
+            None,
+        );
         assert!(result.is_ok(), "Failed: {:?}", result);
 
         let after = fs::read_to_string(&recipe_path).unwrap();
@@ -131,7 +158,17 @@ fn cleanup(ctx, reason) { ctx }
         assert_eq!(before, 0o600);
 
         let engine = create_engine();
-        install(&engine, &build_dir, &recipe_path, &[], true, None).unwrap();
+        install(
+            &engine,
+            &build_dir,
+            default_sysroot(),
+            default_prefix(),
+            &recipe_path,
+            &[],
+            true,
+            None,
+        )
+        .unwrap();
 
         let after = fs::metadata(&recipe_path).unwrap().permissions().mode() & 0o777;
         assert_eq!(after, 0o600);
@@ -159,7 +196,16 @@ fn install(ctx) { throw "should not run"; }
         .unwrap();
 
         let engine = create_engine();
-        let result = install(&engine, &build_dir, &recipe_path, &[], true, None);
+        let result = install(
+            &engine,
+            &build_dir,
+            default_sysroot(),
+            default_prefix(),
+            &recipe_path,
+            &[],
+            true,
+            None,
+        );
         assert!(result.is_ok());
     }
 
@@ -209,7 +255,16 @@ fn cleanup(ctx, reason) { ctx }
         .unwrap();
 
         let engine = create_engine();
-        let result = install(&engine, &build_dir, &recipe_path, &[], true, None);
+        let result = install(
+            &engine,
+            &build_dir,
+            default_sysroot(),
+            default_prefix(),
+            &recipe_path,
+            &[],
+            true,
+            None,
+        );
         assert!(result.is_ok(), "Failed: {:?}", result);
     }
 
@@ -307,7 +362,16 @@ fn cleanup(ctx, reason) { ctx }
         .unwrap();
 
         let engine = create_engine();
-        let result = install(&engine, &build_dir, &child_path, &[], true, None);
+        let result = install(
+            &engine,
+            &build_dir,
+            default_sysroot(),
+            default_prefix(),
+            &child_path,
+            &[],
+            true,
+            None,
+        );
         assert!(result.is_ok(), "Failed: {:?}", result);
 
         let ctx = result.unwrap();
@@ -401,7 +465,16 @@ fn cleanup(ctx, reason) { ctx }
         .unwrap();
 
         let engine = create_engine();
-        let result = install(&engine, &build_dir, &child_path, &[], true, None);
+        let result = install(
+            &engine,
+            &build_dir,
+            default_sysroot(),
+            default_prefix(),
+            &child_path,
+            &[],
+            true,
+            None,
+        );
         assert!(result.is_ok(), "Failed: {:?}", result);
 
         // Ensure ctx was persisted into base (acquired/installed should be true).

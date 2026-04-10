@@ -5,11 +5,14 @@ use rhai::{Engine, Scope};
 use std::path::Path;
 
 use super::reporting::{report_phase_failure, report_phase_success};
-use super::state::{maybe_cleanup, persist_ctx};
+use super::state::{configure_execution_scope, maybe_cleanup, persist_ctx, scoped_execution_roots};
 use crate::core::executor::compile_recipe;
 
 pub(crate) fn remove(
     engine: &Engine,
+    build_dir: &Path,
+    sysroot: &Path,
+    prefix: &Path,
     recipe_path: &Path,
     search_path: Option<&Path>,
     defines: &[(String, String)],
@@ -31,14 +34,17 @@ pub(crate) fn remove(
         .unwrap_or_else(|| ".".to_string());
 
     let mut scope = Scope::new();
-    scope.push_constant("RECIPE_DIR", recipe_dir);
-    if let Some(ref bd) = compiled.base_dir {
-        let base_dir = bd.to_string_lossy().to_string();
-        scope.push_constant("BASE_RECIPE_DIR", base_dir);
-    }
-    for (key, value) in defines {
-        scope.push_constant(key.as_str(), value.clone());
-    }
+    configure_execution_scope(
+        &mut scope,
+        &recipe_dir,
+        compiled.base_dir.as_deref(),
+        Some(build_dir),
+        sysroot,
+        prefix,
+        defines,
+    );
+
+    let _execution_roots = scoped_execution_roots(build_dir, sysroot, prefix, &[])?;
 
     // Run script to populate scope
     engine.run_ast_with_scope(&mut scope, &ast)?;
@@ -83,6 +89,8 @@ pub(crate) fn remove(
 pub(crate) fn cleanup(
     engine: &Engine,
     build_dir: &Path,
+    sysroot: &Path,
+    prefix: &Path,
     recipe_path: &Path,
     search_path: Option<&Path>,
     defines: &[(String, String)],
@@ -105,15 +113,17 @@ pub(crate) fn cleanup(
         .unwrap_or_else(|| ".".to_string());
 
     let mut scope = Scope::new();
-    scope.push_constant("RECIPE_DIR", recipe_dir);
-    if let Some(ref bd) = compiled.base_dir {
-        let base_dir = bd.to_string_lossy().to_string();
-        scope.push_constant("BASE_RECIPE_DIR", base_dir);
-    }
-    scope.push_constant("BUILD_DIR", build_dir.to_string_lossy().to_string());
-    for (key, value) in defines {
-        scope.push_constant(key.as_str(), value.clone());
-    }
+    configure_execution_scope(
+        &mut scope,
+        &recipe_dir,
+        compiled.base_dir.as_deref(),
+        Some(build_dir),
+        sysroot,
+        prefix,
+        defines,
+    );
+
+    let _execution_roots = scoped_execution_roots(build_dir, sysroot, prefix, &[])?;
 
     // Run script to populate scope
     engine.run_ast_with_scope(&mut scope, &ast)?;
@@ -162,6 +172,8 @@ pub(crate) fn cleanup(
 pub(crate) fn is_installed(
     engine: &Engine,
     build_dir: &Path,
+    sysroot: &Path,
+    prefix: &Path,
     recipe_path: &Path,
     search_path: Option<&Path>,
     defines: &[(String, String)],
@@ -169,6 +181,8 @@ pub(crate) fn is_installed(
     run_check(
         engine,
         build_dir,
+        sysroot,
+        prefix,
         recipe_path,
         search_path,
         defines,
@@ -182,6 +196,8 @@ pub(crate) fn is_installed(
 pub(crate) fn is_built(
     engine: &Engine,
     build_dir: &Path,
+    sysroot: &Path,
+    prefix: &Path,
     recipe_path: &Path,
     search_path: Option<&Path>,
     defines: &[(String, String)],
@@ -189,6 +205,8 @@ pub(crate) fn is_built(
     run_check(
         engine,
         build_dir,
+        sysroot,
+        prefix,
         recipe_path,
         search_path,
         defines,
@@ -202,6 +220,8 @@ pub(crate) fn is_built(
 pub(crate) fn is_acquired(
     engine: &Engine,
     build_dir: &Path,
+    sysroot: &Path,
+    prefix: &Path,
     recipe_path: &Path,
     search_path: Option<&Path>,
     defines: &[(String, String)],
@@ -209,6 +229,8 @@ pub(crate) fn is_acquired(
     run_check(
         engine,
         build_dir,
+        sysroot,
+        prefix,
         recipe_path,
         search_path,
         defines,
@@ -219,6 +241,8 @@ pub(crate) fn is_acquired(
 pub(crate) fn run_check(
     engine: &Engine,
     build_dir: &Path,
+    sysroot: &Path,
+    prefix: &Path,
     recipe_path: &Path,
     search_path: Option<&Path>,
     defines: &[(String, String)],
@@ -240,15 +264,17 @@ pub(crate) fn run_check(
         .unwrap_or_else(|| ".".to_string());
 
     let mut scope = Scope::new();
-    scope.push_constant("RECIPE_DIR", recipe_dir);
-    if let Some(ref bd) = compiled.base_dir {
-        let base_dir = bd.to_string_lossy().to_string();
-        scope.push_constant("BASE_RECIPE_DIR", base_dir);
-    }
-    scope.push_constant("BUILD_DIR", build_dir.to_string_lossy().to_string());
-    for (key, value) in defines {
-        scope.push_constant(key.clone(), value.clone());
-    }
+    configure_execution_scope(
+        &mut scope,
+        &recipe_dir,
+        compiled.base_dir.as_deref(),
+        Some(build_dir),
+        sysroot,
+        prefix,
+        defines,
+    );
+
+    let _execution_roots = scoped_execution_roots(build_dir, sysroot, prefix, &[])?;
 
     // Run script to populate scope
     engine.run_ast_with_scope(&mut scope, &ast)?;
