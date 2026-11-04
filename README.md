@@ -105,7 +105,7 @@ cd tools/recipe
 cargo install --path .
 ```
 
-Tests are not standalone today. `Cargo.toml` has a path dev-dependency on `../../testing/cheat-test`, so integration tests expect a normal LevitateOS checkout around this submodule.
+The remaining automated checks run the actual recipe CLI; in-process helper and mock-agent suites have been removed. Unit tests are prohibited. CLI checks are not standalone today. `Cargo.toml` has a path dev-dependency on `../../testing/cheat-test`, so integration tests expect a normal LevitateOS checkout around this submodule.
 
 For reproducible distro-native container runs, use the checked-in Podman runner:
 
@@ -116,7 +116,7 @@ tools/recipe/scripts/podman-test.sh rocky
 tools/recipe/scripts/podman-test.sh all
 ```
 
-This script mounts `tools/recipe` and `testing/cheat-test`, bootstraps upstream `rustup` inside the container, and runs the full suite with an isolated `CARGO_TARGET_DIR=/tmp/recipe-target` so container results are not polluted by host build artifacts.
+This script mounts `tools/recipe` and `testing/cheat-test`, bootstraps upstream `rustup` inside the container, and runs the CLI end-to-end suite with an isolated `CARGO_TARGET_DIR=/tmp/recipe-target` so container results are not polluted by host build artifacts.
 
 ## Operational Defaults
 
