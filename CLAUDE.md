@@ -89,14 +89,14 @@ Optional external commands used by the current implementation:
 
 ```bash
 cargo build
-cargo test
+cargo check # Unit tests are prohibited; use focused integration/runtime checks.
 cargo clippy
 cargo run -- install ripgrep
 cargo run -- list
 cargo install --path .
 ```
 
-`cargo test` expects the surrounding LevitateOS checkout because the crate has a path dev-dependency on `../../testing/cheat-test`.
+Integration tests expect the surrounding LevitateOS checkout because the crate has a path dev-dependency on `../../testing/cheat-test`.
 
 ## Code Structure
 

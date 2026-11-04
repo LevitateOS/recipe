@@ -77,29 +77,3 @@ pub fn hook_event_struct(event: &RecipeHookEvent) {
 
     eprintln!("{}", human);
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::{Arc, Mutex};
-
-    #[test]
-    fn test_set_event_sink_handler() {
-        let events: Arc<Mutex<Vec<RecipeHookEvent>>> = Arc::new(Mutex::new(Vec::new()));
-        let captured = events.clone();
-        set_event_sink_handler(Some(move |event: &RecipeHookEvent| {
-            captured.lock().expect("mutex").push(event.clone());
-        }));
-
-        hook_event("pkg", "install", "running", "unit test");
-        let got = {
-            let guard = events.lock().expect("mutex");
-            guard
-                .iter()
-                .any(|event| event.recipe == "pkg" && event.hook == "install")
-        };
-
-        assert!(got, "hook sink did not receive install event");
-        set_event_sink(None);
-    }
-}

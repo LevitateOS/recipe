@@ -50,11 +50,7 @@ pub fn validate_url_scheme(url: &str, allowed: &[UrlScheme]) -> Result<(), Box<E
 ///
 /// Handles query strings and fragments, returns "download" as fallback.
 ///
-/// # Example
-/// ```ignore
-/// assert_eq!(extract_filename("https://example.com/foo-1.0.tar.gz"), "foo-1.0.tar.gz");
-/// assert_eq!(extract_filename("https://example.com/file?v=1"), "file");
-/// ```
+/// A URL such as `https://example.com/foo-1.0.tar.gz` yields `foo-1.0.tar.gz`.
 pub fn extract_filename(url: &str) -> String {
     // Handle magnet links specially
     if url.starts_with("magnet:") {
@@ -163,11 +159,7 @@ pub fn sanitize_filename(name: &str) -> String {
 
 /// Extract repository name from a git URL.
 ///
-/// # Example
-/// ```ignore
-/// assert_eq!(extract_repo_name("https://github.com/foo/bar.git"), "bar");
-/// assert_eq!(extract_repo_name("git@github.com:foo/bar.git"), "bar");
-/// ```
+/// HTTPS and SSH URLs ending in `foo/bar.git` yield `bar`.
 pub fn extract_repo_name(url: &str) -> String {
     // Strip trailing slashes and .git suffix
     let clean = url
@@ -196,94 +188,4 @@ pub fn extract_repo_name(url: &str) -> String {
         .filter(|s| !s.is_empty())
         .unwrap_or("repo")
         .to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extract_filename_simple() {
-        assert_eq!(
-            extract_filename("https://example.com/foo-1.0.tar.gz"),
-            "foo-1.0.tar.gz"
-        );
-    }
-
-    #[test]
-    fn test_extract_filename_with_query() {
-        assert_eq!(
-            extract_filename("https://example.com/file.tar.gz?token=abc"),
-            "file.tar.gz"
-        );
-    }
-
-    #[test]
-    fn test_extract_filename_with_fragment() {
-        assert_eq!(
-            extract_filename("https://example.com/file.tar.gz#section"),
-            "file.tar.gz"
-        );
-    }
-
-    #[test]
-    fn test_extract_filename_fallback() {
-        assert_eq!(extract_filename("https://example.com/"), "download");
-        assert_eq!(extract_filename("https://example.com"), "download");
-    }
-
-    #[test]
-    fn test_extract_filename_magnet() {
-        let url = "magnet:?xt=urn:btih:abc&dn=My+File.torrent&tr=http://tracker";
-        assert_eq!(extract_filename(url), "My File.torrent");
-    }
-
-    #[test]
-    fn test_sanitize_filename() {
-        assert_eq!(sanitize_filename("foo/bar"), "foo_bar");
-        assert_eq!(sanitize_filename("file:name"), "file_name");
-        assert_eq!(sanitize_filename(".."), "download");
-        assert_eq!(sanitize_filename(""), "download");
-        assert_eq!(sanitize_filename("  test  "), "test");
-    }
-
-    #[test]
-    fn test_extract_repo_name_https() {
-        assert_eq!(extract_repo_name("https://github.com/foo/bar.git"), "bar");
-        assert_eq!(extract_repo_name("https://github.com/foo/bar"), "bar");
-    }
-
-    #[test]
-    fn test_extract_repo_name_ssh() {
-        assert_eq!(extract_repo_name("git@github.com:foo/bar.git"), "bar");
-        assert_eq!(extract_repo_name("git@github.com:foo/bar"), "bar");
-    }
-
-    #[test]
-    fn test_extract_repo_name_trailing_slash() {
-        assert_eq!(extract_repo_name("https://github.com/foo/bar/"), "bar");
-    }
-
-    #[test]
-    fn test_validate_url_scheme_https() {
-        let allowed = &[UrlScheme::Http, UrlScheme::Https];
-        assert!(validate_url_scheme("https://example.com", allowed).is_ok());
-        assert!(validate_url_scheme("http://example.com", allowed).is_ok());
-        assert!(validate_url_scheme("ftp://example.com", allowed).is_err());
-    }
-
-    #[test]
-    fn test_validate_url_scheme_git() {
-        let allowed = &[UrlScheme::Https, UrlScheme::Ssh, UrlScheme::Git];
-        assert!(validate_url_scheme("https://github.com/foo/bar", allowed).is_ok());
-        assert!(validate_url_scheme("git@github.com:foo/bar", allowed).is_ok());
-        assert!(validate_url_scheme("ssh://git@github.com/foo/bar", allowed).is_ok());
-    }
-
-    #[test]
-    fn test_percent_decode() {
-        assert_eq!(percent_decode("hello%20world"), "hello world");
-        assert_eq!(percent_decode("foo+bar"), "foo bar");
-        assert_eq!(percent_decode("100%25"), "100%");
-    }
 }

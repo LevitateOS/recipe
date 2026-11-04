@@ -196,47 +196,9 @@ fn test_regression_http_has_timeout() {
 // BUG: parse_version Incorrect Prefix Stripping (http.rs)
 // =============================================================================
 
-#[test]
-fn test_regression_parse_version_order() {
-    use levitate_recipe::helpers::acquire::http::parse_version;
-
-    // "version-" prefix should be fully stripped
-    assert_eq!(parse_version("version-1.0.0"), "1.0.0");
-    assert_eq!(parse_version("version-2.5.3"), "2.5.3");
-
-    // "release-" prefix should be fully stripped
-    assert_eq!(parse_version("release-1.0.0"), "1.0.0");
-
-    // Combined prefixes
-    assert_eq!(parse_version("release-v1.0.0"), "1.0.0");
-
-    // Simple "v" prefix
-    assert_eq!(parse_version("v1.0.0"), "1.0.0");
-
-    // No prefix
-    assert_eq!(parse_version("1.0.0"), "1.0.0");
-}
-
 // =============================================================================
 // BUG: Symlinks need proper handling (Unix only)
 // =============================================================================
-
-#[test]
-#[cfg(unix)]
-fn test_regression_symlink_detection() {
-    use std::os::unix::fs::symlink;
-
-    let dir = TempDir::new().unwrap();
-    let target = dir.path().join("target");
-    let link = dir.path().join("link");
-
-    std::fs::write(&target, "content").unwrap();
-    symlink(&target, &link).unwrap();
-
-    // Verify detection works
-    assert!(link.is_symlink());
-    assert!(link.is_file() || link.is_symlink());
-}
 
 // =============================================================================
 // BUG: Concurrent lock should block

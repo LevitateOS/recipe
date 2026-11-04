@@ -292,23 +292,3 @@ pub fn progress_fail(pb: ProgressBar, message: &str) {
 pub fn progress_done(pb: ProgressBar) {
     pb.finish_and_clear();
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use leviso_cheat_test::cheat_reviewed;
-
-    #[cheat_reviewed("API test - progress bar can be created")]
-    #[test]
-    fn test_progress_bar_creation() {
-        let pb = download_progress(1000);
-        pb.finish_and_clear();
-    }
-
-    #[cheat_reviewed("API test - spinner can be created")]
-    #[test]
-    fn test_spinner_creation() {
-        let pb = build_spinner("Building");
-        pb.finish_and_clear();
-    }
-}

@@ -105,7 +105,7 @@ cd tools/recipe
 cargo install --path .
 ```
 
-Tests are not standalone today. `Cargo.toml` has a path dev-dependency on `../../testing/cheat-test`, so `cargo test` expects a normal LevitateOS checkout around this submodule.
+Tests are not standalone today. `Cargo.toml` has a path dev-dependency on `../../testing/cheat-test`, so integration tests expect a normal LevitateOS checkout around this submodule.
 
 For reproducible distro-native container runs, use the checked-in Podman runner:
 

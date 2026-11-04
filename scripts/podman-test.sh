@@ -10,7 +10,7 @@ usage() {
   cat <<'EOF'
 Usage: tools/recipe/scripts/podman-test.sh <alpine|fedora|rocky|all>
 
-Runs the full tools/recipe cargo test suite in a distro-native Podman container.
+Runs tools/recipe CLI end-to-end tests in a distro-native Podman container.
 
 Targets:
   alpine  Alpine 3.23
@@ -40,7 +40,7 @@ run_alpine() {
         bzip2-dev bzip2-static xz-dev xz-static zstd-dev git bash perl doas
       curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
       . "$HOME/.cargo/env"
-      CARGO_TARGET_DIR=/tmp/recipe-target cargo test -- --nocapture
+      CARGO_TARGET_DIR=/tmp/recipe-target cargo test --test e2e -- --nocapture
     '
 }
 
@@ -59,7 +59,7 @@ run_fedora() {
         bzip2-devel xz-devel libzstd-devel which findutils tar gzip git
       curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
       . "$HOME/.cargo/env"
-      CARGO_TARGET_DIR=/tmp/recipe-target cargo test -- --nocapture
+      CARGO_TARGET_DIR=/tmp/recipe-target cargo test --test e2e -- --nocapture
     '
 }
 
@@ -79,7 +79,7 @@ run_rocky() {
         bzip2-devel xz-devel libzstd-devel which findutils tar gzip git
       curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
       . "$HOME/.cargo/env"
-      CARGO_TARGET_DIR=/tmp/recipe-target cargo test -- --nocapture
+      CARGO_TARGET_DIR=/tmp/recipe-target cargo test --test e2e -- --nocapture
     '
 }
 

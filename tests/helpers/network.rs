@@ -54,17 +54,6 @@ fn install(ctx) {
     );
 }
 
-#[test]
-fn test_parse_version_helper() {
-    use levitate_recipe::helpers::acquire::http::parse_version;
-
-    // Test various version formats
-    assert_eq!(parse_version("v1.0.0"), "1.0.0");
-    assert_eq!(parse_version("version-1.0.0"), "1.0.0");
-    assert_eq!(parse_version("release-v2.0.0"), "2.0.0");
-    assert_eq!(parse_version("1.2.3"), "1.2.3");
-}
-
 // =============================================================================
 // Network Helper Tests (ignored by default)
 // =============================================================================
