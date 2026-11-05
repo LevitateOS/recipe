@@ -33,211 +33,183 @@ fn commit_payload(repo: &Path, payload: &str) -> String {
     fixture_git(repo, &["rev-parse", "HEAD"])
 }
 
-fn git_recipe(recipes: &Path, call: &str) {
-    write_recipe(
-        recipes,
-        "git-payload",
-        &format!(
-            r#"
-let ctx = #{{ name: "git-payload" }};
-fn is_installed(ctx) {{ throw "run requested"; }}
-fn is_acquired(ctx) {{ throw "acquisition requested"; }}
-fn acquire(ctx) {{ ctx.source = {call}; ctx }}
-fn install(ctx) {{
-    mkdir(BUILD_DIR);
-    copy_file(join_path(ctx.source, "payload.txt"), join_path(BUILD_DIR, "installed.txt"));
-    ctx
-}}
-"#
-        ),
-    );
-}
-
-#[test]
-fn cli_pinned_git_acquisition_selects_reuses_and_fetches_exact_commit() {
-    let (dir, recipes) = create_test_env();
-    let (source, first, second) = upstream(dir.path());
-    let url = format!("file://{}", source.display());
-    let checkout = recipes.join("exact checkout 'quoted'");
-    let write_call = |commit: &str| {
-        git_recipe(
-            &recipes,
-            &format!("git_checkout({url:?}, {checkout:?}, {commit:?})"),
-        )
-    };
-    write_call(&first);
-    let output = recipe_command(&recipes)
-        .args(["install", "git-payload", "--no-persist-ctx"])
-        .arg("--recipes-path")
-        .arg(&recipes)
-        .arg("--build-dir")
-        .arg(dir.path().join("build"))
-        .env("GIT_DIR", source.join(".git"))
-        .env("GIT_WORK_TREE", &source)
-        .env("GIT_INDEX_FILE", dir.path().join("caller-index"))
+fn bare_upstream(root: &Path) -> (std::path::PathBuf, String, String) {
+    let (source, first, second) = upstream(root);
+    let bare = root.join("source.git");
+    let output = Command::new("git")
+        .args(["clone", "--bare", "--no-hardlinks"])
+        .arg(&source)
+        .arg(&bare)
         .output()
         .unwrap();
     assert_success(&output);
-    serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap();
-    assert_eq!(fixture_git(&checkout, &["rev-parse", "HEAD"]), first);
-    assert_eq!(fixture_git(&source, &["rev-parse", "HEAD"]), second);
-    assert!(!dir.path().join("caller-index").exists());
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("build/installed.txt")).unwrap(),
-        "first source payload"
-    );
-    assert!(!checkout.join("upstream").exists());
-
-    // A valid cached commit is reusable without contacting its origin.
-    let offline = dir.path().join("temporarily offline.git");
-    std::fs::rename(&source, &offline).unwrap();
-    let output = run_recipe(&["install", "git-payload", "--no-persist-ctx"], &recipes);
-    assert_success(&output);
-    std::fs::rename(&offline, &source).unwrap();
-
-    // The new commit did not exist when the checkout was cloned.
-    let third = commit_payload(&source, "third fetched source payload");
-    write_call(&third);
-    let output = run_recipe(&["install", "git-payload", "--no-persist-ctx"], &recipes);
-    assert_success(&output);
-    assert_eq!(fixture_git(&checkout, &["rev-parse", "HEAD"]), third);
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("build/installed.txt")).unwrap(),
-        "third fetched source payload"
-    );
-    assert!(String::from_utf8_lossy(&output.stderr).contains("fetch"));
+    (bare, first, second)
 }
 
-#[test]
-fn cli_git_acquisition_preserves_mismatched_dirty_and_invalid_destinations() {
-    for failure in ["origin", "dirty", "invalid", "invalid-under-repo"] {
-        let (dir, recipes) = create_test_env();
-        let (source, first, second) = upstream(dir.path());
-        let url = format!("file://{}", source.display());
-        let checkout = if failure == "invalid-under-repo" {
-            source.join("nested-checkout")
-        } else {
-            recipes.join("exact-checkout")
-        };
-        git_recipe(
-            &recipes,
-            &format!("git_checkout({url:?}, {checkout:?}, {first:?})"),
-        );
-        let output = run_recipe(&["install", "git-payload", "--no-persist-ctx"], &recipes);
-        assert_success(&output);
-        match failure {
-            "origin" => {
-                fixture_git(
-                    &checkout,
-                    &["config", "remote.origin.url", "file:///wrong-origin.git"],
-                );
-            }
-            "dirty" => {
-                std::fs::write(checkout.join("payload.txt"), "local edits to preserve").unwrap();
-            }
-            "invalid" | "invalid-under-repo" => {
-                std::fs::remove_file(checkout.join(".git/HEAD")).unwrap();
-            }
-            _ => unreachable!(),
-        }
-        let before = std::fs::read(checkout.join("payload.txt")).unwrap();
-        std::fs::write(
-            dir.path().join("build/installed.txt"),
-            "previous installation",
-        )
-        .unwrap();
-        git_recipe(
-            &recipes,
-            &format!("git_checkout({url:?}, {checkout:?}, {second:?})"),
-        );
-        let output = run_recipe(&["install", "git-payload", "--no-persist-ctx"], &recipes);
-        assert!(!output.status.success(), "accepted {failure} checkout");
-        assert_eq!(std::fs::read(checkout.join("payload.txt")).unwrap(), before);
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("build/installed.txt")).unwrap(),
-            "previous installation"
-        );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains(match failure {
-                "origin" => "origin mismatch",
-                "dirty" => "local changes",
-                _ => "invalid Git checkout",
-            }),
-            "{stderr}"
-        );
+fn git_command(recipes: &Path, source: Option<&Path>) -> Command {
+    let mut command = recipe_command(recipes);
+    command
+        .args([
+            "install",
+            "git-payload",
+            "--no-persist-state",
+            "--recipes-path",
+        ])
+        .arg(recipes);
+    if let Some(source) = source {
+        command
+            .arg("--input")
+            .arg(format!("source.git={}", source.display()));
     }
+    command
 }
 
 #[test]
-fn cli_legacy_git_clones_keep_parent_destination_and_check_origin() {
-    for shallow in [false, true] {
+fn managed_pinned_git_selects_exact_commits_and_preserves_invalid_checkouts() {
+    for failure in ["dirty", "origin", "invalid"] {
         let (dir, recipes) = create_test_env();
-        let (source, _, second) = upstream(dir.path());
-        let url = format!("file://{}", source.display());
-        let parent = recipes.join("source cache");
-        let checkout = parent.join("upstream");
-        git_recipe(
+        let (bare, first, second) = bare_upstream(dir.path());
+        write_recipe(
             &recipes,
-            &if shallow {
-                format!("git_clone_depth({url:?}, {parent:?}, 1)")
+            "git-payload",
+            &format!(
+                r#"
+const RECIPE_API = 2;
+let ctx = #{{name: "git-payload", source: join_path(RUNTIME.paths.build, "exact checkout 'quoted'"),
+    origin: "file:///inputs/source.git", state: #{{acquired: false, installed: false}}}};
+fn is_acquired(ctx) {{
+    if ctx.state.acquired {{ return ready(ctx); }}
+    needs_work(ctx, "acquire exact commit")
+}}
+fn is_built(ctx) {{ ready(ctx) }}
+fn is_installed(ctx) {{
+    if ctx.state.installed {{ return ready(ctx); }}
+    needs_work(ctx, "install pinned source")
+}}
+fn acquire(ctx) {{
+    ctx.source = git_checkout(ctx.origin, ctx.source, {first:?});
+    if read_file(join_path(ctx.source, "payload.txt")) != "first source payload" {{ throw "wrong first commit"; }}
+    // Cached exact commit reuse and changing selection use the same owner.
+    git_checkout(ctx.origin, ctx.source, {first:?});
+    git_checkout(ctx.origin, ctx.source, {second:?});
+    if read_file(join_path(ctx.source, "payload.txt")) != "second source payload" {{ throw "wrong second commit"; }}
+    if {failure:?} == "dirty" {{ write_file(join_path(ctx.source, "payload.txt"), "local edits"); }}
+    else if {failure:?} == "origin" {{
+        exec_checked("git", ["-C", ctx.source, "config", "remote.origin.url", "file:///inputs/wrong.git"]);
+    }} else {{ write_file(join_path(ctx.source, ".git/HEAD"), "not a Git HEAD"); }}
+    let before = read_file(join_path(ctx.source, "payload.txt"));
+    let rejected = false;
+    try {{ git_checkout(ctx.origin, ctx.source, {first:?}); }} catch (error) {{ rejected = true; }}
+    if !rejected {{ throw "invalid checkout was accepted"; }}
+    if read_file(join_path(ctx.source, "payload.txt")) != before {{ throw "checkout bytes were replaced"; }}
+    if glob_list(join_path(dirname(ctx.source), ".recipe-git.*")).len != 0 {{ throw "Git staging leaked"; }}
+    ctx.state.acquired = true;
+    ctx
+}}
+fn install(ctx) {{
+    copy_file(join_path(ctx.source, "payload.txt"), "/out/product");
+    ctx.outputs.product = "/out/product";
+    ctx.state.installed = true;
+    ctx
+}}
+"#
+            ),
+        );
+        let before = std::fs::read(recipes.join("git-payload.rhai")).unwrap();
+        let output = git_command(&recipes, Some(&bare)).output().unwrap();
+        assert_success(&output);
+        let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(context["state"]["installed"], true);
+        let product = Path::new(context["outputs"]["product"].as_str().unwrap());
+        assert_eq!(
+            std::fs::read_to_string(product).unwrap(),
+            if failure == "dirty" {
+                "local edits"
             } else {
-                format!("git_clone({url:?}, {parent:?})")
-            },
+                "second source payload"
+            }
         );
-        let output = run_recipe(&["install", "git-payload", "--no-persist-ctx"], &recipes);
-        assert_success(&output);
-        assert_eq!(fixture_git(&checkout, &["rev-parse", "HEAD"]), second);
-        assert_eq!(checkout.join(".git/shallow").exists(), shallow);
+        assert_eq!(fixture_git(&bare, &["rev-parse", "HEAD"]), second);
         assert_eq!(
-            std::fs::read_to_string(dir.path().join("build/installed.txt")).unwrap(),
-            "second source payload"
-        );
-        std::fs::write(checkout.join("payload.txt"), "local legacy payload").unwrap();
-        let output = run_recipe(&["install", "git-payload", "--no-persist-ctx"], &recipes);
-        assert_success(&output);
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("build/installed.txt")).unwrap(),
-            "local legacy payload"
-        );
-        fixture_git(
-            &checkout,
-            &["config", "remote.origin.url", "file:///other-origin.git"],
-        );
-        let output = run_recipe(&["install", "git-payload", "--no-persist-ctx"], &recipes);
-        assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("origin mismatch"));
-        assert_eq!(fixture_git(&checkout, &["rev-parse", "HEAD"]), second);
-        std::fs::remove_file(checkout.join(".git/HEAD")).unwrap();
-        let output = run_recipe(&["install", "git-payload", "--no-persist-ctx"], &recipes);
-        assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("invalid Git checkout"));
-        assert_eq!(
-            std::fs::read_to_string(checkout.join("payload.txt")).unwrap(),
-            "local legacy payload"
+            std::fs::read(recipes.join("git-payload.rhai")).unwrap(),
+            before
         );
     }
 }
 
 #[test]
-fn cli_failed_git_acquisition_leaves_no_published_checkout() {
+fn managed_failed_git_acquisition_keeps_staging_private() {
     let (dir, recipes) = create_test_env();
-    let (source, _, _) = upstream(dir.path());
-    let url = format!("file://{}", source.display());
-    let checkout = recipes.join("checkout");
-    git_recipe(
+    let (bare, _, _) = bare_upstream(dir.path());
+    write_recipe(
         &recipes,
-        &format!("git_checkout({url:?}, {checkout:?}, {:?})", "0".repeat(40)),
+        "git-payload",
+        &format!(
+            r#"
+const RECIPE_API = 2;
+let ctx = #{{name: "git-payload", source: join_path(RUNTIME.paths.build, "checkout")}};
+fn is_acquired(ctx) {{ needs_work(ctx, "acquire missing commit") }}
+fn is_built(ctx) {{ ready(ctx) }}
+fn is_installed(ctx) {{ needs_work(ctx, "install requested") }}
+fn acquire(ctx) {{ git_checkout("file:///inputs/source.git", ctx.source, {missing:?}); ctx }}
+fn cleanup(ctx, reason) {{
+    if reason == "auto.acquire.failure" {{
+        if is_dir(ctx.source) {{ throw "failed Git checkout was published"; }}
+        if glob_list(join_path(dirname(ctx.source), ".recipe-git.*")).len != 0 {{ throw "Git staging leaked"; }}
+        log("GIT_STAGING_PRESERVED");
+    }}
+    ctx
+}}
+"#,
+            missing = "0".repeat(40)
+        ),
     );
-    let output = run_recipe(&["install", "git-payload", "--no-persist-ctx"], &recipes);
+    let output = git_command(&recipes, Some(&bare)).output().unwrap();
     assert!(!output.status.success());
-    assert!(!checkout.exists());
-    assert!(!dir.path().join("build/installed.txt").exists());
-    assert!(!std::fs::read_dir(&recipes).unwrap().any(|entry| {
-        entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with(".recipe-git.")
-    }));
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostic.contains("GIT_STAGING_PRESERVED"), "{diagnostic}");
+}
+
+#[test]
+fn managed_git_rejects_unpinned_revisions_and_unsupported_origins_before_spawn() {
+    for (origin, commit, expected) in [
+        (
+            "https://example.invalid/source.git",
+            "main".to_owned(),
+            "full 40- or 64-character",
+        ),
+        (
+            "ssh://example.invalid/source.git",
+            "0".repeat(40),
+            "Git origin must use",
+        ),
+    ] {
+        let (_dir, recipes) = create_test_env();
+        write_recipe(
+            &recipes,
+            "git-payload",
+            &format!(
+                r#"
+const RECIPE_API = 2;
+let ctx = #{{name: "git-payload"}};
+fn is_acquired(ctx) {{ needs_work(ctx, "validate source") }}
+fn is_built(ctx) {{ ready(ctx) }}
+fn is_installed(ctx) {{ needs_work(ctx, "install requested") }}
+fn acquire(ctx) {{ git_checkout({origin:?}, "/work/build/checkout", {commit:?}); ctx }}
+fn cleanup(ctx, reason) {{
+    if is_dir("/work/build/checkout") {{ throw "invalid arguments created a checkout"; }}
+    log("GIT_INVALID_INPUT_PRESERVED"); ctx
+}}
+"#
+            ),
+        );
+        let output = git_command(&recipes, None).output().unwrap();
+        assert!(!output.status.success());
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(diagnostic.contains(expected), "{diagnostic}");
+        assert!(
+            diagnostic.contains("GIT_INVALID_INPUT_PRESERVED"),
+            "{diagnostic}"
+        );
+    }
 }

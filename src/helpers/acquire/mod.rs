@@ -1,31 +1,44 @@
-//! ACQUIRE phase helpers - getting sources
-//!
-//! Pure functions for downloading, verifying, and fetching source files.
-//! These are the first step in the recipe lifecycle: acquire -> build -> install.
-//!
-//! ## Functions
-//!
-//! - **download**: Download files from HTTP(S) URLs
-//! - **verify_sha256/sha512/blake3**: Verify file integrity with cryptographic hashes
-//! - **http_get**: Fetch content from URLs
-//! - **github_latest_release/tag**: Query GitHub for latest versions
-//! - **git_clone**: Clone git repositories
-//! - **torrent**: Download via BitTorrent
+//! Verified acquisition of explicit HTTP payloads and pinned Git sources.
 
 pub mod download;
 pub mod git;
 pub mod http;
-pub mod torrent;
 pub mod verify;
 
-// Re-export commonly used items
-pub use download::{download, download_with_resume};
-pub use git::{git_checkout, git_clone, git_clone_depth};
+pub use download::download;
+pub use git::git_checkout;
 pub use http::{
-    extract_from_tarball, github_download_release, github_latest_release, github_latest_tag,
-    http_get, parse_version,
+    github_download_release, github_latest_release, github_latest_tag, http_get, parse_version,
 };
-pub use torrent::torrent;
 pub use verify::{
     FileHashes, compute_hashes, fetch_sha256, verify_blake3, verify_sha256, verify_sha512,
 };
+
+use rhai::EvalAltResult;
+use std::time::Duration;
+
+fn validate_http_url(url: &str) -> Result<(), Box<EvalAltResult>> {
+    if !(url.starts_with("https://") || url.starts_with("http://"))
+        || url.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return Err("acquisition requires an http:// or https:// URL".into());
+    }
+    Ok(())
+}
+
+/// All acquisition HTTP clients share bounded redirects, verified TLS and
+/// explicit timeouts. Network authority comes from the configured domain,
+/// never an inherited proxy environment or a host-side helper.
+fn http_request(url: &str, timeout: Duration) -> Result<ureq::Request, Box<EvalAltResult>> {
+    validate_http_url(url)?;
+    Ok(ureq::AgentBuilder::new()
+        .try_proxy_from_env(false)
+        .https_only(url.starts_with("https://"))
+        .redirects(5)
+        .timeout_connect(Duration::from_secs(30))
+        .timeout_read(timeout)
+        .timeout_write(timeout)
+        .timeout(timeout)
+        .build()
+        .get(url))
+}

@@ -10,7 +10,8 @@ fn library_default_uses_ginux_even_with_spoofed_worker_environment() {
     let recipe = directory.path().join("library.rhai");
     let source = "const RECIPE_API = 2; let ctx = #{name: \"library\"}; fn is_installed(ctx) { ready(ctx) }\n";
     std::fs::write(&recipe, source).unwrap();
-    let engine = RecipeEngine::new(directory.path().join("host-build")).with_ctx_persistence(false);
+    let engine =
+        RecipeEngine::new(directory.path().join("host-build")).with_state_persistence(false);
     let context = engine.is_installed(&recipe).unwrap();
     let runtime = context["runtime"].clone().cast::<rhai::Map>();
     let paths = runtime["paths"].clone().cast::<rhai::Map>();
@@ -21,9 +22,8 @@ fn library_default_uses_ginux_even_with_spoofed_worker_environment() {
     assert_eq!(paths["build"].clone().into_string().unwrap(), "/work/build");
     assert_eq!(paths["tools"].clone().into_string().unwrap(), "/work/tools");
     assert_eq!(
-        engine.backend().unwrap().kind(),
-        levitate_recipe::BackendKind::Ginux
+        engine.launcher().unwrap().path(),
+        std::path::Path::new(&std::env::var_os("GINUX_BIN").unwrap())
     );
-    assert!(levitate_recipe::Backend::select(Some(levitate_recipe::BackendKind::Host)).is_err());
     assert_eq!(std::fs::read_to_string(&recipe).unwrap(), source);
 }

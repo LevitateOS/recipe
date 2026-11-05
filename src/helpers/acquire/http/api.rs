@@ -11,6 +11,7 @@
 
 use crate::core::output;
 use rhai::EvalAltResult;
+use std::io::Read;
 use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -42,9 +43,8 @@ fn get_github_token() -> Option<String> {
 }
 
 /// Create a GitHub API request builder with proper headers and optional auth.
-fn github_request(url: &str) -> ureq::Request {
-    let mut request = ureq::get(url)
-        .timeout(get_http_timeout())
+fn github_request(url: &str) -> Result<ureq::Request, Box<EvalAltResult>> {
+    let mut request = super::super::http_request(url, get_http_timeout())?
         .set("Accept", "application/vnd.github.v3+json")
         .set("User-Agent", "recipe-package-manager");
 
@@ -52,17 +52,34 @@ fn github_request(url: &str) -> ureq::Request {
         request = request.set("Authorization", &format!("Bearer {}", token));
     }
 
-    request
+    Ok(request)
+}
+
+fn response_text(response: ureq::Response) -> Result<String, Box<EvalAltResult>> {
+    const LIMIT: u64 = 8 * 1024 * 1024;
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read HTTP metadata: {error}"))?;
+    if bytes.len() as u64 > LIMIT {
+        return Err("HTTP metadata exceeds 8 MiB".into());
+    }
+    String::from_utf8(bytes).map_err(|error| format!("HTTP metadata is not UTF-8: {error}").into())
+}
+
+fn response_json(response: ureq::Response) -> Result<serde_json::Value, Box<EvalAltResult>> {
+    serde_json::from_str(&response_text(response)?)
+        .map_err(|error| format!("cannot parse HTTP metadata: {error}").into())
 }
 
 /// Fetch content from a URL (GET request)
 pub fn http_get(url: &str) -> Result<String, Box<EvalAltResult>> {
-    ureq::get(url)
-        .timeout(get_http_timeout())
+    let response = super::super::http_request(url, get_http_timeout())?
         .call()
-        .map_err(|e| format!("HTTP GET failed: {}", e))?
-        .into_string()
-        .map_err(|e| format!("Failed to read response: {}", e).into())
+        .map_err(|error| format!("HTTP GET failed: {error}"))?;
+    response_text(response)
 }
 
 /// Get the latest release version from a GitHub repository
@@ -83,7 +100,7 @@ pub(crate) fn github_latest_release_with_base(
 ) -> Result<String, Box<EvalAltResult>> {
     let url = format!("{}/repos/{}/releases/latest", base_url, repo);
 
-    let response = github_request(&url).call().map_err(|e| {
+    let response = github_request(&url)?.call().map_err(|e| {
         // Handle rate limiting specifically
         if let ureq::Error::Status(403, _) = e {
             return "GitHub API rate limit exceeded. Try again later or set GITHUB_TOKEN.".into();
@@ -94,9 +111,7 @@ pub(crate) fn github_latest_release_with_base(
         format!("GitHub API request failed: {}", e)
     })?;
 
-    let json: serde_json::Value = response
-        .into_json()
-        .map_err(|e| format!("Failed to parse GitHub response: {}", e))?;
+    let json = response_json(response)?;
 
     json.get("tag_name")
         .and_then(|v| v.as_str())
@@ -122,7 +137,7 @@ pub(crate) fn github_latest_tag_with_base(
 ) -> Result<String, Box<EvalAltResult>> {
     let url = format!("{}/repos/{}/tags", base_url, repo);
 
-    let response = github_request(&url).call().map_err(|e| {
+    let response = github_request(&url)?.call().map_err(|e| {
         // Handle rate limiting specifically
         if let ureq::Error::Status(403, _) = e {
             return "GitHub API rate limit exceeded. Try again later or set GITHUB_TOKEN.".into();
@@ -133,9 +148,7 @@ pub(crate) fn github_latest_tag_with_base(
         format!("GitHub API request failed: {}", e)
     })?;
 
-    let json: serde_json::Value = response
-        .into_json()
-        .map_err(|e| format!("Failed to parse GitHub response: {}", e))?;
+    let json = response_json(response)?;
 
     json.as_array()
         .and_then(|arr| arr.first())
@@ -168,25 +181,16 @@ pub fn parse_version(version_str: &str) -> String {
 ///
 /// # Example
 /// ```rhai
-/// let path = github_download_release("LevitateOS/recstrap", "recstrap-x86_64-*.tar.gz", BUILD_DIR);
+/// let path = github_download_release("owner/tool", "tool-1.0.tar.gz", ctx.runtime.paths.build, ctx.sha256);
 /// ```
 pub fn github_download_release(
-    repo: &str,
-    asset_pattern: &str,
-    dest_dir: &str,
-) -> Result<String, Box<EvalAltResult>> {
-    github_download_release_impl(repo, asset_pattern, dest_dir, GITHUB_API_BASE, None)
-}
-
-/// Download a selected release asset and verify SHA256 before publication.
-pub fn github_download_release_verified(
     repo: &str,
     asset_pattern: &str,
     dest_dir: &str,
     sha256: &str,
 ) -> Result<String, Box<EvalAltResult>> {
     super::super::download::validate_sha256(sha256)?;
-    github_download_release_impl(repo, asset_pattern, dest_dir, GITHUB_API_BASE, Some(sha256))
+    github_download_release_impl(repo, asset_pattern, dest_dir, GITHUB_API_BASE, sha256)
 }
 
 /// Internal implementation with configurable base URL (for testing)
@@ -195,11 +199,11 @@ fn github_download_release_impl(
     asset_pattern: &str,
     dest_dir: &str,
     base_url: &str,
-    sha256: Option<&str>,
+    sha256: &str,
 ) -> Result<String, Box<EvalAltResult>> {
     // Get latest release info
     let url = format!("{}/repos/{}/releases/latest", base_url, repo);
-    let response = github_request(&url).call().map_err(|e| {
+    let response = github_request(&url)?.call().map_err(|e| {
         if let ureq::Error::Status(403, _) = e {
             return "GitHub API rate limit exceeded. Try again later or set GITHUB_TOKEN.".into();
         }
@@ -209,9 +213,7 @@ fn github_download_release_impl(
         format!("GitHub API request failed: {}", e)
     })?;
 
-    let json: serde_json::Value = response
-        .into_json()
-        .map_err(|e| format!("Failed to parse GitHub response: {}", e))?;
+    let json = response_json(response)?;
 
     // Find matching asset
     let assets = json
@@ -257,13 +259,7 @@ fn github_download_release_impl(
     // Download the asset
     let dest_path = Path::new(dest_dir).join(asset_name);
 
-    let response = ureq::get(download_url)
-        .set("Accept-Encoding", "identity")
-        .timeout(Duration::from_secs(300)) // 5 minute timeout for downloads
-        .call()
-        .map_err(|e| format!("Download failed: {}", e))?;
-
-    super::super::download::save_response(response, &dest_path, asset_name, sha256)?;
+    super::super::download::download(download_url, &dest_path.to_string_lossy(), sha256, false)?;
 
     output::detail(&format!("downloaded {}", asset_name));
     Ok(dest_path.to_string_lossy().to_string())
@@ -275,7 +271,7 @@ fn github_download_release_impl(
 /// Useful for scripting when you need to inspect available assets.
 pub fn github_release_assets(repo: &str) -> Result<Vec<(String, String)>, Box<EvalAltResult>> {
     let url = format!("{}/repos/{}/releases/latest", GITHUB_API_BASE, repo);
-    let response = github_request(&url).call().map_err(|e| {
+    let response = github_request(&url)?.call().map_err(|e| {
         if let ureq::Error::Status(403, _) = e {
             return "GitHub API rate limit exceeded. Try again later or set GITHUB_TOKEN.".into();
         }
@@ -285,9 +281,7 @@ pub fn github_release_assets(repo: &str) -> Result<Vec<(String, String)>, Box<Ev
         format!("GitHub API request failed: {}", e)
     })?;
 
-    let json: serde_json::Value = response
-        .into_json()
-        .map_err(|e| format!("Failed to parse GitHub response: {}", e))?;
+    let json = response_json(response)?;
 
     let assets = json
         .get("assets")
@@ -304,73 +298,4 @@ pub fn github_release_assets(repo: &str) -> Result<Vec<(String, String)>, Box<Ev
         .collect();
 
     Ok(result)
-}
-
-/// Extract a single file from a tarball
-///
-/// # Arguments
-/// * `archive` - Path to the tar.gz archive
-/// * `file_pattern` - Pattern to match the file inside (e.g., "*/recstrap" or "bin/tool")
-/// * `dest` - Destination path for the extracted file
-///
-/// # Example
-/// ```rhai
-/// let output_dir = RECIPE_DIR + "/output";
-/// extract_from_tarball("tool-1.0.tar.gz", "*/bin/tool", output_dir + "/bin/tool");
-/// ```
-pub fn extract_from_tarball(
-    archive: &str,
-    file_pattern: &str,
-    dest: &str,
-) -> Result<(), Box<EvalAltResult>> {
-    use std::process::Command;
-
-    let archive_path = Path::new(archive);
-    if !archive_path.exists() {
-        return Err(format!("Archive not found: {}", archive).into());
-    }
-
-    // Create parent directory for destination
-    let dest_path = Path::new(dest);
-    if let Some(parent) = dest_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create directory: {}", e))?;
-    }
-
-    // Determine archive type and extract
-    let archive_str = archive_path.to_string_lossy();
-    let tar_args = if archive_str.ends_with(".tar.gz") || archive_str.ends_with(".tgz") {
-        vec!["xzf", archive, "--wildcards", file_pattern, "-O"]
-    } else if archive_str.ends_with(".tar.xz") || archive_str.ends_with(".txz") {
-        vec!["xJf", archive, "--wildcards", file_pattern, "-O"]
-    } else if archive_str.ends_with(".tar.bz2") || archive_str.ends_with(".tbz2") {
-        vec!["xjf", archive, "--wildcards", file_pattern, "-O"]
-    } else {
-        return Err(format!(
-            "Unsupported archive format: {}. Use tar.gz, tar.xz, or tar.bz2.",
-            archive
-        )
-        .into());
-    };
-
-    let output = Command::new("tar")
-        .args(&tar_args)
-        .output()
-        .map_err(|e| format!("Failed to run tar: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "Failed to extract '{}' from {}: {}",
-            file_pattern, archive, stderr
-        )
-        .into());
-    }
-
-    // Write the extracted content to destination
-    std::fs::write(dest, &output.stdout)
-        .map_err(|e| format!("Failed to write to {}: {}", dest, e))?;
-
-    output::detail(&format!("extracted {} -> {}", file_pattern, dest));
-    Ok(())
 }

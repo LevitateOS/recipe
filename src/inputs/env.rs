@@ -96,10 +96,7 @@ pub fn allowlisted_env(
         ),
         ("RECIPE_WORKER".to_string(), "1".to_string()),
         ("RECIPE_INVOCATION".to_string(), invocation_id.to_string()),
-        ("BUILD_DIR".to_string(), "/work/build".to_string()),
         ("TMPDIR".to_string(), "/work/tmp".to_string()),
-        ("ARCH".to_string(), std::env::consts::ARCH.to_string()),
-        ("NPROC".to_string(), num_cpus::get().to_string()),
     ];
     for (name, value) in extra_env {
         if !TOOLCHAIN_ENV_ALLOW.contains(&name.as_str()) {

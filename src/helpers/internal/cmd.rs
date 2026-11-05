@@ -8,6 +8,56 @@ use std::sync::{Arc, Mutex};
 
 const CAPTURE_TAIL_BYTES: usize = 256 * 1024;
 
+thread_local! {
+    static COMMAND_ENV: std::cell::RefCell<std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>> = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// Dependency settings belong to the invoking execution thread, never the process.
+pub(crate) struct EnvironmentGuard(
+    std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,
+);
+impl Drop for EnvironmentGuard {
+    fn drop(&mut self) {
+        COMMAND_ENV.with(|env| *env.borrow_mut() = std::mem::take(&mut self.0));
+    }
+}
+
+pub(crate) fn push_environment(
+    values: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> EnvironmentGuard {
+    COMMAND_ENV.with(|env| {
+        let mut env = env.borrow_mut();
+        let previous = env.clone();
+        env.extend(values);
+        EnvironmentGuard(previous)
+    })
+}
+
+pub(crate) fn environment(name: &str) -> Option<std::ffi::OsString> {
+    COMMAND_ENV
+        .with(|env| env.borrow().get(std::ffi::OsStr::new(name)).cloned())
+        .or_else(|| std::env::var_os(name))
+}
+
+fn apply_environment(command: &mut Command) {
+    // Explicit per-command values, including removals, take precedence.
+    let explicit: Vec<_> = command
+        .get_envs()
+        .map(|(key, value)| (key.to_owned(), value.map(std::ffi::OsStr::to_owned)))
+        .collect();
+    COMMAND_ENV.with(|env| command.envs(env.borrow().iter()));
+    for (key, value) in explicit {
+        match value {
+            Some(value) => {
+                command.env(key, value);
+            }
+            None => {
+                command.env_remove(key);
+            }
+        }
+    }
+}
+
 fn description(command: &Command) -> String {
     // Environment overrides can contain secrets; do not use Command's Debug.
     let mut text = command.get_program().to_string_lossy().into_owned();
@@ -61,6 +111,7 @@ fn drain<R: Read>(
 }
 
 fn stream(mut command: Command) -> Result<(ExitStatus, Vec<u8>), Box<EvalAltResult>> {
+    apply_environment(&mut command);
     let label = description(&command);
     let mut child = command
         .stdin(Stdio::null())
@@ -141,6 +192,7 @@ pub(crate) fn run_status(command: Command) -> Result<i64, Box<EvalAltResult>> {
 }
 
 pub(crate) fn capture(mut command: Command) -> Result<Output, Box<EvalAltResult>> {
+    apply_environment(&mut command);
     let label = description(&command);
     command
         .stdin(Stdio::null())

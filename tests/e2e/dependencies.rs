@@ -153,7 +153,7 @@ fn cli_dependency_cycles_missing_recipes_and_bad_declarations_fail_usefully() {
         write_graph_node(&recipes, "parent", declaration);
         write_graph_node(&recipes, "a", "let deps = [\"b\"];");
         write_graph_node(&recipes, "b", "let deps = [\"a\"];");
-        let output = run_recipe(&["install", "parent", "--no-persist-ctx"], &recipes);
+        let output = run_recipe(&["install", "parent", "--no-persist-state"], &recipes);
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains(diagnostic), "{diagnostic}: {stderr}");
@@ -177,7 +177,7 @@ fn install(ctx) { log("UNEXPECTED_GRAPH_INSTALL"); ctx }
 "##,
     );
     write_graph_node(&recipes, "parent", "let deps = [\"broken\"];");
-    let output = run_recipe(&["install", "parent", "--no-persist-ctx"], &recipes);
+    let output = run_recipe(&["install", "parent", "--no-persist-state"], &recipes);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

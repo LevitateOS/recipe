@@ -35,17 +35,17 @@ fn install(ctx) {{
 "##
             ),
         );
-        let before = run_recipe(&["cleanup", name, "--no-persist-ctx"], &recipes);
+        let before = run_recipe(&["cleanup", name, "--no-persist-state"], &recipes);
         assert_success(&before);
         let before_ctx: serde_json::Value = serde_json::from_slice(&before.stdout).unwrap();
         assert_eq!(before_ctx["name"], name);
         assert_success(&run_recipe(
-            &["install", name, "--no-persist-ctx"],
+            &["install", name, "--no-persist-state"],
             &recipes,
         ));
         let binary = dir.path().join("build").join(name);
         let binary_contents = std::fs::read(&binary).unwrap();
-        let cleanup = run_recipe(&["cleanup", name, "--no-persist-ctx"], &recipes);
+        let cleanup = run_recipe(&["cleanup", name, "--no-persist-state"], &recipes);
         assert_success(&cleanup);
         serde_json::from_slice::<serde_json::Value>(&cleanup.stdout).unwrap();
         assert_eq!(std::fs::read(&binary).unwrap(), binary_contents);
@@ -96,7 +96,7 @@ fn cleanup(ctx, reason) {
 "##,
     );
     let installed = run_recipe(
-        &["install", "cleanup-reasons", "--no-persist-ctx"],
+        &["install", "cleanup-reasons", "--no-persist-state"],
         &recipes,
     );
     assert_success(&installed);
@@ -109,7 +109,7 @@ fn cleanup(ctx, reason) {
             "cleanup-reasons",
             "--reason",
             "manual.trim",
-            "--no-persist-ctx",
+            "--no-persist-state",
         ],
         &recipes,
     );
@@ -156,7 +156,7 @@ fn cleanup(ctx, reason) {{ {cleanup_body} ctx }}
 "##
             ),
         );
-        let output = run_recipe(&["install", name, "--no-persist-ctx"], &recipes);
+        let output = run_recipe(&["install", name, "--no-persist-state"], &recipes);
         assert!(!output.status.success(), "{name} unexpectedly succeeded");
         let stderr = String::from_utf8_lossy(&output.stderr);
         let final_error = stderr.rsplit("Error:").next().unwrap();
@@ -188,7 +188,7 @@ fn cleanup(ctx) { ctx }
 "##,
     );
     for action in ["install", "cleanup"] {
-        let output = run_recipe(&[action, "cleanup-arity", "--no-persist-ctx"], &recipes);
+        let output = run_recipe(&[action, "cleanup-arity", "--no-persist-state"], &recipes);
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("cleanup(ctx, reason)"), "{stderr}");
@@ -224,7 +224,10 @@ fn is_built(ctx) { ctx }
 fn install(ctx) { write_file(join_path(RECIPE_DIR, "unexpected-parent-install"), "bad"); ctx }
 "##,
     );
-    let output = run_recipe(&["install", "cleanup-parent", "--no-persist-ctx"], &recipes);
+    let output = run_recipe(
+        &["install", "cleanup-parent", "--no-persist-state"],
+        &recipes,
+    );
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("TOOL_CLEANUP_FAILED"), "{stderr}");

@@ -7,7 +7,7 @@
 //!
 //! ```rhai
 //! fn acquire(ctx) {
-//!     let archive = download(ctx.url, BUILD_DIR + "/foo.tar.gz", ctx.sha256);
+//!     let archive = download(ctx.url, ctx.runtime.paths.build + "/foo.tar.gz", ctx.sha256);
 //!     ctx.archive_path = archive;
 //!     ctx
 //! }
@@ -24,31 +24,34 @@ use super::super::internal::fs_utils;
 use super::super::internal::hash::{self, HashAlgorithm};
 use super::super::internal::progress::{self, upgrade_to_bytes};
 
-/// Download a file from a URL to a specific destination.
-///
-/// Returns the path to the downloaded file on success.
-///
-/// Throws on failure.
-/// The destination is replaced only after the complete response is written.
-/// Recipes still verify package integrity with the appropriate hash helper.
-///
-/// # Example
-/// ```rhai
-/// let path = download("https://example.com/foo.tar.gz", "/tmp/foo.tar.gz");
-/// verify_sha256(path, "abc123...");
-/// ```
-pub fn download(url: &str, dest: &str) -> Result<String, Box<EvalAltResult>> {
-    download_impl(url, dest, None)
-}
-
-/// Verify the recipe's SHA256 before publishing the completed destination.
-pub fn download_verified(
+/// Acquire a complete payload at an explicit path, checking SHA256 before
+/// atomically replacing any existing file. Resume preserves the old prefix on
+/// every failure and verifies the complete file, including size-only 416 replies.
+pub fn download(
     url: &str,
     dest: &str,
     sha256: &str,
+    resume: bool,
 ) -> Result<String, Box<EvalAltResult>> {
     validate_sha256(sha256)?;
-    download_impl(url, dest, Some(sha256))
+    super::validate_http_url(url)?;
+    let path = Path::new(dest);
+    if path.file_name().is_none() {
+        return Err("download destination must name a regular file".into());
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.is_file() => {
+            return Err("download destination must be a regular file".into());
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("cannot inspect download destination: {error}").into()),
+    }
+    if resume {
+        resume_impl(url, dest, sha256)
+    } else {
+        download_impl(url, dest, sha256)
+    }
 }
 
 pub(super) fn validate_sha256(sha256: &str) -> Result<(), Box<EvalAltResult>> {
@@ -58,11 +61,7 @@ pub(super) fn validate_sha256(sha256: &str) -> Result<(), Box<EvalAltResult>> {
     Ok(())
 }
 
-fn download_impl(
-    url: &str,
-    dest: &str,
-    sha256: Option<&str>,
-) -> Result<String, Box<EvalAltResult>> {
+fn download_impl(url: &str, dest: &str, sha256: &str) -> Result<String, Box<EvalAltResult>> {
     let dest_path = Path::new(dest);
 
     let filename = dest_path
@@ -70,7 +69,7 @@ fn download_impl(
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "download".to_string());
 
-    let response = request(url)
+    let response = request(url)?
         .call()
         .map_err(|e| format!("download failed: {}", e))?;
     let total_bytes = save_response(response, dest_path, &filename, sha256)?;
@@ -83,10 +82,8 @@ fn download_impl(
 // Internal helpers
 // ============================================================================
 
-fn request(url: &str) -> ureq::Request {
-    ureq::get(url)
-        .set("Accept-Encoding", "identity")
-        .timeout(Duration::from_secs(300))
+fn request(url: &str) -> Result<ureq::Request, Box<EvalAltResult>> {
+    Ok(super::http_request(url, Duration::from_secs(300))?.set("Accept-Encoding", "identity"))
 }
 
 fn identity_encoding(response: &ureq::Response) -> Result<(), Box<EvalAltResult>> {
@@ -110,27 +107,7 @@ fn content_length(response: &ureq::Response) -> Result<Option<u64>, Box<EvalAltR
         .transpose()
 }
 
-/// Resume an existing prefix, publishing a replacement only after completion.
-/// A server must honor Range; a size-only 416 response is not integrity evidence.
-/// Recipes must verify the completed file against their declared digest.
-pub fn download_with_resume(url: &str, dest: &str) -> Result<String, Box<EvalAltResult>> {
-    resume_impl(url, dest, None)
-}
-
-/// Resume and verify the complete SHA256 before publication, including 416 reuse.
-pub fn download_with_resume_verified(
-    url: &str,
-    dest: &str,
-    sha256: &str,
-) -> Result<String, Box<EvalAltResult>> {
-    validate_sha256(sha256)?;
-    resume_impl(url, dest, Some(sha256))
-}
-
-fn resume_impl(url: &str, dest: &str, sha256: Option<&str>) -> Result<String, Box<EvalAltResult>> {
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err("HTTP resume requires an http:// or https:// URL".into());
-    }
+fn resume_impl(url: &str, dest: &str, sha256: &str) -> Result<String, Box<EvalAltResult>> {
     let dest_path = Path::new(dest);
     let prefix = match File::open(dest_path) {
         Ok(file) => {
@@ -146,7 +123,7 @@ fn resume_impl(url: &str, dest: &str, sha256: Option<&str>) -> Result<String, Bo
         Err(error) => return Err(format!("cannot open resume prefix: {error}").into()),
     };
     let existing_len = prefix.as_ref().map_or(0, |(_, len)| *len);
-    let mut req = request(url);
+    let mut req = request(url)?;
     if existing_len > 0 {
         req = req.set("Range", &format!("bytes={existing_len}-"));
     }
@@ -170,11 +147,7 @@ fn resume_impl(url: &str, dest: &str, sha256: Option<&str>) -> Result<String, Bo
             if total != existing_len {
                 return Err(format!("resume prefix size {existing_len} does not match remote size {total}").into());
             }
-            if let Some(expected) = sha256 {
-                hash::verify_file_hash(dest_path, expected, HashAlgorithm::Sha256)?;
-            } else {
-                output::detail("download size matches remote; recipe integrity verification is still required");
-            }
+            hash::verify_file_hash(dest_path, sha256, HashAlgorithm::Sha256)?;
         }
         206 => {
             identity_encoding(&response)?;
@@ -201,11 +174,11 @@ fn resume_impl(url: &str, dest: &str, sha256: Option<&str>) -> Result<String, Bo
 }
 
 /// Write a response beside its destination, then publish the completed file.
-pub(crate) fn save_response(
+fn save_response(
     response: ureq::Response,
     dest: &Path,
     filename: &str,
-    sha256: Option<&str>,
+    sha256: &str,
 ) -> Result<u64, Box<EvalAltResult>> {
     if response.status() != 200 {
         return Err(format!(
@@ -225,7 +198,7 @@ fn save_response_with_prefix(
     filename: &str,
     prefix: Option<(File, u64)>,
     expected_total: Option<u64>,
-    sha256: Option<&str>,
+    sha256: &str,
 ) -> Result<u64, Box<EvalAltResult>> {
     let pb = progress::create_spinner(&format!("downloading {}", filename));
 
@@ -282,9 +255,7 @@ fn save_response_with_prefix(
         if expected_total.is_some_and(|total| total_bytes != total) {
             return Err("download ended before the declared length".into());
         }
-        if let Some(expected) = sha256 {
-            hash::verify_file_hash(file.path(), expected, HashAlgorithm::Sha256)?;
-        }
+        hash::verify_file_hash(file.path(), sha256, HashAlgorithm::Sha256)?;
         file.as_file()
             .sync_all()
             .map_err(|e| format!("cannot flush download: {}", e))?;

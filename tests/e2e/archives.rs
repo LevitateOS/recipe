@@ -61,7 +61,7 @@ fn cli_tar_extracts_payload_with_contained_symlink() {
     write_extraction_recipe(&recipes, "payload.tar");
 
     let output = run_recipe(
-        &["install", "extract-archive", "--no-persist-ctx"],
+        &["install", "extract-archive", "--no-persist-state"],
         &recipes,
     );
     assert_success(&output);
@@ -88,7 +88,7 @@ fn cli_zip_extracts_payload_and_preserves_executable_mode() {
     );
 
     let output = run_recipe(
-        &["install", "extract-archive", "--no-persist-ctx"],
+        &["install", "extract-archive", "--no-persist-state"],
         &recipes,
     );
     assert_success(&output);
@@ -117,7 +117,7 @@ fn cli_zip_rejects_unsafe_member_instead_of_silently_skipping_it() {
     );
 
     let output = run_recipe(
-        &["install", "extract-archive", "--no-persist-ctx"],
+        &["install", "extract-archive", "--no-persist-state"],
         &recipes,
     );
     assert!(
@@ -167,7 +167,7 @@ fn cli_zip_rejects_existing_symlink_components() {
         write_zip(&recipes, &[(member, "overwritten")]);
 
         let output = run_recipe(
-            &["install", "extract-archive", "--no-persist-ctx"],
+            &["install", "extract-archive", "--no-persist-state"],
             &recipes,
         );
         assert!(

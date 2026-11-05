@@ -36,12 +36,11 @@ pub(crate) fn install_once(
     build_dir: &Path,
     recipe_path: &Path,
     defines: &[(String, String)],
-    persist_ctx_enabled: bool,
+    persist_state_enabled: bool,
     search_path: Option<&Path>,
     autofix: Option<&crate::AutoFixConfig>,
     exec: &mut ExecutionContext<'_>,
 ) -> std::result::Result<rhai::Map, InstallAttemptError> {
-    let autofix_enabled = autofix.is_some();
     let mut compiled =
         compile_recipe(engine, recipe_path, search_path).map_err(InstallAttemptError::Fatal)?;
     let ast = compiled.ast.clone();
@@ -57,9 +56,14 @@ pub(crate) fn install_once(
         &exec.options(),
     );
 
-    let mut scope =
-        crate::core::invocation::Runtime::new(engine, &ast, scope, "install", persist_ctx_enabled)
-            .map_err(InstallAttemptError::Fatal)?;
+    let mut scope = crate::core::invocation::Runtime::new(
+        engine,
+        &ast,
+        scope,
+        "install",
+        persist_state_enabled,
+    )
+    .map_err(InstallAttemptError::Fatal)?;
 
     exec.restore_runtime(&compiled.recipe_path, &mut scope)
         .map_err(InstallAttemptError::Fatal)?;
@@ -180,7 +184,7 @@ pub(crate) fn install_once(
                 defines,
                 &deps,
                 autofix,
-                persist_ctx_enabled,
+                persist_state_enabled,
                 exec,
             )
             .map_err(InstallAttemptError::Fatal)?,
@@ -209,7 +213,7 @@ pub(crate) fn install_once(
                         phase: "acquire",
                         reason: "phase:acquire",
                     },
-                    persist_ctx_enabled,
+                    persist_state_enabled,
                 )
                 .map_err(InstallAttemptError::Fatal)?;
 
@@ -230,7 +234,7 @@ pub(crate) fn install_once(
                             phase: "cleanup",
                             reason: "auto.acquire.success",
                         },
-                        persist_ctx_enabled,
+                        persist_state_enabled,
                     )
                     .map_err(InstallAttemptError::Fatal)?;
                 }
@@ -283,7 +287,7 @@ pub(crate) fn install_once(
                     defines,
                     &build_deps,
                     autofix,
-                    persist_ctx_enabled,
+                    persist_state_enabled,
                     exec,
                 )
                 .map_err(InstallAttemptError::Fatal)?,
@@ -308,7 +312,7 @@ pub(crate) fn install_once(
                             phase: "build",
                             reason: "phase:build",
                         },
-                        persist_ctx_enabled,
+                        persist_state_enabled,
                     )
                     .map_err(InstallAttemptError::Fatal)?;
 
@@ -328,7 +332,7 @@ pub(crate) fn install_once(
                                 phase: "cleanup",
                                 reason: "auto.build.success",
                             },
-                            persist_ctx_enabled,
+                            persist_state_enabled,
                         )
                         .map_err(InstallAttemptError::Fatal)?;
                     }
@@ -370,7 +374,7 @@ pub(crate) fn install_once(
                         phase: "install",
                         reason: "phase:install",
                     },
-                    persist_ctx_enabled,
+                    persist_state_enabled,
                 )
                 .map_err(InstallAttemptError::Fatal)?;
 
@@ -390,7 +394,7 @@ pub(crate) fn install_once(
                             phase: "cleanup",
                             reason: "auto.install.success",
                         },
-                        persist_ctx_enabled,
+                        persist_state_enabled,
                     )
                     .map_err(InstallAttemptError::Fatal)?;
                 }
@@ -417,12 +421,11 @@ pub(crate) fn install_once(
 
     // API 2 verifies final installation after success cleanup as well. Autofix
     // keeps this verification for legacy recipes too.
-    let verified =
-        if (autofix_enabled || scope.is_api2()) && runner::has_fn_arity(&ast, "is_installed", 1) {
-            runner::verify_phase(&mut scope, "is_installed", &ctx_map)
-        } else {
-            Ok(ctx_map.clone())
-        };
+    let verified = if runner::has_fn_arity(&ast, "is_installed", 1) {
+        runner::verify_phase(&mut scope, "is_installed", &ctx_map)
+    } else {
+        Ok(ctx_map.clone())
+    };
     ctx_map = match verified {
         Ok(ctx) => ctx,
         Err(e) => {

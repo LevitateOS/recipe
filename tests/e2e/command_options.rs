@@ -40,7 +40,7 @@ fn cli_checked_argv_preserves_arguments_cwd_environment_and_control_input() {
 "#,
     );
     let mut child = recipe_command(&recipes)
-        .args(["install", "command-options", "--no-persist-ctx"])
+        .args(["install", "command-options", "--no-persist-state"])
         .arg("--recipes-path")
         .arg(&recipes)
         .arg("--build-dir")
@@ -93,7 +93,7 @@ fn cli_checked_command_failure_stops_install_and_retains_diagnostics() {
 "#,
     );
     let output = run_recipe(
-        &["install", "command-options", "--no-persist-ctx"],
+        &["install", "command-options", "--no-persist-state"],
         &recipes,
     );
     assert!(!output.status.success());
@@ -116,7 +116,7 @@ fn cli_captured_shell_failure_preserves_stderr_and_working_directory() {
 "#,
     );
     let output = run_recipe(
-        &["install", "command-options", "--no-persist-ctx"],
+        &["install", "command-options", "--no-persist-state"],
         &recipes,
     );
     assert!(!output.status.success());
@@ -142,7 +142,7 @@ fn cli_legacy_shell_helpers_preserve_status_capture_and_payloads() {
 "#,
     );
     let output = run_recipe(
-        &["install", "command-options", "--no-persist-ctx"],
+        &["install", "command-options", "--no-persist-state"],
         &recipes,
     );
     assert_success(&output);
@@ -173,7 +173,7 @@ fn cli_command_option_errors_prevent_child_execution() {
             &format!(r#"exec_checked("sh", ["-c", "printf ran > should-not-exist"], {options});"#),
         );
         let output = run_recipe(
-            &["install", "command-options", "--no-persist-ctx"],
+            &["install", "command-options", "--no-persist-state"],
             &recipes,
         );
         assert!(!output.status.success());

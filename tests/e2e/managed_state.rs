@@ -351,10 +351,10 @@ fn install(ctx) {
 }
 
 #[test]
-fn managed_state_disabled_persistence_and_legacy_migration_are_explicit() {
+fn managed_state_disable_and_current_api_requirement_are_explicit() {
     let (dir, recipes) = create_test_env();
     write_recipe(&recipes, "check", SOURCE);
-    for option in ["--no-persist-state", "--no-persist-ctx"] {
+    for option in ["--no-persist-state"] {
         let output = retained_command(&recipes, "install")
             .args(["--define", "FACT=alpha", option])
             .output()
@@ -372,12 +372,15 @@ fn managed_state_disabled_persistence_and_legacy_migration_are_explicit() {
     write_recipe(&recipes, "check", legacy);
     let output = retained_command(&recipes, "isinstalled").output().unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("requires RECIPE_API = 2"));
-    assert_success(
-        &retained_command(&recipes, "isinstalled")
-            .arg("--no-persist-state")
-            .output()
-            .unwrap(),
+    assert!(String::from_utf8_lossy(&output.stderr).contains("must declare const RECIPE_API = 2"));
+    let without_state = retained_command(&recipes, "isinstalled")
+        .arg("--no-persist-state")
+        .output()
+        .unwrap();
+    assert!(!without_state.status.success());
+    assert!(
+        String::from_utf8_lossy(&without_state.stderr)
+            .contains("must declare const RECIPE_API = 2")
     );
     assert_eq!(
         std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
@@ -496,8 +499,8 @@ fn is_installed(ctx) {
 fn acquire(ctx) { write_file("/work/source", "source"); ctx.state.acquires += 1; ctx }
 fn build(ctx) { write_file("/work/built", "built"); ctx.state.builds += 1; ctx }
 fn install(ctx) {
-    if NPROC != RUNTIME.options.jobs || env("NPROC") != NPROC.to_string() { throw "jobs not transported"; }
-    if ARCH != RUNTIME.target.arch { throw "target not transported"; }
+    if ctx.runtime.options.jobs != RUNTIME.options.jobs || ctx.runtime.options.jobs < 1 { throw "jobs not transported"; }
+    if ctx.runtime.target.arch != RUNTIME.target.arch { throw "target not transported"; }
     write_file("/out/product", "product"); ctx.state.installs += 1; ctx.outputs.product = "/out/product"; ctx
 }
 "#;

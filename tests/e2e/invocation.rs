@@ -59,7 +59,7 @@ fn remove(ctx) { rm(join_path(BUILD_DIR, "payload")); inherited(ctx) }
             .args([
                 action,
                 "invocation",
-                "--no-persist-ctx",
+                "--no-persist-state",
                 "--define",
                 "CUSTOM_INPUT=caller input",
             ])
@@ -142,7 +142,7 @@ fn install(ctx) {
 "##,
     );
     let output = recipe_command(&recipes)
-        .args(["install", "invocation-parent", "--no-persist-ctx"])
+        .args(["install", "invocation-parent", "--no-persist-state"])
         .arg("--recipes-path")
         .arg(&recipes)
         .arg("--build-dir")
@@ -202,7 +202,7 @@ fn remove(ctx) { rm(ctx.product); ctx.state.removed = !is_file(ctx.product); ctx
         ("cleanup", "cleanup"),
         ("remove", "remove"),
     ] {
-        let output = run_recipe(&[action, "context-tool", "--no-persist-ctx"], &recipes);
+        let output = run_recipe(&[action, "context-tool", "--no-persist-state"], &recipes);
         assert_success(&output);
         let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(ctx["runtime"]["operation"], operation);
@@ -259,7 +259,7 @@ fn install(ctx) {{ {install} }}
 "##
             ),
         );
-        let output = run_recipe(&["install", name, "--no-persist-ctx"], &recipes);
+        let output = run_recipe(&["install", name, "--no-persist-state"], &recipes);
         assert!(!output.status.success(), "{name} unexpectedly succeeded");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains(diagnostic), "{name}: {stderr}");
@@ -275,11 +275,53 @@ let ctx = #{name: "reserved-runtime"};
 "##,
     );
     let output = run_recipe(
-        &["install", "reserved-runtime", "--no-persist-ctx"],
+        &["install", "reserved-runtime", "--no-persist-state"],
         &recipes,
     );
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("RUNTIME is an engine-owned"), "{stderr}");
     assert!(!recipes.join("unexpected-runtime-setup").exists());
+}
+
+#[test]
+fn managed_current_contract_initializes_once_and_has_no_legacy_globals() {
+    let (_dir, recipes) = create_test_env();
+    std::fs::write(
+        recipes.join("facts.rhai"),
+        "fn value() { \"module fact\" }\n",
+    )
+    .unwrap();
+    let source = r#"
+const RECIPE_API = 2;
+import "facts.rhai" as facts;
+append_file("/work/setup", "once\n");
+let ctx = #{name: "current", state: #{}, outputs: #{}};
+fn is_acquired(ctx) { ready(ctx) }
+fn is_installed(ctx) {
+    if is_file("/out/product") { ctx.outputs.product = "/out/product"; ready(ctx) }
+    else { needs_work(ctx, "product missing") }
+}
+fn install(ctx) {
+    if read_file("/work/setup") != "once\n" { throw "setup repeated"; }
+    if is_def_var("ARCH") || is_def_var("BUILD_DIR") || is_def_var("NPROC") { throw "legacy globals remain"; }
+    write_file("/out/product", facts::value());
+    ctx.state.setup = read_file("/work/setup");
+    ctx.outputs.product = "/out/product";
+    ctx
+}
+"#;
+    write_recipe(&recipes, "current", source);
+    let output = run_recipe(&["install", "current"], &recipes);
+    assert_success(&output);
+    let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(ctx["state"]["setup"], "once\n");
+    assert_eq!(
+        std::fs::read_to_string(ctx["outputs"]["product"].as_str().unwrap()).unwrap(),
+        "module fact"
+    );
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("current.rhai")).unwrap(),
+        source
+    );
 }

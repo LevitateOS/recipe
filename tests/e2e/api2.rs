@@ -74,7 +74,7 @@ fn remove(ctx) { rm(ctx.installed); inherited(ctx) }
 append_file(join_path(RECIPE_DIR, "child-setup"), "child\n");
 "##,
     );
-    let output = run_recipe(&["install", "api2", "--no-persist-ctx"], &recipes);
+    let output = run_recipe(&["install", "api2", "--no-persist-state"], &recipes);
     assert_success(&output);
     let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(ctx["fact"], "imported fact");
@@ -121,7 +121,10 @@ append_file(join_path(RECIPE_DIR, "child-setup"), "child\n");
         "remove",
     ] {
         // Each command gets fresh setup; none reruns setup for its hook calls.
-        assert_success(&run_recipe(&[action, "api2", "--no-persist-ctx"], &recipes));
+        assert_success(&run_recipe(
+            &[action, "api2", "--no-persist-state"],
+            &recipes,
+        ));
     }
     for file in ["base-setup", "child-setup", "resolve", "module-setup"] {
         assert_eq!(
@@ -192,7 +195,7 @@ fn install(ctx) {{ write_file(join_path(RECIPE_DIR, "unauthorized-install"), "ba
 "##
             ),
         );
-        let output = run_recipe(&["install", name, "--no-persist-ctx"], &recipes);
+        let output = run_recipe(&["install", name, "--no-persist-state"], &recipes);
         assert!(
             !output.status.success(),
             "{name}: check failure was suppressed"
@@ -215,7 +218,7 @@ write_file(join_path(RECIPE_DIR, "unsupported-setup"), "bad");
 let ctx = #{name: "future"};
 "##,
     );
-    let output = run_recipe(&["install", "future", "--no-persist-ctx"], &recipes);
+    let output = run_recipe(&["install", "future", "--no-persist-state"], &recipes);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("Unsupported recipe API"));
     assert!(!recipes.join("unsupported-setup").exists());
@@ -232,7 +235,7 @@ fn cleanup(ctx, reason) { write_file(join_path(RECIPE_DIR, "failure-cleanup"), r
 "##,
     );
     let output = run_recipe(
-        &["install", "broken-producer", "--no-persist-ctx"],
+        &["install", "broken-producer", "--no-persist-state"],
         &recipes,
     );
     assert!(!output.status.success());
@@ -267,7 +270,7 @@ fn cleanup(ctx, reason) { write_file(join_path(BUILD_DIR, "refresh-cleanup"), re
 "##,
     );
     assert_success(&run_recipe(
-        &["install", "legacy-refresh", "--no-persist-ctx"],
+        &["install", "legacy-refresh", "--no-persist-state"],
         &recipes,
     ));
     assert_eq!(
@@ -325,7 +328,7 @@ fn install(ctx) { mkdir(BUILD_DIR); write_file(ctx.output, exec_output("api2-too
 "##,
     );
     assert_success(&run_recipe(
-        &["install", "api2-parent", "--no-persist-ctx"],
+        &["install", "api2-parent", "--no-persist-state"],
         &recipes,
     ));
     assert_eq!(
@@ -355,7 +358,7 @@ fn install(ctx) { write_file(join_path(RECIPE_DIR, "unexpected-install"), "bad")
 fn cleanup(ctx, reason) { write_file(join_path(RECIPE_DIR, "budget-cleanup"), reason); ctx }
 "##,
     );
-    let output = run_recipe(&["install", "budget-build", "--no-persist-ctx"], &recipes);
+    let output = run_recipe(&["install", "budget-build", "--no-persist-state"], &recipes);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("operations"), "{stderr}");
@@ -385,7 +388,7 @@ fn cleanup(ctx, reason) {
 "##,
     );
     let output = run_recipe(
-        &["install", "cleanup-product", "--no-persist-ctx"],
+        &["install", "cleanup-product", "--no-persist-state"],
         &recipes,
     );
     assert!(!output.status.success());

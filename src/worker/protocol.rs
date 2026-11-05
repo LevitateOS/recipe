@@ -1,4 +1,4 @@
-//! Worker protocol v5: per-recipe state, invocation options and diagnostics.
+//! Worker protocol v6: per-recipe state, invocation options and diagnostics.
 //!
 //! Implements `docs/ginux-recipe-interfaces.md` §4 on the Recipe side. Ginux
 //! treats these frames as opaque bytes; Recipe owns their shape.
@@ -14,7 +14,7 @@
 //! - `total-length` is the full frame size **including** its own 4 bytes, so
 //!   `payload.len() == total-length - HEADER_LEN` with
 //!   `HEADER_LEN == 14` (4 + 4 + 4 + 2).
-//! - `version` is always [`PROTOCOL_VERSION`] (5). Anything else is a
+//! - `version` is always [`PROTOCOL_VERSION`] (6). Anything else is a
 //!   `protocol` failure: the receiver aborts, never retries on the same
 //!   invocation.
 //! - `seq` numbers each direction independently starting at 1. The receiver
@@ -54,7 +54,7 @@ use std::io::{Read, Write};
 use serde::{Deserialize, Serialize};
 
 /// Protocol version carried in every frame header.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Maximum total frame size in bytes (4 MiB), header included.
 pub const MAX_FRAME_LEN: usize = 4 * 1024 * 1024;
@@ -132,8 +132,8 @@ pub struct RequestPayload {
     pub invocation_id: String,
     /// Engine operation: `install`, `remove`, `cleanup`, or a check name.
     pub operation: String,
-    /// Caller persist flag (`--no-persist-ctx` negated).
-    pub persist_ctx: bool,
+    /// Caller persist flag (`--no-persist-state` negated).
+    pub persist_state: bool,
     /// Digest of the recipe inputs (opaque string, no path).
     pub recipe_digest: String,
     /// Explicit invocation options; never inferred from coordinator environment.
@@ -449,7 +449,7 @@ fn check_request(p: &RequestPayload) -> Result<(), ProtocolError> {
             "force options apply only to install operations".into(),
         ));
     }
-    if p.restored_states.len() > 1024 || (!p.persist_ctx && !p.restored_states.is_empty()) {
+    if p.restored_states.len() > 1024 || (!p.persist_state && !p.restored_states.is_empty()) {
         return Err(ProtocolError::PayloadInvalid(
             "invalid restored state set".into(),
         ));

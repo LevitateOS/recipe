@@ -25,7 +25,7 @@ pub(crate) fn run_phase(
     let ctx = scope
         .call_map(fn_name, vec![ctx.into()], false)
         .map_err(|e| anyhow!("{} failed: {}", fn_name, e))?;
-    if scope.is_api2() {
+    {
         let check = match fn_name {
             "acquire" => Some("is_acquired"),
             "build" => Some("is_built"),

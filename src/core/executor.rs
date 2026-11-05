@@ -151,3 +151,81 @@ pub(crate) fn compile_recipe(
         })
     }
 }
+
+/// Metadata declared in the same compiled recipe used by the worker.
+/// Values requiring execution are listed explicitly rather than evaluated on host.
+#[derive(Debug, Default)]
+pub struct DeclaredMetadata {
+    pub fields: std::collections::BTreeMap<String, String>,
+    pub dynamic_fields: std::collections::BTreeSet<String>,
+}
+
+/// Read literal metadata from the merged recipe AST without executing setup,
+/// imports, hooks or helper calls. Dynamic fields remain unavailable.
+pub fn declared_metadata(recipe: &Path, search_path: Option<&Path>) -> Result<DeclaredMetadata> {
+    use rhai::{Expr, Stmt};
+    let mut engine = Engine::new();
+    engine.set_optimization_level(rhai::OptimizationLevel::None);
+    let compiled = compile_recipe(&engine, recipe, search_path)?;
+    let mut metadata = DeclaredMetadata::default();
+    for statement in compiled.ast.statements() {
+        match statement {
+            Stmt::Var(declaration, _, _) if declaration.0.name == "ctx" => {
+                metadata = DeclaredMetadata::default();
+                match &declaration.1 {
+                    Expr::Map(values, _) => {
+                        for (name, value) in &values.0 {
+                            metadata.set(name.name.as_str(), value)?;
+                        }
+                    }
+                    _ => {
+                        metadata
+                            .dynamic_fields
+                            .extend(["name", "version", "description"].map(str::to_owned));
+                    }
+                }
+            }
+            Stmt::Assignment(assignment) => {
+                let binary = &assignment.1;
+                if let Expr::Dot(property, _, _) = &binary.lhs {
+                    if let (Expr::Variable(variable, _, _), Expr::Property(field, _)) =
+                        (&property.lhs, &property.rhs)
+                    {
+                        if variable.1 == "ctx" {
+                            if assignment.0.is_op_assignment() {
+                                metadata.fields.remove(field.2.as_str());
+                                metadata.dynamic_fields.insert(field.2.to_string());
+                            } else {
+                                metadata.set(field.2.as_str(), &binary.rhs)?;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(metadata)
+}
+
+impl DeclaredMetadata {
+    fn set(&mut self, name: &str, value: &rhai::Expr) -> Result<()> {
+        if !["name", "version", "description"].contains(&name) {
+            return Ok(());
+        }
+        self.fields.remove(name);
+        self.dynamic_fields.remove(name);
+        match value {
+            rhai::Expr::StringConstant(text, _) => {
+                self.fields.insert(name.to_owned(), text.to_string());
+            }
+            _ if value.get_literal_value().is_some() => {
+                anyhow::bail!("declared metadata {name} must be a string")
+            }
+            _ => {
+                self.dynamic_fields.insert(name.to_owned());
+            }
+        }
+        Ok(())
+    }
+}

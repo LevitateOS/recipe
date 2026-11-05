@@ -1,12 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-/// Parse `--backend ginux|host` (`host`/`in-process` parse but are rejected
-/// at selection with a migration error).
-fn parse_backend(s: &str) -> anyhow::Result<levitate_recipe::BackendKind> {
-    s.parse()
-}
-
 #[derive(Parser)]
 #[command(name = "recipe")]
 #[command(about = "Local-first package manager using Rhai recipes")]
@@ -71,22 +65,9 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub(crate) llm_profile: Option<String>,
 
-    /// Disable state/file recovery; --no-persist-ctx is a deprecated alias. Filesystem effects still occur.
-    #[arg(
-        long = "no-persist-state",
-        alias = "no-persist-ctx",
-        global = true,
-        default_value_t = false
-    )]
-    pub(crate) no_persist_ctx: bool,
-
-    /// Select the execution backend for recipe operations: `ginux` (also the
-    /// default when omitted). Overrides `RECIPE_BACKEND`. The `host` and
-    /// `in-process` values are rejected: public host execution was removed
-    /// (S0) and Ginux is required. Launching requires a usable launcher in
-    /// `GINUX_BIN` and fails explicitly otherwise (never falls back to host).
-    #[arg(long, global = true, value_name = "BACKEND", value_parser = parse_backend)]
-    pub(crate) backend: Option<levitate_recipe::BackendKind>,
+    /// Disable state/file recovery. Filesystem effects still occur.
+    #[arg(long = "no-persist-state", global = true, default_value_t = false)]
+    pub(crate) no_persist_state: bool,
 }
 
 #[derive(Subcommand)]
@@ -145,7 +126,7 @@ pub(crate) enum Commands {
     /// Evaluate the recipe's `is_installed(ctx)` hook manually
     #[command(name = "isinstalled")]
     #[command(
-        after_help = "Examples:\n  recipe isinstalled kitty\n  recipe isinstalled ./recipes/kitty.rhai --no-persist-ctx\n\nUseful when debugging whether install state detection is correct."
+        after_help = "Examples:\n  recipe isinstalled kitty\n  recipe isinstalled ./recipes/kitty.rhai --no-persist-state\n\nUseful when debugging whether install state detection is correct."
     )]
     IsInstalled {
         /// Recipe path or recipe name. Name lookup follows the same rules as `recipe install`.

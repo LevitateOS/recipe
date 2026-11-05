@@ -11,8 +11,7 @@
 //! ## Example
 //!
 //! ```rhai
-//! let archive = download(url, BUILD_DIR + "/foo.tar.gz");
-//! verify_sha256(archive, "abc123...");
+//! let archive = download(url, ctx.runtime.paths.build + "/foo.tar.gz", ctx.sha256);
 //! ```
 
 use crate::core::output;
@@ -122,5 +121,5 @@ pub fn compute_hashes(file: &Path) -> Result<hash::FileHashes, std::io::Error> {
     hash::compute_all_hashes(file)
 }
 
-/// Re-export FileHashes for backwards compatibility
+/// Hash results returned by the public hashing operation.
 pub use super::super::internal::hash::FileHashes;

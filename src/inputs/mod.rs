@@ -122,14 +122,8 @@ pub fn prepare_invocation(
     let discovered = discover_inputs(recipe, search_path, extra_inputs)?;
 
     let invocation_id = invocation_id(&discovered.recipe_stem)?;
-    let mut env = allowlisted_env(&invocation_id, extra_env)?;
-    for (name, value) in &mut env {
-        match name.as_str() {
-            "ARCH" => *value = options.target_arch.clone(),
-            "NPROC" => *value = options.jobs.to_string(),
-            _ => {}
-        }
-    }
+    let env = allowlisted_env(&invocation_id, extra_env)?;
+
     let config = DomainConfig::for_invocation(&invocation_id, MAIN_NAME_DOMAIN, &env, options)?;
     let config_text = config.render()?;
 

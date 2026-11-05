@@ -101,7 +101,7 @@ fn private_worker_rejects_missing_bootstrap_and_mismatched_request_before_setup(
             &FramePayload::Request(RequestPayload {
                 invocation_id: "other-id".into(),
                 operation: "is_installed".into(),
-                persist_ctx: false,
+                persist_state: false,
                 recipe_digest: "0".repeat(64),
                 options: Default::default(),
                 restored_states: Default::default(),
@@ -161,7 +161,7 @@ fn private_worker_rejects_previous_transport_before_recipe_setup() {
             &FramePayload::Request(RequestPayload {
                 invocation_id: "bootstrap-id".into(),
                 operation: "is_installed".into(),
-                persist_ctx: false,
+                persist_state: false,
                 recipe_digest: "0".repeat(64),
                 options: Default::default(),
                 restored_states: Default::default(),

@@ -110,7 +110,8 @@ mod llm;
 pub mod logging;
 pub mod worker;
 
-pub use backend::{Backend, BackendKind};
+pub use backend::GinuxLauncher;
+pub use core::executor::{DeclaredMetadata, declared_metadata};
 
 pub use core::output;
 pub use logging::{
@@ -157,14 +158,14 @@ pub struct RecipeEngine {
     /// User-defined scope constants (injected via --define KEY=VALUE)
     defines: Vec<(String, String)>,
     inputs: Vec<inputs::ExtraInput>,
-    persist_ctx: bool,
+    persist_state: bool,
     execution: ExecutionOptions,
     state_dir: Option<PathBuf>,
     llm_profile: Option<String>,
     autofix: Option<AutoFixConfig>,
     /// Explicit launcher selection; None resolves mandatory Ginux from the
     /// environment when an operation starts.
-    backend: Option<Backend>,
+    launcher: Option<GinuxLauncher>,
 }
 
 impl RecipeEngine {
@@ -175,33 +176,27 @@ impl RecipeEngine {
             recipes_path: None,
             defines: Vec::new(),
             inputs: Vec::new(),
-            persist_ctx: true,
+            persist_state: true,
             execution: ExecutionOptions::default(),
             state_dir: None,
             llm_profile: None,
             autofix: None,
-            backend: None,
+            launcher: None,
         }
     }
 
-    /// Select the execution backend for every executable recipe operation.
-    ///
-    /// Resolve with [`Backend::select`] (explicit `--backend` choice falling
-    /// back to `RECIPE_BACKEND`, defaulting to `ginux`). The selected value
-    /// launches the Ginux domain from operation time (R06); legacy host
-    /// selectors fail explicitly instead of running on the host.
-    pub fn with_backend(mut self, backend: Backend) -> Self {
-        self.backend = Some(backend);
+    /// Configure the required Ginux executable.
+    pub fn with_launcher(mut self, launcher: GinuxLauncher) -> Self {
+        self.launcher = Some(launcher);
         self
     }
 
-    /// Resolve the mandatory Ginux backend for executable operations. Missing
-    /// or invalid environment selection returns a startup error.
-    pub fn backend(&self) -> Result<Backend> {
-        self.backend
+    /// Resolve the Ginux executable before executing recipe code.
+    pub fn launcher(&self) -> Result<GinuxLauncher> {
+        self.launcher
             .clone()
             .map(Ok)
-            .unwrap_or_else(Backend::from_env)
+            .unwrap_or_else(GinuxLauncher::from_env)
     }
 
     /// Set the recipes path for module resolution
@@ -217,11 +212,10 @@ impl RecipeEngine {
     }
 
     /// Configure whether runtime state and matching files are retained.
-    /// This compatibility name never enables recipe-source rewriting.
     ///
     /// Default is `true`.
-    pub fn with_ctx_persistence(mut self, persist: bool) -> Self {
-        self.persist_ctx = persist;
+    pub fn with_state_persistence(mut self, persist: bool) -> Self {
+        self.persist_state = persist;
         self
     }
 
@@ -265,11 +259,11 @@ impl RecipeEngine {
     ///
     /// Returns the final ctx map containing all recipe state.
     pub fn execute(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        self.backend()?.run(
+        self.launcher()?.run(
             "install",
             recipe_path,
             self.recipes_path.as_deref(),
-            self.persist_ctx,
+            self.persist_state,
             self.invocation_options("manual")?,
             &self.inputs,
             &self.build_dir,
@@ -281,11 +275,11 @@ impl RecipeEngine {
     ///
     /// Returns the final ctx map after removal.
     pub fn remove(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        self.backend()?.run(
+        self.launcher()?.run(
             "remove",
             recipe_path,
             self.recipes_path.as_deref(),
-            self.persist_ctx,
+            self.persist_state,
             self.invocation_options("manual")?,
             &self.inputs,
             &self.build_dir,
@@ -304,11 +298,11 @@ impl RecipeEngine {
     ///
     /// Returns the final ctx map after cleanup.
     pub fn cleanup_with_reason(&self, recipe_path: &Path, reason: &str) -> Result<rhai::Map> {
-        self.backend()?.run(
+        self.launcher()?.run(
             "cleanup",
             recipe_path,
             self.recipes_path.as_deref(),
-            self.persist_ctx,
+            self.persist_state,
             self.invocation_options(reason)?,
             &self.inputs,
             &self.build_dir,
@@ -318,11 +312,11 @@ impl RecipeEngine {
 
     /// Execute `is_installed(ctx)` manually.
     pub fn is_installed(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        self.backend()?.run(
+        self.launcher()?.run(
             "is_installed",
             recipe_path,
             self.recipes_path.as_deref(),
-            self.persist_ctx,
+            self.persist_state,
             self.invocation_options("manual")?,
             &self.inputs,
             &self.build_dir,
@@ -332,11 +326,11 @@ impl RecipeEngine {
 
     /// Execute `is_built(ctx)` manually.
     pub fn is_built(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        self.backend()?.run(
+        self.launcher()?.run(
             "is_built",
             recipe_path,
             self.recipes_path.as_deref(),
-            self.persist_ctx,
+            self.persist_state,
             self.invocation_options("manual")?,
             &self.inputs,
             &self.build_dir,
@@ -346,11 +340,11 @@ impl RecipeEngine {
 
     /// Execute `is_acquired(ctx)` manually.
     pub fn is_acquired(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        self.backend()?.run(
+        self.launcher()?.run(
             "is_acquired",
             recipe_path,
             self.recipes_path.as_deref(),
-            self.persist_ctx,
+            self.persist_state,
             self.invocation_options("manual")?,
             &self.inputs,
             &self.build_dir,

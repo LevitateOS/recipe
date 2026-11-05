@@ -1,4 +1,4 @@
-//! Shared engine configuration and compatibility globals for recipe operations.
+//! Shared engine configuration and explicit invocation inputs for recipe operations.
 
 use anyhow::{Result, anyhow, bail};
 use rhai::{
@@ -24,60 +24,46 @@ pub(crate) fn scope(
     defines: &[(String, String)],
     options: &crate::ExecutionOptions,
 ) -> PreparedScope {
-    let mut scope = Scope::new();
-    scope.push_constant(
-        "RECIPE_DIR",
-        recipe
-            .parent()
-            .unwrap_or(Path::new("."))
-            .to_string_lossy()
-            .to_string(),
-    );
-    if let Some(base_dir) = base_dir {
-        scope.push_constant("BASE_RECIPE_DIR", base_dir.to_string_lossy().to_string());
-    }
-    if let Some(build_dir) = build_dir {
-        scope.push_constant("BUILD_DIR", build_dir.to_string_lossy().to_string());
-        let tools = tools_prefix
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| build_dir.join(".tools"));
-        scope.push_constant("TOOLS_PREFIX", tools.to_string_lossy().to_string());
-    } else if let Some(tools) = tools_prefix {
-        scope.push_constant("TOOLS_PREFIX", tools.to_string_lossy().to_string());
-    }
-    scope.push_constant("ARCH", options.target_arch.clone());
-    let jobs = i64::from(options.jobs);
-    scope.push_constant("NPROC", jobs);
-    scope.push_constant("RPM_PATH", std::env::var("RPM_PATH").unwrap_or_default());
+    let scope = Scope::new();
     let paths: Map = [
         (
             "recipe_dir".into(),
-            scope.get_value::<Dynamic>("RECIPE_DIR").unwrap(),
+            recipe
+                .parent()
+                .unwrap_or(Path::new("."))
+                .to_string_lossy()
+                .to_string()
+                .into(),
         ),
         (
             "base_recipe_dir".into(),
-            scope
-                .get_value::<Dynamic>("BASE_RECIPE_DIR")
-                .unwrap_or_default(),
+            base_dir
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default()
+                .into(),
         ),
         (
             "build".into(),
-            scope.get_value::<Dynamic>("BUILD_DIR").unwrap_or_default(),
+            build_dir
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default()
+                .into(),
         ),
         (
             "tools".into(),
-            scope
-                .get_value::<Dynamic>("TOOLS_PREFIX")
-                .unwrap_or_default(),
+            tools_prefix
+                .unwrap_or(Path::new(crate::inputs::TOOLS_DOMAIN_PATH))
+                .to_string_lossy()
+                .to_string()
+                .into(),
         ),
         ("inputs".into(), "/inputs".into()),
         ("output".into(), "/out".into()),
-        (
-            "temp".into(),
-            std::env::temp_dir().to_string_lossy().to_string().into(),
-        ),
+        ("target".into(), "/out".into()),
+        ("temp".into(), "/work/tmp".into()),
     ]
     .into();
+    let jobs = i64::from(options.jobs);
     let platform: Map = [
         ("os".into(), std::env::consts::OS.into()),
         ("arch".into(), std::env::consts::ARCH.into()),
@@ -113,8 +99,7 @@ pub(crate) fn scope(
     }
 }
 
-/// Canonical orchestration inputs are kept separately from legacy define
-/// overrides. API 2 cannot silently turn a caller's define into a new work root.
+/// Canonical invocation inputs are independent of recipe-specific defines.
 pub(crate) struct PreparedScope {
     bindings: Scope<'static>,
     runtime: Map,
@@ -128,8 +113,8 @@ pub(crate) struct Runtime<'a> {
     engine: &'a Engine,
     ast: &'a AST,
     scope: Scope<'static>,
-    initialized: Option<(GlobalRuntimeState, Caches)>,
-    runtime: Option<serde_json::Value>,
+    initialized: (GlobalRuntimeState, Caches),
+    runtime: serde_json::Value,
 }
 
 impl<'a> Runtime<'a> {
@@ -140,50 +125,29 @@ impl<'a> Runtime<'a> {
         operation: &str,
         persist_state: bool,
     ) -> Result<Self> {
-        let api2 = api2(ast)?;
-        if persist_state && !api2 {
-            bail!(
-                "resumable execution requires RECIPE_API = 2 and explicit ctx.state; use --no-persist-state while migrating"
-            );
-        }
+        validate_api(ast)?;
         let PreparedScope {
             bindings: mut scope,
             mut runtime,
             defines,
         } = prepared;
         for (key, value) in defines {
-            if api2
-                && (key == "RUNTIME"
-                    || matches!(
-                        key.as_str(),
-                        "RECIPE_DIR"
-                            | "BASE_RECIPE_DIR"
-                            | "BUILD_DIR"
-                            | "TOOLS_PREFIX"
-                            | "ARCH"
-                            | "NPROC"
-                    ))
-            {
-                if scope
-                    .get_value::<Dynamic>(&key)
-                    .is_some_and(|canonical| canonical.to_string() == value)
-                {
-                    continue;
-                }
-                bail!("API 2 define {key} conflicts with engine-owned invocation inputs");
+            if key == "RUNTIME" {
+                bail!("RUNTIME is an engine-owned invocation input");
             }
             scope.push_constant(key, value);
         }
-        let expected_runtime = if api2 {
+        let expected_runtime = {
             if std::env::consts::OS != "linux" {
-                bail!("API 2 currently supports Linux execution only");
+                bail!("Recipe currently supports Linux execution only");
             }
-            if scope
-                .get_value::<String>("BUILD_DIR")
-                .filter(|path| !path.is_empty())
-                .is_none()
+            let paths = runtime["paths"].clone().cast::<Map>();
+            if paths["build"]
+                .clone()
+                .into_string()
+                .map_or(true, |s| s.is_empty())
             {
-                bail!("API 2 invocation is missing its engine-supplied build directory");
+                bail!("invocation is missing its engine-supplied build directory");
             }
             for statement in ast.statements() {
                 if let Stmt::Var(declaration, _, _) = statement {
@@ -196,14 +160,10 @@ impl<'a> Runtime<'a> {
             let mut options = runtime["options"].clone().cast::<Map>();
             options.insert("persist_state".into(), persist_state.into());
             runtime.insert("options".into(), options.into());
-            Some(
-                rhai::serde::from_dynamic::<serde_json::Value>(&runtime.clone().into())
-                    .map_err(|e| anyhow!("Invalid invocation inputs: {e}"))?,
-            )
-        } else {
-            None
+            rhai::serde::from_dynamic::<serde_json::Value>(&runtime.clone().into())
+                .map_err(|e| anyhow!("Invalid invocation inputs: {e}"))?
         };
-        let initialized = if api2 {
+        let initialized = {
             let mut global = engine.new_global_runtime_state();
             global.lib.push(ast.shared_lib().clone());
             global.source = ast.source().map(Into::into);
@@ -259,15 +219,10 @@ impl<'a> Runtime<'a> {
             for field in ["state", "outputs"] {
                 ctx.entry(field.into()).or_insert_with(|| Map::new().into());
             }
-            validate_namespaces(&ctx, expected_runtime.as_ref().unwrap())?;
+            validate_namespaces(&ctx, &expected_runtime)?;
             drop(ctx);
             scope.set_value("ctx", ctx_value);
-            Some((global, caches))
-        } else {
-            engine
-                .run_ast_with_scope(&mut scope, ast)
-                .map_err(|e| anyhow!("Failed to initialize recipe: {e}"))?;
-            None
+            (global, caches)
         };
         Ok(Self {
             engine,
@@ -279,11 +234,6 @@ impl<'a> Runtime<'a> {
     }
 
     pub(crate) fn restore_state(&mut self, state: &Map) -> Result<()> {
-        if !self.is_api2() {
-            bail!(
-                "resumable execution requires RECIPE_API = 2 and explicit ctx.state; use --no-persist-state while migrating"
-            );
-        }
         let mut value = self
             .scope
             .iter_raw()
@@ -303,10 +253,6 @@ impl<'a> Runtime<'a> {
         &self.scope
     }
 
-    pub(crate) fn is_api2(&self) -> bool {
-        self.initialized.is_some()
-    }
-
     /// Checks use an isolated variable scope as before. Filesystem effects and
     /// returned ctx remain observable; hook-local imports/variables unwind in Rhai.
     pub(crate) fn call(
@@ -322,9 +268,7 @@ impl<'a> Runtime<'a> {
         } else {
             &mut self.scope
         };
-        let Some((global, caches)) = self.initialized.as_mut() else {
-            return self.engine.call_fn::<Dynamic>(scope, self.ast, name, args);
-        };
+        let (global, caches) = &mut self.initialized;
 
         // Preserve Rhai's per-evaluation operation limit. A failed hook must not
         // consume the budget needed by its bounded failure cleanup.
@@ -375,10 +319,8 @@ impl<'a> Runtime<'a> {
                 )
                 .into()
             })?;
-        if let Some(runtime) = &self.runtime {
-            validate_namespaces(&ctx, runtime)
-                .map_err(|error| -> Box<rhai::EvalAltResult> { error.to_string().into() })?;
-        }
+        validate_namespaces(&ctx, &self.runtime)
+            .map_err(|error| -> Box<rhai::EvalAltResult> { error.to_string().into() })?;
         Ok(ctx)
     }
 
@@ -390,18 +332,6 @@ impl<'a> Runtime<'a> {
             ));
         }
         let result = self.call(name, vec![ctx.clone().into()], true);
-        if !self.is_api2() {
-            return match result {
-                Ok(value) => value
-                    .try_cast::<Map>()
-                    .map(Readiness::Ready)
-                    .ok_or_else(|| anyhow!("{name} must return ctx")),
-                Err(error) if deliberate_throw(&error) => {
-                    Ok(Readiness::NeedsWork(ctx.clone(), error.to_string()))
-                }
-                Err(error) => Err(anyhow!("{name} failed: {error}")),
-            };
-        }
         let value = result.map_err(|e| anyhow!("{name} failed: {e}"))?;
         let mut outcome = value
             .try_cast::<Map>()
@@ -411,7 +341,7 @@ impl<'a> Runtime<'a> {
             .and_then(Dynamic::try_cast::<String>);
         let ctx = outcome.remove("ctx").and_then(Dynamic::try_cast::<Map>)
             .ok_or_else(|| anyhow!("{name} readiness result is missing a ctx map; return ready(ctx) or needs_work(ctx, reason)"))?;
-        validate_namespaces(&ctx, self.runtime.as_ref().unwrap())?;
+        validate_namespaces(&ctx, &self.runtime)?;
         match status.as_deref() {
             Some("ready") if outcome.is_empty() => Ok(Readiness::Ready(ctx)),
             Some("needs_work") => {
@@ -452,24 +382,9 @@ pub(crate) enum Readiness {
     NeedsWork(Map, String),
 }
 
-// A missing function, failed import, wrong type, or exhausted resource budget
-// must not become permission to install. Only an intentional legacy throw is
-// the old needs-work signal. Module initialization errors stay fatal.
-fn deliberate_throw(error: &rhai::EvalAltResult) -> bool {
-    match error {
-        rhai::EvalAltResult::ErrorRuntime(..) => true,
-        rhai::EvalAltResult::ErrorInFunctionCall(_, source, inner, _)
-            if source != "<recipe-helper>" =>
-        {
-            deliberate_throw(inner)
-        }
-        _ => false,
-    }
-}
-
 /// Inspect declarations without executing any recipe code. A base/child pair
 /// cannot declare an unsupported version. The selected API governs the merged AST.
-fn api2(ast: &AST) -> Result<bool> {
+fn validate_api(ast: &AST) -> Result<()> {
     let mut declared = false;
     for statement in ast.statements() {
         if let Stmt::Var(declaration, flags, _) = statement {
@@ -479,12 +394,13 @@ fn api2(ast: &AST) -> Result<bool> {
             }
             if !flags.contains(ASTFlags::CONSTANT) || !matches!(value, Expr::IntegerConstant(2, _))
             {
-                bail!(
-                    "Unsupported recipe API: declare const RECIPE_API = 2 or omit it for legacy semantics"
-                );
+                bail!("Recipe must declare const RECIPE_API = 2");
             }
             declared = true;
         }
     }
-    Ok(declared)
+    if !declared {
+        bail!("Recipe must declare const RECIPE_API = 2");
+    }
+    Ok(())
 }

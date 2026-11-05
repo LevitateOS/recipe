@@ -364,3 +364,70 @@ let ctx = #{
     assert!(stdout.contains("mypackage"));
     assert!(stdout.contains("1.2.3"));
 }
+
+/// Metadata queries must use the same declarations as execution while never
+/// evaluating setup on the host, even when its side effect would be dangerous.
+#[test]
+fn test_cli_metadata_inherits_without_evaluating_setup() {
+    let (dir, recipes) = create_test_env();
+    let marker = dir.path().join("metadata-setup-ran");
+    write_recipe(
+        &recipes,
+        "base",
+        &format!(
+            r#"
+const RECIPE_API = 2;
+let ctx = #{{name: "base", version: "3.2.1", description: "Inherited description"}};
+write_file("{}", "must never run");
+"#,
+            marker.display()
+        ),
+    );
+    write_recipe(
+        &recipes,
+        "child",
+        r#"//! extends: base.rhai
+ctx.name = "child";
+"#,
+    );
+    let output = run_recipe(&["info", "child"], &recipes);
+    assert_success(&output);
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("child") && text.contains("3.2.1") && text.contains("Inherited description"),
+        "{text}"
+    );
+    assert!(!marker.exists(), "metadata query executed recipe setup");
+}
+
+#[test]
+fn test_cli_metadata_reports_dynamic_values_without_execution() {
+    let (_dir, recipes) = create_test_env();
+    write_recipe(
+        &recipes,
+        "dynamic",
+        r#"
+const RECIPE_API = 2;
+let ctx = #{name: "dynamic", version: exec_output("definitely-unavailable", [])};
+"#,
+    );
+    let output = run_recipe(&["info", "dynamic"], &recipes);
+    assert_success(&output);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("<dynamic>"));
+}
+
+#[test]
+fn test_cli_metadata_rejects_malformed_declarations() {
+    let (_dir, recipes) = create_test_env();
+    write_recipe(
+        &recipes,
+        "wrong-type",
+        "const RECIPE_API = 2; let ctx = #{name: 5};",
+    );
+    let output = run_recipe(&["info", "wrong-type"], &recipes);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("metadata name must be a string"));
+    write_recipe(&recipes, "broken", "let ctx = #{name:");
+    let output = run_recipe(&["info", "broken"], &recipes);
+    assert!(!output.status.success());
+}

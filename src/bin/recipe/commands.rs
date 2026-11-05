@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use levitate_recipe::{AutoFixConfig, Backend, BackendKind, RecipeEngine, helpers, output};
+use levitate_recipe::{AutoFixConfig, GinuxLauncher, RecipeEngine, helpers, output};
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -59,10 +59,9 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 Some(&recipes_path),
                 &cli.defines,
                 &cli.inputs,
-                cli.no_persist_ctx,
+                cli.no_persist_state,
                 cli.llm_profile.clone(),
                 autofix_cfg,
-                cli.backend,
             )?;
             let ctx = engine.execute(&recipe_path)?;
             emit_json(&ctx, json_output.as_deref())?;
@@ -77,10 +76,9 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 Some(&recipes_path),
                 &cli.defines,
                 &cli.inputs,
-                cli.no_persist_ctx,
+                cli.no_persist_state,
                 cli.llm_profile.clone(),
                 None,
-                cli.backend,
             )?;
             let ctx = engine.remove(&recipe_path)?;
             emit_json(&ctx, json_output.as_deref())?;
@@ -95,10 +93,9 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 Some(&recipes_path),
                 &cli.defines,
                 &cli.inputs,
-                cli.no_persist_ctx,
+                cli.no_persist_state,
                 cli.llm_profile.clone(),
                 None,
-                cli.backend,
             )?;
             let cleanup_reason = reason
                 .as_deref()
@@ -118,10 +115,9 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 Some(&recipes_path),
                 &cli.defines,
                 &cli.inputs,
-                cli.no_persist_ctx,
+                cli.no_persist_state,
                 cli.llm_profile.clone(),
                 None,
-                cli.backend,
             )?;
             let ctx = engine.is_installed(&recipe_path)?;
             emit_json(&ctx, json_output.as_deref())?;
@@ -136,10 +132,9 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 Some(&recipes_path),
                 &cli.defines,
                 &cli.inputs,
-                cli.no_persist_ctx,
+                cli.no_persist_state,
                 cli.llm_profile.clone(),
                 None,
-                cli.backend,
             )?;
             let ctx = engine.is_built(&recipe_path)?;
             emit_json(&ctx, json_output.as_deref())?;
@@ -154,10 +149,9 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 Some(&recipes_path),
                 &cli.defines,
                 &cli.inputs,
-                cli.no_persist_ctx,
+                cli.no_persist_state,
                 cli.llm_profile.clone(),
                 None,
-                cli.backend,
             )?;
             let ctx = engine.is_acquired(&recipe_path)?;
             emit_json(&ctx, json_output.as_deref())?;
@@ -167,7 +161,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
 
         Commands::Info { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
-            show_info(&recipe_path)?;
+            show_info(&recipe_path, Some(&recipes_path))?;
         }
 
         Commands::Hash { file } => {
@@ -229,20 +223,19 @@ fn create_engine(
     recipes_path: Option<&Path>,
     defines: &[String],
     inputs: &[String],
-    no_persist_ctx: bool,
+    no_persist_state: bool,
     llm_profile: Option<String>,
     autofix: Option<AutoFixConfig>,
-    backend: Option<BackendKind>,
 ) -> Result<RecipeEngine> {
     execution.validate()?;
-    let backend = Backend::select(backend)?;
+    let launcher = GinuxLauncher::from_env()?;
     let build_dir = match build_dir {
         Some(dir) => {
             std::fs::create_dir_all(dir)
                 .with_context(|| format!("Failed to create build directory: {}", dir.display()))?;
             dir.to_path_buf()
         }
-        None if no_persist_ctx => {
+        None if no_persist_state => {
             let temp = tempfile::tempdir().context("Failed to create temporary build directory")?;
             temp.keep()
         }
@@ -256,8 +249,8 @@ fn create_engine(
     };
 
     let mut engine = RecipeEngine::new(build_dir)
-        .with_backend(backend)
-        .with_ctx_persistence(!no_persist_ctx)
+        .with_launcher(launcher)
+        .with_state_persistence(!no_persist_state)
         .with_state_dir(state_dir.map(Path::to_owned))
         .with_execution_options(execution)
         .with_llm_profile(llm_profile)
@@ -327,7 +320,7 @@ fn list_recipes(recipes_path: &Path) -> Result<()> {
 
     let mut found = false;
     for path in enumerate_recipes(recipes_path) {
-        let meta = RecipeMetadata::load(&path);
+        let meta = RecipeMetadata::load(&path, Some(recipes_path))?;
         println!(
             "  {} {}",
             meta.name.bold(),
@@ -343,10 +336,10 @@ fn list_recipes(recipes_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn show_info(recipe_path: &Path) -> Result<()> {
+fn show_info(recipe_path: &Path, search_path: Option<&Path>) -> Result<()> {
     use owo_colors::OwoColorize;
 
-    let meta = RecipeMetadata::load(recipe_path);
+    let meta = RecipeMetadata::load(recipe_path, search_path)?;
 
     println!("{:<12} {}", "Name:".bold(), meta.name.bold().cyan());
     println!(

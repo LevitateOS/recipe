@@ -8,7 +8,7 @@
 //! - **string**: trim, contains, replace, split
 //! - **shell**: shell, shell_in, shell_output
 //! - **process**: exec_checked, exec, exec_output, rpm/dnf helpers
-//! - **env**: env, set_env
+//! - **env**: env
 //! - **log**: log, debug, warn
 
 pub mod env;
@@ -37,7 +37,7 @@ pub use process::{
 };
 
 // Re-export commonly used items from env
-pub use env::{get_env, set_env};
+pub use env::get_env;
 
 // Re-export commonly used items from log
 pub use log::{debug, log, warn};

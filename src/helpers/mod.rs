@@ -21,7 +21,7 @@
 //!   - cmd, fs_utils, hash, progress, url_utils
 //!
 //! - **acquire**: ACQUIRE phase - getting sources
-//!   - download, verify_sha256/512/blake3, http_get, git_clone, torrent
+//!   - download, verify_sha256/512/blake3, http_get, git_checkout
 //!
 //! - **build**: BUILD phase - transforming sources
 //!   - extract, extract_with_format
@@ -32,7 +32,7 @@
 //! - **util**: Cross-phase utilities
 //!   - join_path, basename, dirname, trim, contains, replace, split
 //!   - shell, shell_in, shell_output, exec_checked, exec, exec_output
-//!   - env, set_env, log, debug, warn
+//!   - env, log, debug, warn
 //!
 //! - **llm**: AI/LLM helpers (standalone)
 
@@ -286,19 +286,19 @@ pub fn register_all(engine: &mut Engine) {
     });
 
     // Acquire helpers (acquire/download, acquire/verify)
-    // download(url, dest) -> path string
+    // download(url, dest, sha256[, resume]) -> path string
     // verify_sha256(path, expected) -> () (throws on mismatch)
-    engine.register_fn("download", |url: &str, dest: &str| {
-        trace_helper("download");
-        helper_result("download", acquire::download(url, dest))
-    });
     engine.register_fn("download", |url: &str, dest: &str, sha256: &str| {
         trace_helper("download");
-        helper_result(
-            "download_verified",
-            acquire::download::download_verified(url, dest, sha256),
-        )
+        helper_result("download", acquire::download(url, dest, sha256, false))
     });
+    engine.register_fn(
+        "download",
+        |url: &str, dest: &str, sha256: &str, resume: bool| {
+            trace_helper("download");
+            helper_result("download", acquire::download(url, dest, sha256, resume))
+        },
+    );
     engine.register_fn("verify_sha256", |path: &str, expected: &str| {
         trace_helper("verify_sha256");
         helper_result("verify_sha256", acquire::verify_sha256(path, expected))
@@ -339,12 +339,6 @@ pub fn register_all(engine: &mut Engine) {
         trace_helper("env");
         util::get_env(name)
     });
-    engine.register_fn("set_env", |name: &str, value: &str| {
-        trace_helper("set_env");
-        util::set_env(name, value)
-    });
-
-    // HTTP utilities for update checking (acquire/http)
     engine.register_fn("http_get", |url: &str| {
         trace_helper("http_get");
         helper_result("http_get", acquire::http_get(url))
@@ -366,36 +360,14 @@ pub fn register_all(engine: &mut Engine) {
     });
     engine.register_fn(
         "github_download_release",
-        |repo: &str, pattern: &str, dest_dir: &str| {
+        |repo: &str, pattern: &str, dest: &str, sha256: &str| {
             trace_helper("github_download_release");
             helper_result(
                 "github_download_release",
-                acquire::github_download_release(repo, pattern, dest_dir),
+                acquire::github_download_release(repo, pattern, dest, sha256),
             )
         },
     );
-    engine.register_fn(
-        "github_download_release",
-        |repo: &str, pattern: &str, dest_dir: &str, sha256: &str| {
-            trace_helper("github_download_release");
-            helper_result(
-                "github_download_release_verified",
-                acquire::http::github_download_release_verified(repo, pattern, dest_dir, sha256),
-            )
-        },
-    );
-    engine.register_fn(
-        "extract_from_tarball",
-        |url: &str, pattern: &str, dest: &str| {
-            trace_helper("extract_from_tarball");
-            helper_result(
-                "extract_from_tarball",
-                acquire::extract_from_tarball(url, pattern, dest),
-            )
-        },
-    );
-
-    // Disk space utilities (install/disk)
     engine.register_fn(
         "check_disk_space",
         |path: &str, required: i64| -> Result<(), Box<rhai::EvalAltResult>> {
@@ -529,58 +501,6 @@ pub fn register_all(engine: &mut Engine) {
         trace_helper("git_checkout");
         helper_result("git_checkout", acquire::git_checkout(url, dest, commit))
     });
-    // git_clone(url, dest_dir) -> path string
-    // git_clone_depth(url, dest_dir, depth) -> path string
-    engine.register_fn("git_clone", |url: &str, dest_dir: &str| {
-        trace_helper("git_clone");
-        helper_result("git_clone", acquire::git_clone(url, dest_dir))
-    });
-    engine.register_fn(
-        "git_clone_depth",
-        |url: &str, dest_dir: &str, depth: i64| {
-            trace_helper("git_clone_depth");
-            helper_result(
-                "git_clone_depth",
-                acquire::git_clone_depth(url, dest_dir, depth),
-            )
-        },
-    );
-
-    // Torrent/download utilities
-    // torrent(url, dest_dir) -> path string
-    // download_with_resume(url, dest_path) -> path string
-    engine.register_fn("torrent", |url: &str, dest_dir: &str| {
-        trace_helper("torrent");
-        helper_result("torrent", acquire::torrent(url, dest_dir))
-    });
-    engine.register_fn(
-        "torrent",
-        |url: &str, dest_dir: &str, filename: &str, sha256: &str| {
-            trace_helper("torrent");
-            helper_result(
-                "torrent_verified",
-                acquire::torrent::torrent_verified(url, dest_dir, filename, sha256),
-            )
-        },
-    );
-    engine.register_fn("download_with_resume", |url: &str, dest: &str| {
-        trace_helper("download_with_resume");
-        helper_result(
-            "download_with_resume",
-            acquire::download_with_resume(url, dest),
-        )
-    });
-    engine.register_fn(
-        "download_with_resume",
-        |url: &str, dest: &str, sha256: &str| {
-            trace_helper("download_with_resume");
-            helper_result(
-                "download_with_resume_verified",
-                acquire::download::download_with_resume_verified(url, dest, sha256),
-            )
-        },
-    );
-
     // LLM utilities (for complex version/URL extraction)
     engine.register_fn("llm_extract", |content: &str, prompt: &str| {
         trace_helper("llm_extract");

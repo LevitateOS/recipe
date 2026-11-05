@@ -26,7 +26,12 @@ fn image_command(recipes: &Path, archive: &Path, digest: &str) -> Command {
         .env("TMPDIR", recipes.parent().unwrap())
         .env("GINUX_ROOTFS", archive)
         .env("GINUX_ROOT", format!("oci:cli-image@sha256:{digest}"))
-        .args(["isinstalled", "check", "--no-persist-ctx", "--recipes-path"])
+        .args([
+            "isinstalled",
+            "check",
+            "--no-persist-state",
+            "--recipes-path",
+        ])
         .arg(recipes);
     command
 }
@@ -212,7 +217,7 @@ fn managed_command(recipes: &Path, operation: &str) -> Command {
         .env("GINUX_BIN", launcher)
         .env_remove("RECIPE_WORKER")
         .env_remove("RECIPE_INVOCATION")
-        .args([operation, "check", "--no-persist-ctx", "--recipes-path"])
+        .args([operation, "check", "--no-persist-state", "--recipes-path"])
         .arg(recipes);
     command
 }
@@ -567,7 +572,7 @@ fn managed_cleanup_and_remove_return_context_after_checkpoint_ack() {
 const RECIPE_API = 2;
 let ctx = #{name: "checkpoint-hooks"};
 fn cleanup(ctx, reason) { ctx.state.reason = reason; ctx.state.operation = "cleanup"; ctx }
-fn remove(ctx) { ctx.state.removed = true; ctx.state.build = BUILD_DIR; ctx.state.operation = "remove"; ctx }
+fn remove(ctx) { ctx.state.removed = true; ctx.state.build = ctx.runtime.paths.build; ctx.state.operation = "remove"; ctx }
 "#;
     write_recipe(&recipes, "check", source);
     for operation in ["cleanup", "remove"] {

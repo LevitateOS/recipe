@@ -122,11 +122,6 @@ impl<'a> ExecutionContext<'a> {
         recipe: &Path,
         runtime: &mut crate::core::invocation::Runtime<'_>,
     ) -> Result<()> {
-        if self.resumable && !runtime.is_api2() {
-            bail!(
-                "resumable execution requires RECIPE_API = 2 and explicit ctx.state; use --no-persist-state while migrating"
-            );
-        }
         if let Some(state) = self.restored_states.get(recipe) {
             runtime.restore_state(state)?;
         }

@@ -8,7 +8,9 @@ use tempfile::TempDir;
 
 /// Get the path to the recipe binary
 fn recipe_bin() -> std::path::PathBuf {
-    env!("CARGO_BIN_EXE_recipe").into()
+    std::env::var_os("RECIPE_TEST_BIN")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_recipe").into())
 }
 
 /// Create a test environment
@@ -97,9 +99,6 @@ mod api2;
 
 #[path = "e2e/cleanup.rs"]
 mod cleanup;
-
-#[path = "e2e/torrent_acquisition.rs"]
-mod torrent_acquisition;
 
 #[path = "e2e/dependencies.rs"]
 mod dependencies;

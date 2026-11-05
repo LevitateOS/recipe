@@ -21,7 +21,7 @@ fn install(ctx) {
 "#,
     );
 
-    let output = run_recipe(&["install", "exec-status", "--no-persist-ctx"], &recipes);
+    let output = run_recipe(&["install", "exec-status", "--no-persist-state"], &recipes);
     assert_success(&output);
     let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(ctx["status"], 23);

@@ -1,6 +1,6 @@
 //! R05 real preparation run: stage a genuine recipe, show every artifact,
 //! then exercise one over-limit and two unsupported-discovery failures plus
-//! the `Backend::run` ginux arm.
+//! the `GinuxLauncher::run` ginux arm.
 //!
 //! Run with:
 //!
@@ -13,8 +13,8 @@
 
 use std::path::PathBuf;
 
+use levitate_recipe::GinuxLauncher;
 use levitate_recipe::inputs::{ExtraInput, prepare_invocation};
-use levitate_recipe::{Backend, BackendKind};
 
 fn main() -> anyhow::Result<()> {
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -166,10 +166,10 @@ fn main() -> anyhow::Result<()> {
         Err(err) => println!("REJECTED (expected): {err:#}"),
     }
 
-    // 6. `Backend::run` ginux arm: preparation runs, then real launch is
+    // 6. `GinuxLauncher::run` ginux arm: preparation runs, then real launch is
     // attempted through the configured launcher. `/bin/true` speaks no
     // transport, so this fails explicitly without host fallback.
-    println!("== Backend::run ginux arm ==");
+    println!("== GinuxLauncher::run ginux arm ==");
     let extra: Vec<ExtraInput> = Vec::new();
     let _ = extra;
     unsafe {
@@ -177,7 +177,7 @@ fn main() -> anyhow::Result<()> {
         std::env::set_var("GINUX_BIN", "/bin/true");
         std::env::remove_var("RECIPE_WORKER");
     }
-    let backend = Backend::select(Some(BackendKind::Ginux))?;
+    let backend = GinuxLauncher::from_env()?;
     let err = backend
         .run(
             "install",

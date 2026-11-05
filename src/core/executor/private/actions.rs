@@ -9,10 +9,11 @@ use crate::core::executor::compile_recipe;
 
 pub(crate) fn remove_with_context(
     engine: &Engine,
+    build_dir: &Path,
     recipe_path: &Path,
     search_path: Option<&Path>,
     defines: &[(String, String)],
-    persist_ctx_enabled: bool,
+    persist_state_enabled: bool,
     exec: &mut ExecutionContext<'_>,
 ) -> Result<rhai::Map> {
     let recipe_path = recipe_path
@@ -22,23 +23,22 @@ pub(crate) fn remove_with_context(
     let mut compiled = compile_recipe(engine, &recipe_path, search_path)?;
     let ast = compiled.ast.clone();
 
-    // Removal's compatibility entry point receives its build directory in defines.
-    let build_dir = defines
-        .iter()
-        .rev()
-        .find(|(key, _)| key == "BUILD_DIR")
-        .map(|(_, value)| Path::new(value));
     let scope = crate::core::invocation::scope(
         &compiled.recipe_path,
         compiled.base_dir.as_deref(),
-        build_dir,
+        Some(build_dir),
         exec.tools_prefix_override(),
         defines,
         &exec.options(),
     );
 
-    let mut scope =
-        crate::core::invocation::Runtime::new(engine, &ast, scope, "remove", persist_ctx_enabled)?;
+    let mut scope = crate::core::invocation::Runtime::new(
+        engine,
+        &ast,
+        scope,
+        "remove",
+        persist_state_enabled,
+    )?;
     exec.restore_runtime(&compiled.recipe_path, &mut scope)?;
 
     let mut ctx_map: rhai::Map = scope
@@ -71,7 +71,7 @@ pub(crate) fn remove_with_context(
             phase: "remove",
             reason: "phase:remove",
         },
-        persist_ctx_enabled,
+        persist_state_enabled,
     )?;
 
     output::success(&format!("{} removed", name));
@@ -85,7 +85,7 @@ pub(crate) fn cleanup_with_context(
     search_path: Option<&Path>,
     defines: &[(String, String)],
     reason: &str,
-    persist_ctx_enabled: bool,
+    persist_state_enabled: bool,
     exec: &mut ExecutionContext<'_>,
 ) -> Result<rhai::Map> {
     let recipe_path = recipe_path
@@ -105,8 +105,13 @@ pub(crate) fn cleanup_with_context(
         &exec.options(),
     );
 
-    let mut scope =
-        crate::core::invocation::Runtime::new(engine, &ast, scope, "cleanup", persist_ctx_enabled)?;
+    let mut scope = crate::core::invocation::Runtime::new(
+        engine,
+        &ast,
+        scope,
+        "cleanup",
+        persist_state_enabled,
+    )?;
     exec.restore_runtime(&compiled.recipe_path, &mut scope)?;
 
     let mut ctx_map: rhai::Map = scope
@@ -140,7 +145,7 @@ pub(crate) fn cleanup_with_context(
             phase: "cleanup",
             reason: "manual",
         },
-        persist_ctx_enabled,
+        persist_state_enabled,
     )?;
 
     output::success(&format!("{} cleaned", name));

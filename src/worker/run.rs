@@ -1,4 +1,4 @@
-//! Worker entry point: run the existing engine behind protocol v5.
+//! Worker entry point: run the existing engine behind protocol v6.
 //!
 //! The worker is the same `recipe` binary entered with a private argv marker (see
 //! the dispatch in `src/bin/`). It reads exactly one request frame from
@@ -115,7 +115,7 @@ const ACK_TIMEOUT: Duration = Duration::from_secs(300);
 struct LocalConfig {
     /// Recipe file after the private command marker (argv[2]).
     recipe: PathBuf,
-    /// Coordinator-prepared build dir (`$BUILD_DIR`, allowlisted by §5).
+    /// Coordinator-prepared writable build directory.
     build_dir: PathBuf,
     /// Module/extends search path (`$RECIPE_WORKER_RECIPES` or the recipe's
     /// own directory).
@@ -131,18 +131,10 @@ impl LocalConfig {
         if !recipe.exists() {
             bail!("worker recipe not found: {}", recipe.display());
         }
-        let build_dir = std::env::var_os("BUILD_DIR")
-            .map(PathBuf::from)
-            .context("worker requires the coordinator-prepared BUILD_DIR")?;
-        let metadata = std::fs::metadata(&build_dir).with_context(|| {
-            format!(
-                "worker: prepared BUILD_DIR {} is unavailable",
-                build_dir.display()
-            )
-        })?;
-        if !metadata.is_dir() {
+        let build_dir = PathBuf::from("/work/build");
+        if !build_dir.is_dir() {
             bail!(
-                "worker: prepared BUILD_DIR {} is not a directory",
+                "worker build directory is unavailable: {}",
                 build_dir.display()
             );
         }
@@ -245,10 +237,10 @@ pub fn run_worker() -> Result<()> {
         );
     }
     eprintln!(
-        "worker: invocation={} operation={} persist_ctx={} recipe={}",
+        "worker: invocation={} operation={} persist_state={} recipe={}",
         request.invocation_id,
         request.operation,
-        request.persist_ctx,
+        request.persist_state,
         local.recipe.display()
     );
 
@@ -342,22 +334,7 @@ fn run_operation(
     output: &mut impl Write,
 ) -> std::result::Result<serde_json::Value, EngineFailure> {
     let engine = build_engine(&local.search_path);
-    let mut defines = req.options.defines.clone();
-    if defines.iter().any(|(name, _)| name == "BUILD_DIR") {
-        return Err(EngineFailure::workload(
-            "startup",
-            anyhow!("BUILD_DIR is coordinator-owned; select inputs through the invocation instead"),
-        ));
-    }
-    // Other operations already receive their own work directory explicitly.
-    // Inheriting the parent's BUILD_DIR define would override a dependency's
-    // work directory and violate API 2's invocation bindings.
-    if req.operation == "remove" {
-        defines.push((
-            "BUILD_DIR".to_string(),
-            local.build_dir.to_string_lossy().into_owned(),
-        ));
-    }
+    let defines = req.options.defines.clone();
     let search_path = Some(local.search_path.as_path());
 
     let mut checkpoint_no: u64 = 0;
@@ -386,12 +363,7 @@ fn run_operation(
     };
     let mut exec = ExecutionContext::worker(&mut sink);
     exec.set_options(req.options.execution.clone());
-    // Worker-local values are explicit invocation inputs, never inherited host options.
-    unsafe {
-        std::env::set_var("NPROC", req.options.execution.jobs.to_string());
-        std::env::set_var("ARCH", &req.options.execution.target_arch);
-    }
-    exec.restore_states(&req.restored_states, req.persist_ctx)
+    exec.restore_states(&req.restored_states, req.persist_state)
         .map_err(|err| EngineFailure::workload("startup", err))?;
 
     let operation = req.operation.as_str();
@@ -401,7 +373,7 @@ fn run_operation(
             &local.build_dir,
             &local.recipe,
             &defines,
-            req.persist_ctx,
+            req.persist_state,
             search_path,
             None,
             &mut exec,
@@ -409,10 +381,11 @@ fn run_operation(
         .map_err(|err| EngineFailure::from_attempt(operation, err))?,
         "remove" => remove_with_context(
             &engine,
+            &local.build_dir,
             &local.recipe,
             search_path,
             &defines,
-            req.persist_ctx,
+            req.persist_state,
             &mut exec,
         )
         .map_err(|err| EngineFailure::workload(operation, err))?,
@@ -423,7 +396,7 @@ fn run_operation(
             search_path,
             &defines,
             &req.options.cleanup_reason,
-            req.persist_ctx,
+            req.persist_state,
             &mut exec,
         )
         .map_err(|err| EngineFailure::workload(operation, err))?,

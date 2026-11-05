@@ -127,7 +127,7 @@ pub struct LaunchReport {
 pub fn run_domain(
     prepared: &PreparedInvocation,
     launcher: &Path,
-    persist_ctx: bool,
+    persist_state: bool,
     options: &crate::worker::protocol::InvocationOptions,
     destination: &Path,
     state_dir: Option<&Path>,
@@ -153,7 +153,7 @@ pub fn run_domain(
         anyhow!("backend startup failure: cannot prepare Ginux root for invocation {invocation}: {error:#} (refusing host fallback)")
     })?;
 
-    let mut retained = if persist_ctx {
+    let mut retained = if persist_state {
         Some(crate::retained::Retained::open(
             state_dir,
             destination,
@@ -171,7 +171,7 @@ pub fn run_domain(
         .map(|state| state.restore_input(&restore_path))
         .transpose()?
         .unwrap_or(false);
-    let (mut control, control_server) = if persist_ctx {
+    let (mut control, control_server) = if persist_state {
         let (client, server) = UnixStream::pair()?;
         (Some(DeadlinePipe::new(client, timeout)?), Some(server))
     } else {
@@ -250,7 +250,7 @@ pub fn run_domain(
         &invocation,
         &prepared.operation,
         &prepared.recipe_digest,
-        persist_ctx,
+        persist_state,
         options,
         stdin,
         stdout,
@@ -331,7 +331,7 @@ fn pump_protocol(
     invocation: &str,
     operation: &str,
     recipe_digest: &str,
-    persist_ctx: bool,
+    persist_state: bool,
     options: &crate::worker::protocol::InvocationOptions,
     stdin: std::process::ChildStdin,
     stdout: std::process::ChildStdout,
@@ -349,7 +349,7 @@ fn pump_protocol(
         &FramePayload::Request(RequestPayload {
             invocation_id: invocation.to_string(),
             operation: operation.to_string(),
-            persist_ctx,
+            persist_state,
             recipe_digest: recipe_digest.to_string(),
             options: options.clone(),
             restored_states: retained

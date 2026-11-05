@@ -55,7 +55,7 @@ fn trim_stdout(output: std::process::Output) -> String {
 }
 
 fn command_path(name: &str) -> Option<std::path::PathBuf> {
-    let path = env::var_os("PATH")?;
+    let path = cmd::environment("PATH")?;
     env::split_paths(&path).find_map(|dir| {
         let candidate = dir.join(name);
         if candidate.is_file() {

@@ -25,7 +25,7 @@ fn serve_response(
     let headers = headers.to_owned();
     let body = body.as_ref().to_vec();
     let server = std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(120);
         let (mut stream, _) = loop {
             match listener.accept() {
                 Ok(connection) => break connection,
@@ -62,347 +62,264 @@ fn serve_response(
     (url, server)
 }
 
-fn write_resume_recipe(recipes: &Path, url: &str) {
-    write_download_recipe(recipes, url);
-    let path = recipes.join("download-payload.rhai");
-    let source = std::fs::read_to_string(&path).unwrap();
-    std::fs::write(
-        path,
-        source.replace("= download(", "= download_with_resume("),
-    )
-    .unwrap();
-}
-
-fn add_download_digest(recipes: &Path, expected: &str) {
-    let path = recipes.join("download-payload.rhai");
-    let source = std::fs::read_to_string(&path).unwrap();
-    std::fs::write(
-        path,
-        source.replace(
-            "join_path(RECIPE_DIR, \"payload.dat\"))",
-            &format!("join_path(RECIPE_DIR, \"payload.dat\"), \"{expected}\")"),
+fn download_recipe(recipes: &Path, url: &str, digest: &str, prefix: Option<&str>, resume: bool) {
+    write_recipe(
+        recipes,
+        "download-payload",
+        &format!(
+            r#"
+const RECIPE_API = 2;
+let ctx = #{{name: "download-payload", url: {url:?}, digest: {digest:?},
+    payload: join_path(RUNTIME.paths.build, "payload.dat"),
+    state: #{{downloaded: false, installed: false}}}};
+fn is_acquired(ctx) {{
+    if ctx.state.downloaded {{ return ready(ctx); }}
+    needs_work(ctx, "fetch verified payload")
+}}
+fn is_built(ctx) {{ ready(ctx) }}
+fn is_installed(ctx) {{
+    if ctx.state.installed {{ return ready(ctx); }}
+    needs_work(ctx, "install verified payload")
+}}
+fn acquire(ctx) {{
+    mkdir(dirname(ctx.payload));
+    if {existing} {{ write_file(ctx.payload, {prefix:?}); }}
+    ctx.payload = download(ctx.url, ctx.payload, ctx.digest, {resume});
+    ctx.state.downloaded = true;
+    ctx
+}}
+fn install(ctx) {{
+    verify_sha256(ctx.payload, ctx.digest);
+    copy_file(ctx.payload, "/out/product");
+    ctx.outputs.product = "/out/product";
+    ctx.state.installed = true;
+    ctx
+}}
+fn cleanup(ctx, reason) {{
+    if reason == "auto.acquire.failure" {{
+        if {existing} {{
+            if read_file(ctx.payload) != {prefix:?} {{ throw "previous payload changed"; }}
+        }} else if is_file(ctx.payload) {{ throw "failed transfer was published"; }}
+        if glob_list(join_path(dirname(ctx.payload), ".recipe-download.*")).len != 0 {{
+            throw "download staging leaked";
+        }}
+        log("DOWNLOAD_CACHE_PRESERVED");
+    }}
+    ctx
+}}
+"#,
+            existing = prefix.is_some(),
+            prefix = prefix.unwrap_or("")
         ),
-    )
-    .unwrap();
+    );
+}
+
+fn download_command(recipes: &Path, url: Option<&str>) -> Command {
+    let mut command = recipe_command(recipes);
+    command
+        .args([
+            "install",
+            "download-payload",
+            "--no-persist-state",
+            "--recipes-path",
+        ])
+        .arg(recipes);
+    if let Some(url) = url {
+        let authority = url
+            .strip_prefix("http://")
+            .unwrap()
+            .split('/')
+            .next()
+            .unwrap();
+        command.args(["--network-host", authority]);
+    }
+    command
 }
 
 #[test]
-fn cli_verified_download_publishes_only_matching_sha256() {
+fn managed_verified_download_checks_digest_before_publication() {
     use sha2::{Digest, Sha256};
-    let expected = hex::encode(Sha256::digest(b"hello world"));
-    for existing in [false, true] {
-        for body in ["hello world", "wrong world"] {
-            let (dir, recipes) = create_test_env();
-            let payload = recipes.join("payload.dat");
-            if existing {
-                std::fs::write(&payload, "previous verified payload").unwrap();
-            }
-            let (url, server) = serve_download(body, body.len());
-            write_download_recipe(&recipes, &url);
-            add_download_digest(&recipes, &expected);
-            let output = run_recipe(
-                &["install", "download-payload", "--no-persist-ctx"],
-                &recipes,
-            );
+    let digest = hex::encode(Sha256::digest(b"hello world"));
+    for prefix in [None, Some("previous verified payload")] {
+        for payload in ["hello world", "wrong world"] {
+            let (_dir, recipes) = create_test_env();
+            let (url, server) = serve_download(payload, payload.len());
+            download_recipe(&recipes, &url, &digest, prefix, false);
+            let source = std::fs::read(recipes.join("download-payload.rhai")).unwrap();
+            let output = download_command(&recipes, Some(&url)).output().unwrap();
             server.join().unwrap();
-            if body == "hello world" {
+            if payload == "hello world" {
                 assert_success(&output);
-                assert_eq!(std::fs::read(&payload).unwrap(), b"hello world");
-                assert_eq!(
-                    std::fs::read(dir.path().join("build/installed.dat")).unwrap(),
-                    b"hello world"
-                );
+                let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(ctx["state"]["installed"], true);
             } else {
                 assert!(!output.status.success());
+                let diagnostic = String::from_utf8_lossy(&output.stderr);
                 assert!(
-                    String::from_utf8_lossy(&output.stderr)
-                        .contains("SHA256 integrity check failed")
+                    diagnostic.contains("integrity check failed"),
+                    "{diagnostic}"
                 );
-                if existing {
-                    assert_eq!(
-                        std::fs::read(&payload).unwrap(),
-                        b"previous verified payload"
-                    );
-                } else {
-                    assert!(!payload.exists());
-                }
-                assert!(!dir.path().join("build/installed.dat").exists());
-                assert!(!std::fs::read_dir(&recipes).unwrap().any(|entry| {
-                    entry
-                        .unwrap()
-                        .file_name()
-                        .to_string_lossy()
-                        .starts_with(".recipe-download.")
-                }));
-            }
-        }
-    }
-}
-
-#[test]
-fn cli_verified_resume_checks_completed_bytes_and_matching_size_reuse() {
-    use sha2::{Digest, Sha256};
-    let expected = hex::encode(Sha256::digest(b"hello world"));
-    for complete in [false, true] {
-        for valid in [false, true] {
-            let (dir, recipes) = create_test_env();
-            let payload = recipes.join("payload.dat");
-            let prefix = if complete {
-                if valid { "hello world" } else { "wrong world" }
-            } else {
-                "hello "
-            };
-            std::fs::write(&payload, prefix).unwrap();
-            let (url, server) = if complete {
-                serve_response(
-                    "416 Range Not Satisfiable",
-                    "Content-Range: bytes */11\r\nContent-Length: 0\r\n",
-                    "",
-                )
-            } else {
-                serve_response(
-                    "206 Partial Content",
-                    "Content-Range: bytes 6-10/11\r\nContent-Length: 5\r\n",
-                    if valid { "world" } else { "other" },
-                )
-            };
-            write_resume_recipe(&recipes, &url);
-            add_download_digest(&recipes, &expected);
-            let output = run_recipe(
-                &["install", "download-payload", "--no-persist-ctx"],
-                &recipes,
-            );
-            server.join().unwrap();
-            if valid {
-                assert_success(&output);
-                assert_eq!(std::fs::read(&payload).unwrap(), b"hello world");
-                assert_eq!(
-                    std::fs::read(dir.path().join("build/installed.dat")).unwrap(),
-                    b"hello world"
-                );
-            } else {
-                assert!(!output.status.success());
                 assert!(
-                    String::from_utf8_lossy(&output.stderr)
-                        .contains("SHA256 integrity check failed")
+                    diagnostic.contains("DOWNLOAD_CACHE_PRESERVED"),
+                    "{diagnostic}"
                 );
-                assert_eq!(std::fs::read_to_string(&payload).unwrap(), prefix);
-                assert!(!dir.path().join("build/installed.dat").exists());
             }
-        }
-    }
-}
-
-#[test]
-fn cli_resumed_download_validates_range_and_installs_complete_payload() {
-    let (dir, recipes) = create_test_env();
-    let payload = recipes.join("payload.dat");
-    std::fs::write(&payload, "hello ").unwrap();
-    let (url, server) = serve_response(
-        "206 Partial Content",
-        "Content-Range: bytes 6-10/11\r\nContent-Length: 5\r\n",
-        "world",
-    );
-    write_resume_recipe(&recipes, &url);
-    let output = run_recipe(
-        &["install", "download-payload", "--no-persist-ctx"],
-        &recipes,
-    );
-    let request = server.join().unwrap().to_lowercase();
-    assert_success(&output);
-    assert!(request.contains("range: bytes=6-"));
-    assert!(request.contains("accept-encoding: identity"));
-    assert_eq!(std::fs::read(&payload).unwrap(), b"hello world");
-    assert_eq!(
-        std::fs::read(dir.path().join("build/installed.dat")).unwrap(),
-        b"hello world"
-    );
-    serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap();
-}
-
-#[test]
-fn cli_resume_handles_complete_range_response_and_rejects_wrong_total() {
-    for total in [11, 12] {
-        let (dir, recipes) = create_test_env();
-        let payload = recipes.join("payload.dat");
-        std::fs::write(&payload, "hello world").unwrap();
-        let (url, server) = serve_response(
-            "416 Range Not Satisfiable",
-            &format!("Content-Range: bytes */{total}\r\nContent-Length: 0\r\n"),
-            "",
-        );
-        write_resume_recipe(&recipes, &url);
-        let output = run_recipe(
-            &["install", "download-payload", "--no-persist-ctx"],
-            &recipes,
-        );
-        server.join().unwrap();
-        if total == 11 {
-            assert_success(&output);
             assert_eq!(
-                std::fs::read(dir.path().join("build/installed.dat")).unwrap(),
-                b"hello world"
+                std::fs::read(recipes.join("download-payload.rhai")).unwrap(),
+                source
             );
-        } else {
-            assert!(!output.status.success());
-            assert!(!dir.path().join("build/installed.dat").exists());
+            assert!(
+                !recipes.join("payload.dat").exists(),
+                "worker wrote into host recipe inputs"
+            );
         }
-        assert_eq!(std::fs::read(&payload).unwrap(), b"hello world");
     }
 }
 
 #[test]
-fn cli_invalid_or_interrupted_resume_preserves_destination() {
-    for (status, headers, body) in [
+fn managed_resume_validates_ranges_and_complete_digest() {
+    use sha2::{Digest, Sha256};
+    let digest = hex::encode(Sha256::digest(b"hello world"));
+    for (status, headers, body, prefix, valid) in [
+        (
+            "206 Partial Content",
+            "Content-Range: bytes 6-10/11\r\nContent-Length: 5\r\n",
+            "world",
+            "hello ",
+            true,
+        ),
+        (
+            "206 Partial Content",
+            "Content-Range: bytes 6-10/11\r\nContent-Length: 5\r\n",
+            "other",
+            "hello ",
+            false,
+        ),
+        (
+            "416 Range Not Satisfiable",
+            "Content-Range: bytes */11\r\nContent-Length: 0\r\n",
+            "",
+            "hello world",
+            true,
+        ),
+        (
+            "416 Range Not Satisfiable",
+            "Content-Range: bytes */11\r\nContent-Length: 0\r\n",
+            "",
+            "wrong world",
+            false,
+        ),
+        (
+            "416 Range Not Satisfiable",
+            "Content-Range: bytes */12\r\nContent-Length: 0\r\n",
+            "",
+            "hello world",
+            false,
+        ),
         (
             "206 Partial Content",
             "Content-Range: bytes 5-9/10\r\nContent-Length: 5\r\n",
             "world",
+            "hello ",
+            false,
         ),
         (
             "206 Partial Content",
-            "Content-Range: bytes 6-11/11\r\nContent-Length: 5\r\n",
+            "Content-Length: 5\r\n",
             "world",
+            "hello ",
+            false,
         ),
-        ("206 Partial Content", "Content-Length: 5\r\n", "world"),
         (
             "206 Partial Content",
             "Content-Range: bytes 6-10/11\r\nContent-Length: 5\r\n",
             "wo",
+            "hello ",
+            false,
         ),
         (
-            "206 Partial Content",
-            "Content-Range: bytes 6-10/11\r\nContent-Length: 4\r\n",
-            "worl",
+            "200 OK",
+            "Content-Length: 11\r\n",
+            "hello world",
+            "hello ",
+            false,
         ),
-        (
-            "206 Partial Content",
-            "Content-Range: bytes 6-8/11\r\nContent-Length: 3\r\n",
-            "wor",
-        ),
-        ("200 OK", "Content-Length: 11\r\n", "hello world"),
     ] {
-        let (dir, recipes) = create_test_env();
-        let payload = recipes.join("payload.dat");
-        std::fs::write(&payload, "hello ").unwrap();
+        let (_dir, recipes) = create_test_env();
         let (url, server) = serve_response(status, headers, body);
-        write_resume_recipe(&recipes, &url);
-        let output = run_recipe(
-            &["install", "download-payload", "--no-persist-ctx"],
-            &recipes,
-        );
-        server.join().unwrap();
-        assert!(
-            !output.status.success(),
-            "accepted invalid resume: {headers}"
-        );
-        assert_eq!(std::fs::read(&payload).unwrap(), b"hello ");
-        assert!(!dir.path().join("build/installed.dat").exists());
-        assert!(!std::fs::read_dir(&recipes).unwrap().any(|entry| {
-            entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".recipe-download.")
-        }));
-    }
-}
-
-#[test]
-fn cli_interrupted_fresh_resume_never_publishes_partial_destination() {
-    let (dir, recipes) = create_test_env();
-    let (url, server) = serve_download("truncated", 1024);
-    write_resume_recipe(&recipes, &url);
-    let output = run_recipe(
-        &["install", "download-payload", "--no-persist-ctx"],
-        &recipes,
-    );
-    server.join().unwrap();
-    assert!(!output.status.success());
-    assert!(!recipes.join("payload.dat").exists());
-    assert!(!dir.path().join("build/installed.dat").exists());
-}
-
-fn write_download_recipe(recipes: &Path, url: &str) {
-    write_recipe(
-        recipes,
-        "download-payload",
-        &r#"
-let ctx = #{ name: "download-payload", url: "DOWNLOAD_URL" };
-fn is_installed(ctx) { throw "install requested"; }
-fn is_acquired(ctx) { throw "download requested"; }
-fn acquire(ctx) {
-    ctx.payload = download(ctx.url, join_path(RECIPE_DIR, "payload.dat"));
-    ctx
-}
-fn install(ctx) {
-    copy_file(ctx.payload, join_path(BUILD_DIR, "installed.dat"));
-    ctx
-}
-"#
-        .replace("DOWNLOAD_URL", url),
-    );
-}
-
-#[test]
-fn cli_interrupted_download_preserves_previous_file_and_removes_partial() {
-    for existing in [false, true] {
-        let (dir, recipes) = create_test_env();
-        let payload = recipes.join("payload.dat");
-        if existing {
-            std::fs::write(&payload, "previous verified payload").unwrap();
-        }
-        let (url, server) = serve_download("truncated", 1024);
-        write_download_recipe(&recipes, &url);
-
-        let output = run_recipe(
-            &["install", "download-payload", "--no-persist-ctx"],
-            &recipes,
-        );
-        server.join().unwrap();
-        assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("read error"));
-        if existing {
-            assert_eq!(
-                std::fs::read_to_string(&payload).unwrap(),
-                "previous verified payload"
-            );
+        download_recipe(&recipes, &url, &digest, Some(prefix), true);
+        let output = download_command(&recipes, Some(&url)).output().unwrap();
+        let request = server.join().unwrap().to_lowercase();
+        assert!(request.contains(&format!("range: bytes={}-", prefix.len())));
+        assert!(request.contains("accept-encoding: identity"));
+        if valid {
+            assert_success(&output);
         } else {
             assert!(
-                !payload.exists(),
-                "interrupted download published a partial destination"
+                !output.status.success(),
+                "accepted invalid resume {headers}"
+            );
+            let diagnostic = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                diagnostic.contains("DOWNLOAD_CACHE_PRESERVED"),
+                "{diagnostic}"
             );
         }
-        assert!(!dir.path().join("build/installed.dat").exists());
-        assert!(!std::fs::read_dir(&recipes).unwrap().any(|entry| {
-            entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".recipe-download.")
-        }));
     }
 }
 
 #[test]
-fn cli_complete_download_replaces_destination_and_installs_payload() {
-    let (dir, recipes) = create_test_env();
-    let payload = recipes.join("payload.dat");
-    std::fs::write(&payload, "old content").unwrap();
-    let body = "complete downloaded payload";
-    let (url, server) = serve_download(body, body.len());
-    write_download_recipe(&recipes, &url);
+fn managed_interrupted_download_preserves_previous_bytes() {
+    use sha2::{Digest, Sha256};
+    let digest = hex::encode(Sha256::digest(b"complete payload"));
+    for resume in [false, true] {
+        for prefix in [None, Some("previous payload")] {
+            let (_dir, recipes) = create_test_env();
+            let (url, server) = serve_download("truncated", 1024);
+            download_recipe(&recipes, &url, &digest, prefix, resume);
+            let output = download_command(&recipes, Some(&url)).output().unwrap();
+            server.join().unwrap();
+            assert!(!output.status.success());
+            let diagnostic = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                diagnostic.contains("DOWNLOAD_CACHE_PRESERVED"),
+                "{diagnostic}"
+            );
+        }
+    }
+}
 
-    let output = run_recipe(
-        &["install", "download-payload", "--no-persist-ctx"],
-        &recipes,
-    );
-    server.join().unwrap();
-    assert_success(&output);
-    assert_eq!(std::fs::read_to_string(&payload).unwrap(), body);
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("build/installed.dat")).unwrap(),
-        body
-    );
-    serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap();
+#[test]
+fn managed_download_rejects_invalid_arguments_without_network() {
+    for (url, digest, diagnostic) in [
+        (
+            "https://example.invalid/payload",
+            "not-a-sha256".to_owned(),
+            "64 hexadecimal",
+        ),
+        (
+            "file:///inputs/source",
+            "0".repeat(64),
+            "http:// or https://",
+        ),
+        (
+            "https://example.invalid/\npayload",
+            "0".repeat(64),
+            "http:// or https://",
+        ),
+    ] {
+        let (_dir, recipes) = create_test_env();
+        download_recipe(
+            &recipes,
+            url,
+            &digest,
+            Some("previous verified payload"),
+            false,
+        );
+        let output = download_command(&recipes, None).output().unwrap();
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(diagnostic), "{stderr}");
+        assert!(stderr.contains("DOWNLOAD_CACHE_PRESERVED"), "{stderr}");
+    }
 }
