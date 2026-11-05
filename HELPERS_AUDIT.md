@@ -99,7 +99,7 @@ These names are the Rhai function names.
 | `git_clone` | `helpers/acquire/git.rs` | `git_clone(url, dest_dir) -> String` | dest_dir/<repo>; verifies origin on reuse |
 | `git_clone_depth` | `helpers/acquire/git.rs` | `git_clone_depth(url, dest_dir, depth) -> String` | same destination convention; shallow initial clone |
 | `git_checkout` | `helpers/acquire/git.rs` | `git_checkout(url, dest, commit) -> String` | exact destination; full pinned commit; origin/cleanliness checks |
-| `torrent` | `helpers/acquire/torrent.rs` | `torrent(url, dest_dir) -> String` | pure Rust (librqbit) |
+| `torrent` | `helpers/acquire/torrent.rs` | `torrent(url, dest_dir [, filename, sha256]) -> String` | staged librqbit transfer; optional exact-file SHA256 before publication |
 | `download_with_resume` | `helpers/acquire/download.rs` | `download_with_resume(url, dest [, sha256]) -> String` | exact HTTP Range; optional digest before replacement/416 reuse |
 | `llm_extract` | `helpers/llm.rs` | `llm_extract(content, prompt) -> String` | TODO backend |
 | `llm_find_latest_version` | `helpers/llm.rs` | `llm_find_latest_version(url, project) -> String` | TODO backend |
@@ -170,7 +170,7 @@ These helpers exist today, but do not appear in the spec helper list:
 - `dnf_install(packages:Array) -> ()`
 - `dnf_install_allow_erasing(packages:Array) -> ()`
 - `dnf_add_repo(url) -> ()`
-- `torrent(url, dest_dir) -> String` (pure Rust, `librqbit`)
+- `torrent(url, dest_dir [, filename, sha256]) -> String` (staged `librqbit`; optional exact-file SHA256)
 - `download_with_resume(url, dest) -> String` (pure Rust HTTP Range resume)
 - `llm_extract/llm_find_latest_version/llm_find_download_url(...) -> String` (currently TODO backend)
 

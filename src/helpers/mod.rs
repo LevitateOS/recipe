@@ -553,6 +553,16 @@ pub fn register_all(engine: &mut Engine) {
         trace_helper("torrent");
         helper_result("torrent", acquire::torrent(url, dest_dir))
     });
+    engine.register_fn(
+        "torrent",
+        |url: &str, dest_dir: &str, filename: &str, sha256: &str| {
+            trace_helper("torrent");
+            helper_result(
+                "torrent_verified",
+                acquire::torrent::torrent_verified(url, dest_dir, filename, sha256),
+            )
+        },
+    );
     engine.register_fn("download_with_resume", |url: &str, dest: &str| {
         trace_helper("download_with_resume");
         helper_result(

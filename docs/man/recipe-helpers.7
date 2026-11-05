@@ -547,13 +547,23 @@ variables are cleared for these child commands. Whole-process limits remain the
 execution runtime's responsibility; Git's HTTP low-speed bound is 600 seconds.
 .TP
 \fBtorrent\fR
-Signature: \fBtorrent(url, dest_dir)\fR
+Signature: \fBtorrent(url, dest_dir [, filename, sha256])\fR
 .br
-Returns: downloaded path
+Returns: downloaded file path, or dest_dir for multi-file legacy calls
 .br
-Fails when: torrent download fails
+Fails when: metadata, destination, transfer, or supplied SHA256 verification fails
 .br
 Example: \fBtorrent(ctx.magnet, BUILD_DIR)\fR
+.br
+Transfers use private staging. Metadata paths and existing destination parents
+are checked before payload writes. Completed files are flushed and published by
+rename. The four-argument form requires exactly the selected basename and verifies
+its SHA256 before replacing an old cache entry. Failed acquisition leaves the old
+entry intact. The two-argument form retains piece-checked reuse by copying existing
+files into staging; it does not provide a recipe-pinned digest. Multi-file legacy
+publication is atomic per file, not a transaction across the whole tree. Failed
+attempts discard their staging; process termination can leave hidden staging
+directories. Session persistence and cross-invocation partial resume are not provided.
 .TP
 \fBdownload_with_resume\fR
 Signature: \fBdownload_with_resume(url, dest [, sha256])\fR

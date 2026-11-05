@@ -96,3 +96,6 @@ mod api2;
 
 #[path = "e2e/cleanup.rs"]
 mod cleanup;
+
+#[path = "e2e/torrent_acquisition.rs"]
+mod torrent_acquisition;
