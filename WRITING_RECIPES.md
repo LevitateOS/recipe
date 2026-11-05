@@ -38,9 +38,15 @@ The `recipe` CLI stages its own executable as the worker. Library callers use an
 installed `recipe` executable on PATH or explicitly select `RECIPE_WORKER_BIN`;
 the caller's unrelated executable is never treated as a Recipe worker. These
 host selections are coordinator inputs, not worker environment variables.
+The public library defaults to Ginux as well. `RecipeEngine::backend()` returns
+`Result<Backend>` because resolving the required launcher can fail. Worker
+bootstrap environment variables never select host execution for public CLI or
+library operations; worker dispatch uses a separate private command.
 
-Managed readiness queries now run through the configured supervisor, including
-custom outcomes, discovered context, and script failures. Integration remains
+Managed readiness queries and cleanup/removal hooks now run through the
+configured supervisor, including custom outcomes, discovered context, script
+failures, and v1 checkpoint acknowledgements. These acknowledgements are not
+durable-state evidence. Integration remains
 in progress: installation, child commands, retained writable storage, durable
 state, complete dependency closure staging, and publication still need
 integration and managed runtime verification. An ephemeral invocation root does
@@ -450,8 +456,8 @@ parent's shared tools destination.
 - `ARCH`: host architecture from Rust `std::env::consts::ARCH`
 - `NPROC`: CPU count
 - `RPM_PATH`: current `RPM_PATH` environment value, or empty string
-- `TOOLS_PREFIX`: `BUILD_DIR/.tools` for the main recipe; the shared tools
-  destination when executing a dependency recipe
+- `TOOLS_PREFIX`: the prepared `/work/tools` tree, shared by the main recipe
+  and its dependencies
 
 ### Present Only in Some Contexts
 
@@ -585,8 +591,8 @@ let build_deps = ["meson", "ninja"];
 - `build_deps` are added to `PATH` only for the actual build portion
 - dependency recipes are found as `<name>.rhai`, beside the requesting recipe
   first and then under `--recipes-path`; names cannot escape through `..`
-- all transitive dependencies share the invocation's `BUILD_DIR/.tools`
-- tool paths are prepended as `.tools/{usr/bin,usr/sbin,bin,sbin}`
+- all transitive dependencies share the invocation's `/work/tools` tree
+- tool paths are prepended as `/work/tools/{usr/bin,usr/sbin,bin,sbin}`
 
 That means your main recipe normally just calls the tool by name:
 
@@ -633,7 +639,7 @@ When dependency tools are installed, the resolver may also export:
 - `CPLUS_INCLUDE_PATH`
 - `PKG_CONFIG_PATH`
 
-Those are only set if the corresponding path exists under `.tools/usr`.
+Those are only set if the corresponding path exists under `/work/tools/usr`.
 
 ## `extends` Behavior
 

@@ -127,8 +127,16 @@ impl<'a> ExecutionContext<'a> {
         }
     }
 
+    pub(crate) fn tools_prefix_override(&self) -> Option<&Path> {
+        matches!(self.persist_sink, PersistSink::Callback(_))
+            .then(|| Path::new(crate::inputs::TOOLS_DOMAIN_PATH))
+    }
+
     pub(crate) fn tools_prefix(&self) -> Result<PathBuf> {
-        Ok(self.work_root()?.join(".tools"))
+        match self.tools_prefix_override() {
+            Some(path) => Ok(path.to_path_buf()),
+            None => Ok(self.work_root()?.join(".tools")),
+        }
     }
 
     pub(crate) fn work_root(&self) -> Result<&Path> {

@@ -137,7 +137,13 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
     // No shared cached tree or mutable hardlinks are handed to the domain.
     // Write syscalls still require Ginux storage mediation; these directories
     // do not grant native host filesystem access.
-    for path in ["work", "work/build", "work/tools", "work/tmp", "out"] {
+    for path in [
+        "work",
+        "work/build",
+        super::TOOLS_DOMAIN_PATH.trim_start_matches('/'),
+        "work/tmp",
+        "out",
+    ] {
         let directory = root.path().join(path);
         std::fs::create_dir(&directory)?;
         std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o777))?;

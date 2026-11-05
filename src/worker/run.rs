@@ -1,6 +1,6 @@
 //! Worker entry point: run the existing engine behind protocol v1.
 //!
-//! The worker is the same `recipe` binary entered with `RECIPE_WORKER=1` (see
+//! The worker is the same `recipe` binary entered with a private argv marker (see
 //! the dispatch in `src/bin/`). It reads exactly one request frame from
 //! stdin, dispatches `install` / `remove` / `cleanup` / `<check>` through the
 //! existing engine entry points under [`ExecutionContext::worker_stub`] (the
@@ -18,9 +18,8 @@
 //! - Every checkpoint blocks for its `ack` with a bounded 300 s wait (§4).
 //!   The host owns the `{seq → generation}` association; the worker only waits
 //!   for it and logs the generation to stderr.
-//! - `RECIPE_WORKER=1` forces in-process execution through the unified R04
-//!   selection: a requested non-host backend is overridden to in-process (with
-//!   a stderr note), so the worker never invokes the Ginux backend.
+//! - The private entry invokes the shared executor directly; it never selects
+//!   a public backend. Worker environment values do not authorize host execution.
 //!
 //! Failure mapping (R03): the engine's [`InstallAttemptError`] shape is
 //! preserved through [`install_with_context`], so an unrecoverable engine
@@ -55,7 +54,7 @@ const ACK_TIMEOUT: Duration = Duration::from_secs(300);
 /// Recipe inputs the worker resolves locally (R05 owns prepared domain inputs;
 /// until then the harness passes these the same way a domain config would).
 struct LocalConfig {
-    /// Recipe file to execute (argv[1]).
+    /// Recipe file after the private command marker (argv[2]).
     recipe: PathBuf,
     /// Coordinator-prepared build dir (`$BUILD_DIR`, allowlisted by §5).
     build_dir: PathBuf,
@@ -67,9 +66,9 @@ struct LocalConfig {
 impl LocalConfig {
     fn from_env() -> Result<Self> {
         let recipe = std::env::args_os()
-            .nth(1)
+            .nth(2)
             .map(PathBuf::from)
-            .context("worker usage: RECIPE_WORKER=1 recipe <recipe-path>")?;
+            .context("private worker usage: recipe --__recipe-worker <recipe-path>")?;
         if !recipe.exists() {
             bail!("worker recipe not found: {}", recipe.display());
         }
@@ -152,15 +151,14 @@ impl EngineFailure {
     }
 }
 
-/// Worker entry point for the `RECIPE_WORKER=1` binary dispatch.
+/// Worker endpoint for the private coordinator-supplied binary command.
 ///
 /// Reads one request frame, runs the engine, sends `failure` (on error) and
 /// exactly one `result`, and returns `Ok` on the protocol path (binary exits
 /// 0). Transport collapse (unwritable stdout) returns `Err` (binary exits
 /// nonzero; the host sees a worker exit without `result`).
 pub fn run_worker() -> Result<()> {
-    ensure_internal_entry()?;
-    ensure_in_process_backend()?;
+    let invocation_id = ensure_internal_entry()?;
     let local = LocalConfig::from_env()?;
 
     let stdin = std::io::stdin();
@@ -179,6 +177,14 @@ pub fn run_worker() -> Result<()> {
             return abort(&mut tx, &mut output, "protocol", &message);
         }
     };
+    if request.invocation_id != invocation_id {
+        return abort(
+            &mut tx,
+            &mut output,
+            "protocol",
+            "request invocation id does not match worker bootstrap",
+        );
+    }
     eprintln!(
         "worker: invocation={} operation={} persist_ctx={} recipe={}",
         request.invocation_id,
@@ -215,44 +221,22 @@ pub fn run_worker() -> Result<()> {
     }
 }
 
-/// The worker entry path is internal: it is only reachable through a
-/// coordinator launch, which issues a `RECIPE_INVOCATION` id (interfaces §5
-/// allowlist) alongside `RECIPE_WORKER=1`. A bare `RECIPE_WORKER=1` in the
-/// public command environment is refused here — before argv is read or any
-/// recipe code is evaluated — so the flag alone can never bypass the public
-/// coordinator execution path (S0).
-fn ensure_internal_entry() -> Result<()> {
-    match std::env::var("RECIPE_INVOCATION") {
-        Ok(id) => crate::inputs::validate_invocation_id(&id).map_err(|err| {
-            anyhow!(
-                "worker refuses to run on the host: RECIPE_WORKER=1 without a \
-                 coordinator-issued RECIPE_INVOCATION ({err:#}); refusing host execution"
-            )
-        }),
-        Err(_) => bail!(
-            "worker refuses to run on the host: RECIPE_WORKER=1 without RECIPE_INVOCATION \
-             (only a coordinator launch issues the invocation id); refusing host execution"
-        ),
+/// Require the private argv entry, the coordinator's bootstrap flag, and an
+/// invocation id. Public backend selection never uses these environment values.
+fn ensure_internal_entry() -> Result<String> {
+    if std::env::args_os().nth(1).as_deref()
+        != Some(std::ffi::OsStr::new(crate::worker::WORKER_ENTRY_ARG))
+        || std::env::args_os().count() != 3
+        || std::env::var("RECIPE_WORKER").as_deref() != Ok("1")
+    {
+        bail!(
+            "private worker entry requires coordinator bootstrap arguments; refusing host execution"
+        );
     }
-}
-
-/// `RECIPE_WORKER=1` forces in-process execution. This goes through the
-/// unified R04 selection ([`crate::backend::Backend::select`]): under the
-/// worker flag selection itself resolves to [`crate::backend::Backend::Host`],
-/// so reaching the `Ginux` arm below is impossible — it stays as the explicit
-/// guard so the worker can never recursively invoke the Ginux backend, with no
-/// second parallel environment check beside the canonical selection.
-fn ensure_in_process_backend() -> Result<()> {
-    match crate::backend::Backend::from_env()? {
-        crate::backend::Backend::Host => Ok(()),
-        crate::backend::Backend::Ginux { launcher } => {
-            bail!(
-                "worker refuses ginux backend (launcher {}): RECIPE_WORKER=1 forces \
-                 in-process execution (no recursive Ginux backend invocation)",
-                launcher.display()
-            )
-        }
-    }
+    let id = std::env::var("RECIPE_INVOCATION")
+        .context("private worker entry requires RECIPE_INVOCATION; refusing host execution")?;
+    crate::inputs::validate_invocation_id(&id)?;
+    Ok(id)
 }
 
 /// Read and validate the single request frame (host→worker direction).
@@ -283,7 +267,10 @@ fn run_operation(
     output: &mut impl Write,
 ) -> std::result::Result<serde_json::Value, EngineFailure> {
     let engine = build_engine(&local.search_path);
-    let defines: Vec<(String, String)> = Vec::new();
+    let defines = vec![(
+        "BUILD_DIR".to_string(),
+        local.build_dir.to_string_lossy().into_owned(),
+    )];
     let search_path = Some(local.search_path.as_path());
 
     let mut checkpoint_no: u64 = 0;
@@ -396,11 +383,7 @@ fn run_operation(
 /// host coordinator owns retry policy (R11), and no credentials cross into
 /// the worker.
 fn build_engine(search_path: &Path) -> rhai::Engine {
-    let mut engine = rhai::Engine::new();
-    engine.set_max_operations(2_000_000);
-    engine.set_max_call_levels(64);
-    engine.set_max_string_size(64 * 1024 * 1024);
-    crate::helpers::register_all(&mut engine);
+    let mut engine = crate::core::invocation::engine();
     let mut resolver = rhai::module_resolvers::FileModuleResolver::new();
     resolver.set_base_path(search_path);
     engine.set_module_resolver(resolver);

@@ -43,6 +43,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
+/// Canonical tool destination shared by root preparation and the executor.
+pub(crate) const TOOLS_DOMAIN_PATH: &str = "/work/tools";
+
 /// Operations the worker entry point dispatches (interfaces §4, op 1).
 const SUPPORTED_OPERATIONS: &[&str] = &[
     "install",

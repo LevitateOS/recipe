@@ -89,7 +89,10 @@ impl DomainConfig {
             id: invocation_id.to_string(),
             root,
             init: WORKER_INIT.to_string(),
-            args: vec![main_domain_path.to_string()],
+            args: vec![
+                crate::worker::WORKER_ENTRY_ARG.to_string(),
+                main_domain_path.to_string(),
+            ],
             environment,
             vcpus,
             memory_mib: DEFAULT_MEMORY_MIB,

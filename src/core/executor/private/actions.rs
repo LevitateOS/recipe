@@ -57,7 +57,7 @@ pub(crate) fn remove_with_context(
         &compiled.recipe_path,
         compiled.base_dir.as_deref(),
         build_dir,
-        None,
+        exec.tools_prefix_override(),
         defines,
     );
 
@@ -155,7 +155,7 @@ pub(crate) fn cleanup_with_context(
         &compiled.recipe_path,
         compiled.base_dir.as_deref(),
         Some(build_dir),
-        None,
+        exec.tools_prefix_override(),
         defines,
     );
 
@@ -307,7 +307,7 @@ pub(crate) fn run_check_with_context(
         &compiled.recipe_path,
         compiled.base_dir.as_deref(),
         Some(build_dir),
-        None,
+        exec.tools_prefix_override(),
         defines,
     );
 

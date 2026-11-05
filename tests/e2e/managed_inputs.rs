@@ -251,6 +251,7 @@ fn is_installed(ctx) {
         assert_eq!(context["observation"], observation);
         assert_eq!(context["runtime"]["paths"]["inputs"], "/inputs");
         assert_eq!(context["runtime"]["paths"]["build"], "/work/build");
+        assert_eq!(context["runtime"]["paths"]["tools"], "/work/tools");
         assert!(String::from_utf8_lossy(&output.stderr).contains("launcher exit 0; result exited"));
         assert_eq!(
             std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
@@ -354,4 +355,50 @@ fn is_installed(ctx) {
             );
         }
     }
+}
+
+#[test]
+fn managed_cleanup_and_remove_return_context_after_checkpoint_ack() {
+    let (_dir, recipes) = create_test_env();
+    let source = r#"
+const RECIPE_API = 2;
+let ctx = #{name: "checkpoint-hooks"};
+fn cleanup(ctx, reason) { ctx.state.reason = reason; ctx.state.operation = "cleanup"; ctx }
+fn remove(ctx) { ctx.state.removed = true; ctx.state.build = BUILD_DIR; ctx.state.operation = "remove"; ctx }
+"#;
+    write_recipe(&recipes, "check", source);
+    for operation in ["cleanup", "remove"] {
+        let output = managed_command(&recipes, operation).output().unwrap();
+        assert_success(&output);
+        let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(context["state"]["operation"], operation);
+        assert_eq!(context["runtime"]["paths"]["tools"], "/work/tools");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("1 checkpoint acked"));
+        if operation == "cleanup" {
+            assert_eq!(context["state"]["reason"], "manual");
+        } else {
+            assert_eq!(context["state"]["removed"], true);
+            assert_eq!(context["state"]["build"], "/work/build");
+        }
+        assert_eq!(
+            std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+            source
+        );
+    }
+}
+
+#[test]
+fn managed_cleanup_without_a_hook_is_a_noop() {
+    let (_dir, recipes) = create_test_env();
+    let source = "const RECIPE_API = 2; let ctx = #{name: \"no-cleanup\"};\n";
+    write_recipe(&recipes, "check", source);
+    let output = managed_command(&recipes, "cleanup").output().unwrap();
+    assert_success(&output);
+    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(context["name"], "no-cleanup");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("0 checkpoints acked"));
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+        source
+    );
 }

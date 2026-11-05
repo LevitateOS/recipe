@@ -17,13 +17,7 @@ const MAX_ID: usize = 64;
 /// variables recorded by I01/R05"). Extra values must be slash-free
 /// literals (`gcc`) or absolute *domain* paths (`/work/...`); host paths
 /// are rejected because the domain cannot resolve them.
-const TOOLCHAIN_ENV_ALLOW: &[&str] = &[
-    "CARGO_HOME",
-    "RUSTUP_HOME",
-    "CC",
-    "CXX",
-    "MAKEFLAGS",
-];
+const TOOLCHAIN_ENV_ALLOW: &[&str] = &["CARGO_HOME", "RUSTUP_HOME", "CC", "CXX", "MAKEFLAGS"];
 
 /// `<recipe-name>-<unix-millis>-<pid>`, `[A-Za-z0-9_-]{1,64}` (§5).
 pub fn invocation_id(recipe_stem: &str) -> Result<String> {
@@ -93,7 +87,13 @@ pub fn allowlisted_env(
 ) -> Result<Vec<(String, String)>> {
     validate_invocation_id(invocation_id)?;
     let mut env = vec![
-        ("PATH".to_string(), "/work/tools:/usr/bin:/bin".to_string()),
+        (
+            "PATH".to_string(),
+            format!(
+                "{0}/usr/bin:{0}/usr/sbin:{0}/bin:{0}/sbin:{0}:/usr/bin:/bin",
+                super::TOOLS_DOMAIN_PATH
+            ),
+        ),
         ("RECIPE_WORKER".to_string(), "1".to_string()),
         ("RECIPE_INVOCATION".to_string(), invocation_id.to_string()),
         ("BUILD_DIR".to_string(), "/work/build".to_string()),

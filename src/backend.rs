@@ -16,11 +16,9 @@
 //!
 //! The Ginux launcher path comes from `GINUX_BIN` (see
 //! `docs/ginux-recipe-interfaces.md` §2). A missing or unexecutable launcher
-//! is a `startup` failure. When `RECIPE_WORKER=1` is set together with the
-//! coordinator-issued `RECIPE_INVOCATION`, selection is forced to in-process
-//! execution for the internal worker entry path: the worker runs its engine
-//! calls in-process inside the domain and can never recursively invoke the
-//! Ginux backend.
+//! is a `startup` failure. Public selection always requires Ginux, regardless
+//! of worker environment variables. The private worker entry invokes the shared
+//! lifecycle executor directly inside its domain; it does not select a backend.
 //!
 //! [`Backend::run`] launches the domain for real (R06): it prepares the R05
 //! invocation inputs, spawns the launcher, pumps the R01 worker protocol,
@@ -80,11 +78,6 @@ impl std::str::FromStr for BackendKind {
 /// operation routes through. This is the selection surface R06 launches from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Backend {
-    /// Run recipe code in-process. Reachable only through the internal worker
-    /// entry path (`RECIPE_WORKER=1` with a coordinator-issued
-    /// `RECIPE_INVOCATION`); [`Backend::run`] refuses it anywhere else, so no
-    /// public caller can evaluate recipe code on the host.
-    Host,
     /// Run recipe code inside a Ginux domain started from this launcher.
     Ginux {
         /// Resolved executable launcher (from `GINUX_BIN`), verified present
@@ -96,11 +89,6 @@ pub enum Backend {
 impl Backend {
     /// Resolve the backend from an explicit caller choice (`--backend`),
     /// falling back to `RECIPE_BACKEND`, falling back to the `ginux` default.
-    ///
-    /// Under `RECIPE_WORKER=1` this always returns [`Backend::Host`]
-    /// (forced in-process execution for the internal worker entry path); an
-    /// explicit non-host request is noted on stderr so the override is
-    /// visible, never silent.
     ///
     /// A legacy `host`/`in-process` request (flag or env) is a `startup`
     /// failure with migration guidance: public host execution was removed
@@ -116,16 +104,6 @@ impl Backend {
                 }
             },
         };
-
-        if std::env::var("RECIPE_WORKER").as_deref() == Ok("1") {
-            if requested == Some(BackendKind::Ginux) {
-                eprintln!(
-                    "recipe: RECIPE_WORKER=1 forces in-process execution; \
-                     ignoring requested ginux backend (no recursive Ginux launch)"
-                );
-            }
-            return Ok(Backend::Host);
-        }
 
         match requested.unwrap_or(BackendKind::Ginux) {
             BackendKind::Host => Err(host_removed_error()),
@@ -144,7 +122,6 @@ impl Backend {
     /// The requested kind behind this resolved backend.
     pub fn kind(&self) -> BackendKind {
         match self {
-            Backend::Host => BackendKind::Host,
             Backend::Ginux { .. } => BackendKind::Ginux,
         }
     }
@@ -152,7 +129,6 @@ impl Backend {
     /// Short backend name for logs and diagnostics.
     pub fn name(&self) -> &'static str {
         match self {
-            Backend::Host => "host",
             Backend::Ginux { .. } => "ginux",
         }
     }
@@ -160,18 +136,15 @@ impl Backend {
     /// Launcher executable for the `ginux` backend, if selected.
     pub fn launcher(&self) -> Option<&Path> {
         match self {
-            Backend::Host => None,
             Backend::Ginux { launcher } => Some(launcher),
         }
     }
 
     /// Route one executable recipe operation through the selected backend.
     ///
-    /// The internal worker entry path (`RECIPE_WORKER=1` with a
-    /// coordinator-issued `RECIPE_INVOCATION`) runs `host_op` in-process
-    /// inside the domain. Anywhere else a `Host` value is a `startup`
-    /// failure naming the removal: public host execution is gone and is
-    /// never used as a silent fallback.
+    /// The legacy callback is retained until coordinator option transport is
+    /// migrated; it is never invoked. Public recipe evaluation always launches
+    /// Ginux. The private worker calls the shared lifecycle executor directly.
     ///
     /// Ginux prepares the invocation inputs for real (R05: discovery, ids,
     /// allowlisted env, staged files, domain config), launches the domain
@@ -185,16 +158,9 @@ impl Backend {
         recipe: &Path,
         search_path: Option<&Path>,
         persist_ctx: bool,
-        host_op: impl FnOnce() -> Result<rhai::Map>,
+        _host_op: impl FnOnce() -> Result<rhai::Map>,
     ) -> Result<rhai::Map> {
         match self {
-            Backend::Host => {
-                if std::env::var("RECIPE_WORKER").as_deref() == Ok("1") {
-                    host_op()
-                } else {
-                    Err(host_removed_error())
-                }
-            }
             Backend::Ginux { launcher } => {
                 let prepared =
                     crate::inputs::prepare_invocation(recipe, operation, search_path, &[], &[])

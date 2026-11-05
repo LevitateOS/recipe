@@ -106,3 +106,6 @@ mod dependencies;
 #[cfg(target_os = "linux")]
 #[path = "e2e/managed_inputs.rs"]
 mod managed_inputs;
+
+#[path = "e2e/worker_entry.rs"]
+mod worker_entry;
