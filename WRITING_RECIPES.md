@@ -90,7 +90,9 @@ to owned directory handles, preserving their public /dev/fd/N[/path] names.
 The interpreter reopens through the descriptor owner with a fresh read offset;
 private kernel/backend handles are never path authority. A required CLOEXEC
 source or directory fails before replacement. The same readonly reopening lets
-Bash source an owned script from an inherited descriptor. General /dev/fd
+Bash fork an image rm helper, then source the deleted script from an inherited
+descriptor. Libc fork publishes the virtual child TID before execution; native
+signal return lets Bash resume after its SIGCHLD handler. General /dev/fd
 metadata/procfs behavior and native-image descriptor paths are not provided.
 Owned interpreters remain unsupported. Absolute execve/execveat and cwd-relative
 execve names work; arrays are bounded to 4096

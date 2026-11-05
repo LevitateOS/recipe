@@ -1029,7 +1029,7 @@ fn install(ctx) {
 }
 
 #[test]
-fn managed_shell_reopens_an_owned_script_through_a_public_descriptor() {
+fn managed_shell_reopens_an_unlinked_script_after_a_libc_fork() {
     let (_dir, recipes) = create_test_env();
     let source = r##"
 const RECIPE_API = 2;
@@ -1037,8 +1037,9 @@ let ctx = #{name: "managed-descriptor-script"};
 fn is_installed(ctx) {
     write_file("/work/build/fd-script", "printf '%s|%s' \"$0\" \"$1\"\nprintf fd-product > /work/build/fd-result\n");
     ctx.state.captured = exec_output("/usr/bin/bash", ["--noprofile", "--norc", "-c",
-        "exec 8</work/build/fd-script; source /dev/fd/8 'spaced argument'", "fd-shell"]);
-    if ctx.state.captured == "fd-shell|spaced argument" && read_file("/work/build/fd-result") == "fd-product" {
+        "exec 8</work/build/fd-script; /usr/bin/rm /work/build/fd-script; source /dev/fd/8 'spaced argument'", "fd-shell"]);
+    ctx.state.removed = !is_file("/work/build/fd-script");
+    if ctx.state.removed && ctx.state.captured == "fd-shell|spaced argument" && read_file("/work/build/fd-result") == "fd-product" {
         return ready(ctx);
     }
     needs_work(ctx, "descriptor script did not produce the expected bytes")
@@ -1049,6 +1050,7 @@ fn is_installed(ctx) {
     assert_success(&output);
     let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(context["state"]["captured"], "fd-shell|spaced argument");
+    assert_eq!(context["state"]["removed"], true);
     let diagnostics = String::from_utf8_lossy(&output.stderr);
     assert!(
         diagnostics.contains("launcher exit 0; result exited"),
