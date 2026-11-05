@@ -603,3 +603,59 @@ fn managed_options_reject_unsupported_targets_and_invalid_force_before_setup() {
         assert!(!dir.path().join("state").exists());
     }
 }
+
+#[test]
+fn managed_state_restores_and_publishes_links_without_rebuilding() {
+    let (_dir, recipes) = create_test_env();
+    write_recipe(
+        &recipes,
+        "check",
+        r#"
+const RECIPE_API = 2;
+let ctx = #{name: "retained-links", state: #{installs: 0}};
+fn is_acquired(ctx) { ready(ctx) }
+fn is_built(ctx) { ready(ctx) }
+fn is_installed(ctx) {
+    if ctx.state.installs == 1 {
+        if read_file("/out/tree/link") != "payload" { throw "link did not restore"; }
+        ctx.outputs.rootfs = "/out/tree";
+        return ready(ctx);
+    }
+    needs_work(ctx, "produce")
+}
+fn install(ctx) {
+    if ctx.state.installs != 0 { throw "unexpected rebuild"; }
+    mkdir("/out/tree");
+    write_file("/out/tree/product", "payload");
+    ln("product", "/out/tree/link");
+    ln("/usr/bin/program", "/out/tree/absolute");
+    ctx.state.installs += 1;
+    ctx.outputs.rootfs = "/out/tree";
+    ctx
+}
+"#,
+    );
+    let mut publications = Vec::new();
+    for _ in 0..2 {
+        let output = retained_command(&recipes, "install").output().unwrap();
+        assert_success(&output);
+        let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(context["state"]["installs"], 1);
+        let root = Path::new(context["outputs"]["rootfs"].as_str().unwrap()).to_path_buf();
+        assert_eq!(std::fs::read(root.join("link")).unwrap(), b"payload");
+        assert_eq!(
+            std::fs::read_link(root.join("link")).unwrap(),
+            Path::new("product")
+        );
+        assert_eq!(
+            std::fs::read_link(root.join("absolute")).unwrap(),
+            Path::new("/usr/bin/program")
+        );
+        publications.push(root);
+    }
+    assert_ne!(publications[0], publications[1]);
+    assert_eq!(
+        std::fs::read(publications[0].join("product")).unwrap(),
+        b"payload"
+    );
+}

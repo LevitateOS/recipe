@@ -84,21 +84,30 @@ pub(crate) fn publish(invocation: &str, archive: &Path, context: &mut Value) -> 
     let mut published_bytes = 0u64;
     let mut archive = tar::Archive::new(file);
     let mut long_name = None;
+    let mut long_link = None;
+    let mut links = BTreeMap::new();
     for (raw_count, entry) in archive.entries()?.raw(true).enumerate() {
-        if raw_count >= MAX_ENTRIES * 2 {
+        if raw_count >= MAX_ENTRIES * 3 {
             bail!("excessive export headers");
         }
         let mut entry = entry?;
-        if entry.header().entry_type().is_gnu_longname() {
-            if long_name.is_some() || !(2..=256).contains(&entry.size()) {
+        if entry.header().entry_type().is_gnu_longname()
+            || entry.header().entry_type().is_gnu_longlink()
+        {
+            let pending = if entry.header().entry_type().is_gnu_longname() {
+                &mut long_name
+            } else {
+                &mut long_link
+            };
+            if pending.is_some() || !(2..=256).contains(&entry.size()) {
                 bail!("invalid long export name");
             }
             let mut name = vec![0; entry.size() as usize];
             entry.read_exact(&mut name)?;
-            if name.pop() != Some(0) {
+            if name.pop() != Some(0) || name.contains(&0) {
                 bail!("unterminated long export name");
             }
-            long_name = Some(name);
+            *pending = Some(name);
             continue;
         }
         let path = String::from_utf8(
@@ -113,18 +122,36 @@ pub(crate) fn publish(invocation: &str, archive: &Path, context: &mut Value) -> 
             bail!("duplicate or excessive export entries");
         }
         let kind = entry.header().entry_type();
-        if !kind.is_file() && !kind.is_dir() {
+        if !kind.is_file() && !kind.is_dir() && !kind.is_symlink() {
             bail!("unsupported export entry kind at {path}");
         }
+        if long_link.is_some() && !kind.is_symlink() {
+            bail!("link target on a non-link export entry");
+        }
+        let target = if kind.is_symlink() {
+            let bytes = long_link
+                .take()
+                .or_else(|| entry.link_name_bytes().map(|name| name.into_owned()))
+                .context("export link has no target")?;
+            if bytes.is_empty() || bytes.len() > 255 || bytes.contains(&0) {
+                bail!("invalid export link target");
+            }
+            Some(PathBuf::from(std::ffi::OsStr::from_bytes(&bytes)))
+        } else {
+            None
+        };
         let size = entry.size();
         bytes = bytes.checked_add(size).context("export size overflow")?;
-        if bytes > MAX_BYTES || (kind.is_dir() && size != 0) {
+        if bytes > MAX_BYTES || (!kind.is_file() && size != 0) {
             bail!("invalid export size");
         }
         let mode = entry.header().mode()? & 0o777;
         let mut destinations = Vec::new();
         for (name, root) in &selected {
             let suffix = if path == root {
+                if kind.is_symlink() {
+                    bail!("a named output must be a regular file or directory");
+                }
                 found.insert(name.clone());
                 Some("")
             } else {
@@ -143,7 +170,11 @@ pub(crate) fn publish(invocation: &str, archive: &Path, context: &mut Value) -> 
         if destinations.is_empty() {
             continue;
         }
-        if kind.is_dir() {
+        if let Some(target) = target {
+            for destination in destinations {
+                links.insert(destination, target.clone());
+            }
+        } else if kind.is_dir() {
             for destination in destinations {
                 fs::create_dir_all(&destination)?;
                 directories.insert(destination, mode);
@@ -183,14 +214,33 @@ pub(crate) fn publish(invocation: &str, archive: &Path, context: &mut Value) -> 
             output.sync_all()?;
         }
     }
-    if long_name.is_some() {
+    if long_name.is_some() || long_link.is_some() {
         bail!("long export name without an entry");
     }
     if found.len() != selected.len() {
         bail!("a declared output is absent from the completed domain export");
     }
-    // Set directory modes only after children are materialized. No archive
-    // symlink or hardlink is ever created, so parents stay within fresh staging.
+    // Materialize links only after regular bytes. Preflight every parent before
+    // creating any link, so even conflicting archive entries cannot redirect an
+    // extraction, cleanup, or permission operation outside private staging.
+    for destination in links.keys() {
+        fs::create_dir_all(destination.parent().context("missing link parent")?)?;
+        if fs::symlink_metadata(destination).is_ok() {
+            bail!("export symlink conflicts with a file or parent directory");
+        }
+    }
+    for (destination, target) in &links {
+        std::os::unix::fs::symlink(target, destination)?;
+    }
+    // Rootfs products may contain absolute links meaningful inside their future
+    // root. Preserve their bytes; never follow them while publishing.
+    for entry in walkdir::WalkDir::new(staging.0.path()).follow_links(false) {
+        let entry = entry?;
+        if entry.file_type().is_dir() {
+            File::open(entry.path())?.sync_all()?;
+        }
+    }
+    // Apply directory modes after all children and links have been created.
     for (directory, mode) in directories.iter().rev() {
         File::open(directory)?.sync_all()?;
         fs::set_permissions(directory, fs::Permissions::from_mode(*mode))?;

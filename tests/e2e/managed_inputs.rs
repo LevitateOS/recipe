@@ -1454,6 +1454,9 @@ fn install(ctx) {
     let long_name = "";
     for index in 0..120 { long_name += "a"; }
     write_file("/out/tree/" + long_name, "long-name-product");
+    ln("product", "/out/tree/link");
+    ln("/usr/bin/program", "/out/tree/absolute");
+    ln(long_name, "/out/tree/long-link");
     write_file("/work/private", "not selected");
     ctx.outputs.tree = "/out/tree";
     ctx.outputs.file = "/out/tree/product";
@@ -1469,6 +1472,22 @@ fn install(ctx) {
     let tree = Path::new(context["outputs"]["tree"].as_str().unwrap());
     let published = tree.parent().unwrap();
     assert!(tree.join("empty").is_dir());
+    assert_eq!(
+        std::fs::read_link(tree.join("link")).unwrap(),
+        Path::new("product")
+    );
+    assert_eq!(
+        std::fs::read(tree.join("link")).unwrap(),
+        b"published-bytes"
+    );
+    assert_eq!(
+        std::fs::read_link(tree.join("absolute")).unwrap(),
+        Path::new("/usr/bin/program")
+    );
+    assert_eq!(
+        std::fs::read_link(tree.join("long-link")).unwrap(),
+        Path::new(&"a".repeat(120))
+    );
     assert_eq!(
         std::fs::read(tree.join("a".repeat(120))).unwrap(),
         b"long-name-product"
@@ -1509,7 +1528,7 @@ fn install(ctx) {
 }
 
 #[test]
-fn managed_publication_rejects_archive_traversal_and_links() {
+fn managed_publication_rejects_archive_traversal_and_link_redirects() {
     use std::os::unix::fs::PermissionsExt;
     let (dir, recipes) = create_test_env();
     let source = r#"
@@ -1525,7 +1544,15 @@ fn install(ctx) { write_file("/out/product", "valid"); ctx.outputs.product = "/o
     std::fs::write(&sentinel, b"keep").unwrap();
     let launcher = std::env::var("GINUX_BIN").unwrap();
     let wrapper = dir.path().join("corrupt-export");
-    for kind in ["traversal", "symlink", "hardlink", "longname"] {
+    for kind in [
+        "traversal",
+        "symlink",
+        "hardlink",
+        "longname",
+        "longlink",
+        "link-parent",
+        "link-child",
+    ] {
         // Run the real supervisor and worker before injecting malformed export
         // bytes at the coordinator boundary. This is not a protocol stub.
         std::fs::write(
@@ -1538,10 +1565,21 @@ if result.returncode: sys.exit(result.returncode)
 path = sys.argv[sys.argv.index('--export-file')+1]
 with tarfile.open(path, 'w') as archive:
     entry = tarfile.TarInfo('out/../../sentinel' if {kind:?} == 'traversal' else 'out/product')
-    if {kind:?} == 'longname':
-        entry.type = tarfile.GNUTYPE_LONGNAME
+    if {kind:?} in ('longname', 'longlink'):
+        entry.type = tarfile.GNUTYPE_LONGNAME if {kind:?} == 'longname' else tarfile.GNUTYPE_LONGLINK
         entry.size = 1024
         archive.addfile(entry, io.BytesIO(b'x'*1024))
+    elif {kind:?} in ('link-parent', 'link-child'):
+        entry.type = tarfile.DIRTYPE
+        archive.addfile(entry)
+        link = tarfile.TarInfo('out/product/redirect')
+        link.type = tarfile.SYMTYPE
+        link.linkname = {outside:?}
+        child = tarfile.TarInfo('out/product/redirect/sentinel')
+        child.size = 7
+        if {kind:?} == 'link-parent': archive.addfile(link)
+        archive.addfile(child, io.BytesIO(b'changed'))
+        if {kind:?} == 'link-child': archive.addfile(link)
     elif {kind:?} == 'traversal':
         entry.size = 7
         archive.addfile(entry, io.BytesIO(b'changed'))
@@ -1550,7 +1588,8 @@ with tarfile.open(path, 'w') as archive:
         entry.linkname = {sentinel:?}
         archive.addfile(entry)
 "#,
-                sentinel = sentinel.to_str().unwrap()
+                sentinel = sentinel.to_str().unwrap(),
+                outside = dir.path().to_str().unwrap()
             ),
         )
         .unwrap();
