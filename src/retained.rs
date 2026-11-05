@@ -111,7 +111,15 @@ impl Retained {
         let inputs = prepared
             .inputs
             .iter()
-            .map(|input| (&input.name, input.sha256, input.size, input.mode))
+            .map(|input| {
+                (
+                    &input.name,
+                    &input.kind,
+                    input.sha256,
+                    input.size,
+                    input.mode,
+                )
+            })
             .collect::<Vec<_>>();
         let identity = hex::encode(Sha256::digest(serde_json::to_vec(&(
             "recipe-state-v1-transport-v5",

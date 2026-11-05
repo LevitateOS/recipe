@@ -85,10 +85,24 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
 
     let inputs = root.path().join("inputs");
     std::fs::create_dir(&inputs)?;
-    for input in &invocation.inputs {
+    for (index, input) in invocation.inputs.iter().enumerate() {
         super::discover::validate_input_name(&input.name)?;
         ensure_parents(&inputs, Path::new(&input.name))?;
-        let mut source = regular_file(&invocation.staging_dir().join(&input.name))?;
+        match input.kind {
+            super::InputKind::Directory => {
+                let path = inputs.join(&input.name);
+                if !path.exists() {
+                    std::fs::create_dir(&path)?;
+                }
+                if !std::fs::symlink_metadata(&path)?.is_dir() {
+                    bail!("input directory collision: {}", input.name);
+                }
+                continue;
+            }
+            super::InputKind::Symlink(_) => continue, // Install links after all ordinary paths.
+            super::InputKind::File => {}
+        }
+        let mut source = regular_file(&invocation.staging_dir().join(format!("input-{index}")))?;
         let mut destination = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -105,6 +119,12 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
         destination.set_permissions(std::fs::Permissions::from_mode(
             0o444 | (input.mode & 0o111),
         ))?;
+    }
+    for input in &invocation.inputs {
+        if let super::InputKind::Symlink(target) = &input.kind {
+            ensure_parents(&inputs, Path::new(&input.name))?;
+            std::os::unix::fs::symlink(target, inputs.join(&input.name))?;
+        }
     }
     let worker_path = worker_binary()?;
     let mut worker = regular_file(&worker_path)
@@ -138,7 +158,12 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
         std::fs::create_dir(&directory)?;
         std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o777))?;
     }
-    std::fs::set_permissions(&inputs, std::fs::Permissions::from_mode(0o555))?;
+    for entry in walkdir::WalkDir::new(&inputs).follow_links(false) {
+        let entry = entry?;
+        if entry.file_type().is_dir() {
+            std::fs::set_permissions(entry.path(), std::fs::Permissions::from_mode(0o555))?;
+        }
+    }
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o555))?;
     Ok(root)
 }

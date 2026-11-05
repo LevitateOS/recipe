@@ -303,7 +303,7 @@ fn install(ctx) {
 }
 
 #[test]
-fn managed_declared_source_tree_is_readonly_and_rejects_symlinks() {
+fn managed_declared_source_tree_preserves_empty_directories_and_confined_links() {
     let (dir, recipes) = create_test_env();
     let source = dir.path().join("source");
     std::fs::create_dir_all(source.join("nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/")).unwrap();
@@ -315,7 +315,8 @@ fn managed_declared_source_tree_is_readonly_and_rejects_symlinks() {
 const RECIPE_API = 2;
 let ctx = #{name: "source-input"};
 fn is_installed(ctx) {
-    ctx.value = read_file("/inputs/source/nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/value");
+    if !is_dir("/inputs/source/empty") { throw "empty input directory missing"; }
+    ctx.value = read_file("/inputs/source/chain");
     let denied = false;
     try { write_file("/inputs/source/nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/value", "changed"); } catch (error) { denied = true; }
     if !denied { throw "input accepted mutation"; }
@@ -323,6 +324,9 @@ fn is_installed(ctx) {
 }
 "#,
     );
+    std::fs::create_dir(source.join("empty")).unwrap();
+    std::os::unix::fs::symlink("nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/value", source.join("alias")).unwrap();
+    std::os::unix::fs::symlink("alias", source.join("chain")).unwrap();
     let selection = format!("source={}", source.display());
     let output = managed_command(&recipes, "isinstalled")
         .args(["--input", &selection])
@@ -335,6 +339,7 @@ fn is_installed(ctx) {
         std::fs::read_to_string(source.join("nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/value")).unwrap(),
         "declared input"
     );
+    std::fs::remove_file(source.join("alias")).unwrap();
     std::os::unix::fs::symlink(source.join("nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/value"), source.join("alias")).unwrap();
     let rejected = managed_command(&recipes, "isinstalled")
         .args(["--input", &selection])
@@ -342,6 +347,73 @@ fn is_installed(ctx) {
         .unwrap();
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("symlink"));
+    std::fs::remove_file(source.join("alias")).unwrap();
+    for target in ["../outside", "chain", "nested/up/../outside"] {
+        // nested/up -> .. makes the last path escape after link expansion,
+        // despite its apparently contained lexical spelling.
+        let up = source.join("nested/up");
+        if !std::fs::symlink_metadata(&up).is_ok() {
+            std::os::unix::fs::symlink("..", &up).unwrap();
+        }
+        std::os::unix::fs::symlink(target, source.join("alias")).unwrap();
+        let rejected = managed_command(&recipes, "isinstalled")
+            .args(["--input", &selection])
+            .output()
+            .unwrap();
+        assert!(
+            !rejected.status.success(),
+            "accepted invalid link: {target}"
+        );
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("symlink"));
+        std::fs::remove_file(source.join("alias")).unwrap();
+    }
+}
+
+#[test]
+fn managed_large_asset_is_streamed_and_oversized_asset_rejected() {
+    use std::io::{Seek, SeekFrom, Write};
+    let (dir, recipes) = create_test_env();
+    let asset = dir.path().join("asset.iso");
+    let size = 513u64 * 1024 * 1024 + 7;
+    let mut file = std::fs::File::create(&asset).unwrap();
+    file.set_len(size).unwrap();
+    file.seek(SeekFrom::End(-7)).unwrap();
+    file.write_all(b"payload").unwrap();
+    drop(file);
+    write_recipe(
+        &recipes,
+        "check",
+        &format!(
+            r#"
+const RECIPE_API = 2;
+let ctx = #{{name: "large-input"}};
+fn is_installed(ctx) {{
+    if trim(shell_output("wc -c < /inputs/asset.iso")) != "{size}" {{ throw "asset truncated"; }}
+    if shell_output("tail -c 7 /inputs/asset.iso") != "payload" {{ throw "asset bytes changed"; }}
+    ready(ctx)
+}}
+"#
+        ),
+    );
+    let selection = format!("asset.iso={}", asset.display());
+    let output = managed_command(&recipes, "isinstalled")
+        .args(["--input", &selection])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(std::fs::metadata(&asset).unwrap().len(), size);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&asset)
+        .unwrap()
+        .set_len(16 * 1024 * 1024 * 1024 + 1)
+        .unwrap();
+    let rejected = managed_command(&recipes, "isinstalled")
+        .args(["--input", &selection])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("exceeding"));
 }
 
 #[test]

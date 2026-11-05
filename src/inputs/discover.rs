@@ -3,7 +3,7 @@
 //! Resolution mirrors the executor: `//! extends:` and `import "..."` paths
 //! resolve relative to the referring file's directory first, then against the
 //! executor search path. Anything else — absolute host paths, missing files,
-//! symlinks, directories, secret-bearing names — fails with an explicit
+//! recipe symlinks, undeclared directories, secret-bearing names — fails with an explicit
 //! error instead of staging unchecked host state.
 //!
 //! Staged domain names preserve relative directories under `/inputs`. Literal
@@ -28,15 +28,25 @@ pub const MAIN_NAME_DOMAIN: &str = "/inputs/main.rhai";
 /// Configured-launch inputs are copied directly, not through a ustar name field.
 /// Keep `/inputs/` + NAME + NUL within the launcher's 256-byte path buffer.
 const MAX_INPUT_NAME: usize = 247;
-/// G10 per-file/total caps mirrored (streamed, never fully buffered).
-const MAX_INPUT_FILE: u64 = 512 * 1024 * 1024;
-const MAX_INPUTS_TOTAL: u64 = 2 * 1024 * 1024 * 1024;
+/// Explicit assets include installation DVDs; stream bounded copies.
+const MAX_INPUT_FILE: u64 = 16 * 1024 * 1024 * 1024;
+const MAX_INPUTS_TOTAL: u64 = 32 * 1024 * 1024 * 1024;
 /// Transitive import depth; deeper nesting is an explicit failure, not a hang.
 const MAX_IMPORT_DEPTH: usize = 16;
+
+/// Kind and link bytes participate in the retained input identity.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub enum InputKind {
+    File,
+    Directory,
+    /// Relative target confined to the explicitly selected source tree.
+    Symlink(String),
+}
 
 /// One staged host file and its `/inputs/NAME` identity.
 #[derive(Debug, Clone)]
 pub struct StagedInput {
+    pub kind: InputKind,
     /// Relative domain name under `/inputs`; each component uses `[A-Za-z0-9._-]`.
     pub name: String,
     /// Host file this was staged from (never crosses into the domain).
@@ -107,6 +117,7 @@ pub fn discover_inputs(
         validate_input_name(&extra.name)?;
         let meta = std::fs::symlink_metadata(&extra.path)?;
         if meta.is_dir() {
+            let mut links = HashMap::new();
             for entry in walkdir::WalkDir::new(&extra.path)
                 .follow_links(false)
                 .sort_by_file_name()
@@ -118,18 +129,31 @@ pub fn discover_inputs(
             {
                 let entry = entry
                     .context("input preparation failure: cannot traverse declared input tree")?;
-                if entry.file_type().is_dir() {
-                    continue;
-                }
                 let relative = entry.path().strip_prefix(&extra.path)?;
-                let name = format!(
-                    "{}/{}",
-                    extra.name,
-                    relative
+                let relative = relative
+                    .to_str()
+                    .context("input preparation failure: non-Unicode source name")?;
+                let name = if relative.is_empty() {
+                    extra.name.clone()
+                } else {
+                    format!("{}/{relative}", extra.name)
+                };
+                let kind = if entry.file_type().is_dir() {
+                    InputKind::Directory
+                } else if entry.file_type().is_symlink() {
+                    let target = std::fs::read_link(entry.path())?;
+                    let target = target
                         .to_str()
-                        .context("input preparation failure: non-Unicode source name")?
-                );
-                collector.stage_named(&name, entry.path(), &name)?;
+                        .context("input preparation failure: non-Unicode symlink")?;
+                    links.insert(relative.to_owned(), target.to_owned());
+                    InputKind::Symlink(target.to_owned())
+                } else {
+                    InputKind::File
+                };
+                collector.stage_kind(&name, entry.path(), &name, kind)?;
+            }
+            for relative in links.keys() {
+                validate_tree_link(relative, &links)?;
             }
         } else {
             collector.stage_named(&extra.name, &extra.path, &extra.name)?;
@@ -140,6 +164,54 @@ pub fn discover_inputs(
     }
 
     collector.finish(recipe_digest, recipe_stem)
+}
+
+/// Resolve the discovered link graph without consulting the live host tree.
+/// Expand links before processing `..`: lexical containment alone is not enough
+/// when an intermediate link redirects to a shallower directory.
+fn validate_tree_link(relative: &str, links: &HashMap<String, String>) -> Result<()> {
+    use std::collections::VecDeque;
+    let mut pending = relative
+        .split('/')
+        .map(str::to_owned)
+        .collect::<VecDeque<_>>();
+    let mut parts = Vec::<String>::new();
+    let mut followed = 0;
+    while let Some(part) = pending.pop_front() {
+        match part.as_str() {
+            "" | "." => continue,
+            ".." => {
+                if parts.pop().is_none() {
+                    bail!("input preparation failure: symlink escapes selected tree: {relative}");
+                }
+            }
+            _ => {
+                parts.push(part);
+                if let Some(target) = links.get(&parts.join("/")) {
+                    followed += 1;
+                    if followed > 40
+                        || target.is_empty()
+                        || target.len() > MAX_INPUT_NAME
+                        || target.starts_with('/')
+                    {
+                        bail!(
+                            "input preparation failure: invalid, absolute or cyclic symlink: {relative}"
+                        );
+                    }
+                    parts.pop();
+                    for component in target.split('/').rev() {
+                        pending.push_front(component.to_owned());
+                    }
+                }
+            }
+        }
+        if matches!(parts.first().map(String::as_str), Some(".git" | "target")) {
+            bail!(
+                "input preparation failure: symlink targets excluded source directory: {relative}"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Read one recipe/module file: must exist, be a regular file (never a
@@ -216,6 +288,16 @@ impl<'a> Collector<'a> {
     /// (shared imports); the same name with different bytes is an explicit
     /// duplicate-name failure.
     fn stage_named(&mut self, name: &str, host: &Path, referenced_as: &str) -> Result<()> {
+        self.stage_kind(name, host, referenced_as, InputKind::File)
+    }
+
+    fn stage_kind(
+        &mut self,
+        name: &str,
+        host: &Path,
+        referenced_as: &str,
+        kind: InputKind,
+    ) -> Result<()> {
         validate_input_name(name)?;
         if let Some(first) = self.by_name.get(name) {
             if same_file(first, host) {
@@ -231,7 +313,26 @@ impl<'a> Collector<'a> {
         if self.staged.len() >= 100_000 {
             bail!("input preparation failure: too many input files");
         }
-        let mut staged = validate_and_hash(name, host)?;
+        let mut staged = if kind == InputKind::File {
+            validate_and_hash(name, host)?
+        } else {
+            reject_secret_bearing_host(host, name)?;
+            use std::os::unix::fs::PermissionsExt;
+            let meta = std::fs::symlink_metadata(host)?;
+            let bytes = match &kind {
+                InputKind::Symlink(target) => target.as_bytes(),
+                _ => &[],
+            };
+            StagedInput {
+                name: name.to_owned(),
+                host_path: host.to_path_buf(),
+                size: bytes.len() as u64,
+                sha256: Sha256::digest(bytes).into(),
+                mode: meta.permissions().mode() & 0o777,
+                referenced_as: String::new(),
+                kind,
+            }
+        };
         staged.referenced_as = referenced_as.to_string();
         self.total = self.total.checked_add(staged.size).with_context(|| {
             format!("input preparation failure: input byte total overflowed at {name:?}")
@@ -456,6 +557,7 @@ fn validate_and_hash(name: &str, host: &Path) -> Result<StagedInput> {
     let mode = 0o644;
     let sha256 = hash_file(host, size)?;
     Ok(StagedInput {
+        kind: InputKind::File,
         name: name.to_string(),
         host_path: host.to_path_buf(),
         size,
@@ -467,10 +569,18 @@ fn validate_and_hash(name: &str, host: &Path) -> Result<StagedInput> {
 
 /// Stream `host` through sha256, failing if it grows while being read.
 pub fn hash_file(host: &Path, expected: u64) -> Result<[u8; 32]> {
-    let mut source = File::open(host)
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut source = File::options()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(host)
         .with_context(|| format!("input preparation failure: cannot open {}", host.display()))?;
     let mut hasher = Sha256::new();
-    let copied = std::io::copy(&mut source, &mut WriterHasher(&mut hasher))?;
+    let copied = std::io::copy(
+        &mut Read::by_ref(&mut source).take(expected + 1),
+        &mut WriterHasher(&mut hasher),
+    )?;
     if copied != expected {
         bail!(
             "input preparation failure: {} changed while reading ({copied} B vs {expected} B)",

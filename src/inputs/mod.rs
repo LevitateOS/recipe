@@ -36,7 +36,9 @@ mod root;
 pub(crate) use root::prepare_root;
 
 pub use config::{DomainConfig, config_text};
-pub use discover::{ExtraInput, MAIN_NAME_DOMAIN, StagedInput, discover_inputs, hash_file};
+pub use discover::{
+    ExtraInput, InputKind, MAIN_NAME_DOMAIN, StagedInput, discover_inputs, hash_file,
+};
 pub use env::{allowlisted_env, invocation_id, validate_invocation_id};
 
 use std::path::{Path, PathBuf};
@@ -60,7 +62,7 @@ const SUPPORTED_OPERATIONS: &[&str] = &[
 /// and worker into a fresh root before launching Ginux.
 ///
 /// The staging directory is a fresh per-invocation temp dir holding one file
-/// per input under its flat domain `NAME`, plus `manifest.txt` (G10-format
+/// per regular input under an internal indexed name, plus `manifest.txt` (G10-format
 /// `INPUT:` lines: domain path, sha256, size, mode), `sources.txt`
 /// (domain NAME `<-` referenced-as map), `config.toml`, and `env.txt`.
 /// The temp dir lives as long as this value does.
@@ -130,18 +132,28 @@ pub fn prepare_invocation(
 
     let staging =
         tempfile::tempdir().context("input preparation failure: cannot create staging dir")?;
-    for input in &discovered.inputs {
-        let dest = staging.path().join(&input.name);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
+    // Indexed private files cannot collide with source names or metadata.
+    for (index, input) in discovered.inputs.iter().enumerate() {
+        if input.kind != InputKind::File {
+            continue;
         }
-        std::fs::copy(&input.host_path, &dest).with_context(|| {
-            format!(
-                "input preparation failure: cannot stage /inputs/{} from {}",
-                input.name,
-                input.host_path.display()
-            )
-        })?;
+        let dest = staging.path().join(format!("input-{index}"));
+        use std::io::Read;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut source = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&input.host_path)?;
+        if !source.metadata()?.is_file() {
+            bail!("input changed kind: {}", input.name);
+        }
+        let mut target = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&dest)?;
+        if std::io::copy(&mut source.by_ref().take(input.size + 1), &mut target)? != input.size {
+            bail!("input changed size: {}", input.name);
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -205,11 +217,12 @@ fn render_manifest(inputs: &[StagedInput]) -> String {
     for input in inputs {
         total += input.size;
         out.push_str(&format!(
-            "INPUT: path=/inputs/{} sha256={} size={} mode={:04o}\n",
+            "INPUT: path=/inputs/{} sha256={} size={} mode={:04o} kind={:?}\n",
             input.name,
             hex::encode(input.sha256),
             input.size,
             input.mode,
+            input.kind,
         ));
     }
     out.push_str(&format!(
