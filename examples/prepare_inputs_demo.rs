@@ -22,7 +22,7 @@ fn main() -> anyhow::Result<()> {
     println!("== R05 real run: {} ==", recipe.display());
 
     // 1. Real preparation over the actual recfstab recipe.
-    let prepared = prepare_invocation(&recipe, "install", None, &[], &[])?;
+    let prepared = prepare_invocation(&recipe, "install", None, &[], &[], &Default::default())?;
     println!("invocation_id: {}", prepared.invocation_id);
     println!("operation: {}", prepared.operation);
     println!("recipe_digest: sha256:{}", prepared.recipe_digest);
@@ -85,14 +85,8 @@ fn main() -> anyhow::Result<()> {
     // 2. extends + import discovery over temp fixtures (proves non-vacuous).
     let fixture_dir = std::env::temp_dir().join(format!("r05demo-{}", std::process::id()));
     std::fs::create_dir_all(&fixture_dir)?;
-    std::fs::write(
-        fixture_dir.join("base.rhai"),
-        "fn shared(ctx) { ctx }\n",
-    )?;
-    std::fs::write(
-        fixture_dir.join("helper.rhai"),
-        "fn assist(ctx) { ctx }\n",
-    )?;
+    std::fs::write(fixture_dir.join("base.rhai"), "fn shared(ctx) { ctx }\n")?;
+    std::fs::write(fixture_dir.join("helper.rhai"), "fn assist(ctx) { ctx }\n")?;
     std::fs::write(
         fixture_dir.join("child.rhai"),
         "//! extends: base.rhai\nimport \"helper.rhai\" as h;\nlet ctx = #{ name: \"child\" };\n",
@@ -103,6 +97,7 @@ fn main() -> anyhow::Result<()> {
         Some(&fixture_dir),
         &[],
         &[],
+        &Default::default(),
     )?;
     println!("== discovery run: child.rhai ==");
     for input in &child.inputs {
@@ -123,7 +118,14 @@ fn main() -> anyhow::Result<()> {
         ("CC".to_string(), "gcc".to_string()),
         ("CXX".to_string(), "g++".to_string()),
     ];
-    match prepare_invocation(&recipe, "install", None, &[], &extra_env) {
+    match prepare_invocation(
+        &recipe,
+        "install",
+        None,
+        &[],
+        &extra_env,
+        &Default::default(),
+    ) {
         Ok(_) => anyhow::bail!("expected the 9-entry env to fail the §2 limit"),
         Err(err) => println!("REJECTED (expected): {err:#}"),
     }
@@ -134,7 +136,14 @@ fn main() -> anyhow::Result<()> {
         fixture_dir.join("abshost.rhai"),
         "//! extends: /etc/passwd\nlet ctx = #{ name: \"abshost\" };\n",
     )?;
-    match prepare_invocation(&fixture_dir.join("abshost.rhai"), "install", None, &[], &[]) {
+    match prepare_invocation(
+        &fixture_dir.join("abshost.rhai"),
+        "install",
+        None,
+        &[],
+        &[],
+        &Default::default(),
+    ) {
         Ok(_) => anyhow::bail!("expected the absolute extends to fail"),
         Err(err) => println!("REJECTED (expected): {err:#}"),
     }
@@ -145,7 +154,14 @@ fn main() -> anyhow::Result<()> {
         fixture_dir.join("missing.rhai"),
         "import \"no-such-module.rhai\" as m;\nlet ctx = #{ name: \"missing\" };\n",
     )?;
-    match prepare_invocation(&fixture_dir.join("missing.rhai"), "install", None, &[], &[]) {
+    match prepare_invocation(
+        &fixture_dir.join("missing.rhai"),
+        "install",
+        None,
+        &[],
+        &[],
+        &Default::default(),
+    ) {
         Ok(_) => anyhow::bail!("expected the missing import to fail"),
         Err(err) => println!("REJECTED (expected): {err:#}"),
     }
@@ -170,9 +186,8 @@ fn main() -> anyhow::Result<()> {
             true,
             Default::default(),
             &[],
-            || -> anyhow::Result<rhai::Map> {
-                panic!("host fallback must never run under the ginux backend")
-            },
+            &fixture_dir.join("destination"),
+            Some(&fixture_dir.join("state")),
         )
         .err()
         .expect("ginux run without a speaking launcher must fail");

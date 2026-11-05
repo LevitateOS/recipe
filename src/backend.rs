@@ -161,15 +161,24 @@ impl Backend {
                 options
                     .validate()
                     .context("backend startup failure: invalid invocation options")?;
-                let prepared =
-                    crate::inputs::prepare_invocation(recipe, operation, search_path, inputs, &[])
-                        .map_err(|err| {
-                            anyhow!(
-                                "backend startup failure: ginux input preparation failed for \
+                if operation != "install" && options.execution.forced() {
+                    bail!("force options apply only to install operations");
+                }
+                let prepared = crate::inputs::prepare_invocation(
+                    recipe,
+                    operation,
+                    search_path,
+                    inputs,
+                    &[],
+                    &options.execution,
+                )
+                .map_err(|err| {
+                    anyhow!(
+                        "backend startup failure: ginux input preparation failed for \
                                  `{operation}` ({}): {err:#}",
-                                recipe.display(),
-                            )
-                        })?;
+                        recipe.display(),
+                    )
+                })?;
                 let report = crate::launch::run_domain(
                     &prepared,
                     launcher,

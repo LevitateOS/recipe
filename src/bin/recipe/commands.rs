@@ -10,6 +10,14 @@ use super::{
 };
 
 pub(crate) fn execute(cli: Cli) -> Result<()> {
+    let execution = levitate_recipe::ExecutionOptions {
+        target_os: cli.target_os,
+        target_arch: cli.target_arch,
+        jobs: cli.jobs,
+        force_acquire: cli.force_acquire,
+        force_build: cli.force_build,
+        force_install: cli.force_install,
+    };
     let recipes_path = cli.recipes_path;
     output::set_machine_events(cli.machine_events);
 
@@ -47,6 +55,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             let engine = create_engine(
                 cli.build_dir.as_deref(),
                 cli.state_dir.as_deref(),
+                execution.clone(),
                 Some(&recipes_path),
                 &cli.defines,
                 &cli.inputs,
@@ -64,6 +73,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             let engine = create_engine(
                 cli.build_dir.as_deref(),
                 cli.state_dir.as_deref(),
+                execution.clone(),
                 Some(&recipes_path),
                 &cli.defines,
                 &cli.inputs,
@@ -81,6 +91,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             let engine = create_engine(
                 cli.build_dir.as_deref(),
                 cli.state_dir.as_deref(),
+                execution.clone(),
                 Some(&recipes_path),
                 &cli.defines,
                 &cli.inputs,
@@ -103,6 +114,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             let engine = create_engine(
                 cli.build_dir.as_deref(),
                 cli.state_dir.as_deref(),
+                execution.clone(),
                 Some(&recipes_path),
                 &cli.defines,
                 &cli.inputs,
@@ -120,6 +132,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             let engine = create_engine(
                 cli.build_dir.as_deref(),
                 cli.state_dir.as_deref(),
+                execution.clone(),
                 Some(&recipes_path),
                 &cli.defines,
                 &cli.inputs,
@@ -137,6 +150,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             let engine = create_engine(
                 cli.build_dir.as_deref(),
                 cli.state_dir.as_deref(),
+                execution.clone(),
                 Some(&recipes_path),
                 &cli.defines,
                 &cli.inputs,
@@ -206,11 +220,12 @@ fn emit_json(ctx: &rhai::Map, path: Option<&Path>) -> Result<()> {
 
 /// Build the engine for one executable recipe operation, routing through the
 /// single R04 backend selection (`--backend` flag falling back to
-/// `RECIPE_BACKEND`, defaulting to host). List/info/hash never reach this:
+/// `RECIPE_BACKEND`, defaulting to Ginux). List/info/hash never reach this:
 /// they need no execution domain.
 fn create_engine(
     build_dir: Option<&Path>,
     state_dir: Option<&Path>,
+    execution: levitate_recipe::ExecutionOptions,
     recipes_path: Option<&Path>,
     defines: &[String],
     inputs: &[String],
@@ -219,6 +234,7 @@ fn create_engine(
     autofix: Option<AutoFixConfig>,
     backend: Option<BackendKind>,
 ) -> Result<RecipeEngine> {
+    execution.validate()?;
     let backend = Backend::select(backend)?;
     let build_dir = match build_dir {
         Some(dir) => {
@@ -243,6 +259,7 @@ fn create_engine(
         .with_backend(backend)
         .with_ctx_persistence(!no_persist_ctx)
         .with_state_dir(state_dir.map(Path::to_owned))
+        .with_execution_options(execution)
         .with_llm_profile(llm_profile)
         .with_autofix(autofix);
 

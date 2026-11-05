@@ -24,13 +24,32 @@ pub(crate) struct Cli {
     )]
     pub(crate) recipes_path: PathBuf,
 
-    /// Build directory used for acquire/build/install work; uses a temporary directory if omitted.
+    /// Logical build destination and lock (default: stable destination under the state directory).
     #[arg(short, long, global = true)]
     pub(crate) build_dir: Option<PathBuf>,
 
     /// Store resumable state here (default: the per-user application-state directory).
     #[arg(long, global = true)]
     pub(crate) state_dir: Option<PathBuf>,
+
+    /// Execution target OS (only native Linux is currently supported).
+    #[arg(long, global = true, default_value = "linux")]
+    pub(crate) target_os: String,
+    /// Execution target architecture (only native x86_64 is currently supported).
+    #[arg(long, global = true, default_value = "x86_64")]
+    pub(crate) target_arch: String,
+    /// Parallel jobs requested by recipes; Ginux task limits still apply.
+    #[arg(short = 'j', long, global = true, default_value_t = 1)]
+    pub(crate) jobs: u16,
+    /// Rerun acquisition, build and installation for the main recipe.
+    #[arg(long, global = true)]
+    pub(crate) force_acquire: bool,
+    /// Rerun build and installation for the main recipe.
+    #[arg(long, global = true)]
+    pub(crate) force_build: bool,
+    /// Rerun installation for the main recipe.
+    #[arg(long, global = true)]
+    pub(crate) force_install: bool,
 
     /// Define scope constants (KEY=VALUE), injected into Rhai scope before execution
     #[arg(short, long = "define", global = true, value_name = "KEY=VALUE")]

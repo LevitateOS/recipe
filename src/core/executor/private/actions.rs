@@ -34,6 +34,7 @@ pub(crate) fn remove_with_context(
         build_dir,
         exec.tools_prefix_override(),
         defines,
+        &exec.options(),
     );
 
     let mut scope =
@@ -101,6 +102,7 @@ pub(crate) fn cleanup_with_context(
         Some(build_dir),
         exec.tools_prefix_override(),
         defines,
+        &exec.options(),
     );
 
     let mut scope =
@@ -167,6 +169,7 @@ pub(crate) fn run_check_with_context(
         Some(build_dir),
         exec.tools_prefix_override(),
         defines,
+        &exec.options(),
     );
 
     let mut scope =

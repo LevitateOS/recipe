@@ -59,7 +59,9 @@ impl DomainConfig {
         invocation_id: &str,
         main_domain_path: &str,
         env: &[(String, String)],
+        options: &crate::ExecutionOptions,
     ) -> Result<Self> {
+        options.validate()?;
         validate_id(invocation_id)?;
         let root = root_reference()?;
         validate_init(WORKER_INIT)?;
@@ -84,7 +86,7 @@ impl DomainConfig {
             }
             environment.push(entry);
         }
-        let vcpus = (num_cpus::get() as u64).clamp(1, 64);
+        let vcpus = u64::from(options.jobs);
         Ok(Self {
             id: invocation_id.to_string(),
             root,
@@ -145,8 +147,9 @@ pub fn config_text(
     invocation_id: &str,
     main_domain_path: &str,
     env: &[(String, String)],
+    options: &crate::ExecutionOptions,
 ) -> Result<String> {
-    DomainConfig::for_invocation(invocation_id, main_domain_path, env)?.render()
+    DomainConfig::for_invocation(invocation_id, main_domain_path, env, options)?.render()
 }
 
 /// Image reference: I01 pin by default, `GINUX_ROOT` override when set.

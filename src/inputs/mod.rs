@@ -110,13 +110,22 @@ pub fn prepare_invocation(
     search_path: Option<&Path>,
     extra_inputs: &[ExtraInput],
     extra_env: &[(String, String)],
+    options: &crate::ExecutionOptions,
 ) -> Result<PreparedInvocation> {
+    options.validate()?;
     let operation = normalize_operation(operation)?;
     let discovered = discover_inputs(recipe, search_path, extra_inputs)?;
 
     let invocation_id = invocation_id(&discovered.recipe_stem)?;
-    let env = allowlisted_env(&invocation_id, extra_env)?;
-    let config = DomainConfig::for_invocation(&invocation_id, MAIN_NAME_DOMAIN, &env)?;
+    let mut env = allowlisted_env(&invocation_id, extra_env)?;
+    for (name, value) in &mut env {
+        match name.as_str() {
+            "ARCH" => *value = options.target_arch.clone(),
+            "NPROC" => *value = options.jobs.to_string(),
+            _ => {}
+        }
+    }
+    let config = DomainConfig::for_invocation(&invocation_id, MAIN_NAME_DOMAIN, &env, options)?;
     let config_text = config.render()?;
 
     let staging =

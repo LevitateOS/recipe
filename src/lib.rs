@@ -93,6 +93,8 @@
 
 pub mod backend;
 mod core;
+mod options;
+pub use options::ExecutionOptions;
 pub mod helpers;
 pub mod inputs;
 pub mod launch;
@@ -155,6 +157,7 @@ pub struct RecipeEngine {
     defines: Vec<(String, String)>,
     inputs: Vec<inputs::ExtraInput>,
     persist_ctx: bool,
+    execution: ExecutionOptions,
     state_dir: Option<PathBuf>,
     llm_profile: Option<String>,
     autofix: Option<AutoFixConfig>,
@@ -172,6 +175,7 @@ impl RecipeEngine {
             defines: Vec::new(),
             inputs: Vec::new(),
             persist_ctx: true,
+            execution: ExecutionOptions::default(),
             state_dir: None,
             llm_profile: None,
             autofix: None,
@@ -217,6 +221,12 @@ impl RecipeEngine {
     /// Default is `true`.
     pub fn with_ctx_persistence(mut self, persist: bool) -> Self {
         self.persist_ctx = persist;
+        self
+    }
+
+    /// Select target, job count and main-recipe force policy.
+    pub fn with_execution_options(mut self, options: ExecutionOptions) -> Self {
+        self.execution = options;
         self
     }
 
@@ -359,6 +369,7 @@ impl RecipeEngine {
         Ok(worker::protocol::InvocationOptions {
             defines: self.defines.clone(),
             cleanup_reason: cleanup_reason.to_owned(),
+            execution: self.execution.clone(),
         })
     }
 

@@ -20,6 +20,7 @@ pub(crate) struct ExecutionContext<'a> {
     active_recipes: Vec<PathBuf>,
     restored_states: std::collections::BTreeMap<PathBuf, rhai::Map>,
     resumable: bool,
+    options: crate::ExecutionOptions,
 }
 impl<'a> ExecutionContext<'a> {
     pub(crate) fn worker(sink: &'a mut CheckpointSink<'a>) -> Self {
@@ -29,6 +30,17 @@ impl<'a> ExecutionContext<'a> {
             active_recipes: Vec::new(),
             restored_states: Default::default(),
             resumable: false,
+            options: Default::default(),
+        }
+    }
+    pub(crate) fn set_options(&mut self, options: crate::ExecutionOptions) {
+        self.options = options;
+    }
+    pub(crate) fn options(&self) -> crate::ExecutionOptions {
+        if self.active_recipes.len() > 1 {
+            self.options.for_dependency()
+        } else {
+            self.options.clone()
         }
     }
     pub(crate) fn resumable(&self) -> bool {

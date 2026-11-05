@@ -54,6 +54,7 @@ pub(crate) fn install_once(
         Some(build_dir),
         Some(&exec.tools_prefix().map_err(InstallAttemptError::Fatal)?),
         defines,
+        &exec.options(),
     );
 
     let mut scope =
@@ -87,6 +88,8 @@ pub(crate) fn install_once(
         output::detail(&format!("Extends base recipe: {}", base_path.display()));
     }
 
+    let policy = exec.options();
+
     // Check steps (reverse order) - throw means "needs this step".
     //
     // IMPORTANT: `is_*` checks may also *return an updated ctx* (e.g. setting
@@ -95,6 +98,7 @@ pub(crate) fn install_once(
     let (needs_install, checked_ctx, needs_install_reason) =
         check_phase_with_reason(&mut scope, "is_installed", &ctx_map)
             .map_err(InstallAttemptError::Fatal)?;
+    let needs_install = needs_install || policy.forced();
     report_check_result(
         &name,
         "is_installed",
@@ -110,7 +114,7 @@ pub(crate) fn install_once(
             check_phase_with_reason(&mut scope, "is_built", &ctx_map)
                 .map_err(InstallAttemptError::Fatal)?;
         report_check_result(&name, "is_built", nb, build_reason.as_deref());
-        needs_build = nb;
+        needs_build = nb || policy.force_build || policy.force_acquire;
         ctx_map = checked_ctx;
 
         if needs_build {
@@ -118,7 +122,7 @@ pub(crate) fn install_once(
                 check_phase_with_reason(&mut scope, "is_acquired", &ctx_map)
                     .map_err(InstallAttemptError::Fatal)?;
             report_check_result(&name, "is_acquired", na, acquire_reason.as_deref());
-            needs_acquire = na;
+            needs_acquire = na || policy.force_acquire;
             ctx_map = checked_ctx;
         }
     }
@@ -266,6 +270,8 @@ pub(crate) fn install_once(
             ));
         }
         ctx_map = checked_ctx;
+
+        let still_needs_build = still_needs_build || policy.force_build || policy.force_acquire;
 
         // Resolve build_deps only when actually building
         let _build_env_guard = if still_needs_build && !build_deps.is_empty() {

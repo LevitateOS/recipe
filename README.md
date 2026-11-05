@@ -161,7 +161,7 @@ Recipes use a `ctx` map for state.
 - Unversioned checks (`is_*`) return `ctx` when ready and deliberately `throw` when work is needed. Interpreter and native-helper failures stop execution.
 - `const RECIPE_API = 2;` opts into initialization once per invocation and checks returning `ready(ctx)` or `needs_work(ctx, reason)`. API 2 preserves imports and rechecks custom readiness after successful phases. See [the author guide](WRITING_RECIPES.md#api-2-initialization-and-readiness) for the implemented migration scope.
 - Phase functions (`acquire/build/install/remove/cleanup`) take `ctx` and return an updated `ctx`.
-- API 2 supplies engine-owned `ctx.runtime` (also `RUNTIME` during setup), plus `ctx.state` and `ctx.outputs` maps. Current target selection is the native Linux architecture; explicit target selection remains in progress. Successful named file/directory outputs under `/work` or `/out` are exported through Ginux, validated, and published under the coordinator's `.artifacts/ginux-export/<invocation-id>/<name>`. The returned `ctx.outputs` contains these host paths; recipe hooks continue to use domain paths. Only selected outputs are published. Missing outputs, archive links/traversal, and exceeded bounds fail publication. Current limits are 64 names, 4096 archive entries and 2 GiB; resumable state is described below.
+- API 2 supplies engine-owned `ctx.runtime` (also `RUNTIME` during setup), plus `ctx.state` and `ctx.outputs` maps. Explicit --target-os/--target-arch select the native linux/x86_64 target; other targets fail before launch. Successful named file/directory outputs under `/work` or `/out` are exported through Ginux, validated, and published under the coordinator's `.artifacts/ginux-export/<invocation-id>/<name>`. The returned `ctx.outputs` contains these host paths; recipe hooks continue to use domain paths. Only selected outputs are published. Missing outputs, archive links/traversal, and exceeded bounds fail publication. Current limits are 64 names, 4096 archive entries and 2 GiB; resumable state is described below.
 - `--define KEY=VALUE` and cleanup `--reason` cross the worker boundary using transport v3. Unsupported managed autofix/LLM-profile options fail explicitly.
 - `--input NAME=PATH` imports an explicitly selected file or source tree read-only at `/inputs/NAME`. Tree imports omit root `.git` and `target`, reject symlinks and credential-bearing names, and retain input size/count bounds. The library equivalent is `RecipeEngine::add_input`. A host path in a define does not import that path.
 - Literal imports and `deps`/`build_deps` declarations are discovered without executing Rhai on the coordinator. Nested module paths are preserved; dynamic imports/dependency declarations fail preparation with guidance.
@@ -449,3 +449,23 @@ Keep the directory for diagnosis; choose a new `--state-dir` to explicitly start
 fresh. Snapshot storage currently has no automatic garbage collection. Abnormal
 coordinator death can also leave temporary prepared roots; workload processes are
 terminated, but temporary-directory cleanup after SIGKILL remains incomplete.
+
+## Target and execution options
+
+`--target-os linux --target-arch x86_64` selects the currently supported native
+platform. Unsupported targets fail before recipe setup. `--jobs N` (`-j N`)
+selects 1–16 jobs, default 1, and supplies `NPROC`, the worker environment and
+`ctx.runtime.options.jobs`. Ginux's task limits still apply to tools that create
+additional threads. Target and job count participate in saved-state identity.
+
+`--force-install` reruns installation, `--force-build` reruns build and installation,
+and `--force-acquire` reruns all three phases for the main recipe. Dependencies
+continue to use their own custom readiness. Force does not create a fresh state
+identity or turn a failed check into success. Checks still run and completed phases
+must pass their normal validation. These options apply only to `install`; direct
+checks keep reporting actual readiness. Recipe authors should keep force policy
+out of `is_*` checks so post-phase verification remains truthful.
+
+Library callers select the same inputs with `ExecutionOptions` and
+`RecipeEngine::with_execution_options`. Worker protocol v5 carries these options
+explicitly; old versions are rejected before setup.

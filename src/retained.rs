@@ -114,13 +114,14 @@ impl Retained {
             .map(|input| (&input.name, input.sha256, input.size, input.mode))
             .collect::<Vec<_>>();
         let identity = hex::encode(Sha256::digest(serde_json::to_vec(&(
-            "recipe-state-v1-transport-v4",
+            "recipe-state-v1-transport-v5",
             &prepared.root_reference,
             worker_digest,
             inputs,
             defines,
-            std::env::consts::OS,
-            std::env::consts::ARCH,
+            &options.execution.target_os,
+            &options.execution.target_arch,
+            options.execution.jobs,
         ))?));
         let directory = scope.join(&identity);
         private_directory(&directory)?;

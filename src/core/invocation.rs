@@ -22,6 +22,7 @@ pub(crate) fn scope(
     build_dir: Option<&Path>,
     tools_prefix: Option<&Path>,
     defines: &[(String, String)],
+    options: &crate::ExecutionOptions,
 ) -> PreparedScope {
     let mut scope = Scope::new();
     scope.push_constant(
@@ -44,8 +45,8 @@ pub(crate) fn scope(
     } else if let Some(tools) = tools_prefix {
         scope.push_constant("TOOLS_PREFIX", tools.to_string_lossy().to_string());
     }
-    scope.push_constant("ARCH", std::env::consts::ARCH);
-    let jobs = num_cpus::get() as i64;
+    scope.push_constant("ARCH", options.target_arch.clone());
+    let jobs = i64::from(options.jobs);
     scope.push_constant("NPROC", jobs);
     scope.push_constant("RPM_PATH", std::env::var("RPM_PATH").unwrap_or_default());
     let paths: Map = [
@@ -84,11 +85,24 @@ pub(crate) fn scope(
     .into();
     let runtime: Map = [
         ("host".into(), platform.clone().into()),
-        ("target".into(), platform.into()),
+        (
+            "target".into(),
+            Map::from([
+                ("os".into(), options.target_os.clone().into()),
+                ("arch".into(), options.target_arch.clone().into()),
+            ])
+            .into(),
+        ),
         ("paths".into(), paths.into()),
         (
             "options".into(),
-            Map::from([("jobs".into(), jobs.into())]).into(),
+            Map::from([
+                ("jobs".into(), jobs.into()),
+                ("force_acquire".into(), options.force_acquire.into()),
+                ("force_build".into(), options.force_build.into()),
+                ("force_install".into(), options.force_install.into()),
+            ])
+            .into(),
         ),
     ]
     .into();

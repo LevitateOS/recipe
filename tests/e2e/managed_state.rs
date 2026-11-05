@@ -479,3 +479,127 @@ fn is_installed(ctx) { ctx.state.child = #{callback: Fn("helper")}; ready(ctx) }
         source
     );
 }
+
+#[test]
+fn managed_options_force_phases_without_invalidating_saved_installation() {
+    let (dir, recipes) = create_test_env();
+    let source = r#"
+const RECIPE_API = 2;
+let deps = ["helper"];
+let ctx = #{name: "options", state: #{acquires: 0, builds: 0, installs: 0}};
+fn is_acquired(ctx) { if is_file("/work/source") { ready(ctx) } else { needs_work(ctx, "source") } }
+fn is_built(ctx) { if is_file("/work/built") { ready(ctx) } else { needs_work(ctx, "build") } }
+fn is_installed(ctx) {
+    if is_file("/out/product") { ctx.outputs.product = "/out/product"; ready(ctx) }
+    else { needs_work(ctx, "install") }
+}
+fn acquire(ctx) { write_file("/work/source", "source"); ctx.state.acquires += 1; ctx }
+fn build(ctx) { write_file("/work/built", "built"); ctx.state.builds += 1; ctx }
+fn install(ctx) {
+    if NPROC != RUNTIME.options.jobs || env("NPROC") != NPROC.to_string() { throw "jobs not transported"; }
+    if ARCH != RUNTIME.target.arch { throw "target not transported"; }
+    write_file("/out/product", "product"); ctx.state.installs += 1; ctx.outputs.product = "/out/product"; ctx
+}
+"#;
+    let dependency = r#"
+const RECIPE_API = 2;
+let ctx = #{name: "helper", state: #{installs: 0}};
+fn is_acquired(ctx) { ready(ctx) }
+fn is_installed(ctx) { if is_file("/work/tools/helper") { ready(ctx) } else { needs_work(ctx, "helper") } }
+fn install(ctx) {
+    if ctx.state.installs != 0 { throw "parent force leaked into dependency"; }
+    if RUNTIME.options.force_acquire || RUNTIME.options.force_build || RUNTIME.options.force_install { throw "dependency force flags"; }
+    write_file("/work/tools/helper", "helper"); ctx.state.installs += 1; ctx
+}
+"#;
+    write_recipe(&recipes, "check", source);
+    write_recipe(&recipes, "helper", dependency);
+    for (args, counts) in [
+        (vec![], [1, 1, 1]),
+        (vec![], [1, 1, 1]),
+        (vec!["--force-install"], [1, 1, 2]),
+        (vec!["--force-build"], [1, 2, 3]),
+        (vec!["--force-acquire"], [2, 3, 4]),
+        (vec!["--jobs", "2"], [1, 1, 1]),
+    ] {
+        let output = retained_command(&recipes, "install")
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_success(&output);
+        let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        for (field, count) in ["acquires", "builds", "installs"].iter().zip(counts) {
+            assert_eq!(ctx["state"][field], count, "{args:?} {field}");
+        }
+        assert_eq!(
+            ctx["runtime"]["target"],
+            serde_json::json!({"os":"linux","arch":"x86_64"})
+        );
+        assert_eq!(
+            ctx["runtime"]["options"]["jobs"],
+            if args.contains(&"2") { 2 } else { 1 }
+        );
+    }
+    assert_eq!(
+        walkdir::WalkDir::new(dir.path().join("state"))
+            .into_iter()
+            .map(Result::unwrap)
+            .filter(|entry| entry.file_name() == "current.json")
+            .count(),
+        2
+    );
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+        source
+    );
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("helper.rhai")).unwrap(),
+        dependency
+    );
+}
+
+#[test]
+fn managed_options_reject_unsupported_targets_and_invalid_force_before_setup() {
+    let (dir, recipes) = create_test_env();
+    let sentinel = dir.path().join("setup-effect");
+    write_recipe(
+        &recipes,
+        "check",
+        &format!(
+            "write_file({:?}, \"bad\"); let ctx = #{{name: \"guard\"}};",
+            sentinel.to_str().unwrap()
+        ),
+    );
+    for (operation, args, expected) in [
+        (
+            "install",
+            vec!["--target-arch", "aarch64"],
+            "unsupported target",
+        ),
+        (
+            "install",
+            vec!["--target-os", "macos"],
+            "unsupported target",
+        ),
+        ("install", vec!["--jobs", "0"], "jobs must be"),
+        ("install", vec!["--jobs", "17"], "jobs must be"),
+        (
+            "isinstalled",
+            vec!["--force-build"],
+            "force options apply only to install",
+        ),
+    ] {
+        let output = retained_command(&recipes, operation)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!sentinel.exists());
+        assert!(!dir.path().join("state").exists());
+    }
+}

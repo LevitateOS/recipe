@@ -1,4 +1,4 @@
-//! Worker entry point: run the existing engine behind protocol v4.
+//! Worker entry point: run the existing engine behind protocol v5.
 //!
 //! The worker is the same `recipe` binary entered with a private argv marker (see
 //! the dispatch in `src/bin/`). It reads exactly one request frame from
@@ -385,6 +385,12 @@ fn run_operation(
         Ok(())
     };
     let mut exec = ExecutionContext::worker(&mut sink);
+    exec.set_options(req.options.execution.clone());
+    // Worker-local values are explicit invocation inputs, never inherited host options.
+    unsafe {
+        std::env::set_var("NPROC", req.options.execution.jobs.to_string());
+        std::env::set_var("ARCH", &req.options.execution.target_arch);
+    }
     exec.restore_states(&req.restored_states, req.persist_ctx)
         .map_err(|err| EngineFailure::workload("startup", err))?;
 

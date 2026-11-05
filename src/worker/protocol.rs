@@ -1,4 +1,4 @@
-//! Worker protocol v4: per-recipe state, invocation options and diagnostics.
+//! Worker protocol v5: per-recipe state, invocation options and diagnostics.
 //!
 //! Implements `docs/ginux-recipe-interfaces.md` §4 on the Recipe side. Ginux
 //! treats these frames as opaque bytes; Recipe owns their shape.
@@ -8,13 +8,13 @@
 //! Every frame is:
 //!
 //! ```text
-//! [u32 BE total-length][u32 BE version=4][u32 BE seq][u16 BE op][payload]
+//! [u32 BE total-length][u32 BE version=5][u32 BE seq][u16 BE op][payload]
 //! ```
 //!
 //! - `total-length` is the full frame size **including** its own 4 bytes, so
 //!   `payload.len() == total-length - HEADER_LEN` with
 //!   `HEADER_LEN == 14` (4 + 4 + 4 + 2).
-//! - `version` is always [`PROTOCOL_VERSION`] (4). Anything else is a
+//! - `version` is always [`PROTOCOL_VERSION`] (5). Anything else is a
 //!   `protocol` failure: the receiver aborts, never retries on the same
 //!   invocation.
 //! - `seq` numbers each direction independently starting at 1. The receiver
@@ -54,7 +54,7 @@ use std::io::{Read, Write};
 use serde::{Deserialize, Serialize};
 
 /// Protocol version carried in every frame header.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Maximum total frame size in bytes (4 MiB), header included.
 pub const MAX_FRAME_LEN: usize = 4 * 1024 * 1024;
@@ -147,6 +147,7 @@ pub struct RequestPayload {
 pub struct InvocationOptions {
     pub defines: Vec<(String, String)>,
     pub cleanup_reason: String,
+    pub execution: crate::ExecutionOptions,
 }
 
 impl Default for InvocationOptions {
@@ -154,12 +155,16 @@ impl Default for InvocationOptions {
         Self {
             defines: Vec::new(),
             cleanup_reason: "manual".into(),
+            execution: crate::ExecutionOptions::default(),
         }
     }
 }
 
 impl InvocationOptions {
     pub fn validate(&self) -> Result<(), ProtocolError> {
+        self.execution
+            .validate()
+            .map_err(|error| ProtocolError::PayloadInvalid(error.to_string()))?;
         if self.defines.len() > 64 || self.cleanup_reason.len() > 4096 {
             return Err(ProtocolError::PayloadInvalid(
                 "invocation options exceed their bounds".into(),
@@ -439,6 +444,11 @@ fn valid_invocation_id(id: &str) -> bool {
 
 fn check_request(p: &RequestPayload) -> Result<(), ProtocolError> {
     p.options.validate()?;
+    if p.operation != "install" && p.options.execution.forced() {
+        return Err(ProtocolError::PayloadInvalid(
+            "force options apply only to install operations".into(),
+        ));
+    }
     if p.restored_states.len() > 1024 || (!p.persist_ctx && !p.restored_states.is_empty()) {
         return Err(ProtocolError::PayloadInvalid(
             "invalid restored state set".into(),

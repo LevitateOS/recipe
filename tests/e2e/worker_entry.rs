@@ -168,7 +168,8 @@ fn private_worker_rejects_previous_transport_before_recipe_setup() {
             }),
         )
         .unwrap();
-    bytes[4..8].copy_from_slice(&1u32.to_be_bytes());
+    bytes[4..8]
+        .copy_from_slice(&(levitate_recipe::worker::protocol::PROTOCOL_VERSION - 1).to_be_bytes());
     child.stdin.take().unwrap().write_all(&bytes).unwrap();
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success());
