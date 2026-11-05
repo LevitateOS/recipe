@@ -19,12 +19,13 @@
 //! worker can never recursively invoke the Ginux backend.
 //!
 //! What this does NOT do (owned by R06): actually launching Ginux. The
-//! [`Backend::run`] Ginux arm returns an explicit error naming the operation
-//! and the resolved launcher; R06 replaces that arm with real domain launch.
+//! [`Backend::run`] Ginux arm runs R05 input preparation for real and then
+//! returns an explicit error naming the operation, the prepared invocation,
+//! and the resolved launcher; R06 replaces the error with real domain launch.
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 
 /// Requested execution backend kind, before launcher resolution.
 ///
@@ -146,18 +147,42 @@ impl Backend {
 
     /// Route one executable recipe operation through the selected backend.
     ///
-    /// Host runs `host_op` in-process. Ginux fails explicitly (R06 owns real
-    /// domain launch): the error names the operation and the resolved
-    /// launcher, and host execution is never used as a silent fallback.
-    pub fn run<T>(&self, operation: &str, host_op: impl FnOnce() -> Result<T>) -> Result<T> {
+    /// Host runs `host_op` in-process. Ginux prepares the invocation inputs
+    /// for real (R05: discovery, ids, allowlisted env, staged files, domain
+    /// config) and then fails explicitly because domain launch is not wired
+    /// yet (R06 owns it): the error names the operation, the prepared
+    /// invocation, and the resolved launcher, and host execution is never
+    /// used as a silent fallback.
+    pub fn run<T>(
+        &self,
+        operation: &str,
+        recipe: &Path,
+        search_path: Option<&Path>,
+        host_op: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
         match self {
             Backend::Host => host_op(),
-            Backend::Ginux { launcher } => bail!(
-                "backend startup failure: cannot run `{operation}` through ginux: \
-                 domain launch is not wired yet (R06 owns it); refusing to run on \
-                 the host instead (no silent host fallback). Configured launcher: {}",
-                launcher.display()
-            ),
+            Backend::Ginux { launcher } => {
+                let prepared = crate::inputs::prepare_invocation(recipe, operation, search_path, &[], &[])
+                    .map_err(|err| {
+                        anyhow!(
+                            "backend startup failure: ginux input preparation failed for \
+                             `{operation}` ({}): {err:#}",
+                            recipe.display(),
+                        )
+                    })?;
+                bail!(
+                    "backend startup failure: cannot run `{operation}` through ginux: \
+                     domain launch is not wired yet (R06 owns it); refusing to run on \
+                     the host instead (no silent host fallback). Prepared invocation {} \
+                     ({} input{} staged under {}) for launcher {}.",
+                    prepared.invocation_id,
+                    prepared.inputs.len(),
+                    if prepared.inputs.len() == 1 { "" } else { "s" },
+                    prepared.staging_dir().display(),
+                    launcher.display(),
+                )
+            }
         }
     }
 }

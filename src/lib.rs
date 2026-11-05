@@ -94,6 +94,7 @@
 pub mod backend;
 mod core;
 pub mod helpers;
+pub mod inputs;
 mod llm;
 pub mod logging;
 pub mod worker;
@@ -239,7 +240,7 @@ impl RecipeEngine {
     ///
     /// Returns the final ctx map containing all recipe state.
     pub fn execute(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        self.backend.run("install", || {
+        self.backend.run("install", recipe_path, self.recipes_path.as_deref(), || {
             llm::with_llm_profile(self.llm_profile.as_deref(), || {
             if let Some(autofix) = self.autofix.as_ref() {
                 core::executor::install_with_options(
@@ -269,7 +270,7 @@ impl RecipeEngine {
     ///
     /// Returns the final ctx map after removal.
     pub fn remove(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        self.backend.run("remove", || {
+        self.backend.run("remove", recipe_path, self.recipes_path.as_deref(), || {
             llm::with_llm_profile(self.llm_profile.as_deref(), || {
                 core::executor::remove(
                     &self.engine,
@@ -293,7 +294,7 @@ impl RecipeEngine {
     ///
     /// Returns the final ctx map after cleanup.
     pub fn cleanup_with_reason(&self, recipe_path: &Path, reason: &str) -> Result<rhai::Map> {
-        self.backend.run("cleanup", || {
+        self.backend.run("cleanup", recipe_path, self.recipes_path.as_deref(), || {
             llm::with_llm_profile(self.llm_profile.as_deref(), || {
                 core::executor::cleanup(
                     &self.engine,
@@ -310,7 +311,7 @@ impl RecipeEngine {
 
     /// Execute `is_installed(ctx)` manually.
     pub fn is_installed(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        self.backend.run("is_installed", || {
+        self.backend.run("is_installed", recipe_path, self.recipes_path.as_deref(), || {
             llm::with_llm_profile(self.llm_profile.as_deref(), || {
                 core::executor::is_installed(
                     &self.engine,
@@ -325,7 +326,7 @@ impl RecipeEngine {
 
     /// Execute `is_built(ctx)` manually.
     pub fn is_built(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        self.backend.run("is_built", || {
+        self.backend.run("is_built", recipe_path, self.recipes_path.as_deref(), || {
             llm::with_llm_profile(self.llm_profile.as_deref(), || {
                 core::executor::is_built(
                     &self.engine,
@@ -340,7 +341,7 @@ impl RecipeEngine {
 
     /// Execute `is_acquired(ctx)` manually.
     pub fn is_acquired(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        self.backend.run("is_acquired", || {
+        self.backend.run("is_acquired", recipe_path, self.recipes_path.as_deref(), || {
             llm::with_llm_profile(self.llm_profile.as_deref(), || {
                 core::executor::is_acquired(
                     &self.engine,
