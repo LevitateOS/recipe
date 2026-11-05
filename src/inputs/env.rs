@@ -62,7 +62,7 @@ pub fn invocation_id(recipe_stem: &str) -> Result<String> {
 }
 
 /// Enforce the §5 invocation-id shape explicitly (never truncate silently).
-pub(crate) fn validate_invocation_id(id: &str) -> Result<()> {
+pub fn validate_invocation_id(id: &str) -> Result<()> {
     if id.is_empty() || id.len() > MAX_ID {
         bail!(
             "input preparation failure: invocation id {id:?} has {} B, want 1..={MAX_ID} B",

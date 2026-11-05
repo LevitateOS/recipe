@@ -1,7 +1,8 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-/// Parse `--backend host|ginux` (also accepts `in-process` as host).
+/// Parse `--backend ginux|host` (`host`/`in-process` parse but are rejected
+/// at selection with a migration error).
 fn parse_backend(s: &str) -> anyhow::Result<levitate_recipe::BackendKind> {
     s.parse()
 }
@@ -47,10 +48,11 @@ pub(crate) struct Cli {
     #[arg(long, global = true, default_value_t = false)]
     pub(crate) no_persist_ctx: bool,
 
-    /// Select the execution backend for recipe operations: `host` (default) or
-    /// `ginux`. Overrides `RECIPE_BACKEND`. Selecting `ginux` requires a usable
-    /// launcher in `GINUX_BIN` and fails explicitly otherwise (never falls
-    /// back to host).
+    /// Select the execution backend for recipe operations: `ginux` (also the
+    /// default when omitted). Overrides `RECIPE_BACKEND`. The `host` and
+    /// `in-process` values are rejected: public host execution was removed
+    /// (S0) and Ginux is required. Launching requires a usable launcher in
+    /// `GINUX_BIN` and fails explicitly otherwise (never falls back to host).
     #[arg(long, global = true, value_name = "BACKEND", value_parser = parse_backend)]
     pub(crate) backend: Option<levitate_recipe::BackendKind>,
 }

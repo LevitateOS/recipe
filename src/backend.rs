@@ -1,27 +1,32 @@
-//! Explicit backend selection (R04): one surface shared by CLI and library callers.
+//! Mandatory Ginux backend selection (R04 selection, S0 policy, R06 launch).
 //!
 //! Every executable recipe operation (`install` / `remove` / `cleanup` / the
-//! manual `is_*` checks, including the R02 worker paths) routes through the
-//! [`Backend`] value carried by [`crate::RecipeEngine`]. The default is host
-//! execution; selecting `ginux` requires a usable launcher and fails
-//! explicitly otherwise — never silently falling back to host.
+//! manual `is_*` checks) routes through the [`Backend`] value carried by
+//! [`crate::RecipeEngine`]. Ginux is the only public backend: the default
+//! selection launches the configured domain, and legacy host selectors
+//! (`--backend host`, `RECIPE_BACKEND=host`) are rejected with an explicit
+//! migration error — never honored, never a silent fallback.
 //!
 //! Sources, in precedence order:
 //!
 //! 1. An explicit caller choice ([`BackendKind`], wired to `--backend` on the CLI).
-//! 2. The `RECIPE_BACKEND` environment variable (`host` / `in-process` / `ginux`).
-//! 3. The built-in default: host.
+//! 2. The `RECIPE_BACKEND` environment variable (`ginux` accepted; `host` /
+//!    `in-process` rejected as removed).
+//! 3. The built-in default: `ginux`.
 //!
 //! The Ginux launcher path comes from `GINUX_BIN` (see
-//! `docs/ginux-recipe-interfaces.md` §2). A selected `ginux` backend with a
-//! missing or unexecutable launcher is a `startup` failure. When
-//! `RECIPE_WORKER=1` is set, selection is forced to in-process execution: the
-//! worker can never recursively invoke the Ginux backend.
+//! `docs/ginux-recipe-interfaces.md` §2). A missing or unexecutable launcher
+//! is a `startup` failure. When `RECIPE_WORKER=1` is set together with the
+//! coordinator-issued `RECIPE_INVOCATION`, selection is forced to in-process
+//! execution for the internal worker entry path: the worker runs its engine
+//! calls in-process inside the domain and can never recursively invoke the
+//! Ginux backend.
 //!
-//! What this does NOT do (owned by R06): actually launching Ginux. The
-//! [`Backend::run`] Ginux arm runs R05 input preparation for real and then
-//! returns an explicit error naming the operation, the prepared invocation,
-//! and the resolved launcher; R06 replaces the error with real domain launch.
+//! [`Backend::run`] launches the domain for real (R06): it prepares the R05
+//! invocation inputs, spawns the launcher, pumps the R01 worker protocol,
+//! and maps outcomes to the interface §1 categories (result file
+//! authoritative). Host recipe execution is unavailable outside the internal
+//! worker entry path.
 
 use std::path::{Path, PathBuf};
 
@@ -29,11 +34,18 @@ use anyhow::{Context, Result, anyhow, bail};
 
 /// Requested execution backend kind, before launcher resolution.
 ///
-/// Parses from `--backend` / `RECIPE_BACKEND` (`host` and `in-process` both
-/// mean host execution; anything else besides `ginux` is an explicit error).
+/// Parses from `--backend` / `RECIPE_BACKEND`. `host` and `in-process` are
+/// legacy selectors: they parse so [`Backend::select`] can reject them with
+/// a migration error, but they never select host execution. Anything else
+/// besides `ginux` is an explicit parse error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendKind {
+    /// Legacy host request. Rejected by [`Backend::select`] with a migration
+    /// error; kept parseable so the error names the removal instead of
+    /// reporting an unknown value.
     Host,
+    /// Ginux domain launch (the only public backend; also the default when
+    /// no explicit choice is given).
     Ginux,
 }
 
@@ -68,7 +80,10 @@ impl std::str::FromStr for BackendKind {
 /// operation routes through. This is the selection surface R06 launches from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Backend {
-    /// Run recipe code in-process on the host (the default).
+    /// Run recipe code in-process. Reachable only through the internal worker
+    /// entry path (`RECIPE_WORKER=1` with a coordinator-issued
+    /// `RECIPE_INVOCATION`); [`Backend::run`] refuses it anywhere else, so no
+    /// public caller can evaluate recipe code on the host.
     Host,
     /// Run recipe code inside a Ginux domain started from this launcher.
     Ginux {
@@ -80,11 +95,16 @@ pub enum Backend {
 
 impl Backend {
     /// Resolve the backend from an explicit caller choice (`--backend`),
-    /// falling back to `RECIPE_BACKEND`, falling back to host.
+    /// falling back to `RECIPE_BACKEND`, falling back to the `ginux` default.
     ///
     /// Under `RECIPE_WORKER=1` this always returns [`Backend::Host`]
-    /// (forced in-process execution); an explicit non-host request is noted
-    /// on stderr so the override is visible, never silent.
+    /// (forced in-process execution for the internal worker entry path); an
+    /// explicit non-host request is noted on stderr so the override is
+    /// visible, never silent.
+    ///
+    /// A legacy `host`/`in-process` request (flag or env) is a `startup`
+    /// failure with migration guidance: public host execution was removed
+    /// (S0) and is never honored.
     pub fn select(explicit: Option<BackendKind>) -> Result<Self> {
         let requested = match explicit {
             Some(kind) => Some(kind),
@@ -107,8 +127,8 @@ impl Backend {
             return Ok(Backend::Host);
         }
 
-        match requested.unwrap_or(BackendKind::Host) {
-            BackendKind::Host => Ok(Backend::Host),
+        match requested.unwrap_or(BackendKind::Ginux) {
+            BackendKind::Host => Err(host_removed_error()),
             BackendKind::Ginux => {
                 let launcher = resolve_launcher()?;
                 Ok(Backend::Ginux { launcher })
@@ -147,43 +167,170 @@ impl Backend {
 
     /// Route one executable recipe operation through the selected backend.
     ///
-    /// Host runs `host_op` in-process. Ginux prepares the invocation inputs
-    /// for real (R05: discovery, ids, allowlisted env, staged files, domain
-    /// config) and then fails explicitly because domain launch is not wired
-    /// yet (R06 owns it): the error names the operation, the prepared
-    /// invocation, and the resolved launcher, and host execution is never
-    /// used as a silent fallback.
-    pub fn run<T>(
+    /// The internal worker entry path (`RECIPE_WORKER=1` with a
+    /// coordinator-issued `RECIPE_INVOCATION`) runs `host_op` in-process
+    /// inside the domain. Anywhere else a `Host` value is a `startup`
+    /// failure naming the removal: public host execution is gone and is
+    /// never used as a silent fallback.
+    ///
+    /// Ginux prepares the invocation inputs for real (R05: discovery, ids,
+    /// allowlisted env, staged files, domain config), launches the domain
+    /// through the resolved launcher, and returns the worker's final context.
+    /// `persist_ctx` is the caller's persistence preference; it travels in
+    /// the worker request frame (checks ignore it) and R07 decides what the
+    /// acked generations mean for durable state.
+    pub fn run(
         &self,
         operation: &str,
         recipe: &Path,
         search_path: Option<&Path>,
-        host_op: impl FnOnce() -> Result<T>,
-    ) -> Result<T> {
+        persist_ctx: bool,
+        host_op: impl FnOnce() -> Result<rhai::Map>,
+    ) -> Result<rhai::Map> {
         match self {
-            Backend::Host => host_op(),
+            Backend::Host => {
+                if std::env::var("RECIPE_WORKER").as_deref() == Ok("1") {
+                    host_op()
+                } else {
+                    Err(host_removed_error())
+                }
+            }
             Backend::Ginux { launcher } => {
-                let prepared = crate::inputs::prepare_invocation(recipe, operation, search_path, &[], &[])
-                    .map_err(|err| {
-                        anyhow!(
-                            "backend startup failure: ginux input preparation failed for \
-                             `{operation}` ({}): {err:#}",
-                            recipe.display(),
-                        )
-                    })?;
-                bail!(
-                    "backend startup failure: cannot run `{operation}` through ginux: \
-                     domain launch is not wired yet (R06 owns it); refusing to run on \
-                     the host instead (no silent host fallback). Prepared invocation {} \
-                     ({} input{} staged under {}) for launcher {}.",
+                let prepared =
+                    crate::inputs::prepare_invocation(recipe, operation, search_path, &[], &[])
+                        .map_err(|err| {
+                            anyhow!(
+                                "backend startup failure: ginux input preparation failed for \
+                                 `{operation}` ({}): {err:#}",
+                                recipe.display(),
+                            )
+                        })?;
+                let report = crate::launch::run_domain(&prepared, launcher, persist_ctx)?;
+                eprintln!(
+                    "recipe: invocation {} finished in the Ginux domain: ok={} ({} checkpoint{} \
+                     acked; launcher exit {}; result {})",
                     prepared.invocation_id,
-                    prepared.inputs.len(),
-                    if prepared.inputs.len() == 1 { "" } else { "s" },
-                    prepared.staging_dir().display(),
-                    launcher.display(),
-                )
+                    report.result.ok,
+                    report.checkpoints_acked,
+                    if report.checkpoints_acked == 1 {
+                        ""
+                    } else {
+                        "s"
+                    },
+                    report
+                        .launcher_code
+                        .map(|code| code.to_string())
+                        .unwrap_or_else(|| "signaled".to_string()),
+                    report.result_outcome,
+                );
+                if !report.result.ok {
+                    let detail = report
+                        .result
+                        .failures
+                        .first()
+                        .map(|failure| {
+                            format!(
+                                "phase={} reason={}: {}",
+                                failure.phase, failure.reason, failure.message
+                            )
+                        })
+                        .unwrap_or_else(|| "worker reported failure without detail".to_string());
+                    bail!(
+                        "backend workload failure: `{operation}` failed in the Ginux domain \
+                         (invocation {}): {detail}",
+                        prepared.invocation_id,
+                    );
+                }
+                ctx_summary_to_map(&report.result.ctx_summary).map_err(|err| {
+                    anyhow!(
+                        "backend protocol failure: `{operation}` succeeded in the Ginux domain \
+                         (invocation {}) but its ctx summary is not a JSON object: {err:#}",
+                        prepared.invocation_id,
+                    )
+                })
             }
         }
+    }
+}
+
+/// Rejection for every public host-execution path (S0): Ginux is required
+/// for every operation that evaluates recipe code. Callers holding a legacy
+/// host selector must drop it (or set it to `ginux`); with no usable
+/// launcher in `GINUX_BIN` this fails explicitly instead of running on the
+/// host. Refusing host execution.
+fn host_removed_error() -> anyhow::Error {
+    anyhow!(
+        "backend startup failure: public host execution was removed (S0): \
+         Ginux is required for every operation that evaluates recipe code. \
+         Remove `--backend host` / `RECIPE_BACKEND=host` (or set them to `ginux`); \
+         with no usable launcher in `GINUX_BIN` this fails explicitly instead of \
+         running on the host. Refusing host execution."
+    )
+}
+
+/// Convert a worker `ctx_summary` JSON object into the caller-facing context
+/// map. Scalars round-trip exactly; nested values become the matching Rhai
+/// types. A non-object summary is a protocol failure, never silent loss.
+fn ctx_summary_to_map(value: &serde_json::Value) -> Result<rhai::Map> {
+    match value {
+        serde_json::Value::Object(fields) => {
+            let mut map = rhai::Map::new();
+            for (name, item) in fields {
+                map.insert(name.clone().into(), json_to_dynamic(item)?);
+            }
+            Ok(map)
+        }
+        other => anyhow::bail!("ctx summary is {}, want a JSON object", json_kind(other)),
+    }
+}
+
+/// Convert one JSON value to the matching Rhai dynamic value.
+fn json_to_dynamic(value: &serde_json::Value) -> Result<rhai::Dynamic> {
+    match value {
+        serde_json::Value::Null => Ok(rhai::Dynamic::UNIT),
+        serde_json::Value::Bool(flag) => Ok(rhai::Dynamic::from_bool(*flag)),
+        serde_json::Value::Number(number) => {
+            if let Some(signed) = number.as_i64() {
+                Ok(rhai::Dynamic::from_int(signed))
+            } else if let Some(unsigned) = number.as_u64() {
+                i64::try_from(unsigned)
+                    .map(rhai::Dynamic::from_int)
+                    .map_err(|_| {
+                        anyhow!("ctx summary number {unsigned} exceeds i64 (not representable)")
+                    })
+            } else if let Some(float) = number.as_f64() {
+                Ok(rhai::Dynamic::from_float(float))
+            } else {
+                anyhow::bail!("ctx summary number {number} is not representable")
+            }
+        }
+        serde_json::Value::String(text) => Ok(rhai::Dynamic::from(text.clone())),
+        serde_json::Value::Array(items) => {
+            let mut array = rhai::Array::with_capacity(items.len());
+            for item in items {
+                array.push(json_to_dynamic(item)?);
+            }
+            Ok(rhai::Dynamic::from_array(array))
+        }
+        serde_json::Value::Object(fields) => {
+            let mut map = rhai::Map::new();
+            for (name, item) in fields {
+                map.insert(name.clone().into(), json_to_dynamic(item)?);
+            }
+            Ok(rhai::Dynamic::from_map(map))
+        }
+    }
+}
+
+/// JSON value kind for diagnostics.
+fn json_kind(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::Object(_) => "an object",
     }
 }
 

@@ -36,7 +36,7 @@ pub use config::{DomainConfig, config_text};
 pub use discover::{
     ExtraInput, StagedInput, MAIN_NAME_DOMAIN, discover_inputs, hash_file,
 };
-pub use env::{allowlisted_env, invocation_id};
+pub use env::{allowlisted_env, invocation_id, validate_invocation_id};
 
 use std::path::{Path, PathBuf};
 

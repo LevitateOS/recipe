@@ -155,6 +155,7 @@ impl EngineFailure {
 /// 0). Transport collapse (unwritable stdout) returns `Err` (binary exits
 /// nonzero; the host sees a worker exit without `result`).
 pub fn run_worker() -> Result<()> {
+    ensure_internal_entry()?;
     ensure_in_process_backend()?;
     let local = LocalConfig::from_env()?;
 
@@ -207,6 +208,27 @@ pub fn run_worker() -> Result<()> {
                 serde_json::Value::Object(serde_json::Map::new()),
             )
         }
+    }
+}
+
+/// The worker entry path is internal: it is only reachable through a
+/// coordinator launch, which issues a `RECIPE_INVOCATION` id (interfaces §5
+/// allowlist) alongside `RECIPE_WORKER=1`. A bare `RECIPE_WORKER=1` in the
+/// public command environment is refused here — before argv is read or any
+/// recipe code is evaluated — so the flag alone can never bypass the public
+/// coordinator execution path (S0).
+fn ensure_internal_entry() -> Result<()> {
+    match std::env::var("RECIPE_INVOCATION") {
+        Ok(id) => crate::inputs::validate_invocation_id(&id).map_err(|err| {
+            anyhow!(
+                "worker refuses to run on the host: RECIPE_WORKER=1 without a \
+                 coordinator-issued RECIPE_INVOCATION ({err:#}); refusing host execution"
+            )
+        }),
+        Err(_) => bail!(
+            "worker refuses to run on the host: RECIPE_WORKER=1 without RECIPE_INVOCATION \
+             (only a coordinator launch issues the invocation id); refusing host execution"
+        ),
     }
 }
 

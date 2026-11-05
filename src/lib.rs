@@ -95,6 +95,7 @@ pub mod backend;
 mod core;
 pub mod helpers;
 pub mod inputs;
+pub mod launch;
 mod llm;
 pub mod logging;
 pub mod worker;
@@ -175,9 +176,9 @@ impl RecipeEngine {
     /// Select the execution backend for every executable recipe operation.
     ///
     /// Resolve with [`Backend::select`] (explicit `--backend` choice falling
-    /// back to `RECIPE_BACKEND`, defaulting to host). R06 launches Ginux from
-    /// the selected value; until then a `ginux` backend fails explicitly at
-    /// operation time instead of silently running on the host.
+    /// back to `RECIPE_BACKEND`, defaulting to `ginux`). The selected value
+    /// launches the Ginux domain from operation time (R06); legacy host
+    /// selectors fail explicitly instead of running on the host.
     pub fn with_backend(mut self, backend: Backend) -> Self {
         self.backend = backend;
         self
@@ -233,7 +234,7 @@ impl RecipeEngine {
     ///
     /// Returns the final ctx map containing all recipe state.
     pub fn execute(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        self.backend.run("install", recipe_path, self.recipes_path.as_deref(), || {
+        self.backend.run("install", recipe_path, self.recipes_path.as_deref(), self.persist_ctx, || {
             llm::with_llm_profile(self.llm_profile.as_deref(), || {
             if let Some(autofix) = self.autofix.as_ref() {
                 core::executor::install_with_options(
@@ -270,7 +271,7 @@ impl RecipeEngine {
                 self.build_dir.to_string_lossy().into_owned(),
             ));
         }
-        self.backend.run("remove", recipe_path, self.recipes_path.as_deref(), || {
+        self.backend.run("remove", recipe_path, self.recipes_path.as_deref(), self.persist_ctx, || {
             llm::with_llm_profile(self.llm_profile.as_deref(), || {
                 core::executor::remove(
                     &self.engine,
@@ -294,7 +295,7 @@ impl RecipeEngine {
     ///
     /// Returns the final ctx map after cleanup.
     pub fn cleanup_with_reason(&self, recipe_path: &Path, reason: &str) -> Result<rhai::Map> {
-        self.backend.run("cleanup", recipe_path, self.recipes_path.as_deref(), || {
+        self.backend.run("cleanup", recipe_path, self.recipes_path.as_deref(), self.persist_ctx, || {
             llm::with_llm_profile(self.llm_profile.as_deref(), || {
                 core::executor::cleanup(
                     &self.engine,
@@ -311,7 +312,7 @@ impl RecipeEngine {
 
     /// Execute `is_installed(ctx)` manually.
     pub fn is_installed(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        self.backend.run("is_installed", recipe_path, self.recipes_path.as_deref(), || {
+        self.backend.run("is_installed", recipe_path, self.recipes_path.as_deref(), self.persist_ctx, || {
             llm::with_llm_profile(self.llm_profile.as_deref(), || {
                 core::executor::is_installed(
                     &self.engine,
@@ -326,7 +327,7 @@ impl RecipeEngine {
 
     /// Execute `is_built(ctx)` manually.
     pub fn is_built(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        self.backend.run("is_built", recipe_path, self.recipes_path.as_deref(), || {
+        self.backend.run("is_built", recipe_path, self.recipes_path.as_deref(), self.persist_ctx, || {
             llm::with_llm_profile(self.llm_profile.as_deref(), || {
                 core::executor::is_built(
                     &self.engine,
@@ -341,7 +342,7 @@ impl RecipeEngine {
 
     /// Execute `is_acquired(ctx)` manually.
     pub fn is_acquired(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        self.backend.run("is_acquired", recipe_path, self.recipes_path.as_deref(), || {
+        self.backend.run("is_acquired", recipe_path, self.recipes_path.as_deref(), self.persist_ctx, || {
             llm::with_llm_profile(self.llm_profile.as_deref(), || {
                 core::executor::is_acquired(
                     &self.engine,

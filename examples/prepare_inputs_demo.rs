@@ -150,7 +150,9 @@ fn main() -> anyhow::Result<()> {
         Err(err) => println!("REJECTED (expected): {err:#}"),
     }
 
-    // 6. `Backend::run` ginux arm: preparation runs, then not-wired error.
+    // 6. `Backend::run` ginux arm: preparation runs, then real launch is
+    // attempted through the configured launcher. `/bin/true` speaks no
+    // transport, so this fails explicitly without host fallback.
     println!("== Backend::run ginux arm ==");
     let extra: Vec<ExtraInput> = Vec::new();
     let _ = extra;
@@ -161,14 +163,24 @@ fn main() -> anyhow::Result<()> {
     }
     let backend = Backend::select(Some(BackendKind::Ginux))?;
     let err = backend
-        .run("install", &recipe, None, || -> anyhow::Result<()> {
-            panic!("host fallback must never run under the ginux backend")
-        })
+        .run(
+            "install",
+            &recipe,
+            None,
+            true,
+            || -> anyhow::Result<rhai::Map> {
+                panic!("host fallback must never run under the ginux backend")
+            },
+        )
         .err()
-        .expect("ginux run without launch must fail");
+        .expect("ginux run without a speaking launcher must fail");
     println!("BACKEND-ERROR (expected): {err:#}");
-    if !format!("{err:#}").contains("not wired yet") {
-        anyhow::bail!("ginux arm error does not name the not-wired handoff");
+    let text = format!("{err:#}");
+    if !(text.contains("backend startup failure") || text.contains("backend protocol failure")) {
+        anyhow::bail!("ginux arm error does not carry a backend failure category");
+    }
+    if text.contains("host fallback must never run") {
+        anyhow::bail!("ginux arm ran the host fallback");
     }
 
     std::fs::remove_dir_all(&fixture_dir).ok();
