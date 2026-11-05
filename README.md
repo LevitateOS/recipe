@@ -218,7 +218,7 @@ fn cleanup(ctx, reason) {
 At the top of a recipe, you can declare a base recipe:
 
 ```rhai
-//! extends: linux-base.rhai
+//! extends: base.rhai
 ```
 
 Behavior:
@@ -227,6 +227,11 @@ Behavior:
 - Child functions with the same name and arity override base functions.
 - Top-level statements run base-first, then child.
 - Recursive `extends` is rejected.
+
+The shared source-kernel lifecycle is `distro-builder/recipes/linux.rhai`.
+`linux-base.rhai` is a deprecated entry point using that same lifecycle and
+canonical artifact layout. Custom kernel recipes should extend `linux.rhai`
+directly. Kernel source metadata stays in `recipes/kernel/metadata.rhai`.
 
 ## Dependency Recipes (`deps` and `build_deps`)
 

@@ -485,7 +485,7 @@ Those are only set if the corresponding path exists under `.tools/usr`.
 Recipes can inherit from a base recipe with a leading comment:
 
 ```rhai
-//! extends: linux-base.rhai
+//! extends: base.rhai
 ```
 
 Rules:
@@ -496,6 +496,14 @@ Rules:
 - child functions with the same name and arity override base functions
 - top-level statements run base first, then child
 - recursive extends are rejected
+
+The repository's source-kernel lifecycle lives in
+`distro-builder/recipes/linux.rhai`; its shared metadata and path/release helpers
+live in `recipes/kernel/metadata.rhai`. `linux-base.rhai` is a deprecated entry
+point that inherits the canonical lifecycle and artifact layout. Custom kernel
+recipes should extend `linux.rhai` directly, since extending the alias would
+require recursive inheritance. The unused `leviso/deps/linux.rhai` overlay was
+removed; its Rust caller already delegates to the canonical recipe.
 
 ### Important Persistence Caveat
 
