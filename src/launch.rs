@@ -8,7 +8,7 @@
 //!
 //! Transport discipline (matches `docs/ginux-recipe-interfaces.md` §§2/4):
 //!
-//! - Launcher argv: `--config <config.toml> --result-file <fresh host path>`.
+//! - Launcher argv: `launch <config.toml> <prepared-rootfs> --result-file <fresh host path>`.
 //!   The config file is the staged `config.toml` from [`PreparedInvocation`];
 //!   the result file is a fresh path in a per-invocation run directory that
 //!   the launcher creates exclusively (`O_EXCL` semantics belong to the
@@ -24,12 +24,10 @@
 //!   report only. Generations are `0` here (no durable storage claim);
 //!   R07/G12a own durable generations and the state record.
 //!
-//! Host-side scaffolding (pending G-launch convergence, named follow-up):
-//! the adapter sets `RECIPE_LAUNCH_WORKER` (this `recipe` binary, the domain
-//! init for stub launchers) in the launcher environment and passes the staged
-//! `config.toml`, whose directory a stub launcher treats as the `/inputs`
-//! image. Real launchers resolve `/inputs` from retained image storage
-//! (G10/G11) and ignore the scaffolding variable.
+//! Before launch, the input owner snapshots and verifies the selected assembled
+//! rootfs tar, creates a fresh domain root, and copies the worker plus staged
+//! inputs into `/inputs`. The root is private to this invocation and is kept
+//! alive until the launcher is reaped. No stub-launcher environment is supplied.
 //!
 //! Failure categories (§1): `startup` (bad config, spawn failure, launcher
 //! that cannot speak the transport, supervisor-error result),
@@ -48,8 +46,7 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use crate::inputs::PreparedInvocation;
 use crate::worker::protocol::{
-    AckPayload, Direction, FramePayload, FrameReceiver, FrameSender, RequestPayload,
-    ResultPayload,
+    AckPayload, Direction, FramePayload, FrameReceiver, FrameSender, RequestPayload, ResultPayload,
 };
 
 /// Bound on silent worker output: one frame wait lasts at most this long
@@ -139,19 +136,16 @@ pub fn run_domain(
         );
     }
 
-    let worker_binary = std::env::current_exe().map_err(|err| {
-        anyhow!(
-            "backend startup failure: cannot locate the recipe binary for launcher scaffolding: \
-             {err:#} (refusing host fallback)"
-        )
+    let domain_root = crate::inputs::prepare_root(prepared).map_err(|error| {
+        anyhow!("backend startup failure: cannot prepare Ginux root for invocation {invocation}: {error:#} (refusing host fallback)")
     })?;
 
     let mut child = Command::new(launcher)
-        .arg("--config")
+        .arg("launch")
         .arg(&config_path)
+        .arg(domain_root.path())
         .arg("--result-file")
         .arg(&result_path)
-        .env("RECIPE_LAUNCH_WORKER", &worker_binary)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -274,12 +268,14 @@ fn pump_protocol(
         let frame = rx
             .recv(&mut stdout)
             .map_err(|err| classify_stream_error(invocation, "read worker frame", err, false))?;
-        frame.check_direction(Direction::WorkerToHost).map_err(|err| {
-            anyhow!(
-                "backend protocol failure: invocation {invocation}: worker stream direction \
+        frame
+            .check_direction(Direction::WorkerToHost)
+            .map_err(|err| {
+                anyhow!(
+                    "backend protocol failure: invocation {invocation}: worker stream direction \
                  violation: {err} (refusing host fallback)"
-            )
-        })?;
+                )
+            })?;
         match frame.payload {
             FramePayload::Checkpoint(point) => {
                 checkpoints += 1;
@@ -644,11 +640,7 @@ fn read_result_record(result_path: &Path, invocation: &str) -> Result<ResultReco
 /// `ok` requires a clean `exited`/`0` record; a worker failure requires the
 /// domain to have run it. Contradictions are `protocol` failures, never
 /// success.
-fn check_agreement(
-    invocation: &str,
-    result: &ResultPayload,
-    record: &ResultRecord,
-) -> Result<()> {
+fn check_agreement(invocation: &str, result: &ResultPayload, record: &ResultRecord) -> Result<()> {
     if result.ok {
         if record.outcome == "supervisor-error" {
             bail!(

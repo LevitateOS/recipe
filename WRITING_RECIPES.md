@@ -13,6 +13,37 @@ If this guide, `REQUIREMENTS.md`, and the code disagree, trust:
 `REQUIREMENTS.md` is still the broader target spec. This guide is about what
 you can actually write and run now.
 
+## Required execution environment
+
+Operations that evaluate recipes use Ginux on Linux x86_64. Select the launcher
+with `GINUX_BIN`. Recipe invokes `ginux launch <config> <prepared-rootfs>
+--result-file <fresh-path>` and reports unavailable capabilities as failures.
+
+`GINUX_ROOTFS` selects an assembled, uncompressed rootfs tar. Its SHA-256 must
+match `GINUX_ROOT`, whose format is `oci:NAME@sha256:CONTENT_DIGEST` (the digest
+of the assembled tar, rather than an OCI manifest digest). With no override,
+Recipe uses its pinned Rocky image identity and looks for the tar at
+`$XDG_CACHE_HOME/recipe/images/<digest>.tar`, or the platform cache directory
+when `XDG_CACHE_HOME` is unset. Acquisition of the environment is explicit;
+ordinary execution does not download it.
+
+The coordinator snapshots and verifies the tar, then builds a fresh invocation
+root containing `/inputs/recipe-worker`, the staged inputs, `/work/build`,
+`/work/tools`, `/work/tmp`, and `/out`. Inputs and image files are read-only.
+Image entries cannot replace these invocation paths or write through symlinks.
+The coordinator copies files into the invocation root; it does not share mutable
+hardlinks with an image cache. The root is removed after the launcher is reaped.
+
+The `recipe` CLI stages its own executable as the worker. Library callers use an
+installed `recipe` executable on PATH or explicitly select `RECIPE_WORKER_BIN`;
+the caller's unrelated executable is never treated as a Recipe worker. These
+host selections are coordinator inputs, not worker environment variables.
+
+Integration remains in progress: the configured worker currently fails during
+Rust startup. Retained writable storage, durable state, complete dependency
+closure staging, and publication still need integration and managed runtime
+verification. An ephemeral invocation root does not provide resumable state.
+
 ## Core Model
 
 Recipes are Rhai scripts.

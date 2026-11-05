@@ -96,13 +96,20 @@ impl DomainConfig {
         })
     }
 
+    pub(crate) fn root_reference(&self) -> &str {
+        &self.root
+    }
+
     /// Render the parser-accepted config text (≤ 4096 B).
     pub fn render(&self) -> Result<String> {
         let mut out = String::from("schema_version = 1\n\n[domain]\n");
         out.push_str(&format!("id = {}\n", quote(&self.id)?));
         out.push_str(&format!("root = {}\n", quote(&self.root)?));
         out.push_str(&format!("init = {}\n", quote(&self.init)?));
-        out.push_str(&format!("args = {}\n", quote_list(&self.args, MAX_ARGS, MAX_ARG, "args")?));
+        out.push_str(&format!(
+            "args = {}\n",
+            quote_list(&self.args, MAX_ARGS, MAX_ARG, "args")?
+        ));
         out.push_str(&format!(
             "environment = {}\n",
             quote_list(&self.environment, MAX_ENV, MAX_ENV_ENTRY, "environment")?
@@ -129,7 +136,11 @@ impl DomainConfig {
 }
 
 /// Render the config text for `invocation_id` + `env` in one step.
-pub fn config_text(invocation_id: &str, main_domain_path: &str, env: &[(String, String)]) -> Result<String> {
+pub fn config_text(
+    invocation_id: &str,
+    main_domain_path: &str,
+    env: &[(String, String)],
+) -> Result<String> {
     DomainConfig::for_invocation(invocation_id, main_domain_path, env)?.render()
 }
 
@@ -190,9 +201,9 @@ fn validate_domain_path_value(field: &str, value: &str) -> Result<()> {
 fn validate_reference(value: &str) -> Result<()> {
     if value.starts_with('/')
         || value.contains("..")
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/' | b'@'))
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/' | b'@')
+        })
     {
         bail!(
             "input preparation failure: domain reference {value:?} is not a reference \

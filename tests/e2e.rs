@@ -102,3 +102,7 @@ mod torrent_acquisition;
 
 #[path = "e2e/dependencies.rs"]
 mod dependencies;
+
+#[cfg(target_os = "linux")]
+#[path = "e2e/managed_inputs.rs"]
+mod managed_inputs;

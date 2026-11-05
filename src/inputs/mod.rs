@@ -1,7 +1,7 @@
 //! Invocation input preparation (R05): stage everything a Ginux domain needs.
 //!
 //! Given a recipe path and an operation, [`prepare_invocation`] assembles the
-//! complete invocation input set the worker resolves inside the domain:
+//! supported invocation input set the worker resolves inside the domain:
 //!
 //! - the main recipe file,
 //! - its `//! extends:` base recipe, resolved like the executor does,
@@ -17,8 +17,8 @@
 //!
 //! What this does NOT do (owned by later tasks): domain launch and channel
 //! transport (R06), retained storage backing and generations (G11/G12a),
-//! export of results (G13/R08), or recipe layout adaptation for domain paths
-//! (I02). Unsupported input discovery fails here with an explicit error
+//! export of results (G13/R08), dependency-closure discovery, or recipe layout
+//! reconstruction for nested domain paths (I02). Unsupported input discovery fails here with an explicit error
 //! instead of silently staging the wrong bytes.
 //!
 //! Hard limits enforced (interfaces §2, no silent truncation):
@@ -31,11 +31,12 @@
 mod config;
 mod discover;
 mod env;
+mod root;
+
+pub(crate) use root::prepare_root;
 
 pub use config::{DomainConfig, config_text};
-pub use discover::{
-    ExtraInput, StagedInput, MAIN_NAME_DOMAIN, discover_inputs, hash_file,
-};
+pub use discover::{ExtraInput, MAIN_NAME_DOMAIN, StagedInput, discover_inputs, hash_file};
 pub use env::{allowlisted_env, invocation_id, validate_invocation_id};
 
 use std::path::{Path, PathBuf};
@@ -52,7 +53,8 @@ const SUPPORTED_OPERATIONS: &[&str] = &[
     "is_acquired",
 ];
 
-/// Fully staged invocation inputs, ready for R06 domain launch.
+/// Staged invocation inputs; R06 verifies and materializes the selected image
+/// and worker into a fresh root before launching Ginux.
 ///
 /// The staging directory is a fresh per-invocation temp dir holding one file
 /// per input under its flat domain `NAME`, plus `manifest.txt` (G10-format
@@ -73,6 +75,7 @@ pub struct PreparedInvocation {
     pub env: Vec<(String, String)>,
     /// Domain config text the `ginux-domain` parser accepts (≤ 4096 B).
     pub config_text: String,
+    pub(crate) root_reference: String,
     staging: tempfile::TempDir,
 }
 
@@ -113,7 +116,8 @@ pub fn prepare_invocation(
     let config = DomainConfig::for_invocation(&invocation_id, MAIN_NAME_DOMAIN, &env)?;
     let config_text = config.render()?;
 
-    let staging = tempfile::tempdir().context("input preparation failure: cannot create staging dir")?;
+    let staging =
+        tempfile::tempdir().context("input preparation failure: cannot create staging dir")?;
     for input in &discovered.inputs {
         let dest = staging.path().join(&input.name);
         std::fs::copy(&input.host_path, &dest).with_context(|| {
@@ -131,7 +135,8 @@ pub fn prepare_invocation(
     }
     let manifest = render_manifest(&discovered.inputs);
     std::fs::write(staging.path().join("manifest.txt"), &manifest)?;
-    let mut sources = String::from("# domain NAME <- referenced-as (R06/I02 layout reconstruction)\n");
+    let mut sources =
+        String::from("# domain NAME <- referenced-as (R06/I02 layout reconstruction)\n");
     for input in &discovered.inputs {
         sources.push_str(&format!("{} <- {}\n", input.name, input.referenced_as));
     }
@@ -153,6 +158,7 @@ pub fn prepare_invocation(
         inputs: discovered.inputs,
         env,
         config_text,
+        root_reference: config.root_reference().to_owned(),
         staging,
     })
 }
