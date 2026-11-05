@@ -57,7 +57,7 @@ const ACK_TIMEOUT: Duration = Duration::from_secs(300);
 struct LocalConfig {
     /// Recipe file to execute (argv[1]).
     recipe: PathBuf,
-    /// Build dir (`$BUILD_DIR`, allowlisted by §5) or a fresh temp dir.
+    /// Coordinator-prepared build dir (`$BUILD_DIR`, allowlisted by §5).
     build_dir: PathBuf,
     /// Module/extends search path (`$RECIPE_WORKER_RECIPES` or the recipe's
     /// own directory).
@@ -73,17 +73,21 @@ impl LocalConfig {
         if !recipe.exists() {
             bail!("worker recipe not found: {}", recipe.display());
         }
-        let build_dir = match std::env::var_os("BUILD_DIR") {
-            Some(dir) => {
-                let dir = PathBuf::from(dir);
-                std::fs::create_dir_all(&dir)
-                    .with_context(|| format!("worker: cannot create BUILD_DIR {}", dir.display()))?;
-                dir
-            }
-            None => tempfile::tempdir()
-                .context("worker: cannot create a temporary build directory")?
-                .keep(),
-        };
+        let build_dir = std::env::var_os("BUILD_DIR")
+            .map(PathBuf::from)
+            .context("worker requires the coordinator-prepared BUILD_DIR")?;
+        let metadata = std::fs::metadata(&build_dir).with_context(|| {
+            format!(
+                "worker: prepared BUILD_DIR {} is unavailable",
+                build_dir.display()
+            )
+        })?;
+        if !metadata.is_dir() {
+            bail!(
+                "worker: prepared BUILD_DIR {} is not a directory",
+                build_dir.display()
+            );
+        }
         let search_path = match std::env::var_os("RECIPE_WORKER_RECIPES") {
             Some(p) => PathBuf::from(p),
             None => recipe
