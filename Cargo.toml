@@ -1,5 +1,6 @@
 [package]
 name = "levitate-recipe"
+default-run = "recipe"
 version = "0.1.4"
 edition = "2024"
 description = "Rhai-based package recipe executor for LevitateOS"

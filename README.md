@@ -469,3 +469,7 @@ out of `is_*` checks so post-phase verification remains truthful.
 Library callers select the same inputs with `ExecutionOptions` and
 `RecipeEngine::with_execution_options`. Worker protocol v5 carries these options
 explicitly; old versions are rejected before setup.
+
+The explicit compiler-image producer and pinned local input manifest are documented
+in [bootstrap/README.md](bootstrap/README.md). Build it with
+`cargo build --bin recipe-image`; it does not change the default `recipe` binary.
