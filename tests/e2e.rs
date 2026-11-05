@@ -48,6 +48,7 @@ fn recipe_command(recipes: &Path) -> Command {
     command
         .current_dir(root)
         .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_STATE_HOME", root.join("state"))
         .env("XDG_CONFIG_HOME", root.join("config"))
         .env("XDG_CACHE_HOME", root.join("cache"));
     command
@@ -66,30 +67,30 @@ fn assert_success(output: &std::process::Output) {
 // =============================================================================
 // CLI Help and Version Tests
 
-#[path = "e2e/cli.rs"]
-mod cli;
-#[path = "e2e/failures.rs"]
-mod failures;
-#[path = "e2e/query.rs"]
-mod query;
 #[path = "e2e/archives.rs"]
 mod archives;
-#[path = "e2e/kernel_recipes.rs"]
-mod kernel_recipes;
-#[path = "e2e/downloads.rs"]
-mod downloads;
-#[path = "e2e/process.rs"]
-mod process;
-#[path = "e2e/preseed_recipes.rs"]
-mod preseed_recipes;
+#[path = "e2e/cli.rs"]
+mod cli;
 #[path = "e2e/command_options.rs"]
 mod command_options;
+#[path = "e2e/downloads.rs"]
+mod downloads;
+#[path = "e2e/failures.rs"]
+mod failures;
 #[path = "e2e/git_acquisition.rs"]
 mod git_acquisition;
-#[path = "e2e/kernel_acquisition.rs"]
-mod kernel_acquisition;
 #[path = "e2e/invocation.rs"]
 mod invocation;
+#[path = "e2e/kernel_acquisition.rs"]
+mod kernel_acquisition;
+#[path = "e2e/kernel_recipes.rs"]
+mod kernel_recipes;
+#[path = "e2e/preseed_recipes.rs"]
+mod preseed_recipes;
+#[path = "e2e/process.rs"]
+mod process;
+#[path = "e2e/query.rs"]
+mod query;
 
 #[path = "e2e/api2.rs"]
 mod api2;

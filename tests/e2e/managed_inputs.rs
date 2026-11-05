@@ -1,6 +1,22 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
+fn scratch_directories(parent: &Path) -> Vec<std::path::PathBuf> {
+    let pool = parent.join(format!("recipe-scratch-{}", unsafe { libc::geteuid() }));
+    std::fs::read_dir(pool)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("invocation-")
+        })
+        .map(|entry| entry.path())
+        .collect()
+}
+
 fn image_command(recipes: &Path, archive: &Path, digest: &str) -> Command {
     let mut command = recipe_command(recipes);
     command
@@ -116,13 +132,7 @@ fn cli_image_traversal_and_symlink_ancestors_preserve_host_files() {
             "keep this host file"
         );
         assert!(!effect.exists());
-        assert!(!std::fs::read_dir(dir.path()).unwrap().any(|entry| {
-            entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with("recipe-domain-")
-        }));
+        assert!(scratch_directories(dir.path()).is_empty());
     }
 }
 
@@ -162,13 +172,7 @@ fn cli_image_cannot_replace_invocation_paths_or_duplicate_files() {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(!effect.exists());
-        assert!(!std::fs::read_dir(dir.path()).unwrap().any(|entry| {
-            entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with("recipe-domain-")
-        }));
+        assert!(scratch_directories(dir.path()).is_empty());
     }
 }
 
@@ -194,13 +198,7 @@ fn cli_invalid_worker_cleans_up_a_prepared_readonly_image() {
             .contains("worker must be a Linux x86_64 ELF executable")
     );
     assert!(!effect.exists());
-    assert!(!std::fs::read_dir(dir.path()).unwrap().any(|entry| {
-        entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with("recipe-domain-")
-    }));
+    assert!(scratch_directories(dir.path()).is_empty());
 }
 
 // These cases require the real configured launcher and its prepared image.
@@ -1326,7 +1324,7 @@ else:
 fn managed_coordinator_death_terminates_launcher_and_worker() {
     use std::io::{BufRead, BufReader};
     use std::process::Stdio;
-    let (_dir, recipes) = create_test_env();
+    let (dir, recipes) = create_test_env();
     write_recipe(
         &recipes,
         "check",
@@ -1341,6 +1339,7 @@ fn is_installed(ctx) {
 "#,
     );
     let mut child = managed_command(&recipes, "isinstalled")
+        .env("TMPDIR", dir.path())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -1371,8 +1370,31 @@ fn is_installed(ctx) {
     assert_eq!(launchers.len(), 1);
     let workers = children(launchers[0]);
     assert!(!workers.is_empty());
+    let abandoned = scratch_directories(dir.path());
+    assert_eq!(
+        abandoned.len(),
+        3,
+        "coordinator must lease input, root and run directories"
+    );
+    let pool = abandoned[0].parent().unwrap();
+    let sentinel = pool.join("unrelated");
+    std::fs::write(&sentinel, "preserve").unwrap();
+    write_recipe(
+        &recipes,
+        "check",
+        "const RECIPE_API = 2; let ctx = #{name: \"quick\"}; fn is_installed(ctx) { ready(ctx) }",
+    );
+    let output = managed_command(&recipes, "isinstalled")
+        .env("TMPDIR", dir.path())
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert!(
+        abandoned.iter().all(|path| path.exists()),
+        "concurrent invocation removed active scratch"
+    );
     unsafe {
-        libc::kill(pid as i32, libc::SIGTERM);
+        libc::kill(pid as i32, libc::SIGKILL);
     }
     assert!(!child.wait().unwrap().success());
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -1397,6 +1419,16 @@ fn is_installed(ctx) {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     reader.join().unwrap();
+    let output = managed_command(&recipes, "isinstalled")
+        .env("TMPDIR", dir.path())
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert!(
+        scratch_directories(dir.path()).is_empty(),
+        "next invocation did not reclaim abandoned scratch"
+    );
+    assert_eq!(std::fs::read_to_string(sentinel).unwrap(), "preserve");
 }
 
 #[test]

@@ -20,30 +20,16 @@ const MAX_WORKER_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Owns the isolated root until the launcher and worker have been reaped.
 pub(crate) struct PreparedRoot {
-    directory: tempfile::TempDir,
+    directory: crate::temporary::TemporaryDirectory,
     pub(crate) worker_digest: String,
 }
 
 impl PreparedRoot {
+    pub(crate) fn lease_fd(&self) -> std::os::fd::RawFd {
+        self.directory.lease_fd()
+    }
     pub(crate) fn path(&self) -> &Path {
         self.directory.path()
-    }
-}
-
-impl Drop for PreparedRoot {
-    fn drop(&mut self) {
-        // Image directories are read-only while the domain exists. Restore
-        // owner access for cleanup without following image symlinks.
-        for entry in walkdir::WalkDir::new(self.path())
-            .follow_links(false)
-            .into_iter()
-            .flatten()
-        {
-            if entry.file_type().is_dir() {
-                let _ =
-                    std::fs::set_permissions(entry.path(), std::fs::Permissions::from_mode(0o700));
-            }
-        }
     }
 }
 
@@ -77,9 +63,7 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
     snapshot.seek(SeekFrom::Start(0))?;
     let mut root = PreparedRoot {
         worker_digest: String::new(),
-        directory: tempfile::Builder::new()
-            .prefix("recipe-domain-")
-            .tempdir()?,
+        directory: crate::temporary::TemporaryDirectory::new()?,
     };
     unpack_image(snapshot, root.path())?;
 

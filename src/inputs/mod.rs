@@ -81,10 +81,13 @@ pub struct PreparedInvocation {
     /// Domain config text the `ginux-domain` parser accepts (≤ 4096 B).
     pub config_text: String,
     pub(crate) root_reference: String,
-    staging: tempfile::TempDir,
+    staging: crate::temporary::TemporaryDirectory,
 }
 
 impl PreparedInvocation {
+    pub(crate) fn lease_fd(&self) -> std::os::fd::RawFd {
+        self.staging.lease_fd()
+    }
     /// Fresh per-invocation staging directory holding the input files,
     /// `manifest.txt`, `config.toml`, and `env.txt`.
     pub fn staging_dir(&self) -> &Path {
@@ -130,8 +133,8 @@ pub fn prepare_invocation(
     let config = DomainConfig::for_invocation(&invocation_id, MAIN_NAME_DOMAIN, &env, options)?;
     let config_text = config.render()?;
 
-    let staging =
-        tempfile::tempdir().context("input preparation failure: cannot create staging dir")?;
+    let staging = crate::temporary::TemporaryDirectory::new()
+        .context("input preparation failure: cannot create staging dir")?;
     // Indexed private files cannot collide with source names or metadata.
     for (index, input) in discovered.inputs.iter().enumerate() {
         if input.kind != InputKind::File {

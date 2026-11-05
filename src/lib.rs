@@ -100,6 +100,7 @@ pub mod inputs;
 pub mod launch;
 mod publication;
 mod retained;
+mod temporary;
 
 /// Default coordinator-owned runtime state directory.
 pub fn default_state_directory() -> anyhow::Result<std::path::PathBuf> {

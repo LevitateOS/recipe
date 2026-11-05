@@ -136,7 +136,7 @@ pub fn run_domain(
     let invocation = prepared.invocation_id.clone();
     let timeout = frame_timeout()?;
     let _destination_lock = crate::retained::lock_destination(destination, timeout)?;
-    let run_dir = tempfile::tempdir().context(
+    let run_dir = crate::temporary::TemporaryDirectory::new().context(
         "backend startup failure: cannot create ginux run directory (refusing host fallback)",
     )?;
     let result_path = run_dir.path().join("result.json");
@@ -182,11 +182,16 @@ pub fn run_domain(
     let mut command = Command::new(launcher);
     command.process_group(0);
     let parent = unsafe { libc::getpid() };
+    let leases = [
+        prepared.lease_fd(),
+        domain_root.lease_fd(),
+        run_dir.lease_fd(),
+    ];
     // Killing the coordinator must not orphan the supervisor. Ginux's
     // PTRACE_O_EXITKILL then tears down the supervised tasks.
     unsafe {
         command.pre_exec(move || {
-            if let Some(fd) = control_fd {
+            for fd in leases.into_iter().chain(control_fd) {
                 let flags = libc::fcntl(fd, libc::F_GETFD);
                 if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
                     return Err(std::io::Error::last_os_error());
