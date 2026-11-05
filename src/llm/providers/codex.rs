@@ -55,7 +55,7 @@ pub(crate) fn build(
         cmd.args(["--config", ov]);
     }
 
-    // Effort maps to Codex's config override used in Ralph.
+    // Map the requested effort to Codex's config override.
     if let Some(effort) = &cfg.codex.effort {
         cmd.arg("--config");
         cmd.arg(format!("model_reasoning_effort={}", effort));
