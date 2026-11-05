@@ -652,3 +652,87 @@ fn install(ctx) {
         source
     );
 }
+
+#[test]
+fn managed_capture_returns_stdout_and_relays_stderr_beyond_pipe_capacity() {
+    let (_dir, recipes) = create_test_env();
+    let source = r#"
+const RECIPE_API = 2;
+let ctx = #{name: "managed-capture"};
+fn is_installed(ctx) {
+    ctx.state.short = exec_output("/usr/bin/bash", ["--noprofile", "--norc", "-c", "printf ' capture-value\\n'"]);
+    ctx.state.large = exec_output("/usr/bin/bash", ["--noprofile", "--norc", "-c",
+        "printf '%080000d' 0; printf capture-stdout-end; printf '%080000d' 0 >&2; printf capture-stderr-end >&2"]);
+    ctx.state.empty = exec_output("/usr/bin/bash", ["--noprofile", "--norc", "-c", "printf only-stderr >&2"]);
+    ready(ctx)
+}
+"#;
+    write_recipe(&recipes, "check", source);
+    let output = managed_command(&recipes, "isinstalled").output().unwrap();
+    assert_success(&output);
+    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(context["state"]["short"], " capture-value\n");
+    assert_eq!(
+        context["state"]["large"],
+        "0".repeat(80000) + "capture-stdout-end"
+    );
+    assert_eq!(context["state"]["empty"], "");
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        diagnostics.contains("capture-stderr-end") && diagnostics.contains("only-stderr"),
+        "{diagnostics}"
+    );
+    assert!(
+        !diagnostics.contains("capture-stdout-end"),
+        "captured stdout leaked to diagnostics"
+    );
+    assert!(
+        !diagnostics.contains("ginux: audit") && !diagnostics.contains("panicked at"),
+        "{diagnostics}"
+    );
+    assert!(
+        diagnostics.contains("launcher exit 0; result exited"),
+        "{diagnostics}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+        source
+    );
+}
+
+#[test]
+fn managed_capture_nonzero_exit_remains_a_fatal_custom_check_error() {
+    let (_dir, recipes) = create_test_env();
+    let source = r#"
+const RECIPE_API = 2;
+let ctx = #{name: "managed-capture-failure"};
+fn is_installed(ctx) {
+    ctx.state.unreachable = exec_output("/usr/bin/bash", ["--noprofile", "--norc", "-c",
+        "printf capture-failed-stdout; printf capture-failed-stderr >&2; exit 23"]);
+    ready(ctx)
+}
+"#;
+    write_recipe(&recipes, "check", source);
+    let output = managed_command(&recipes, "isinstalled").output().unwrap();
+    assert!(!output.status.success());
+    assert!(
+        output.stdout.is_empty(),
+        "failure emitted a successful context"
+    );
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    for message in [
+        "exit status: 23",
+        "capture-failed-stdout",
+        "capture-failed-stderr",
+    ] {
+        assert!(diagnostics.contains(message), "{diagnostics}");
+    }
+    assert!(
+        !diagnostics.contains("panicked at") && !diagnostics.contains("backend protocol failure"),
+        "{diagnostics}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+        source
+    );
+}

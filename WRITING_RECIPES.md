@@ -80,12 +80,18 @@ stderr through bounded diagnostic messages. Machine JSON remains on stdout,
 including when child output contains non-UTF-8 bytes. The invocation budget is
 16 MiB or 32768 data messages; one notice reports truncation and excess output
 continues draining so the command can finish. Supervisor audit remains separate.
-Streaming helpers now work for the demonstrated Bash lifecycle. Captured-output
-helpers still need owned-pipe nonblocking ioctl/readiness support in Ginux; a
-real exec_output probe currently fails there.
-Broader signal/robust-futex behavior, threaded exec transitions, and polling of
-owned or remapped descriptors remain unfinished. Exec preparation interrupted
-by signals fails explicitly; generated-file execution still needs storage.
+Streaming and captured-output helpers now work for the demonstrated Bash
+commands. Ginux supports shared pipe FIONBIO and public-descriptor polling for
+pipes, assigned memory files/directories, null and console aliases. Actual CLI
+cases capture 80,000 stdout bytes while draining more than a pipe buffer of
+stderr, preserve whitespace/empty stdout, and keep a child exit 23 fatal inside
+a custom check. Captured stdout is returned to Rhai; captured stderr reaches
+diagnostics without corrupting the JSON result.
+Polling is limited to 16 slots, finite waits through 300000 ms or negative
+infinite waits. Image-file polling is unsupported. Nonfatal signal interruption
+and restart, broader signal/robust-futex behavior and threaded exec transitions
+remain unfinished. Exec preparation interrupted by signals fails explicitly;
+generated-file execution still needs storage.
 File effects disappear after the invocation.
 Acknowledgements still use placeholder generation 0 and are not durable-state
 evidence. Child commands, retained writable storage, durable state, complete
