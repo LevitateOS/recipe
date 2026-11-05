@@ -683,7 +683,10 @@ fn install(ctx) {
         "x".repeat(32768)
     );
     assert!(output.stderr.windows(2).any(|window| window == b"\0\xff"));
-    assert_eq!(context["outputs"]["proof"], "/out/child-proof");
+    assert_eq!(
+        std::fs::read(context["outputs"]["proof"].as_str().unwrap()).unwrap(),
+        b"actual-bash-product"
+    );
     assert!(!String::from_utf8_lossy(&output.stdout).contains("child-stdout"));
     assert_eq!(
         std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
@@ -902,7 +905,10 @@ fn install(ctx) {
     assert_success(&output);
     let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(context["state"]["verified_bytes"], 131072);
-    assert_eq!(context["outputs"]["proof"], "/out/large-file");
+    assert_eq!(
+        std::fs::read(context["outputs"]["proof"].as_str().unwrap()).unwrap(),
+        vec![b'x'; 131072]
+    );
     assert!(String::from_utf8_lossy(&output.stderr).contains("launcher exit 0; result exited"));
     assert_eq!(
         std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
@@ -962,7 +968,15 @@ fn install(ctx) {
     let output = managed_command(&recipes, "install").output().unwrap();
     assert_success(&output);
     let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(context["outputs"]["tree"], "/out/final");
+    let published = Path::new(context["outputs"]["tree"].as_str().unwrap());
+    assert_eq!(
+        std::fs::read(published.join("manifest")).unwrap(),
+        b"directory-product-v1"
+    );
+    assert_eq!(
+        std::fs::read(published.join("nested/input")).unwrap(),
+        vec![b'd'; 131072]
+    );
     assert_eq!(context["state"]["cleaned"], true);
     let diagnostics = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -1045,7 +1059,10 @@ fn install(ctx) {
     let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(context["state"]["code"], 0);
     assert_eq!(context["state"]["captured"], "owned-elf-capture");
-    assert_eq!(context["outputs"]["proof"], "/out/owned-result");
+    assert_eq!(
+        std::fs::read(context["outputs"]["proof"].as_str().unwrap()).unwrap(),
+        b"owned-elf-product"
+    );
     let diagnostics = String::from_utf8_lossy(&output.stderr);
     for message in [
         "owned-elf-stdout",
@@ -1136,7 +1153,10 @@ fn install(ctx) {
         context["state"]["captured"],
         "/work/build/generated-script|argument with spaces|last"
     );
-    assert_eq!(context["outputs"]["proof"], "/out/script-result");
+    assert_eq!(
+        std::fs::read(context["outputs"]["proof"].as_str().unwrap()).unwrap(),
+        b"script-product"
+    );
     let diagnostics = String::from_utf8_lossy(&output.stderr);
     assert!(
         diagnostics.contains("script-stderr")
@@ -1305,4 +1325,138 @@ fn is_installed(ctx) {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     reader.join().unwrap();
+}
+
+#[test]
+fn managed_publication_selects_products_and_rejects_missing_outputs() {
+    let (dir, recipes) = create_test_env();
+    let source = r#"
+const RECIPE_API = 2;
+let ctx = #{name: "publication"};
+fn is_acquired(ctx) { ready(ctx) }
+fn is_built(ctx) { ready(ctx) }
+fn is_installed(ctx) { if ctx.state.contains("done") { ready(ctx) } else { needs_work(ctx, "produce") } }
+fn install(ctx) {
+    mkdir("/out/tree/empty");
+    write_file("/out/tree/product", "published-bytes");
+    let long_name = "";
+    for index in 0..120 { long_name += "a"; }
+    write_file("/out/tree/" + long_name, "long-name-product");
+    write_file("/work/private", "not selected");
+    ctx.outputs.tree = "/out/tree";
+    ctx.outputs.file = "/out/tree/product";
+    ctx.outputs.alias = "/out/tree/product";
+    ctx.state.done = true;
+    ctx
+}
+"#;
+    write_recipe(&recipes, "check", source);
+    let output = managed_command(&recipes, "install").output().unwrap();
+    assert_success(&output);
+    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let tree = Path::new(context["outputs"]["tree"].as_str().unwrap());
+    let published = tree.parent().unwrap();
+    assert!(tree.join("empty").is_dir());
+    assert_eq!(
+        std::fs::read(tree.join("a".repeat(120))).unwrap(),
+        b"long-name-product"
+    );
+    for path in [
+        tree.join("product"),
+        published.join("file"),
+        published.join("alias"),
+    ] {
+        assert_eq!(std::fs::read(path).unwrap(), b"published-bytes");
+    }
+    assert_eq!(std::fs::read_dir(published).unwrap().count(), 3);
+    assert!(published.starts_with(dir.path().join(".artifacts/ginux-export")));
+    let before = std::fs::read_dir(published.parent().unwrap())
+        .unwrap()
+        .count();
+    write_recipe(
+        &recipes,
+        "check",
+        &source.replace(
+            "ctx.outputs.alias = \"/out/tree/product\";",
+            "ctx.outputs.alias = \"/out/missing\";",
+        ),
+    );
+    let output = managed_command(&recipes, "install").output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("declared output is absent"));
+    assert_eq!(
+        std::fs::read_dir(published.parent().unwrap())
+            .unwrap()
+            .count(),
+        before
+    );
+    assert_eq!(
+        std::fs::read(published.join("file")).unwrap(),
+        b"published-bytes"
+    );
+}
+
+#[test]
+fn managed_publication_rejects_archive_traversal_and_links() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, recipes) = create_test_env();
+    let source = r#"
+const RECIPE_API = 2;
+let ctx = #{name: "export-boundary"};
+fn is_acquired(ctx) { ready(ctx) }
+fn is_built(ctx) { ready(ctx) }
+fn is_installed(ctx) { if ctx.state.contains("done") { ready(ctx) } else { needs_work(ctx, "produce") } }
+fn install(ctx) { write_file("/out/product", "valid"); ctx.outputs.product = "/out/product"; ctx.state.done = true; ctx }
+"#;
+    write_recipe(&recipes, "check", source);
+    let sentinel = dir.path().join("sentinel");
+    std::fs::write(&sentinel, b"keep").unwrap();
+    let launcher = std::env::var("GINUX_BIN").unwrap();
+    let wrapper = dir.path().join("corrupt-export");
+    for kind in ["traversal", "symlink", "hardlink", "longname"] {
+        // Run the real supervisor and worker before injecting malformed export
+        // bytes at the coordinator boundary. This is not a protocol stub.
+        std::fs::write(
+            &wrapper,
+            format!(
+                r#"#!/usr/bin/python3
+import io, subprocess, sys, tarfile
+result = subprocess.run([{launcher:?}] + sys.argv[1:])
+if result.returncode: sys.exit(result.returncode)
+path = sys.argv[sys.argv.index('--export-file')+1]
+with tarfile.open(path, 'w') as archive:
+    entry = tarfile.TarInfo('out/../../sentinel' if {kind:?} == 'traversal' else 'out/product')
+    if {kind:?} == 'longname':
+        entry.type = tarfile.GNUTYPE_LONGNAME
+        entry.size = 1024
+        archive.addfile(entry, io.BytesIO(b'x'*1024))
+    elif {kind:?} == 'traversal':
+        entry.size = 7
+        archive.addfile(entry, io.BytesIO(b'changed'))
+    else:
+        entry.type = tarfile.SYMTYPE if {kind:?} == 'symlink' else tarfile.LNKTYPE
+        entry.linkname = {sentinel:?}
+        archive.addfile(entry)
+"#,
+                sentinel = sentinel.to_str().unwrap()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let output = managed_command(&recipes, "install")
+            .env("GINUX_BIN", &wrapper)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "accepted {kind}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("cannot publish completed domain outputs"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");
+        let exports = dir.path().join(".artifacts/ginux-export");
+        if exports.exists() {
+            assert_eq!(std::fs::read_dir(exports).unwrap().count(), 0);
+        }
+    }
 }

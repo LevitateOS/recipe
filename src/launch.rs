@@ -8,7 +8,7 @@
 //!
 //! Transport discipline (matches `docs/ginux-recipe-interfaces.md` §§2/4):
 //!
-//! - Launcher argv: `launch <config.toml> <prepared-rootfs> --result-file <fresh host path>`.
+//! - Launcher argv: `launch <config.toml> <prepared-rootfs> --result-file <fresh host path> --export-file <fresh tar path>`.
 //!   The config file is the staged `config.toml` from [`PreparedInvocation`];
 //!   the result file is a fresh path in a per-invocation run directory that
 //!   the launcher creates exclusively (`O_EXCL` semantics belong to the
@@ -135,6 +135,7 @@ pub fn run_domain(
         "backend startup failure: cannot create ginux run directory (refusing host fallback)",
     )?;
     let result_path = run_dir.path().join("result.json");
+    let export_path = run_dir.path().join("export.tar");
     let config_path = prepared.staging_dir().join("config.toml");
     if !config_path.is_file() {
         bail!(
@@ -169,6 +170,8 @@ pub fn run_domain(
         .arg(domain_root.path())
         .arg("--result-file")
         .arg(&result_path)
+        .arg("--export-file")
+        .arg(&export_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -202,7 +205,7 @@ pub fn run_domain(
         stdin,
         stdout,
     );
-    let stream = match pump {
+    let mut stream = match pump {
         Ok(stream) => stream,
         Err(err) => {
             let exit = reap_launcher(&mut child);
@@ -225,6 +228,10 @@ pub fn run_domain(
     let record = read_result_record(&result_path, &invocation)?;
     check_agreement(&invocation, &stream.result, &record)?;
     check_launcher_exit(&invocation, &stream.result, &record, exit)?;
+    if stream.result.ok {
+        crate::publication::publish(&invocation, &export_path, &mut stream.result.ctx_summary)
+            .context("backend storage failure: cannot publish completed domain outputs")?;
+    }
 
     let log_tail = read_log_tail(&log_path);
     Ok(LaunchReport {

@@ -96,6 +96,7 @@ mod core;
 pub mod helpers;
 pub mod inputs;
 pub mod launch;
+mod publication;
 mod llm;
 pub mod logging;
 pub mod worker;
