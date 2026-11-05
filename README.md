@@ -406,3 +406,10 @@ The CLI end-to-end suite uses the Cargo-built binary and isolated working, build
 ```bash
 cargo test -p levitate-recipe --test e2e
 ```
+
+Managed transport waits are bounded for each complete frame, including partial
+headers/payloads and blocked writes. `RECIPE_FRAME_TIMEOUT_SECS` selects 1–86400
+seconds (default 300). Launcher shutdown has a bounded grace period; remaining
+process-group members are killed, and stderr collection cannot wait forever for
+a pipe holder. On Linux, coordinator death kills its launcher, allowing Ginux
+to terminate traced workloads. This does not yet provide resumable cancellation.

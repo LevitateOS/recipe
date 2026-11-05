@@ -38,8 +38,14 @@
 //! here (R07/L03 own them).
 
 use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -141,7 +147,23 @@ pub fn run_domain(
         anyhow!("backend startup failure: cannot prepare Ginux root for invocation {invocation}: {error:#} (refusing host fallback)")
     })?;
 
-    let mut child = Command::new(launcher)
+    let mut command = Command::new(launcher);
+    command.process_group(0);
+    let parent = unsafe { libc::getpid() };
+    // Killing the coordinator must not orphan the supervisor. Ginux's
+    // PTRACE_O_EXITKILL then tears down the supervised tasks.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::getppid() != parent {
+                libc::_exit(125);
+            }
+            Ok(())
+        });
+    }
+    let mut child = command
         .arg("launch")
         .arg(&config_path)
         .arg(domain_root.path())
@@ -227,7 +249,7 @@ struct WorkerStream {
     failure: Option<crate::worker::protocol::FailurePayload>,
     checkpoints: u64,
     generations: Vec<(u64, u64)>,
-    stdin: std::process::ChildStdin,
+    stdin: DeadlinePipe<std::process::ChildStdin>,
 }
 
 /// Send the request, relay checkpoint→ack, and collect the exactly-once
@@ -240,12 +262,12 @@ fn pump_protocol(
     recipe_digest: &str,
     persist_ctx: bool,
     options: &crate::worker::protocol::InvocationOptions,
-    mut stdin: std::process::ChildStdin,
+    stdin: std::process::ChildStdin,
     stdout: std::process::ChildStdout,
 ) -> Result<WorkerStream> {
-    use std::os::unix::io::AsRawFd as _;
-    let stdout_fd = stdout.as_raw_fd();
-    let mut stdout = stdout;
+    let timeout = frame_timeout()?;
+    let mut stdin = DeadlinePipe::new(stdin, timeout)?;
+    let mut stdout = DeadlinePipe::new(stdout, timeout)?;
     let mut tx = FrameSender::new();
     let mut rx = FrameReceiver::new();
 
@@ -271,7 +293,7 @@ fn pump_protocol(
     let mut diagnostic_frames = 0usize;
     let mut diagnostic_truncated = false;
     let result = loop {
-        wait_readable(invocation, stdout_fd)?;
+        stdout.reset(timeout);
         let frame = rx
             .recv(&mut stdout)
             .map_err(|err| classify_stream_error(invocation, "read worker frame", err, false))?;
@@ -327,6 +349,7 @@ fn pump_protocol(
                 }
                 let seq = point.seq;
                 generations.push((seq, UNGROUNDED_GENERATION));
+                stdin.reset(timeout);
                 tx.send(
                     &mut stdin,
                     &FramePayload::Ack(AckPayload {
@@ -370,57 +393,121 @@ fn pump_protocol(
     })
 }
 
-/// Wait until the launcher stdout pipe is readable, bounding worker silence.
-///
-/// The wait covers the first byte of the next frame; once readable, the
-/// receiver takes the frame remainder. Writes are serialized but may be split
-/// into bounded IO chunks. EOF detects truncation; a deadline for a live peer
-/// stalled inside a frame remains part of cancellation/timeout work (L03).
-#[cfg(unix)]
-fn wait_readable(invocation: &str, fd: i32) -> Result<()> {
-    let mut pfd = libc::pollfd {
-        fd,
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    let timeout_ms = FRAME_TIMEOUT.as_millis().min(i32::MAX as u128) as libc::c_int;
-    loop {
-        let ready = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
-        if ready < 0 {
-            let err = std::io::Error::last_os_error();
-            if err.kind() == std::io::ErrorKind::Interrupted {
-                continue;
+/// One absolute deadline covers the complete frame, including partial headers,
+/// payloads and blocked writes. Nonblocking descriptors prevent a poll/read race
+/// from accidentally turning the next operation into an unbounded wait.
+struct DeadlinePipe<T> {
+    inner: T,
+    deadline: Instant,
+}
+
+fn frame_timeout() -> Result<Duration> {
+    match std::env::var("RECIPE_FRAME_TIMEOUT_SECS") {
+        Err(std::env::VarError::NotPresent) => Ok(FRAME_TIMEOUT),
+        value => {
+            let seconds: u64 = value
+                .context("invalid RECIPE_FRAME_TIMEOUT_SECS")?
+                .parse()
+                .context("RECIPE_FRAME_TIMEOUT_SECS must be an integer from 1 to 86400")?;
+            if !(1..=86400).contains(&seconds) {
+                bail!("RECIPE_FRAME_TIMEOUT_SECS must be from 1 to 86400");
             }
-            bail!(
-                "backend protocol failure: invocation {invocation}: poll on launcher stdout \
-                 failed: {err} (refusing host fallback)"
-            );
+            Ok(Duration::from_secs(seconds))
         }
-        if ready == 0 {
-            bail!(
-                "backend protocol failure: invocation {invocation}: timed out after {}s waiting \
-                 for the next worker frame (refusing host fallback)",
-                FRAME_TIMEOUT.as_secs(),
-            );
-        }
-        if pfd.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
-            bail!(
-                "backend protocol failure: invocation {invocation}: launcher stdout pipe broken \
-                 (revents {:#x}; refusing host fallback)",
-                pfd.revents
-            );
-        }
-        // POLLIN or POLLHUP: recv takes pending bytes or reports Closed /
-        // Truncated explicitly.
-        return Ok(());
     }
 }
 
-/// Non-Unix fallback: block in the receiver, which still reports EOF and
-/// truncation explicitly but has no silence bound.
-#[cfg(not(unix))]
-fn wait_readable(_invocation: &str, _fd: i32) -> Result<()> {
-    Ok(())
+impl<T: AsRawFd> DeadlinePipe<T> {
+    fn new(inner: T, timeout: Duration) -> std::io::Result<Self> {
+        let fd = inner.as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self {
+            inner,
+            deadline: Instant::now() + timeout,
+        })
+    }
+    fn reset(&mut self, timeout: Duration) {
+        self.deadline = Instant::now() + timeout;
+    }
+    fn wait(&self, events: i16) -> std::io::Result<()> {
+        loop {
+            let left = self.deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "complete worker frame deadline expired",
+                ));
+            }
+            let mut poll = libc::pollfd {
+                fd: self.inner.as_raw_fd(),
+                events,
+                revents: 0,
+            };
+            let millis = left.as_millis().clamp(1, i32::MAX as u128) as i32;
+            let result = unsafe { libc::poll(&mut poll, 1, millis) };
+            if result < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            if result > 0 {
+                if poll.revents & libc::POLLNVAL != 0 {
+                    return Err(std::io::Error::from_raw_os_error(libc::EBADF));
+                }
+                return Ok(());
+            }
+        }
+    }
+}
+impl<T: AsRawFd + Read> Read for DeadlinePipe<T> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            self.wait(libc::POLLIN)?;
+            match self.inner.read(bytes) {
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    continue;
+                }
+                result => return result,
+            }
+        }
+    }
+}
+impl<T: AsRawFd + Write> Write for DeadlinePipe<T> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            self.wait(libc::POLLOUT)?;
+            match self.inner.write(bytes) {
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    continue;
+                }
+                result => return result,
+            }
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 /// Categorize a transport error: failures delivering the request mean the
@@ -496,9 +583,18 @@ fn reap_launcher(child: &mut Child) -> Option<i32> {
     let deadline = Instant::now() + SHUTDOWN_GRACE;
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => return status.code(),
+            Ok(Some(status)) => {
+                // A malformed launcher may leave a child holding its pipes.
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGKILL);
+                }
+                return status.code();
+            }
             Ok(None) => {
                 if Instant::now() >= deadline {
+                    unsafe {
+                        libc::kill(-(child.id() as i32), libc::SIGKILL);
+                    }
                     child.kill().ok();
                     return match child.wait() {
                         Ok(status) => status.code(),
@@ -526,17 +622,40 @@ struct DrainedLog {
 /// Drain launcher stderr to a log file with a retention cap, so a chatty
 /// worker can never block on a full stderr pipe. Bytes past the cap are
 /// still consumed (and counted) but discarded. The log is never parsed.
-fn spawn_stderr_drain(
-    mut stderr: std::process::ChildStderr,
-    log_path: PathBuf,
-) -> std::thread::JoinHandle<DrainedLog> {
-    std::thread::spawn(move || {
+struct Drain {
+    stop: Arc<AtomicBool>,
+    thread: std::thread::JoinHandle<DrainedLog>,
+}
+
+fn spawn_stderr_drain(stderr: std::process::ChildStderr, log_path: PathBuf) -> Drain {
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopping = stop.clone();
+    let thread = std::thread::spawn(move || {
+        let mut stderr = match DeadlinePipe::new(stderr, Duration::from_millis(250)) {
+            Ok(stderr) => stderr,
+            Err(error) => {
+                return DrainedLog {
+                    total_bytes: 0,
+                    discarded_bytes: 0,
+                    tail: format!("<cannot drain stderr: {error}>"),
+                };
+            }
+        };
+        let mut shutdown = None;
         let mut file = std::fs::File::create(&log_path).ok();
         let mut total: u64 = 0;
         let mut retained: u64 = 0;
         let mut tail: Vec<u8> = Vec::new();
         let mut buf = [0u8; 8192];
         loop {
+            if stopping.load(Ordering::Relaxed) {
+                let deadline =
+                    shutdown.get_or_insert_with(|| Instant::now() + Duration::from_secs(1));
+                if Instant::now() >= *deadline {
+                    break;
+                }
+            }
+            stderr.reset(Duration::from_millis(250));
             match stderr.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
@@ -557,6 +676,11 @@ fn spawn_stderr_drain(
                         tail.drain(..drop);
                     }
                 }
+                Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
+                    if shutdown.is_some() {
+                        break;
+                    }
+                }
                 Err(_) => break,
             }
         }
@@ -569,12 +693,14 @@ fn spawn_stderr_drain(
             discarded_bytes: total.saturating_sub(retained),
             tail: String::from_utf8_lossy(&tail[start..]).into_owned(),
         }
-    })
+    });
+    Drain { stop, thread }
 }
 
 /// Join the drain thread; a dead drain is reported, never silent.
-fn join_drain(handle: std::thread::JoinHandle<DrainedLog>) -> DrainedLog {
-    handle.join().unwrap_or(DrainedLog {
+fn join_drain(handle: Drain) -> DrainedLog {
+    handle.stop.store(true, Ordering::Relaxed);
+    handle.thread.join().unwrap_or(DrainedLog {
         total_bytes: 0,
         discarded_bytes: 0,
         tail: "<stderr drain thread failed>".to_string(),

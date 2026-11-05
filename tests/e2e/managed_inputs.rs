@@ -1190,3 +1190,42 @@ fn is_installed(ctx) {
         source
     );
 }
+
+#[test]
+fn cli_partial_launcher_frame_times_out_and_reaps_pipe_holders() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, recipes) = create_test_env();
+    let sentinel = dir.path().join("host-effect");
+    guarded_recipe(&recipes, &sentinel);
+    let archive = dir.path().join("image.tar");
+    let digest = image_tar(&archive, &[("etc/fact", tar::EntryType::Regular, "image")]);
+    let launcher = dir.path().join("partial-launcher");
+    std::fs::write(
+        &launcher,
+        r#"#!/usr/bin/python3
+import os, time
+os.write(1, b'\x00')
+child = os.fork()
+if child == 0:
+    time.sleep(60)
+else:
+    time.sleep(60)
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let start = std::time::Instant::now();
+    let output = image_command(&recipes, &archive, &digest)
+        .env("GINUX_BIN", &launcher)
+        .env("RECIPE_FRAME_TIMEOUT_SECS", "1")
+        .output()
+        .unwrap();
+    assert!(!output.status.success() && output.stdout.is_empty());
+    assert!(start.elapsed() < std::time::Duration::from_secs(20));
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("complete worker frame deadline expired"),
+        "{error}"
+    );
+    assert!(!sentinel.exists());
+}
