@@ -95,6 +95,7 @@ mod core;
 pub mod helpers;
 mod llm;
 pub mod logging;
+pub mod worker;
 
 pub use core::output;
 pub use logging::{
