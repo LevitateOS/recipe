@@ -125,7 +125,7 @@ impl DomainConfig {
         // Only domain paths cross this interface. The launcher's memory backend
         // owns these bytes; no writable host directory is assigned.
         out.push_str("\n[storage]\nassignments = [\"memory:/work\", \"memory:/work/build\", \"memory:/work/tools\", \"memory:/work/tmp\", \"memory:/out\"]\n");
-        out.push_str("\n[devices]\nassignments = []\n");
+        out.push_str("\n[devices]\nassignments = [\"null\"]\n");
         out.push_str("\n[network]\nbackend = \"none\"\n");
         out.push_str("\n[audit]\nmode = \"stderr\"\n");
         out.push_str("\n[failure]\npolicy = \"stop\"\n");

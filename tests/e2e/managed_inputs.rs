@@ -485,3 +485,31 @@ fn remove(ctx) { cleanup(ctx, "remove") }
         );
     }
 }
+
+#[test]
+fn managed_helpers_use_the_assigned_null_device() {
+    let (_dir, recipes) = create_test_env();
+    let source = r#"
+const RECIPE_API = 2;
+let ctx = #{name: "null-device"};
+fn is_installed(ctx) {
+    write_file("/dev/null", "discard these actual helper bytes");
+    ctx.state.null_read = read_file("/dev/null");
+    ctx.state.regular_file = is_file("/dev/null");
+    ctx.state.device_directory = is_dir("/dev");
+    ready(ctx)
+}
+"#;
+    write_recipe(&recipes, "check", source);
+    let output = managed_command(&recipes, "isinstalled").output().unwrap();
+    assert_success(&output);
+    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(context["state"]["null_read"], "");
+    assert_eq!(context["state"]["regular_file"], false);
+    assert_eq!(context["state"]["device_directory"], true);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("launcher exit 0; result exited"));
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+        source
+    );
+}
