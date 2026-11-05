@@ -126,3 +126,62 @@ fn private_worker_rejects_missing_bootstrap_and_mismatched_request_before_setup(
     assert_eq!(stream.position(), output.stdout.len() as u64);
     assert!(!sentinel.exists());
 }
+
+#[test]
+fn private_worker_rejects_previous_transport_before_recipe_setup() {
+    let (dir, recipes) = create_test_env();
+    let sentinel = dir.path().join("host-effect");
+    write_recipe(
+        &recipes,
+        "check",
+        &format!(
+            "write_file({:?}, \"unexpected setup\"); let ctx = #{{name: \"guard\"}}; fn is_installed(ctx) {{ ctx }}",
+            sentinel.to_string_lossy()
+        ),
+    );
+    let build = dir.path().join("prepared-build");
+    std::fs::create_dir(&build).unwrap();
+    let mut child = recipe_command(&recipes)
+        .env("RECIPE_WORKER", "1")
+        .env("RECIPE_INVOCATION", "bootstrap-id")
+        .env("BUILD_DIR", &build)
+        .arg(levitate_recipe::worker::WORKER_ENTRY_ARG)
+        .arg(recipes.join("check.rhai"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut bytes = Vec::new();
+    FrameSender::new()
+        .send(
+            &mut bytes,
+            &FramePayload::Request(RequestPayload {
+                invocation_id: "bootstrap-id".into(),
+                operation: "is_installed".into(),
+                persist_ctx: false,
+                recipe_digest: "0".repeat(64),
+            }),
+        )
+        .unwrap();
+    bytes[4..8].copy_from_slice(&1u32.to_be_bytes());
+    child.stdin.take().unwrap().write_all(&bytes).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let mut stream = std::io::Cursor::new(&output.stdout);
+    let mut receiver = FrameReceiver::new();
+    let FramePayload::Failure(failure) = receiver.recv(&mut stream).unwrap().payload else {
+        panic!("expected failure")
+    };
+    assert!(
+        failure.message.contains("version mismatch"),
+        "{}",
+        failure.message
+    );
+    let FramePayload::Result(result) = receiver.recv(&mut stream).unwrap().payload else {
+        panic!("expected result")
+    };
+    assert!(!result.ok);
+    assert_eq!(stream.position(), output.stdout.len() as u64);
+    assert!(!sentinel.exists());
+}

@@ -75,8 +75,11 @@ Blocked pipe IO keeps its original handle across a peer close/reuse. Threads can
 exit without closing peer handles; final process exit reaps the whole group.
 A real Bash child now produces verified domain bytes and returns zero through
 the existing helper. Reader startup failures remain ordinary command errors.
-Successful child stderr is still discarded by the coordinator's temporary log
-collection; the retained CLI regression exposes that remaining diagnostic gap.
+Child stdout/stderr, Rhai print/debug/log/warn and phase narration now reach CLI
+stderr through bounded diagnostic messages. Machine JSON remains on stdout,
+including when child output contains non-UTF-8 bytes. The invocation budget is
+16 MiB or 32768 data messages; one notice reports truncation and excess output
+continues draining so the command can finish. Supervisor audit remains separate.
 Broader signal/robust-futex behavior, threaded exec transitions, and polling of
 owned or remapped descriptors remain unfinished. Exec preparation interrupted
 by signals fails explicitly; generated-file execution still needs storage.

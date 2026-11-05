@@ -2,15 +2,15 @@
 
 /// Log a message to stderr (stdout is reserved for JSON output)
 pub fn log(msg: &str) {
-    eprintln!("[recipe] {}", msg);
+    crate::logging::diag!("[recipe] {}", msg);
 }
 
 /// Log a debug message (only shown in verbose mode)
 pub fn debug(msg: &str) {
-    eprintln!("[recipe:debug] {}", msg);
+    crate::logging::diag!("[recipe:debug] {}", msg);
 }
 
 /// Log a warning message
 pub fn warn(msg: &str) {
-    eprintln!("[recipe:warn] {}", msg);
+    crate::logging::diag!("[recipe:warn] {}", msg);
 }

@@ -263,6 +263,9 @@ fn pump_protocol(
     let mut checkpoints: u64 = 0;
     let mut generations = Vec::new();
     let mut failure = None;
+    let mut diagnostic_bytes = 0usize;
+    let mut diagnostic_frames = 0usize;
+    let mut diagnostic_truncated = false;
     let result = loop {
         wait_readable(invocation, stdout_fd)?;
         let frame = rx
@@ -277,6 +280,39 @@ fn pump_protocol(
                 )
             })?;
         match frame.payload {
+            FramePayload::Diagnostic(payload) => {
+                use crate::worker::protocol::{MAX_DIAGNOSTIC_BYTES, MAX_DIAGNOSTIC_FRAMES};
+                if diagnostic_truncated {
+                    bail!(
+                        "backend protocol failure: diagnostic after truncation (refusing host fallback)"
+                    );
+                }
+                if payload.truncated {
+                    if diagnostic_bytes != MAX_DIAGNOSTIC_BYTES
+                        && diagnostic_frames != MAX_DIAGNOSTIC_FRAMES
+                    {
+                        bail!(
+                            "backend protocol failure: premature diagnostic truncation (refusing host fallback)"
+                        );
+                    }
+                    diagnostic_truncated = true;
+                    let _ = std::io::stderr()
+                        .write_all(b"recipe: diagnostic limit reached; remaining output drained\n");
+                } else {
+                    diagnostic_bytes += payload.data.len();
+                    diagnostic_frames += 1;
+                    if diagnostic_bytes > MAX_DIAGNOSTIC_BYTES
+                        || diagnostic_frames > MAX_DIAGNOSTIC_FRAMES
+                    {
+                        bail!(
+                            "backend protocol failure: diagnostic budget exceeded (refusing host fallback)"
+                        );
+                    }
+                    // All human bytes go to CLI stderr, never to its JSON stream.
+                    // Supervisor stderr is collected independently and never parsed.
+                    let _ = std::io::stderr().write_all(&payload.data);
+                }
+            }
             FramePayload::Checkpoint(point) => {
                 checkpoints += 1;
                 if checkpoints > MAX_CHECKPOINTS {
@@ -333,10 +369,9 @@ fn pump_protocol(
 /// Wait until the launcher stdout pipe is readable, bounding worker silence.
 ///
 /// The wait covers the first byte of the next frame; once readable, the
-/// receiver takes the frame remainder. A stalled remainder without EOF is
-/// not a hang risk in practice: the worker writes whole frames atomically
-/// and any peer death surfaces as EOF, which unblocks the receiver with an
-/// explicit truncation error.
+/// receiver takes the frame remainder. Writes are serialized but may be split
+/// into bounded IO chunks. EOF detects truncation; a deadline for a live peer
+/// stalled inside a frame remains part of cancellation/timeout work (L03).
 #[cfg(unix)]
 fn wait_readable(invocation: &str, fd: i32) -> Result<()> {
     let mut pfd = libc::pollfd {

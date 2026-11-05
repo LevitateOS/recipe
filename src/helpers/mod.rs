@@ -139,7 +139,7 @@ pub fn register_all(engine: &mut Engine) {
     // overload breaks its built-in formatter, which expects a string.
     engine.on_print(|msg| {
         trace_helper("print");
-        eprintln!("{msg}");
+        crate::logging::diagnostic_line(msg);
     });
     engine.on_debug(|msg, source, position| {
         trace_helper("debug");

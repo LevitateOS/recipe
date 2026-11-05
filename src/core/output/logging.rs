@@ -72,8 +72,8 @@ pub fn hook_event_struct(event: &RecipeHookEvent) {
     emit_to_sink(event);
 
     if machine_events() {
-        eprintln!("{}", event.as_json());
+        crate::logging::diag!("{}", event.as_json());
     }
 
-    eprintln!("{}", human);
+    crate::logging::diag!("{}", human);
 }

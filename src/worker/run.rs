@@ -1,4 +1,4 @@
-//! Worker entry point: run the existing engine behind protocol v1.
+//! Worker entry point: run the existing engine behind protocol v2.
 //!
 //! The worker is the same `recipe` binary entered with a private argv marker (see
 //! the dispatch in `src/bin/`). It reads exactly one request frame from
@@ -10,11 +10,10 @@
 //!
 //! Transport discipline (matches `docs/ginux-recipe-interfaces.md` §2/§4):
 //!
-//! - stdin is the host→worker direction (one `request`, then one `ack` per
-//!   checkpoint); stdout is the worker→host direction (`checkpoint`, an
-//!   optional `failure`, exactly one `result`). Nothing else may be written to
-//!   stdout: engine narration and worker diagnostics go to stderr (verified:
-//!   `core::output` only uses `eprintln!`).
+//! - stdin carries request/ack frames. Stdout carries serialized diagnostic,
+//!   checkpoint, failure and result frames. Child bytes and engine narration
+//!   use the explicitly installed logging sink; startup/audit details stay on
+//!   stderr. No recipe text or child bytes are written as raw protocol output.
 //! - Every checkpoint blocks for its `ack` with a bounded 300 s wait (§4).
 //!   The host owns the `{seq → generation}` association; the worker only waits
 //!   for it and logs the generation to stderr.
@@ -35,6 +34,7 @@
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -47,6 +47,66 @@ use crate::worker::protocol::{
     CheckpointPayload, Direction, FailureInfo, FailurePayload, FramePayload, FrameReceiver,
     FrameSender, RequestPayload, ResultPayload,
 };
+
+struct WorkerChannel {
+    sender: FrameSender,
+    diagnostic_bytes: usize,
+    diagnostic_frames: usize,
+    truncated: bool,
+    failed: bool,
+    terminal: bool,
+}
+type SharedChannel = Arc<Mutex<WorkerChannel>>;
+
+fn install_diagnostics(channel: &SharedChannel) -> Result<()> {
+    let channel = Arc::clone(channel);
+    crate::logging::install_diagnostic_sink(Box::new(move |stream, mut bytes| {
+        use crate::worker::protocol::{
+            DiagnosticPayload, MAX_DIAGNOSTIC_BYTES, MAX_DIAGNOSTIC_CHUNK, MAX_DIAGNOSTIC_FRAMES,
+        };
+        let mut state = channel
+            .lock()
+            .map_err(|_| std::io::Error::other("worker channel poisoned"))?;
+        if state.failed || state.terminal {
+            return Err(std::io::Error::other("worker channel is closed"));
+        }
+        let mut output = std::io::stdout();
+        while !bytes.is_empty() && !state.truncated {
+            let room = MAX_DIAGNOSTIC_BYTES - state.diagnostic_bytes;
+            let payload = if room == 0 || state.diagnostic_frames == MAX_DIAGNOSTIC_FRAMES {
+                state.truncated = true;
+                DiagnosticPayload {
+                    stream,
+                    data: Vec::new(),
+                    truncated: true,
+                }
+            } else {
+                let take = room.min(MAX_DIAGNOSTIC_CHUNK).min(bytes.len());
+                let data = bytes[..take].to_vec();
+                bytes = &bytes[take..];
+                state.diagnostic_bytes += take;
+                state.diagnostic_frames += 1;
+                DiagnosticPayload {
+                    stream,
+                    data,
+                    truncated: false,
+                }
+            };
+            if let Err(error) = state
+                .sender
+                .send(&mut output, &FramePayload::Diagnostic(payload))
+            {
+                state.failed = true;
+                return Err(std::io::Error::other(error));
+            }
+            if let Err(error) = output.flush() {
+                state.failed = true;
+                return Err(error);
+            }
+        }
+        Ok(())
+    }))
+}
 
 /// Bounded wait for one checkpoint acknowledgement (§4: 300 s default).
 const ACK_TIMEOUT: Duration = Duration::from_secs(300);
@@ -164,7 +224,7 @@ pub fn run_worker() -> Result<()> {
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
     let stdout = std::io::stdout();
-    let mut output = stdout.lock();
+    let mut output = stdout;
     let mut rx = FrameReceiver::new();
     let mut tx = FrameSender::new();
 
@@ -193,13 +253,29 @@ pub fn run_worker() -> Result<()> {
         local.recipe.display()
     );
 
-    // (2) Dispatch through the existing engine; (3) terminate with exactly
-    // one result frame.
-    match run_operation(&local, &request, &mut rx, &mut input, &mut tx, &mut output) {
-        Ok(summary) => send_result(&mut tx, &mut output, true, Vec::new(), summary),
+    let channel = Arc::new(Mutex::new(WorkerChannel {
+        sender: tx,
+        diagnostic_bytes: 0,
+        diagnostic_frames: 0,
+        truncated: false,
+        failed: false,
+        terminal: false,
+    }));
+    install_diagnostics(&channel)?;
+    let outcome = run_operation(&local, &request, &mut rx, &mut input, &channel, &mut output);
+    let mut channel = channel
+        .lock()
+        .map_err(|_| anyhow!("worker channel poisoned"))?;
+    channel.terminal = true;
+    if channel.failed {
+        bail!("worker diagnostic transport failed");
+    }
+    let tx = &mut channel.sender;
+    match outcome {
+        Ok(summary) => send_result(tx, &mut output, true, Vec::new(), summary),
         Err(failure) => {
             send_failure(
-                &mut tx,
+                tx,
                 &mut output,
                 failure.fatal,
                 &failure.phase,
@@ -207,7 +283,7 @@ pub fn run_worker() -> Result<()> {
                 &failure.message,
             )?;
             send_result(
-                &mut tx,
+                tx,
                 &mut output,
                 false,
                 vec![FailureInfo {
@@ -263,7 +339,7 @@ fn run_operation(
     req: &RequestPayload,
     rx: &mut FrameReceiver,
     input: &mut impl Read,
-    tx: &mut FrameSender,
+    tx: &SharedChannel,
     output: &mut impl Write,
 ) -> std::result::Result<serde_json::Value, EngineFailure> {
     let engine = build_engine(&local.search_path);
@@ -398,7 +474,7 @@ fn build_engine(search_path: &Path) -> rhai::Engine {
 /// (`phase:<phase>`) and success cleanups (the actual cleanup reason).
 #[allow(clippy::too_many_arguments)]
 fn report_checkpoint(
-    tx: &mut FrameSender,
+    tx: &SharedChannel,
     output: &mut impl Write,
     rx: &mut FrameReceiver,
     input: &mut impl Read,
@@ -411,32 +487,45 @@ fn report_checkpoint(
     let seq = *checkpoint_no;
     let main_ctx =
         ctx_json(ctx_map).with_context(|| format!("serialize ctx for checkpoint #{seq}"))?;
-    tx.send(
-        output,
-        &FramePayload::Checkpoint(CheckpointPayload {
-            seq,
-            phase: point.phase.to_string(),
-            reason: point.reason.to_string(),
-            main_ctx: main_ctx.clone(),
-            // `ctx` is a single map shared across `//! extends:`; when a base
-            // recipe is present the host needs the same content to decide
-            // which trusted source (main or base) the acked generation updates.
-            base_ctx: if compiled.base_path.is_some() {
-                main_ctx
-            } else {
-                serde_json::Value::Object(serde_json::Map::new())
-            },
-            // A recipe-side source name, never a host path (§4).
-            base_path: compiled
-                .base_path
-                .as_ref()
-                .and_then(|p| p.file_name())
-                .map(|s| s.to_string_lossy().into_owned()),
-        }),
-    )
-    .map_err(|e| anyhow!("send checkpoint #{seq}: {e}"))?;
+    let mut channel = tx.lock().map_err(|_| anyhow!("worker channel poisoned"))?;
+    if channel.failed {
+        bail!("worker diagnostic transport failed");
+    }
+    channel
+        .sender
+        .send(
+            output,
+            &FramePayload::Checkpoint(CheckpointPayload {
+                seq,
+                phase: point.phase.to_string(),
+                reason: point.reason.to_string(),
+                main_ctx: main_ctx.clone(),
+                // `ctx` is a single map shared across `//! extends:`; when a base
+                // recipe is present the host needs the same content to decide
+                // which trusted source (main or base) the acked generation updates.
+                base_ctx: if compiled.base_path.is_some() {
+                    main_ctx
+                } else {
+                    serde_json::Value::Object(serde_json::Map::new())
+                },
+                // A recipe-side source name, never a host path (§4).
+                base_path: compiled
+                    .base_path
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .map(|s| s.to_string_lossy().into_owned()),
+            }),
+        )
+        .map_err(|e| {
+            channel.failed = true;
+            anyhow!("send checkpoint #{seq}: {e}")
+        })?;
     // Flush before waiting: the host cannot ack a checkpoint it has not seen.
-    output.flush().context("flush checkpoint")?;
+    output.flush().map_err(|e| {
+        channel.failed = true;
+        anyhow!("flush checkpoint: {e}")
+    })?;
+    drop(channel);
     let generation = wait_ack(rx, input, seq)?;
     eprintln!("worker: checkpoint #{seq} acked (generation {generation})");
     Ok(generation)
@@ -585,5 +674,6 @@ fn payload_name(payload: &FramePayload) -> &'static str {
         FramePayload::Ack(_) => "ack",
         FramePayload::Failure(_) => "failure",
         FramePayload::Result(_) => "result",
+        FramePayload::Diagnostic(_) => "diagnostic",
     }
 }

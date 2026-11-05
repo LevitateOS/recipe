@@ -28,3 +28,37 @@ pub fn emit_hook_event_struct(event: &RecipeHookEvent) {
 pub fn set_machine_events(enabled: bool) {
     crate::core::output::set_machine_events(enabled);
 }
+
+// Worker installation is explicit and never selected through environment flags.
+// The shared callback serializes diagnostics with lifecycle protocol frames.
+type DiagnosticSink =
+    dyn Fn(crate::worker::protocol::DiagnosticStream, &[u8]) -> std::io::Result<()> + Send + Sync;
+static DIAGNOSTIC_SINK: std::sync::OnceLock<Box<DiagnosticSink>> = std::sync::OnceLock::new();
+
+pub(crate) fn install_diagnostic_sink(sink: Box<DiagnosticSink>) -> anyhow::Result<()> {
+    DIAGNOSTIC_SINK
+        .set(sink)
+        .map_err(|_| anyhow::anyhow!("worker diagnostic sink already installed"))
+}
+
+pub(crate) fn diagnostic(
+    stream: crate::worker::protocol::DiagnosticStream,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    use std::io::Write;
+    match DIAGNOSTIC_SINK.get() {
+        Some(sink) => sink(stream, bytes),
+        None => std::io::stderr().write_all(bytes),
+    }
+}
+
+pub(crate) fn diagnostic_line(message: &str) {
+    let mut bytes = message.as_bytes().to_vec();
+    bytes.push(b'\n');
+    let _ = diagnostic(crate::worker::protocol::DiagnosticStream::Recipe, &bytes);
+}
+
+macro_rules! diag {
+    ($($args:tt)*) => { $crate::logging::diagnostic_line(&format!($($args)*)) };
+}
+pub(crate) use diag;

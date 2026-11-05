@@ -1,4 +1,4 @@
-//! Worker protocol v1 framing (R01).
+//! Worker protocol v2 framing and bounded diagnostics.
 //!
 //! Implements `docs/ginux-recipe-interfaces.md` §4 on the Recipe side. Ginux
 //! treats these frames as opaque bytes; Recipe owns their shape.
@@ -8,22 +8,20 @@
 //! Every frame is:
 //!
 //! ```text
-//! [u32 BE total-length][u32 BE version=1][u32 BE seq][u16 BE op][payload]
+//! [u32 BE total-length][u32 BE version=2][u32 BE seq][u16 BE op][payload]
 //! ```
 //!
 //! - `total-length` is the full frame size **including** its own 4 bytes, so
 //!   `payload.len() == total-length - HEADER_LEN` with
-//!   `HEADER_LEN == 14` (4 + 4 + 4 + 2). (The interface doc writes
-//!   "`total-length − 12`"; that is an arithmetic slip — 4+4+4+2 is 14 —
-//!   and this module implements the self-consistent 14.)
-//! - `version` is always [`PROTOCOL_VERSION`] (1). Anything else is a
+//!   `HEADER_LEN == 14` (4 + 4 + 4 + 2).
+//! - `version` is always [`PROTOCOL_VERSION`] (2). Anything else is a
 //!   `protocol` failure: the receiver aborts, never retries on the same
 //!   invocation.
 //! - `seq` numbers each direction independently starting at 1. The receiver
 //!   expects exactly the next sequence number; any gap or replay is a
 //!   `protocol` failure.
 //! - `op` selects the payload schema: 1 = request, 2 = checkpoint, 3 = ack,
-//!   4 = failure, 5 = result.
+//!   4 = failure, 5 = result, 6 = diagnostic.
 //! - `payload` is JSON, UTF-8, and together with the header the frame is at
 //!   most [`MAX_FRAME_LEN`] (4 MiB) total.
 //!
@@ -57,7 +55,7 @@ use std::io::{Read, Write};
 use serde::{Deserialize, Serialize};
 
 /// Protocol version carried in every frame header.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Maximum total frame size in bytes (4 MiB), header included.
 pub const MAX_FRAME_LEN: usize = 4 * 1024 * 1024;
@@ -68,11 +66,19 @@ pub const HEADER_LEN: usize = 14;
 /// First sequence number in each direction.
 pub const FIRST_SEQ: u32 = 1;
 
+/// Keep a diagnostic frame below the configured console IO bound even when
+/// every byte requires four JSON characters. The full transport remains 4 MiB.
+pub const MAX_DIAGNOSTIC_CHUNK: usize = 768;
+pub const MAX_DIAGNOSTIC_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_DIAGNOSTIC_FRAMES: usize = 32768;
+const TRANSPORT_IO_CHUNK: usize = 4096;
+
 // ---------------------------------------------------------------------------
 // Ops
 // ---------------------------------------------------------------------------
 
-/// Frame operation codes (§4: 1=request 2=checkpoint 3=ack 4=failure 5=result).
+/// Frame operation codes: 1=request, 2=checkpoint, 3=ack, 4=failure,
+/// 5=result, 6=diagnostic (transport v2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum Op {
@@ -81,6 +87,7 @@ pub enum Op {
     Ack = 3,
     Failure = 4,
     Result = 5,
+    Diagnostic = 6,
 }
 
 impl Op {
@@ -92,6 +99,7 @@ impl Op {
             3 => Ok(Op::Ack),
             4 => Ok(Op::Failure),
             5 => Ok(Op::Result),
+            6 => Ok(Op::Diagnostic),
             other => Err(ProtocolError::UnknownOp(other)),
         }
     }
@@ -100,7 +108,7 @@ impl Op {
     pub fn direction(self) -> Direction {
         match self {
             Op::Request | Op::Ack => Direction::HostToWorker,
-            Op::Checkpoint | Op::Failure | Op::Result => Direction::WorkerToHost,
+            Op::Checkpoint | Op::Failure | Op::Result | Op::Diagnostic => Direction::WorkerToHost,
         }
     }
 }
@@ -110,7 +118,7 @@ impl Op {
 pub enum Direction {
     /// Host → worker: request, ack.
     HostToWorker,
-    /// Worker → host: checkpoint, failure, result.
+    /// Worker → host: diagnostic, checkpoint, failure, result.
     WorkerToHost,
 }
 
@@ -191,6 +199,33 @@ pub struct ResultPayload {
     pub ctx_summary: serde_json::Value,
 }
 
+/// Human bytes only: no lifecycle, output-path or result authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticStream {
+    Stdout,
+    Stderr,
+    Recipe,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiagnosticPayload {
+    pub stream: DiagnosticStream,
+    pub data: Vec<u8>,
+    /// Exactly one empty marker after the invocation byte/frame budget is full.
+    pub truncated: bool,
+}
+
+fn check_diagnostic(p: &DiagnosticPayload) -> Result<(), ProtocolError> {
+    if p.data.len() > MAX_DIAGNOSTIC_CHUNK || p.data.is_empty() != p.truncated {
+        return Err(ProtocolError::PayloadInvalid(
+            "diagnostic needs 1..=768 bytes, or one empty truncation marker".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// A typed frame payload. The op code is derived from the variant, so an
 /// encoded frame can never carry a mismatched op/payload pair.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,6 +235,7 @@ pub enum FramePayload {
     Ack(AckPayload),
     Failure(FailurePayload),
     Result(ResultPayload),
+    Diagnostic(DiagnosticPayload),
 }
 
 impl FramePayload {
@@ -210,6 +246,7 @@ impl FramePayload {
             FramePayload::Ack(_) => Op::Ack,
             FramePayload::Failure(_) => Op::Failure,
             FramePayload::Result(_) => Op::Result,
+            FramePayload::Diagnostic(_) => Op::Diagnostic,
         }
     }
 }
@@ -254,36 +291,22 @@ pub enum ProtocolError {
     Closed,
     /// Declared frame larger than [`MAX_FRAME_LEN`]. Rejected before any
     /// payload allocation.
-    Oversize {
-        declared: u64,
-    },
+    Oversize { declared: u64 },
     /// Declared frame shorter than [`HEADER_LEN`]; no valid payload fits.
-    Undersize {
-        declared: u32,
-    },
+    Undersize { declared: u32 },
     /// Fewer bytes arrived than the frame declares. Never silently accepted.
-    Truncated {
-        detail: String,
-    },
-    /// `version != 1`.
-    VersionMismatch {
-        got: u32,
-    },
+    Truncated { detail: String },
+    /// Header version differs from PROTOCOL_VERSION.
+    VersionMismatch { got: u32 },
     /// `seq` is not exactly the next expected number (gap or replay).
-    SeqMismatch {
-        expected: u32,
-        got: u32,
-    },
+    SeqMismatch { expected: u32, got: u32 },
     /// Unknown op code.
     UnknownOp(u16),
     /// Payload is not valid UTF-8 JSON, has the wrong shape, or breaks a
     /// field rule (bad `invocation_id`, non-object `*_ctx`, ...).
     PayloadInvalid(String),
     /// Trailing bytes after one complete frame in [`decode_message`].
-    TrailingBytes {
-        frame_len: usize,
-        buffer_len: usize,
-    },
+    TrailingBytes { frame_len: usize, buffer_len: usize },
     /// Frame arrived from the wrong side of the pipe.
     WrongDirection {
         op: Op,
@@ -414,6 +437,10 @@ fn serialize_payload(payload: &FramePayload) -> Result<Vec<u8>, ProtocolError> {
         FramePayload::Ack(p) => serde_json::to_vec(p),
         FramePayload::Failure(p) => serde_json::to_vec(p),
         FramePayload::Result(p) => serde_json::to_vec(p),
+        FramePayload::Diagnostic(p) => {
+            check_diagnostic(p)?;
+            serde_json::to_vec(p)
+        }
     }
     .map_err(|e| ProtocolError::PayloadInvalid(format!("cannot serialize payload: {e}")))?;
     if HEADER_LEN.saturating_add(json.len()) > MAX_FRAME_LEN {
@@ -443,8 +470,9 @@ fn parse_payload(op: Op, seq: u32, json: &[u8]) -> Result<Frame, ProtocolError> 
             FramePayload::Checkpoint(p)
         }
         Op::Ack => {
-            let p: AckPayload = serde_json::from_str(text)
-                .map_err(|e| ProtocolError::PayloadInvalid(format!("ack payload malformed: {e}")))?;
+            let p: AckPayload = serde_json::from_str(text).map_err(|e| {
+                ProtocolError::PayloadInvalid(format!("ack payload malformed: {e}"))
+            })?;
             FramePayload::Ack(p)
         }
         Op::Failure => {
@@ -452,6 +480,13 @@ fn parse_payload(op: Op, seq: u32, json: &[u8]) -> Result<Frame, ProtocolError> 
                 ProtocolError::PayloadInvalid(format!("failure payload malformed: {e}"))
             })?;
             FramePayload::Failure(p)
+        }
+        Op::Diagnostic => {
+            let p: DiagnosticPayload = serde_json::from_str(text).map_err(|e| {
+                ProtocolError::PayloadInvalid(format!("diagnostic payload malformed: {e}"))
+            })?;
+            check_diagnostic(&p)?;
+            FramePayload::Diagnostic(p)
         }
         Op::Result => {
             let p: ResultPayload = serde_json::from_str(text).map_err(|e| {
@@ -502,10 +537,7 @@ pub fn encode_message(seq: u32, payload: &FramePayload) -> Result<Vec<u8>, Proto
 pub fn decode_message(buf: &[u8], expected_seq: u32) -> Result<Frame, ProtocolError> {
     if buf.len() < 4 {
         return Err(ProtocolError::Truncated {
-            detail: format!(
-                "need 4 length bytes, buffer holds {}",
-                buf.len()
-            ),
+            detail: format!("need 4 length bytes, buffer holds {}", buf.len()),
         });
     }
     let total = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
@@ -513,10 +545,7 @@ pub fn decode_message(buf: &[u8], expected_seq: u32) -> Result<Frame, ProtocolEr
     let total_usize = total as usize;
     if buf.len() < total_usize {
         return Err(ProtocolError::Truncated {
-            detail: format!(
-                "frame declares {total} bytes, buffer holds {}",
-                buf.len()
-            ),
+            detail: format!("frame declares {total} bytes, buffer holds {}", buf.len()),
         });
     }
     if buf.len() > total_usize {
@@ -573,7 +602,9 @@ pub struct FrameReceiver {
 
 impl FrameSender {
     pub fn new() -> Self {
-        Self { next_seq: FIRST_SEQ }
+        Self {
+            next_seq: FIRST_SEQ,
+        }
     }
 
     /// Next sequence number that will be assigned.
@@ -611,7 +642,9 @@ impl Default for FrameSender {
 
 impl FrameReceiver {
     pub fn new() -> Self {
-        Self { next_seq: FIRST_SEQ }
+        Self {
+            next_seq: FIRST_SEQ,
+        }
     }
 
     /// Next sequence number expected from the peer.
@@ -651,7 +684,7 @@ impl Default for FrameReceiver {
 
 fn write_all_complete<W: Write>(writer: &mut W, mut buf: &[u8]) -> Result<(), ProtocolError> {
     while !buf.is_empty() {
-        match writer.write(buf) {
+        match writer.write(&buf[..buf.len().min(TRANSPORT_IO_CHUNK)]) {
             Ok(0) => {
                 return Err(ProtocolError::Io(std::io::Error::new(
                     std::io::ErrorKind::WriteZero,
@@ -670,7 +703,8 @@ fn write_all_complete<W: Write>(writer: &mut W, mut buf: &[u8]) -> Result<(), Pr
 fn fill_or_eof<R: Read>(reader: &mut R, mut buf: &mut [u8]) -> Result<bool, ProtocolError> {
     let mut first = true;
     while !buf.is_empty() {
-        match reader.read(buf) {
+        let take = buf.len().min(TRANSPORT_IO_CHUNK);
+        match reader.read(&mut buf[..take]) {
             Ok(0) => {
                 if first {
                     return Ok(false);
@@ -698,7 +732,8 @@ fn read_exact_counted<R: Read>(
     let want = buf.len();
     let mut got = 0usize;
     while !buf.is_empty() {
-        match reader.read(buf) {
+        let take = buf.len().min(TRANSPORT_IO_CHUNK);
+        match reader.read(&mut buf[..take]) {
             Ok(0) => {
                 return Err(ProtocolError::Truncated {
                     detail: format!(

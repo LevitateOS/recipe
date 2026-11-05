@@ -9,19 +9,19 @@ use crate::core::events::RecipeHookEvent;
 /// Print an action header (blue, bold)
 /// Example: "==> Installing ripgrep"
 pub fn action(message: &str) {
-    eprintln!("{}", message.bold());
+    crate::logging::diag!("{}", message.bold());
 }
 
 /// Print an action with package counter (blue, bold)
 /// Example: "(1/5) Installing ripgrep"
 pub fn action_numbered(_current: usize, _total: usize, message: &str) {
-    eprintln!("{}", message.bold());
+    crate::logging::diag!("{}", message.bold());
 }
 
 /// Print a sub-action (cyan arrow)
 /// Example: "  -> acquire"
 pub fn sub_action(phase: &str) {
-    eprintln!(
+    crate::logging::diag!(
         "{}",
         format!("Now working through the {phase} step.").cyan()
     );
@@ -30,34 +30,34 @@ pub fn sub_action(phase: &str) {
 /// Print a detail line (dimmed prefix)
 /// Example: "     downloading https://..."
 pub fn detail(message: &str) {
-    eprintln!("{}", message.dimmed());
+    crate::logging::diag!("{}", message.dimmed());
 }
 
 /// Print a success message (green)
 /// Example: "==> ripgrep installed"
 pub fn success(message: &str) {
-    eprintln!("{}", message.green());
+    crate::logging::diag!("{}", message.green());
 }
 
 /// Print an info message (cyan)
 pub fn info(message: &str) {
-    eprintln!("{message}");
+    crate::logging::diag!("{message}");
 }
 
 /// Print a warning message (yellow)
 pub fn warning(message: &str) {
-    eprintln!("{}", message.yellow());
+    crate::logging::diag!("{}", message.yellow());
 }
 
 /// Print an error message (red)
 pub fn error(message: &str) {
-    eprintln!("{}", message.red());
+    crate::logging::diag!("{}", message.red());
 }
 
 /// Print a skip message (dimmed)
 /// Example: "==> ripgrep already installed, skipping"
 pub fn skip(message: &str) {
-    eprintln!("{}", message.dimmed());
+    crate::logging::diag!("{}", message.dimmed());
 }
 
 pub(crate) fn format_hook_line(event: &RecipeHookEvent) -> String {
@@ -228,9 +228,9 @@ fn find_word_span(sentence: &str, word: &str) -> Option<(usize, usize)> {
 /// Print package status in list output.
 pub fn list_item(name: &str, status: &str, is_installed: bool) {
     if is_installed {
-        eprintln!("  {} {}", name.green(), status.dimmed());
+        crate::logging::diag!("  {} {}", name.green(), status.dimmed());
     } else {
-        eprintln!("  {} {}", name, status.dimmed());
+        crate::logging::diag!("  {} {}", name, status.dimmed());
     }
 }
 

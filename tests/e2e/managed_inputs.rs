@@ -513,3 +513,142 @@ fn is_installed(ctx) {
         source
     );
 }
+
+#[test]
+fn managed_bash_child_writes_domain_files_and_keeps_logs_out_of_json() {
+    let (_dir, recipes) = create_test_env();
+    let source = r#"
+const RECIPE_API = 2;
+let ctx = #{name: "managed-child"};
+fn is_acquired(ctx) { ready(ctx) }
+fn is_built(ctx) {
+    if ctx.state.contains("child_code") && ctx.state.child_code == 0 && is_file("/work/build/from-child") {
+        if read_file("/work/build/from-child") == "actual-bash-product" { return ready(ctx); }
+    }
+    needs_work(ctx, "child has not produced the requested bytes")
+}
+fn is_installed(ctx) {
+    if is_file("/out/child-proof") {
+        if read_file("/out/child-proof") == "actual-bash-product" { return ready(ctx); }
+    }
+    needs_work(ctx, "child product is not installed")
+}
+fn build(ctx) {
+    print("rhai-print-proof"); debug("rhai-debug-proof"); warn("rhai-warn-proof");
+    let large = "x";
+    for index in 0..15 { large += large; }
+    ctx.state.large = large;
+    ctx.state.child_code = exec("/usr/bin/bash", ["--noprofile", "--norc", "-c",
+        "printf actual-bash-product > /work/build/from-child; printf 'child-stdout\\000\\377'; printf child-stderr >&2; exit 0"]);
+    ctx
+}
+fn install(ctx) {
+    write_file("/out/child-proof", read_file("/work/build/from-child"));
+    ctx.outputs.proof = "/out/child-proof";
+    ctx
+}
+"#;
+    write_recipe(&recipes, "check", source);
+    let output = managed_command(&recipes, "install").output().unwrap();
+    assert_success(&output);
+    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(context["state"]["child_code"], 0);
+    assert_eq!(
+        context["state"]["large"].as_str().unwrap(),
+        "x".repeat(32768)
+    );
+    assert!(output.stderr.windows(2).any(|window| window == b"\0\xff"));
+    assert_eq!(context["outputs"]["proof"], "/out/child-proof");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("child-stdout"));
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+        source
+    );
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostics.contains("child-stdout"), "{diagnostics}");
+    assert!(diagnostics.contains("child-stderr"), "{diagnostics}");
+    for message in ["rhai-print-proof", "rhai-debug-proof", "rhai-warn-proof"] {
+        assert!(diagnostics.contains(message), "{diagnostics}");
+    }
+    assert!(
+        !diagnostics.contains("ginux: audit"),
+        "supervisor audit leaked into user diagnostics"
+    );
+    assert!(
+        diagnostics.contains("launcher exit 0; result exited"),
+        "{diagnostics}"
+    );
+    assert!(!diagnostics.contains("panicked at"), "{diagnostics}");
+    assert!(
+        !diagnostics.contains("error retrieving current directory"),
+        "{diagnostics}"
+    );
+}
+
+#[test]
+fn managed_diagnostic_limit_drains_child_and_preserves_result() {
+    use levitate_recipe::worker::protocol::MAX_DIAGNOSTIC_BYTES;
+    let (_dir, recipes) = create_test_env();
+    let source = r#"
+const RECIPE_API = 2;
+let ctx = #{name: "diagnostic-cap", state: #{child_code: -1}};
+fn is_acquired(ctx) { ready(ctx) }
+fn is_built(ctx) { if ctx.state.child_code == 0 { ready(ctx) } else { needs_work(ctx, "run child") } }
+fn is_installed(ctx) { if ctx.state.child_code == 0 { ready(ctx) } else { needs_work(ctx, "run child") } }
+fn build(ctx) {
+    print("before-diagnostic-cap");
+    ctx.state.child_code = exec("/usr/bin/bash", ["--noprofile", "--norc", "-c", "printf '%*s' DIAGNOSTIC_WIDTH x; exit 0"]);
+    print("after-diagnostic-cap");
+    ctx
+}
+fn install(ctx) { ctx }
+"#.replace("DIAGNOSTIC_WIDTH", &(MAX_DIAGNOSTIC_BYTES + 8192).to_string());
+    write_recipe(&recipes, "check", &source);
+    let output = managed_command(&recipes, "install").output().unwrap();
+    assert_success(&output);
+    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(context["state"]["child_code"], 0);
+    assert!(output.stderr.len() <= MAX_DIAGNOSTIC_BYTES + 4096);
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostics.contains("before-diagnostic-cap"));
+    assert!(!diagnostics.contains("after-diagnostic-cap"));
+    assert_eq!(diagnostics.matches("diagnostic limit reached").count(), 1);
+    assert!(diagnostics.contains("launcher exit 0; result exited"));
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+        source
+    );
+}
+
+#[test]
+fn managed_diagnostic_frame_limit_preserves_lifecycle_result() {
+    use levitate_recipe::worker::protocol::MAX_DIAGNOSTIC_FRAMES;
+    let (_dir, recipes) = create_test_env();
+    let source = r#"
+const RECIPE_API = 2;
+let ctx = #{name: "diagnostic-frames", state: #{done: false}};
+fn is_acquired(ctx) { ready(ctx) }
+fn is_installed(ctx) { if ctx.state.done { ready(ctx) } else { needs_work(ctx, "run logging hook") } }
+fn install(ctx) {
+    print("before-frame-cap");
+    for index in 0..DIAGNOSTIC_COUNT { print("frame-data"); }
+    ctx.state.done = true;
+    print("after-frame-cap");
+    ctx
+}
+"#.replace("DIAGNOSTIC_COUNT", &(MAX_DIAGNOSTIC_FRAMES + 1024).to_string());
+    write_recipe(&recipes, "check", &source);
+    let output = managed_command(&recipes, "install").output().unwrap();
+    assert_success(&output);
+    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(context["state"]["done"], true);
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostics.contains("before-frame-cap"));
+    assert!(!diagnostics.contains("after-frame-cap"));
+    assert_eq!(diagnostics.matches("diagnostic limit reached").count(), 1);
+    assert!(diagnostics.contains("launcher exit 0; result exited"));
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+        source
+    );
+}

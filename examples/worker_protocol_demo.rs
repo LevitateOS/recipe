@@ -71,6 +71,9 @@ fn summarize(payload: &FramePayload) -> String {
         FramePayload::Ack(p) => format!("ack seq={} generation={}", p.seq, p.generation),
         FramePayload::Failure(p) => format!("failure fatal={} reason={}", p.fatal, p.reason),
         FramePayload::Result(p) => format!("result ok={}", p.ok),
+        FramePayload::Diagnostic(p) => {
+            format!("diagnostic stream={:?} bytes={}", p.stream, p.data.len())
+        }
     }
 }
 
@@ -84,16 +87,28 @@ fn good_exchange() {
         let mut tx = FrameSender::new();
 
         let req = rx.recv(&mut sock).expect("worker recv request");
-        println!("worker: received {} seq={}", summarize(&req.payload), req.seq);
+        println!(
+            "worker: received {} seq={}",
+            summarize(&req.payload),
+            req.seq
+        );
         assert_eq!(req.seq, 1);
 
-        let used = tx.send(&mut sock, &checkpoint_fixture()).expect("worker send checkpoint");
+        let used = tx
+            .send(&mut sock, &checkpoint_fixture())
+            .expect("worker send checkpoint");
         println!("worker: sent checkpoint seq={used}");
 
         let ack = rx.recv(&mut sock).expect("worker recv ack");
-        println!("worker: received {} seq={}", summarize(&ack.payload), ack.seq);
+        println!(
+            "worker: received {} seq={}",
+            summarize(&ack.payload),
+            ack.seq
+        );
 
-        let used = tx.send(&mut sock, &result_fixture()).expect("worker send result");
+        let used = tx
+            .send(&mut sock, &result_fixture())
+            .expect("worker send result");
         println!("worker: sent result seq={used}");
     });
 
@@ -101,7 +116,9 @@ fn good_exchange() {
     let mut rx = FrameReceiver::new();
     let mut tx = FrameSender::new();
 
-    let used = tx.send(&mut sock, &request_fixture()).expect("host send request");
+    let used = tx
+        .send(&mut sock, &request_fixture())
+        .expect("host send request");
     println!("host: sent request seq={used}");
 
     let cp = rx.recv(&mut sock).expect("host recv checkpoint");
@@ -124,7 +141,7 @@ fn rejection_cases() {
     {
         let (mut tx_sock, rx_sock) = UnixStream::pair().expect("socketpair");
         let mut bytes = encode_message(1, &request_fixture()).expect("encode");
-        bytes[4..8].copy_from_slice(&2u32.to_be_bytes());
+        bytes[4..8].copy_from_slice(&(PROTOCOL_VERSION + 1).to_be_bytes());
         tx_sock.write_all(&bytes).expect("write");
         drop(tx_sock);
         let mut sock = rx_sock;
