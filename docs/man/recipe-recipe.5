@@ -142,7 +142,7 @@ Recipes currently receive these commonly used bindings and environment-derived
 values through the executor:
 .TP
 \fBBUILD_DIR\fR
-Work directory for acquire/build/install steps.
+Work directory for installs, manual checks, cleanup, and removal.
 .TP
 \fBRECIPE_DIR\fR
 Directory containing the current recipe.
@@ -156,14 +156,15 @@ Available CPU count.
 \fBRPM_PATH\fR
 RPM path string used by some package-oriented recipes.
 .PP
-Dependency and base-recipe execution may also expose \fBBASE_RECIPE_DIR\fR and
-\fBTOOLS_PREFIX\fR.
+CLI and RecipeEngine operations also expose \fBTOOLS_PREFIX\fR as BUILD_DIR/.tools.
+Dependencies receive their own work directory and the parent's shared tools prefix.
+Base-recipe execution additionally exposes \fBBASE_RECIPE_DIR\fR.
 .SH FAILURE SEMANTICS
 Checks must \fBthrow\fR to request work. Returning \fBfalse\fR is not the contract.
 .PP
-Helpers generally raise an evaluation error on failure. Shelling out with
-\fBshell()\fR or \fBexec()\fR does not silently suppress failure; recipes should
-check return codes or use helpers that fail directly when required.
+Helpers generally raise an evaluation error on failure. Use \fBshell()\fR or
+\fBexec_checked()\fR for checked execution. \fBexec()\fR returns a status code
+that the recipe must handle explicitly.
 .SH MINIMAL EXAMPLE
 .nf
 let ctx = #{

@@ -1,6 +1,6 @@
 use crate::core::{output, runner};
 use anyhow::{Result, anyhow};
-use rhai::{Engine, Scope};
+use rhai::Engine;
 use std::path::Path;
 
 use super::context::{CheckpointPoint, ExecutionContext};
@@ -48,21 +48,19 @@ pub(crate) fn remove_with_context(
     let mut compiled = compile_recipe(engine, &recipe_path, search_path)?;
     let ast = compiled.ast.clone();
 
-    // Derive RECIPE_DIR from the recipe file's parent directory
-    let recipe_dir = recipe_path
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| ".".to_string());
-
-    let mut scope = Scope::new();
-    scope.push_constant("RECIPE_DIR", recipe_dir);
-    if let Some(ref bd) = compiled.base_dir {
-        let base_dir = bd.to_string_lossy().to_string();
-        scope.push_constant("BASE_RECIPE_DIR", base_dir);
-    }
-    for (key, value) in defines {
-        scope.push_constant(key.as_str(), value.clone());
-    }
+    // Removal's compatibility entry point receives its build directory in defines.
+    let build_dir = defines
+        .iter()
+        .rev()
+        .find(|(key, _)| key == "BUILD_DIR")
+        .map(|(_, value)| Path::new(value));
+    let mut scope = crate::core::invocation::scope(
+        &compiled.recipe_path,
+        compiled.base_dir.as_deref(),
+        build_dir,
+        None,
+        defines,
+    );
 
     // Run script to populate scope
     engine.run_ast_with_scope(&mut scope, &ast)?;
@@ -152,22 +150,13 @@ pub(crate) fn cleanup_with_context(
     let mut compiled = compile_recipe(engine, &recipe_path, search_path)?;
     let ast = compiled.ast.clone();
 
-    // Derive RECIPE_DIR from the recipe file's parent directory
-    let recipe_dir = recipe_path
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| ".".to_string());
-
-    let mut scope = Scope::new();
-    scope.push_constant("RECIPE_DIR", recipe_dir);
-    if let Some(ref bd) = compiled.base_dir {
-        let base_dir = bd.to_string_lossy().to_string();
-        scope.push_constant("BASE_RECIPE_DIR", base_dir);
-    }
-    scope.push_constant("BUILD_DIR", build_dir.to_string_lossy().to_string());
-    for (key, value) in defines {
-        scope.push_constant(key.as_str(), value.clone());
-    }
+    let mut scope = crate::core::invocation::scope(
+        &compiled.recipe_path,
+        compiled.base_dir.as_deref(),
+        Some(build_dir),
+        None,
+        defines,
+    );
 
     // Run script to populate scope
     engine.run_ast_with_scope(&mut scope, &ast)?;
@@ -315,22 +304,13 @@ pub(crate) fn run_check_with_context(
     let compiled = compile_recipe(engine, &recipe_path, search_path)?;
     let ast = compiled.ast.clone();
 
-    // Derive RECIPE_DIR from the recipe file's parent directory
-    let recipe_dir = recipe_path
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| ".".to_string());
-
-    let mut scope = Scope::new();
-    scope.push_constant("RECIPE_DIR", recipe_dir);
-    if let Some(ref bd) = compiled.base_dir {
-        let base_dir = bd.to_string_lossy().to_string();
-        scope.push_constant("BASE_RECIPE_DIR", base_dir);
-    }
-    scope.push_constant("BUILD_DIR", build_dir.to_string_lossy().to_string());
-    for (key, value) in defines {
-        scope.push_constant(key.clone(), value.clone());
-    }
+    let mut scope = crate::core::invocation::scope(
+        &compiled.recipe_path,
+        compiled.base_dir.as_deref(),
+        Some(build_dir),
+        None,
+        defines,
+    );
 
     // Run script to populate scope
     engine.run_ast_with_scope(&mut scope, &ast)?;

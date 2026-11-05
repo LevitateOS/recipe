@@ -120,9 +120,15 @@ pub fn register_all(engine: &mut Engine) {
         trace_helper("log");
         util::log(msg)
     });
-    engine.register_fn("debug", |msg: &str| {
+    // Rhai owns print/debug conversion. Registering a unit-returning `debug`
+    // overload breaks its built-in formatter, which expects a string.
+    engine.on_print(|msg| {
+        trace_helper("print");
+        eprintln!("{msg}");
+    });
+    engine.on_debug(|msg, source, position| {
         trace_helper("debug");
-        util::debug(msg)
+        util::debug(&format!("{}:{position}: {msg}", source.unwrap_or("recipe")));
     });
     engine.register_fn("warn", |msg: &str| {
         trace_helper("warn");

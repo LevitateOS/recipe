@@ -118,6 +118,9 @@ Returns: \fB()\fR
 Fails when: stderr formatting fails
 .br
 Example: \fBdebug("checking build cache")\fR
+.br
+Uses Rhai's built-in formatter with source/position diagnostics on stderr.
+The built-in \fBprint(value)\fR also writes to stderr, preserving JSON/protocol stdout.
 .TP
 \fBwarn\fR
 Signature: \fBwarn(msg)\fR

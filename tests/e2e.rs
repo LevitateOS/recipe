@@ -93,3 +93,5 @@ mod command_options;
 mod git_acquisition;
 #[path = "e2e/kernel_acquisition.rs"]
 mod kernel_acquisition;
+#[path = "e2e/invocation.rs"]
+mod invocation;

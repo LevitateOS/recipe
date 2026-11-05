@@ -158,14 +158,7 @@ pub struct RecipeEngine {
 impl RecipeEngine {
     /// Create a new recipe engine
     pub fn new(build_dir: PathBuf) -> Self {
-        let mut engine = Engine::new();
-
-        // Safety limits to prevent runaway recipes
-        engine.set_max_operations(2_000_000); // ~2M ops before abort
-        engine.set_max_call_levels(64); // prevent deep recursion
-        engine.set_max_string_size(64 * 1024 * 1024); // 64 MB max string
-
-        helpers::register_all(&mut engine);
+        let engine = core::invocation::engine();
 
         Self {
             engine,
@@ -270,13 +263,20 @@ impl RecipeEngine {
     ///
     /// Returns the final ctx map after removal.
     pub fn remove(&self, recipe_path: &Path) -> Result<rhai::Map> {
+        let mut defines = self.defines.clone();
+        if !defines.iter().any(|(key, _)| key == "BUILD_DIR") {
+            defines.push((
+                "BUILD_DIR".to_owned(),
+                self.build_dir.to_string_lossy().into_owned(),
+            ));
+        }
         self.backend.run("remove", recipe_path, self.recipes_path.as_deref(), || {
             llm::with_llm_profile(self.llm_profile.as_deref(), || {
                 core::executor::remove(
                     &self.engine,
                     recipe_path,
                     self.recipes_path.as_deref(),
-                    &self.defines,
+                    &defines,
                     self.persist_ctx,
                 )
             })

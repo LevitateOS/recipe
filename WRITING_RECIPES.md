@@ -302,19 +302,27 @@ Good uses for cleanup:
 
 These constants are pushed into the Rhai scope by the executor.
 
-### Always Present for Normal Installs
+### Present for CLI and RecipeEngine Operations
+
+Install, manual checks, cleanup, and removal use the same compatibility globals.
+Dependency recipes use these globals with their own work directory and the
+parent's shared tools destination.
 
 - `RECIPE_DIR`: parent directory of the recipe file
 - `BUILD_DIR`: build/work directory for this run
 - `ARCH`: host architecture from Rust `std::env::consts::ARCH`
 - `NPROC`: CPU count
 - `RPM_PATH`: current `RPM_PATH` environment value, or empty string
+- `TOOLS_PREFIX`: `BUILD_DIR/.tools` for the main recipe; the shared tools
+  destination when executing a dependency recipe
 
 ### Present Only in Some Contexts
 
 - `BASE_RECIPE_DIR`: parent directory of the base recipe when using
   `//! extends: ...`
-- `TOOLS_PREFIX`: only when executing a dependency recipe
+
+Built-in `print` and `debug` write to stderr, including when called by imported
+modules. They do not prefix machine-readable JSON on stdout.
 
 ### User Defines
 

@@ -30,7 +30,8 @@ These names are the Rhai function names.
 | `replace` | `helpers/util/string.rs` | `replace(s, from, to) -> String` |  |
 | `split` | `helpers/util/string.rs` | `split(s, sep) -> Array` |  |
 | `log` | `helpers/util/log.rs` | `log(msg) -> ()` | stderr formatting via `core/output.rs` |
-| `debug` | `helpers/util/log.rs` | `debug(msg) -> ()` |  |
+| `debug` | Rhai built-in; callback in `helpers/mod.rs` | `debug(value) -> ()` | stderr, with source position |
+| `print` | Rhai built-in; callback in `helpers/mod.rs` | `print(value) -> ()` | stderr; keeps JSON/protocol stdout intact |
 | `warn` | `helpers/util/log.rs` | `warn(msg) -> ()` |  |
 | `shell` | `helpers/util/shell.rs` | `shell(cmd) -> ()` | uses `sh -c` |
 | `shell_in` | `helpers/util/shell.rs` | `shell_in(dir, cmd) -> ()` | run in directory |

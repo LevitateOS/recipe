@@ -2,7 +2,7 @@ use crate::core::executor::compile_recipe;
 use crate::core::output;
 use crate::core::runner;
 use anyhow::anyhow;
-use rhai::{Engine, Scope};
+use rhai::Engine;
 use std::path::Path;
 
 use super::{
@@ -27,27 +27,13 @@ pub(crate) fn install_once(
         compile_recipe(engine, recipe_path, search_path).map_err(InstallAttemptError::Fatal)?;
     let ast = compiled.ast.clone();
 
-    // Derive RECIPE_DIR from the recipe file's parent directory
-    let recipe_dir = recipe_path
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| ".".to_string());
-
-    // Set up scope with constants
-    let mut scope = Scope::new();
-    scope.push_constant("RECIPE_DIR", recipe_dir);
-    if let Some(ref bd) = compiled.base_dir {
-        scope.push_constant("BASE_RECIPE_DIR", bd.to_string_lossy().to_string());
-    }
-    scope.push_constant("BUILD_DIR", build_dir.to_string_lossy().to_string());
-    scope.push_constant("ARCH", std::env::consts::ARCH);
-    scope.push_constant("NPROC", num_cpus::get() as i64);
-    scope.push_constant("RPM_PATH", std::env::var("RPM_PATH").unwrap_or_default());
-
-    // Inject user-defined constants (from --define KEY=VALUE)
-    for (key, value) in defines {
-        scope.push_constant(key.as_str(), value.clone());
-    }
+    let mut scope = crate::core::invocation::scope(
+        &compiled.recipe_path,
+        compiled.base_dir.as_deref(),
+        Some(build_dir),
+        None,
+        defines,
+    );
 
     // Run script to populate scope (this sets up ctx)
     engine

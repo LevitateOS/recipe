@@ -132,29 +132,18 @@ impl<'a> BuildDepsResolver<'a> {
         let ast = compiled.ast;
         let base_dir = compiled.base_dir;
 
-        let recipe_dir = recipe_path
-            .parent()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| ".".to_string());
-
         let dep_build_dir = self.build_dir.join(format!(".deps/{}", name));
         fs::create_dir_all(&dep_build_dir)
             .with_context(|| format!("Failed to create dep build dir for {}", name))
             .map_err(DepAttemptError::Fatal)?;
 
-        let mut scope = Scope::new();
-        scope.push_constant("RECIPE_DIR", recipe_dir);
-        if let Some(ref bd) = base_dir {
-            scope.push_constant("BASE_RECIPE_DIR", bd.to_string_lossy().to_string());
-        }
-        scope.push_constant("BUILD_DIR", dep_build_dir.to_string_lossy().to_string());
-        scope.push_constant("TOOLS_PREFIX", tools_prefix.to_string_lossy().to_string());
-        scope.push_constant("ARCH", std::env::consts::ARCH);
-        scope.push_constant("NPROC", num_cpus::get() as i64);
-
-        for (key, value) in self.defines {
-            scope.push_constant(key.as_str(), value.clone());
-        }
+        let mut scope = super::invocation::scope(
+            &compiled.recipe_path,
+            base_dir.as_deref(),
+            Some(&dep_build_dir),
+            Some(tools_prefix),
+            self.defines,
+        );
 
         // Run top-level to populate ctx
         self.engine
