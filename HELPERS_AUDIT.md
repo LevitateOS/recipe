@@ -85,8 +85,9 @@ These names are the Rhai function names.
 | `apk_install` | `helpers/util/process.rs` | `apk_install(packages:Array) -> ()` | fails fast if `apk` is absent or no `sudo`/`doas` privilege runner is available |
 | `apk_add_repo` | `helpers/util/process.rs` | `apk_add_repo(url) -> ()` | fails fast if `apk` is absent or no `sudo`/`doas` privilege runner is available |
 | `apk_download` | `helpers/util/process.rs` | `apk_download(packages:Array, dest_dir) -> Array` | fails fast if `apk` is absent |
-| `exec` | `helpers/util/process.rs` | `exec(cmd, args:Array) -> int` | no shell, explicit args |
-| `exec_output` | `helpers/util/process.rs` | `exec_output(cmd, args:Array) -> String` | no shell, explicit args |
+| `exec_checked` | `helpers/util/process.rs` | `exec_checked(cmd, args:Array [, options:Map]) -> ()` | throws on nonzero; child-only cwd/env |
+| `exec` | `helpers/util/process.rs` | `exec(cmd, args:Array [, options:Map]) -> int` | explicit exit status; child-only cwd/env |
+| `exec_output` | `helpers/util/process.rs` | `exec_output(cmd, args:Array [, options:Map]) -> String` | checked stdout capture; child-only cwd/env |
 | `rpm_installed` | `helpers/util/process.rs` | `rpm_installed(name) -> bool` | fails fast if `rpm` is absent |
 | `rpm_version` | `helpers/util/process.rs` | `rpm_version(name) -> String` | fails fast if `rpm` is absent |
 | `dnf_package_available` | `helpers/util/process.rs` | `dnf_package_available(name) -> bool` | fails fast if `dnf` is absent |

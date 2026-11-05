@@ -1,192 +1,130 @@
-//! Unified shell command execution
-//!
-//! Provides a builder pattern for running shell commands with consistent
-//! error handling and environment setup.
+//! Shared subprocess execution for recipe-facing shell and argv helpers.
 
 use rhai::EvalAltResult;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::collections::VecDeque;
+use std::io::{Read, Write};
+use std::process::{Command, ExitStatus, Output, Stdio};
+use std::sync::{Arc, Mutex};
 
-/// Builder for shell command execution.
-///
-/// # Example
-/// ```ignore
-/// ShellCmd::new("make -j4")
-///     .dir("/tmp/build")
-///     .env("PREFIX", "/usr/local")
-///     .run()?;
-/// ```
-#[derive(Clone)]
-pub struct ShellCmd {
-    cmd: String,
-    cwd: Option<PathBuf>,
-    env: HashMap<String, String>,
+const CAPTURE_TAIL_BYTES: usize = 256 * 1024;
+
+fn description(command: &Command) -> String {
+    // Environment overrides can contain secrets; do not use Command's Debug.
+    let mut text = command.get_program().to_string_lossy().into_owned();
+    for arg in command.get_args() {
+        text.push(' ');
+        text.push_str(&arg.to_string_lossy());
+    }
+    if let Some(dir) = command.get_current_dir() {
+        text.push_str(&format!("\n  in: {}", dir.display()));
+    }
+    text
 }
 
-impl ShellCmd {
-    /// Create a new shell command.
-    pub fn new(cmd: impl Into<String>) -> Self {
-        Self {
-            cmd: cmd.into(),
-            cwd: None,
-            env: HashMap::new(),
+fn failure(label: &str, status: ExitStatus, tail: &[u8]) -> Box<EvalAltResult> {
+    let tail = &tail[tail.len().saturating_sub(CAPTURE_TAIL_BYTES)..];
+    format!(
+        "command failed: {}\n  command: {}\n--- output tail ---\n{}",
+        status,
+        label,
+        String::from_utf8_lossy(tail).trim_end()
+    )
+    .into()
+}
+
+fn drain<R: Read>(mut reader: R, tail: Arc<Mutex<VecDeque<u8>>>) -> std::io::Result<()> {
+    let mut buffer = [0u8; 8192];
+    loop {
+        let count = match reader.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        // Diagnostics are best effort; pipe read errors are returned to the caller.
+        let _ = std::io::stderr().write_all(&buffer[..count]);
+        let _ = std::io::stderr().flush();
+        let mut captured = tail
+            .lock()
+            .map_err(|_| std::io::Error::other("command output lock poisoned"))?;
+        for byte in &buffer[..count] {
+            if captured.len() == CAPTURE_TAIL_BYTES {
+                captured.pop_front();
+            }
+            captured.push_back(*byte);
         }
     }
+}
 
-    /// Set the working directory for the command.
-    pub fn dir(mut self, dir: impl AsRef<Path>) -> Self {
-        self.cwd = Some(dir.as_ref().to_path_buf());
-        self
+fn stream(mut command: Command) -> Result<(ExitStatus, Vec<u8>), Box<EvalAltResult>> {
+    let label = description(&command);
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("command failed to start: {label}: {error}"))?;
+    let stdout = child.stdout.take().ok_or("failed to open child stdout")?;
+    let stderr = child.stderr.take().ok_or("failed to open child stderr")?;
+    let tail = Arc::new(Mutex::new(VecDeque::with_capacity(8192)));
+    let out_tail = Arc::clone(&tail);
+    let out = std::thread::spawn(move || drain(stdout, out_tail));
+    let err_tail = Arc::clone(&tail);
+    let err = std::thread::spawn(move || drain(stderr, err_tail));
+    let status = child.wait();
+    if status.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
     }
-
-    /// Set an environment variable for the command.
-    pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.env.insert(key.into(), value.into());
-        self
+    // Join both drains before propagating either error.
+    let out = out.join();
+    let err = err.join();
+    let status = status.map_err(|error| format!("command failed to run: {label}: {error}"))?;
+    for result in [out, err] {
+        result
+            .map_err(|_| format!("command output drain panicked: {label}"))?
+            .map_err(|error| format!("command output read failed: {label}: {error}"))?;
     }
+    let captured = tail
+        .lock()
+        .map_err(|_| "command output lock poisoned")?
+        .iter()
+        .copied()
+        .collect();
+    Ok((status, captured))
+}
 
-    /// Set multiple environment variables at once.
-    pub fn envs<I, K, V>(mut self, vars: I) -> Self
-    where
-        I: IntoIterator<Item = (K, V)>,
-        K: Into<String>,
-        V: Into<String>,
-    {
-        for (k, v) in vars {
-            self.env.insert(k.into(), v.into());
-        }
-        self
-    }
-
-    /// Build the underlying Command object.
-    fn build_command(&self) -> Command {
-        let mut cmd = Command::new("sh");
-        cmd.args(["-c", &self.cmd]);
-
-        if let Some(ref cwd) = self.cwd {
-            cmd.current_dir(cwd);
-        }
-
-        for (k, v) in &self.env {
-            cmd.env(k, v);
-        }
-
-        cmd
-    }
-
-    /// Run the command and return success/failure.
-    ///
-    /// Returns `Ok(())` if exit code is 0, error otherwise.
-    pub fn run(&self) -> Result<(), Box<EvalAltResult>> {
-        let status = self
-            .build_command()
-            .status()
-            .map_err(|e| format!("command failed to start: {}", e))?;
-
-        if !status.success() {
-            return Err(format!(
-                "command failed with exit code: {:?}\n  command: {}",
-                status.code(),
-                self.truncated_cmd()
-            )
-            .into());
-        }
-
+pub(crate) fn run_checked(command: Command) -> Result<(), Box<EvalAltResult>> {
+    let label = description(&command);
+    let (status, tail) = stream(command)?;
+    if status.success() {
         Ok(())
-    }
-
-    /// Run the command and return the exit status code.
-    ///
-    /// Returns -1 if the command couldn't be started.
-    pub fn status(&self) -> i64 {
-        self.build_command()
-            .status()
-            .map(|s| s.code().unwrap_or(-1) as i64)
-            .unwrap_or(-1)
-    }
-
-    /// Run the command and capture stdout.
-    ///
-    /// Returns error if command fails (non-zero exit).
-    pub fn output(&self) -> Result<String, Box<EvalAltResult>> {
-        let output = self
-            .build_command()
-            .output()
-            .map_err(|e| format!("command failed to start: {}", e))?;
-
-        if !output.status.success() {
-            return Err(format!(
-                "command failed with exit code: {:?}\n  command: {}",
-                output.status.code(),
-                self.truncated_cmd()
-            )
-            .into());
-        }
-
-        String::from_utf8(output.stdout).map_err(|e| format!("invalid utf8 output: {}", e).into())
-    }
-
-    /// Run the command and capture both stdout and stderr.
-    pub fn output_all(&self) -> Result<CmdOutput, Box<EvalAltResult>> {
-        let output = self
-            .build_command()
-            .output()
-            .map_err(|e| format!("command failed to start: {}", e))?;
-
-        Ok(CmdOutput {
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            exit_code: output.status.code().unwrap_or(-1),
-            success: output.status.success(),
-        })
-    }
-
-    /// Get a truncated version of the command for display.
-    fn truncated_cmd(&self) -> String {
-        if self.cmd.len() > 60 {
-            format!("{}...", &self.cmd[..57])
-        } else {
-            self.cmd.clone()
-        }
-    }
-
-    /// Get the full command string.
-    pub fn cmd(&self) -> &str {
-        &self.cmd
-    }
-
-    /// Get the truncated command string for display.
-    pub fn display_cmd(&self) -> String {
-        self.truncated_cmd()
+    } else {
+        Err(failure(&label, status, &tail))
     }
 }
 
-/// Output from a command execution.
-#[derive(Debug, Clone)]
-pub struct CmdOutput {
-    pub stdout: String,
-    pub stderr: String,
-    pub exit_code: i32,
-    pub success: bool,
+pub(crate) fn run_status(command: Command) -> Result<i64, Box<EvalAltResult>> {
+    stream(command).map(|(status, _)| status.code().unwrap_or(-1) as i64)
 }
 
-/// Convenience function to run a simple command.
-pub fn run(cmd: &str) -> Result<(), Box<EvalAltResult>> {
-    ShellCmd::new(cmd).run()
+pub(crate) fn capture(mut command: Command) -> Result<Output, Box<EvalAltResult>> {
+    let label = description(&command);
+    command
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("command failed to start: {label}: {error}").into())
 }
 
-/// Convenience function to run a command in a directory.
-pub fn run_in(dir: &str, cmd: &str) -> Result<(), Box<EvalAltResult>> {
-    ShellCmd::new(cmd).dir(dir).run()
-}
-
-/// Convenience function to get command status.
-pub fn status(cmd: &str) -> i64 {
-    ShellCmd::new(cmd).status()
-}
-
-/// Convenience function to get command output.
-pub fn output(cmd: &str) -> Result<String, Box<EvalAltResult>> {
-    ShellCmd::new(cmd).output()
+pub(crate) fn checked_capture(command: Command) -> Result<Output, Box<EvalAltResult>> {
+    let label = description(&command);
+    let output = capture(command)?;
+    let _ = std::io::stderr().write_all(&output.stderr);
+    if output.status.success() {
+        Ok(output)
+    } else {
+        let mut tail = output.stdout;
+        tail.extend_from_slice(&output.stderr);
+        Err(failure(&label, output.status, &tail))
+    }
 }

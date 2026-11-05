@@ -351,7 +351,7 @@ that do not exist yet.
 - logging helpers: `log`, `debug`, `warn`
 - shell helpers: `shell`, `shell_in`, `shell_status`, `shell_status_in`,
   `shell_output`, `shell_output_in`
-- process helpers: `exec`, `exec_output`
+- process helpers: `exec_checked`, `exec`, `exec_output`
 - file I/O helpers: `read_file`, `read_file_or_empty`, `write_file`,
   `append_file`, `glob_list`
 - filesystem helpers: `exists`, `file_exists`, `is_file`, `dir_exists`,
@@ -378,10 +378,23 @@ Use `shell*` when you need shell syntax:
 Use `exec*` when you already have a command and argument list:
 
 ```rhai
-exec("strip", ["--strip-unneeded", binary_path]);
+exec_checked("strip", ["--strip-unneeded", binary_path]);
+exec_checked("make", ["-j", NPROC], #{
+    cwd: ctx.source_path,
+    env: #{PREFIX: ctx.prefix}
+});
 ```
 
-That avoids shell quoting issues.
+Arguments are passed directly without shell expansion. `exec_checked` throws
+on a nonzero exit; `exec` returns the exit code for explicit handling.
+`exec_output` returns stdout and throws on failure. All three accept an optional
+third argument with `cwd` (a nonempty string) and `env` (a map of string values).
+Environment overrides apply only to that child command.
+
+Streaming command output and captured-command stderr go to Recipe stderr so
+machine output stays intact. Child stdin is closed; it cannot consume worker
+control input. Use `shell*` for pipelines or redirects; shell strings still
+require appropriate quoting.
 
 ### Helper Footguns Worth Knowing
 

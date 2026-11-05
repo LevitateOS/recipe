@@ -31,7 +31,7 @@
 //!
 //! - **util**: Cross-phase utilities
 //!   - join_path, basename, dirname, trim, contains, replace, split
-//!   - shell, shell_in, shell_output, exec, exec_output
+//!   - shell, shell_in, shell_output, exec_checked, exec, exec_output
 //!   - env, set_env, log, debug, warn
 //!
 //! - **llm**: AI/LLM helpers (standalone)
@@ -351,10 +351,35 @@ pub fn register_all(engine: &mut Engine) {
         trace_helper("exec");
         util::exec(cmd, args)
     });
+    engine.register_fn(
+        "exec",
+        |cmd: &str, args: rhai::Array, options: rhai::Map| {
+            trace_helper("exec");
+            util::exec_with_options(cmd, args, options)
+        },
+    );
+    engine.register_fn("exec_checked", |cmd: &str, args: rhai::Array| {
+        trace_helper("exec_checked");
+        util::exec_checked(cmd, args)
+    });
+    engine.register_fn(
+        "exec_checked",
+        |cmd: &str, args: rhai::Array, options: rhai::Map| {
+            trace_helper("exec_checked");
+            util::exec_checked_with_options(cmd, args, options)
+        },
+    );
     engine.register_fn("exec_output", |cmd: &str, args: rhai::Array| {
         trace_helper("exec_output");
         util::exec_output(cmd, args)
     });
+    engine.register_fn(
+        "exec_output",
+        |cmd: &str, args: rhai::Array, options: rhai::Map| {
+            trace_helper("exec_output");
+            util::exec_output_with_options(cmd, args, options)
+        },
+    );
     engine.register_fn("command_exists", |name: &str| {
         trace_helper("command_exists");
         util::command_exists(name)

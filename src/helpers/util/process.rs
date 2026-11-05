@@ -2,6 +2,7 @@
 //!
 //! Provides helpers for running installed packages.
 
+use crate::helpers::internal::cmd;
 use rhai::EvalAltResult;
 use std::env;
 use std::process::Command;
@@ -14,30 +15,15 @@ enum PrivilegeCommand {
 }
 
 fn run_command(cmd: &str, args: &[String]) -> Result<std::process::Output, Box<EvalAltResult>> {
-    Command::new(cmd)
-        .args(args)
-        .output()
-        .map_err(|e| format!("Failed to execute {}: {}", cmd, e).into())
+    let mut command = Command::new(cmd);
+    command.args(args);
+    cmd::capture(command)
 }
 
 fn run_checked(cmd: &str, args: &[String]) -> Result<(), Box<EvalAltResult>> {
-    let output = run_command(cmd, args)?;
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Err(format!(
-        "Command {} failed with exit code {:?}: {}\n{}",
-        cmd,
-        output.status.code(),
-        stderr.trim(),
-        stdout.trim()
-    )
-    .trim()
-    .to_owned()
-    .into())
+    let mut command = Command::new(cmd);
+    command.args(args);
+    cmd::run_checked(command)
 }
 
 fn strings(items: &[&str]) -> Vec<String> {
@@ -200,15 +186,65 @@ fn apk_repositories_file() -> String {
 /// Exit code of the command
 /// Child stdout streams to Recipe's stderr so machine output stays intact.
 pub fn exec(cmd: &str, args: rhai::Array) -> Result<i64, Box<EvalAltResult>> {
-    let args: Vec<String> = args.into_iter().map(|v| v.to_string()).collect();
+    exec_with_options(cmd, args, rhai::Map::new())
+}
 
-    let status = Command::new(cmd)
-        .args(&args)
-        .stdout(std::io::stderr())
-        .status()
-        .map_err(|e| format!("Failed to execute {}: {}", cmd, e))?;
+fn argv_command(
+    program: &str,
+    args: rhai::Array,
+    options: rhai::Map,
+) -> Result<Command, Box<EvalAltResult>> {
+    let mut command = Command::new(program);
+    command.args(args.into_iter().map(|value| value.to_string()));
+    for (key, value) in options {
+        match key.as_str() {
+            "cwd" => {
+                let dir = value
+                    .into_string()
+                    .map_err(|_| "command option cwd must be a string")?;
+                if dir.is_empty() {
+                    return Err("command option cwd must not be empty".into());
+                }
+                command.current_dir(dir);
+            }
+            "env" => {
+                let vars = value
+                    .try_cast::<rhai::Map>()
+                    .ok_or("command option env must be a map")?;
+                for (name, value) in vars {
+                    let text = value.into_string().map_err(|_| {
+                        format!("command environment value {name} must be a string")
+                    })?;
+                    command.env(name.as_str(), text);
+                }
+            }
+            other => return Err(format!("unknown command option: {other}").into()),
+        }
+    }
+    Ok(command)
+}
 
-    Ok(status.code().unwrap_or(-1) as i64)
+/// Execute argv with optional cwd/env; return status and throw on execution errors.
+pub fn exec_with_options(
+    cmd: &str,
+    args: rhai::Array,
+    options: rhai::Map,
+) -> Result<i64, Box<EvalAltResult>> {
+    cmd::run_status(argv_command(cmd, args, options)?)
+}
+
+/// Execute argv, stream diagnostics to stderr, and throw on nonzero exit.
+pub fn exec_checked(cmd: &str, args: rhai::Array) -> Result<(), Box<EvalAltResult>> {
+    exec_checked_with_options(cmd, args, rhai::Map::new())
+}
+
+/// Checked argv execution with per-command cwd and environment overrides.
+pub fn exec_checked_with_options(
+    cmd: &str,
+    args: rhai::Array,
+    options: rhai::Map,
+) -> Result<(), Box<EvalAltResult>> {
+    cmd::run_checked(argv_command(cmd, args, options)?)
 }
 
 /// Execute a command and return its output
@@ -220,15 +256,16 @@ pub fn exec(cmd: &str, args: rhai::Array) -> Result<i64, Box<EvalAltResult>> {
 /// # Returns
 /// stdout of the command as a string
 pub fn exec_output(cmd: &str, args: rhai::Array) -> Result<String, Box<EvalAltResult>> {
-    let args: Vec<String> = args.into_iter().map(|v| v.to_string()).collect();
+    exec_output_with_options(cmd, args, rhai::Map::new())
+}
 
-    let output = run_command(cmd, &args)?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Command {} failed: {}", cmd, stderr).into());
-    }
-
+/// Capture checked argv stdout with per-command cwd and environment overrides.
+pub fn exec_output_with_options(
+    cmd: &str,
+    args: rhai::Array,
+    options: rhai::Map,
+) -> Result<String, Box<EvalAltResult>> {
+    let output = cmd::checked_capture(argv_command(cmd, args, options)?)?;
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 

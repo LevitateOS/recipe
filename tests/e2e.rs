@@ -87,3 +87,5 @@ mod downloads;
 mod process;
 #[path = "e2e/preseed_recipes.rs"]
 mod preseed_recipes;
+#[path = "e2e/command_options.rs"]
+mod command_options;

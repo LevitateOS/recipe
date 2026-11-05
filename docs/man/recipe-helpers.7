@@ -567,22 +567,38 @@ Fails when: available space is below requirement or \fBdf\fR invocation fails
 Example: \fBcheck_disk_space(BUILD_DIR, 20 * 1024 * 1024 * 1024)\fR
 .TP
 \fBexec\fR
-Signature: \fBexec(cmd, args)\fR
+Signature: \fBexec(cmd, args [, options])\fR
 .br
 Returns: integer exit code
 .br
 Fails when: process startup fails
 .br
-Example: \fBexec("make", ["-j8"])\fR
+Example: \fBlet status = exec("test", ["-f", path]);\fR
+.TP
+\fBexec_checked\fR
+Signature: \fBexec_checked(cmd, args [, options])\fR
+.br
+Returns: \fB()\fR
+.br
+Fails when: process execution fails or exits non-zero
+.br
+Example: \fBexec_checked("make", ["-j8"], #{cwd: ctx.source_path})\fR
 .TP
 \fBexec_output\fR
-Signature: \fBexec_output(cmd, args)\fR
+Signature: \fBexec_output(cmd, args [, options])\fR
 .br
 Returns: stdout string
 .br
 Fails when: process startup fails or exits non-zero
 .br
 Example: \fBtrim(exec_output("pkg-config", ["--modversion", "glib-2.0"]))\fR
+.PP
+The argv helpers pass arguments directly without shell expansion. Their optional
+options map accepts \fBcwd\fR (a nonempty string) and \fBenv\fR (a map of string
+values). Environment overrides affect only the child command. Unknown options
+are errors. Streaming stdout and stderr go to Recipe stderr; captured stdout is
+returned to the recipe and captured stderr goes to Recipe stderr. Child stdin
+is closed to protect worker control input.
 .TP
 \fBrpm_installed\fR
 Signature: \fBrpm_installed(name)\fR
