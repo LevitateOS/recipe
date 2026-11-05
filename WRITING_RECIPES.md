@@ -69,12 +69,17 @@ blocking pipes wake for peer IO, and waits use virtual child IDs and observed
 exit statuses. Root exit or supervisor failure kills and reaps descendants.
 Image execve/execveat now preserve task identity, retire CLOEXEC descriptors only
 after successful replacement, and retain every descriptor after failed exec.
-The actual child helper reaches Bash's dynamic loader, then fails because its
-output-draining threads are still unsupported. Reader startup failures return
-structured command errors and reap the child; they no longer panic the worker.
-Threads, broader wait/signal semantics and polling of owned or remapped
-descriptors remain unfinished. Exec preparation interrupted by signals fails
-explicitly; generated-file execution still needs storage integration.
+The configured supervisor now tracks the supported pthread shape with shared
+descriptor tables, virtual TIDs, independent syscall state and clear-TID joins.
+Blocked pipe IO keeps its original handle across a peer close/reuse. Threads can
+exit without closing peer handles; final process exit reaps the whole group.
+A real Bash child now produces verified domain bytes and returns zero through
+the existing helper. Reader startup failures remain ordinary command errors.
+Successful child stderr is still discarded by the coordinator's temporary log
+collection; the retained CLI regression exposes that remaining diagnostic gap.
+Broader signal/robust-futex behavior, threaded exec transitions, and polling of
+owned or remapped descriptors remain unfinished. Exec preparation interrupted
+by signals fails explicitly; generated-file execution still needs storage.
 File effects disappear after the invocation.
 Acknowledgements still use placeholder generation 0 and are not durable-state
 evidence. Child commands, retained writable storage, durable state, complete
