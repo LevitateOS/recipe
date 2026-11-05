@@ -62,6 +62,23 @@ errors remain catchable in Rhai. Unsupported API versions fail before setup.
 .PP
 Source-based persistence and the acquire/install-only dependency runner remain
 pending migration.
+.SH API 2 CONTEXT NAMESPACES
+The engine supplies \fBRUNTIME\fR before top-level setup and attaches the same
+values as \fBctx.runtime\fR before checks and hooks. This namespace contains
+host/target os and arch, paths (recipe_dir, base_recipe_dir, build, tools, inputs,
+output, temp), operation, and options (jobs, persist_state). The current target
+default is native Linux. Inputs/output are /inputs and /out domain paths; build
+and tool paths are supplied by the current execution flow.
+.PP
+Fresh inputs replace a stale runtime snapshot in source. Hooks must preserve the
+engine-owned runtime namespace. Conflicting defines for engine paths/platform
+values and a recipe declaration of RUNTIME are rejected.
+.PP
+\fBctx.state\fR and \fBctx.outputs\fR default to empty maps. Returned contexts
+must preserve map types. They hold recipe runtime data and named products.
+Explicit target/input transport, durable state import/storage, strict value
+serialization, output contracts, and publication remain pending integration.
+The persist_state option records requested policy, not proof of resumability.
 .SH CTX CONTRACT
 .TP
 \fBCanonical declaration\fR

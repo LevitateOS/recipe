@@ -147,7 +147,8 @@ impl<'a> BuildDepsResolver<'a> {
             self.defines,
         );
 
-        let mut scope = Runtime::new(self.engine, &ast, scope).map_err(DepAttemptError::Fatal)?;
+        let mut scope = Runtime::new(self.engine, &ast, scope, "install", false)
+            .map_err(DepAttemptError::Fatal)?;
 
         let mut ctx_map: rhai::Map = scope.scope().get_value("ctx").ok_or_else(|| {
             DepAttemptError::Fatal(anyhow!("Dependency recipe {} missing ctx", name))

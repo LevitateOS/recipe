@@ -161,6 +161,7 @@ Recipes use a `ctx` map for state.
 - Unversioned checks (`is_*`) return `ctx` when ready and deliberately `throw` when work is needed. Interpreter and native-helper failures stop execution.
 - `const RECIPE_API = 2;` opts into initialization once per invocation and checks returning `ready(ctx)` or `needs_work(ctx, reason)`. API 2 preserves imports and rechecks custom readiness after successful phases. See [the author guide](WRITING_RECIPES.md#api-2-initialization-and-readiness) for the implemented migration scope.
 - Phase functions (`acquire/build/install/remove/cleanup`) take `ctx` and return an updated `ctx`.
+- API 2 supplies engine-owned `ctx.runtime` (also `RUNTIME` during setup), plus `ctx.state` and `ctx.outputs` maps. Target selection, durable state, and publication integration remain in progress.
 - Omit `cleanup` when no recipe-specific cleanup is needed. A defined hook must accept `(ctx, reason)` and return `ctx`. Errors after a successful phase fail the command; errors during failure cleanup are reported while preserving the primary failure.
 
 Minimal example:

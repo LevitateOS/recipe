@@ -61,7 +61,8 @@ pub(crate) fn remove_with_context(
         defines,
     );
 
-    let mut scope = crate::core::invocation::Runtime::new(engine, &ast, scope)?;
+    let mut scope =
+        crate::core::invocation::Runtime::new(engine, &ast, scope, "remove", persist_ctx_enabled)?;
 
     let mut ctx_map: rhai::Map = scope
         .scope()
@@ -158,7 +159,8 @@ pub(crate) fn cleanup_with_context(
         defines,
     );
 
-    let mut scope = crate::core::invocation::Runtime::new(engine, &ast, scope)?;
+    let mut scope =
+        crate::core::invocation::Runtime::new(engine, &ast, scope, "cleanup", persist_ctx_enabled)?;
 
     let mut ctx_map: rhai::Map = scope
         .scope()
@@ -309,7 +311,7 @@ pub(crate) fn run_check_with_context(
         defines,
     );
 
-    let mut scope = crate::core::invocation::Runtime::new(engine, &ast, scope)?;
+    let mut scope = crate::core::invocation::Runtime::new(engine, &ast, scope, check_name, false)?;
 
     let ctx_map: rhai::Map = scope
         .scope()

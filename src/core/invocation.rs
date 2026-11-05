@@ -2,8 +2,8 @@
 
 use anyhow::{Result, anyhow, bail};
 use rhai::{
-    AST, ASTFlags, Caches, Dynamic, Engine, EvalContext, Expr, GlobalRuntimeState, Map, Position,
-    Scope, Stmt, StmtBlock,
+    AST, ASTFlags, Caches, Dynamic, Engine, EvalContext, Expr, GlobalRuntimeState, Ident, Map,
+    Position, Scope, Stmt, StmtBlock,
 };
 use std::path::Path;
 
@@ -22,7 +22,7 @@ pub(crate) fn scope(
     build_dir: Option<&Path>,
     tools_prefix: Option<&Path>,
     defines: &[(String, String)],
-) -> Scope<'static> {
+) -> PreparedScope {
     let mut scope = Scope::new();
     scope.push_constant(
         "RECIPE_DIR",
@@ -45,12 +45,66 @@ pub(crate) fn scope(
         scope.push_constant("TOOLS_PREFIX", tools.to_string_lossy().to_string());
     }
     scope.push_constant("ARCH", std::env::consts::ARCH);
-    scope.push_constant("NPROC", num_cpus::get() as i64);
+    let jobs = num_cpus::get() as i64;
+    scope.push_constant("NPROC", jobs);
     scope.push_constant("RPM_PATH", std::env::var("RPM_PATH").unwrap_or_default());
-    for (key, value) in defines {
-        scope.push_constant(key.as_str(), value.clone());
+    let paths: Map = [
+        (
+            "recipe_dir".into(),
+            scope.get_value::<Dynamic>("RECIPE_DIR").unwrap(),
+        ),
+        (
+            "base_recipe_dir".into(),
+            scope
+                .get_value::<Dynamic>("BASE_RECIPE_DIR")
+                .unwrap_or_default(),
+        ),
+        (
+            "build".into(),
+            scope.get_value::<Dynamic>("BUILD_DIR").unwrap_or_default(),
+        ),
+        (
+            "tools".into(),
+            scope
+                .get_value::<Dynamic>("TOOLS_PREFIX")
+                .unwrap_or_default(),
+        ),
+        ("inputs".into(), "/inputs".into()),
+        ("output".into(), "/out".into()),
+        (
+            "temp".into(),
+            std::env::temp_dir().to_string_lossy().to_string().into(),
+        ),
+    ]
+    .into();
+    let platform: Map = [
+        ("os".into(), std::env::consts::OS.into()),
+        ("arch".into(), std::env::consts::ARCH.into()),
+    ]
+    .into();
+    let runtime: Map = [
+        ("host".into(), platform.clone().into()),
+        ("target".into(), platform.into()),
+        ("paths".into(), paths.into()),
+        (
+            "options".into(),
+            Map::from([("jobs".into(), jobs.into())]).into(),
+        ),
+    ]
+    .into();
+    PreparedScope {
+        bindings: scope,
+        runtime,
+        defines: defines.to_vec(),
     }
-    scope
+}
+
+/// Canonical orchestration inputs are kept separately from legacy define
+/// overrides. API 2 cannot silently turn a caller's define into a new work root.
+pub(crate) struct PreparedScope {
+    bindings: Scope<'static>,
+    runtime: Map,
+    defines: Vec<(String, String)>,
 }
 
 /// The imports and global constants needed by hook calls belong to an invocation,
@@ -61,19 +115,95 @@ pub(crate) struct Runtime<'a> {
     ast: &'a AST,
     scope: Scope<'static>,
     initialized: Option<(GlobalRuntimeState, Caches)>,
+    runtime: Option<serde_json::Value>,
 }
 
 impl<'a> Runtime<'a> {
-    pub(crate) fn new(engine: &'a Engine, ast: &'a AST, mut scope: Scope<'static>) -> Result<Self> {
+    pub(crate) fn new(
+        engine: &'a Engine,
+        ast: &'a AST,
+        prepared: PreparedScope,
+        operation: &str,
+        persist_state: bool,
+    ) -> Result<Self> {
         let api2 = api2(ast)?;
+        let PreparedScope {
+            bindings: mut scope,
+            mut runtime,
+            defines,
+        } = prepared;
+        for (key, value) in defines {
+            if api2
+                && (key == "RUNTIME"
+                    || matches!(
+                        key.as_str(),
+                        "RECIPE_DIR"
+                            | "BASE_RECIPE_DIR"
+                            | "BUILD_DIR"
+                            | "TOOLS_PREFIX"
+                            | "ARCH"
+                            | "NPROC"
+                    ))
+            {
+                if scope
+                    .get_value::<Dynamic>(&key)
+                    .is_some_and(|canonical| canonical.to_string() == value)
+                {
+                    continue;
+                }
+                bail!("API 2 define {key} conflicts with engine-owned invocation inputs");
+            }
+            scope.push_constant(key, value);
+        }
+        let expected_runtime = if api2 {
+            if std::env::consts::OS != "linux" {
+                bail!("API 2 currently supports Linux execution only");
+            }
+            if scope
+                .get_value::<String>("BUILD_DIR")
+                .filter(|path| !path.is_empty())
+                .is_none()
+            {
+                bail!("API 2 invocation is missing its engine-supplied build directory");
+            }
+            for statement in ast.statements() {
+                if let Stmt::Var(declaration, _, _) = statement {
+                    if declaration.0.name == "RUNTIME" {
+                        bail!("RUNTIME is an engine-owned API 2 constant; do not redeclare it");
+                    }
+                }
+            }
+            runtime.insert("operation".into(), operation.into());
+            let mut options = runtime["options"].clone().cast::<Map>();
+            options.insert("persist_state".into(), persist_state.into());
+            runtime.insert("options".into(), options.into());
+            Some(
+                rhai::serde::from_dynamic::<serde_json::Value>(&runtime.clone().into())
+                    .map_err(|e| anyhow!("Invalid invocation inputs: {e}"))?,
+            )
+        } else {
+            None
+        };
         let initialized = if api2 {
             let mut global = engine.new_global_runtime_state();
             global.lib.push(ast.shared_lib().clone());
             global.source = ast.source().map(Into::into);
             global.embedded_module_resolver = ast.resolver().cloned();
             let mut caches = Caches::new();
+            let runtime_constant = Stmt::Var(
+                Box::new((
+                    Ident {
+                        name: "RUNTIME".into(),
+                        pos: Position::NONE,
+                    },
+                    Expr::from_dynamic(runtime.clone().into(), Position::NONE),
+                    None,
+                )),
+                ASTFlags::CONSTANT,
+                Position::NONE,
+            );
             let setup = Expr::Stmt(Box::new(StmtBlock::new(
-                ast.statements().iter().cloned(),
+                std::iter::once(runtime_constant).chain(ast.statements().iter().cloned()),
                 Position::NONE,
                 Position::NONE,
             )));
@@ -89,6 +219,29 @@ impl<'a> Runtime<'a> {
                     _ => Err(error),
                 })
                 .map_err(|e| anyhow!("Failed to initialize recipe: {e}"))?;
+            if scope.is_constant("ctx") == Some(true) {
+                bail!("API 2 ctx must be a mutable map declared with let");
+            }
+            // Preserve a shared ctx captured by a Rhai closure. get_value_mut
+            // panics for shared values; a Dynamic write lock handles both forms.
+            let mut ctx_value = scope
+                .iter_raw()
+                .filter(|(name, _, _)| *name == "ctx")
+                .last()
+                .map(|(_, _, value)| value.clone())
+                .ok_or_else(|| anyhow!("API 2 recipe must declare a ctx map"))?;
+            let mut ctx = ctx_value
+                .write_lock::<Map>()
+                .ok_or_else(|| anyhow!("API 2 recipe must declare a ctx map"))?;
+            // Discard any saved runtime snapshot; paths and policy always come
+            // from this invocation. State/output map values stay recipe-owned.
+            ctx.insert("runtime".into(), Dynamic::from(runtime).into_read_only());
+            for field in ["state", "outputs"] {
+                ctx.entry(field.into()).or_insert_with(|| Map::new().into());
+            }
+            validate_namespaces(&ctx, expected_runtime.as_ref().unwrap())?;
+            drop(ctx);
+            scope.set_value("ctx", ctx_value);
             Some((global, caches))
         } else {
             engine
@@ -101,6 +254,7 @@ impl<'a> Runtime<'a> {
             ast,
             scope,
             initialized,
+            runtime: expected_runtime,
         })
     }
 
@@ -170,14 +324,21 @@ impl<'a> Runtime<'a> {
         isolated: bool,
     ) -> std::result::Result<Map, Box<rhai::EvalAltResult>> {
         let value = self.call(name, args, isolated)?;
-        value.try_cast_result::<Map>().map_err(|value| {
-            rhai::EvalAltResult::ErrorMismatchOutputType(
-                "map".into(),
-                value.type_name().into(),
-                Position::NONE,
-            )
-            .into()
-        })
+        let ctx = value
+            .try_cast_result::<Map>()
+            .map_err(|value| -> Box<rhai::EvalAltResult> {
+                rhai::EvalAltResult::ErrorMismatchOutputType(
+                    "map".into(),
+                    value.type_name().into(),
+                    Position::NONE,
+                )
+                .into()
+            })?;
+        if let Some(runtime) = &self.runtime {
+            validate_namespaces(&ctx, runtime)
+                .map_err(|error| -> Box<rhai::EvalAltResult> { error.to_string().into() })?;
+        }
+        Ok(ctx)
     }
 
     pub(crate) fn check(&mut self, name: &str, ctx: &Map) -> Result<Readiness> {
@@ -209,6 +370,7 @@ impl<'a> Runtime<'a> {
             .and_then(Dynamic::try_cast::<String>);
         let ctx = outcome.remove("ctx").and_then(Dynamic::try_cast::<Map>)
             .ok_or_else(|| anyhow!("{name} readiness result is missing a ctx map; return ready(ctx) or needs_work(ctx, reason)"))?;
+        validate_namespaces(&ctx, self.runtime.as_ref().unwrap())?;
         match status.as_deref() {
             Some("ready") if outcome.is_empty() => Ok(Readiness::Ready(ctx)),
             Some("needs_work") => {
@@ -225,6 +387,23 @@ impl<'a> Runtime<'a> {
             _ => bail!("{name} must return ready(ctx) or needs_work(ctx, reason)"),
         }
     }
+}
+
+fn validate_namespaces(ctx: &Map, expected_runtime: &serde_json::Value) -> Result<()> {
+    for field in ["state", "outputs"] {
+        if !ctx.get(field).is_some_and(Dynamic::is::<Map>) {
+            bail!("ctx.{field} must be a map in API 2");
+        }
+    }
+    let actual = ctx
+        .get("runtime")
+        .ok_or_else(|| anyhow!("ctx.runtime is engine-owned and must be preserved"))?;
+    let actual: serde_json::Value =
+        rhai::serde::from_dynamic(actual).map_err(|e| anyhow!("ctx.runtime is invalid: {e}"))?;
+    if &actual != expected_runtime {
+        bail!("ctx.runtime is engine-owned and must not be changed");
+    }
+    Ok(())
 }
 
 pub(crate) enum Readiness {

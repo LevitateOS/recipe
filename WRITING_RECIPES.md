@@ -54,13 +54,13 @@ All three checks remain independent Rhai functions with package-specific rules:
 
 ```rhai
 const RECIPE_API = 2;
-let ctx = #{name: "example", product: join_path(BUILD_DIR, "example.txt")};
+let ctx = #{name: "example", product: join_path(RUNTIME.paths.output, "example.txt")};
 fn is_installed(ctx) {
     if !is_file(ctx.product) { return needs_work(ctx, "product is missing"); }
     ready(ctx)
 }
 fn is_built(ctx) { ready(ctx) }
-fn install(ctx) { mkdir(BUILD_DIR); write_file(ctx.product, "example"); ctx }
+fn install(ctx) { mkdir(dirname(ctx.product)); write_file(ctx.product, "example"); ctx }
 ```
 
 `ready(ctx)` reports readiness; `needs_work(ctx, reason)` requests the relevant
@@ -78,6 +78,41 @@ helpers fail execution. Native helper errors remain catchable with Rhai
 
 Source-based ctx persistence and the dependency runner's acquire/install-only
 behavior remain pending migration; API 2 does not imply they are done.
+
+### Engine-owned invocation inputs
+
+API 2 supplies `RUNTIME` before top-level setup, and attaches the same values as
+`ctx.runtime` before checks/hooks. A stale `runtime` field in source is replaced
+with current inputs. Hooks must preserve this namespace; returned contexts are
+validated. Use the runtime paths when declaring products instead of deriving an
+identity from build-directory names.
+
+| Field | Current value |
+| --- | --- |
+| `runtime.host.os`, `runtime.host.arch` | Linux worker platform |
+| `runtime.target.os`, `runtime.target.arch` | Native Linux default, currently equal to host |
+| `runtime.paths.recipe_dir`, `base_recipe_dir` | Prepared recipe/base directories; absent base is `()` |
+| `runtime.paths.build`, `tools` | Explicit directories supplied to the current operation/dependency |
+| `runtime.paths.inputs`, `output` | `/inputs` and `/out` domain paths |
+| `runtime.paths.temp` | Worker temporary directory |
+| `runtime.operation` | `install`, `remove`, `cleanup`, or `is_*` |
+| `runtime.options.jobs` | Resolved processor count |
+| `runtime.options.persist_state` | Requested persistence policy; false for manual checks and current tool dependencies |
+
+API 2 rejects conflicting defines for engine-owned paths/platform globals and
+reserves the name `RUNTIME`. Unversioned define behavior is unchanged. The
+coordinated R07 transport work still needs to supply explicitly selected targets,
+prepared input identities, force policy, and the final domain/tool layout. This
+slice exposes the native default and current explicit directories; it does not
+claim target-selection transport is complete.
+
+`ctx.state` and `ctx.outputs` default to empty maps. Recipe-defined map entries
+are preserved, and checks/phases/cleanup can return updated maps. Wrong namespace
+types fail with a field-specific error. `state` is for recipe runtime data and
+`outputs` is for named products; fresh package facts may stay at the ctx root.
+Separate durable state import/storage, strict nested-value persistence, output
+contracts, and publication remain pending. The persistence option alone does not
+establish resumable storage.
 
 ## Minimal Template
 

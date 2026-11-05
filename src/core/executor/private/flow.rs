@@ -37,8 +37,9 @@ pub(crate) fn install_once(
         defines,
     );
 
-    let mut scope = crate::core::invocation::Runtime::new(engine, &ast, scope)
-        .map_err(InstallAttemptError::Fatal)?;
+    let mut scope =
+        crate::core::invocation::Runtime::new(engine, &ast, scope, "install", persist_ctx_enabled)
+            .map_err(InstallAttemptError::Fatal)?;
 
     // Extract ctx from scope
     let mut ctx_map: rhai::Map = scope.scope().get_value("ctx").ok_or_else(|| {
