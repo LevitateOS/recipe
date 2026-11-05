@@ -398,6 +398,10 @@ require appropriate quoting.
 
 ### Helper Footguns Worth Knowing
 
+- `download_with_resume(url, dest)` treats an existing file as a prefix and
+  requires an exact HTTP Range response. It stages a complete replacement;
+  failures preserve the existing file and discard the attempt's new bytes.
+  Verify the result's declared digest even if the server reports a matching size.
 - `git_clone(url, dest_dir)` clones into `dest_dir/<repo-name>`, not exactly to
   `dest_dir`
 - `git_clone_depth(url, dest_dir, depth)` behaves the same way

@@ -246,6 +246,7 @@ fn github_download_release_impl(
     let dest_path = Path::new(dest_dir).join(asset_name);
 
     let response = ureq::get(download_url)
+        .set("Accept-Encoding", "identity")
         .timeout(Duration::from_secs(300)) // 5 minute timeout for downloads
         .call()
         .map_err(|e| format!("Download failed: {}", e))?;

@@ -98,7 +98,7 @@ These names are the Rhai function names.
 | `git_clone` | `helpers/acquire/git.rs` | `git_clone(url, dest_dir) -> String` | clones into dest_dir/<repo> |
 | `git_clone_depth` | `helpers/acquire/git.rs` | `git_clone_depth(url, dest_dir, depth) -> String` | shallow clone |
 | `torrent` | `helpers/acquire/torrent.rs` | `torrent(url, dest_dir) -> String` | pure Rust (librqbit) |
-| `download_with_resume` | `helpers/acquire/torrent.rs` | `download_with_resume(url, dest) -> String` | pure Rust (HTTP Range) |
+| `download_with_resume` | `helpers/acquire/download.rs` | `download_with_resume(url, dest) -> String` | validates HTTP Range; stages before replacement; recipe verifies digest |
 | `llm_extract` | `helpers/llm.rs` | `llm_extract(content, prompt) -> String` | TODO backend |
 | `llm_find_latest_version` | `helpers/llm.rs` | `llm_find_latest_version(url, project) -> String` | TODO backend |
 | `llm_find_download_url` | `helpers/llm.rs` | `llm_find_download_url(content, criteria) -> String` | TODO backend |

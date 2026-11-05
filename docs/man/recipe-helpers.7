@@ -518,6 +518,14 @@ Returns: destination path
 Fails when: HTTP range download fails
 .br
 Example: \fBdownload_with_resume(ctx.url, join_path(BUILD_DIR, "iso"))\fR
+.PP
+An existing destination is treated as a prefix. The server must return the exact
+requested remainder with HTTP 206, or HTTP 416 with a matching total size.
+HTTP 200 is rejected when resuming; use \fBdownload\fR to restart explicitly.
+Resumed bytes are staged beside the destination and replace it only on completion.
+A failed attempt preserves the destination and discards that attempt's progress.
+Staging requires space for the complete replacement file. A matching remote size
+does not establish integrity: recipes must still verify their declared digest.
 .SH BUILD HELPERS
 .TP
 \fBextract\fR
