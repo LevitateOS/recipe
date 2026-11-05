@@ -122,6 +122,7 @@ pub fn run_domain(
     prepared: &PreparedInvocation,
     launcher: &Path,
     persist_ctx: bool,
+    options: &crate::worker::protocol::InvocationOptions,
 ) -> Result<LaunchReport> {
     let invocation = prepared.invocation_id.clone();
     let run_dir = tempfile::tempdir().context(
@@ -175,6 +176,7 @@ pub fn run_domain(
         &prepared.operation,
         &prepared.recipe_digest,
         persist_ctx,
+        options,
         stdin,
         stdout,
     );
@@ -237,6 +239,7 @@ fn pump_protocol(
     operation: &str,
     recipe_digest: &str,
     persist_ctx: bool,
+    options: &crate::worker::protocol::InvocationOptions,
     mut stdin: std::process::ChildStdin,
     stdout: std::process::ChildStdout,
 ) -> Result<WorkerStream> {
@@ -253,6 +256,7 @@ fn pump_protocol(
             operation: operation.to_string(),
             persist_ctx,
             recipe_digest: recipe_digest.to_string(),
+            options: options.clone(),
         }),
     )
     .map_err(|err| classify_stream_error(invocation, "send request", err, true))?;

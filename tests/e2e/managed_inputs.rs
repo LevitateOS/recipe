@@ -220,6 +220,35 @@ fn managed_command(recipes: &Path, operation: &str) -> Command {
 }
 
 #[test]
+fn managed_invocation_preserves_defines_and_cleanup_reason() {
+    let (_dir, recipes) = create_test_env();
+    write_recipe(
+        &recipes,
+        "check",
+        r#"
+const RECIPE_API = 2;
+let ctx = #{name: "options", value: CUSTOM_INPUT};
+fn is_installed(ctx) { ready(ctx) }
+fn cleanup(ctx, reason) { ctx.reason = reason; ctx }
+"#,
+    );
+    for operation in ["isinstalled", "cleanup"] {
+        let mut command = managed_command(&recipes, operation);
+        command.args(["--define", "CUSTOM_INPUT=caller value"]);
+        if operation == "cleanup" {
+            command.args(["--reason", "requested retry"]);
+        }
+        let output = command.output().unwrap();
+        assert_success(&output);
+        let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(context["value"], "caller value");
+        if operation == "cleanup" {
+            assert_eq!(context["reason"], "requested retry");
+        }
+    }
+}
+
+#[test]
 fn managed_custom_checks_run_independently_and_return_discovered_context() {
     use std::os::unix::fs::PermissionsExt;
     let (_dir, recipes) = create_test_env();

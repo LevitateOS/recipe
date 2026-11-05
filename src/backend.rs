@@ -158,10 +158,14 @@ impl Backend {
         recipe: &Path,
         search_path: Option<&Path>,
         persist_ctx: bool,
+        options: crate::worker::protocol::InvocationOptions,
         _host_op: impl FnOnce() -> Result<rhai::Map>,
     ) -> Result<rhai::Map> {
         match self {
             Backend::Ginux { launcher } => {
+                options
+                    .validate()
+                    .context("backend startup failure: invalid invocation options")?;
                 let prepared =
                     crate::inputs::prepare_invocation(recipe, operation, search_path, &[], &[])
                         .map_err(|err| {
@@ -171,7 +175,7 @@ impl Backend {
                                 recipe.display(),
                             )
                         })?;
-                let report = crate::launch::run_domain(&prepared, launcher, persist_ctx)?;
+                let report = crate::launch::run_domain(&prepared, launcher, persist_ctx, &options)?;
                 eprintln!(
                     "recipe: invocation {} finished in the Ginux domain: ok={} ({} checkpoint{} \
                      acked; launcher exit {}; result {})",

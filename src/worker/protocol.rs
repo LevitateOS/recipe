@@ -1,4 +1,4 @@
-//! Worker protocol v2 framing and bounded diagnostics.
+//! Worker protocol v3 framing, invocation options and bounded diagnostics.
 //!
 //! Implements `docs/ginux-recipe-interfaces.md` §4 on the Recipe side. Ginux
 //! treats these frames as opaque bytes; Recipe owns their shape.
@@ -8,13 +8,13 @@
 //! Every frame is:
 //!
 //! ```text
-//! [u32 BE total-length][u32 BE version=2][u32 BE seq][u16 BE op][payload]
+//! [u32 BE total-length][u32 BE version=3][u32 BE seq][u16 BE op][payload]
 //! ```
 //!
 //! - `total-length` is the full frame size **including** its own 4 bytes, so
 //!   `payload.len() == total-length - HEADER_LEN` with
 //!   `HEADER_LEN == 14` (4 + 4 + 4 + 2).
-//! - `version` is always [`PROTOCOL_VERSION`] (2). Anything else is a
+//! - `version` is always [`PROTOCOL_VERSION`] (3). Anything else is a
 //!   `protocol` failure: the receiver aborts, never retries on the same
 //!   invocation.
 //! - `seq` numbers each direction independently starting at 1. The receiver
@@ -55,7 +55,7 @@ use std::io::{Read, Write};
 use serde::{Deserialize, Serialize};
 
 /// Protocol version carried in every frame header.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Maximum total frame size in bytes (4 MiB), header included.
 pub const MAX_FRAME_LEN: usize = 4 * 1024 * 1024;
@@ -137,6 +137,50 @@ pub struct RequestPayload {
     pub persist_ctx: bool,
     /// Digest of the recipe inputs (opaque string, no path).
     pub recipe_digest: String,
+    /// Explicit invocation options; never inferred from coordinator environment.
+    pub options: InvocationOptions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InvocationOptions {
+    pub defines: Vec<(String, String)>,
+    pub cleanup_reason: String,
+}
+
+impl Default for InvocationOptions {
+    fn default() -> Self {
+        Self {
+            defines: Vec::new(),
+            cleanup_reason: "manual".into(),
+        }
+    }
+}
+
+impl InvocationOptions {
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        if self.defines.len() > 64 || self.cleanup_reason.len() > 4096 {
+            return Err(ProtocolError::PayloadInvalid(
+                "invocation options exceed their bounds".into(),
+            ));
+        }
+        let mut names = std::collections::HashSet::new();
+        for (name, value) in &self.defines {
+            if name.is_empty()
+                || name.len() > 128
+                || value.len() > 65536
+                || !name.bytes().enumerate().all(|(i, b)| {
+                    b == b'_' || b.is_ascii_alphabetic() || i > 0 && b.is_ascii_digit()
+                })
+                || !names.insert(name)
+            {
+                return Err(ProtocolError::PayloadInvalid(format!(
+                    "invalid or duplicate define {name:?}"
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Op 2 (worker→host): report one persistence point; the host quiesces
@@ -396,6 +440,7 @@ fn valid_invocation_id(id: &str) -> bool {
 }
 
 fn check_request(p: &RequestPayload) -> Result<(), ProtocolError> {
+    p.options.validate()?;
     if !valid_invocation_id(&p.invocation_id) {
         return Err(ProtocolError::PayloadInvalid(format!(
             "request invocation_id {:?} must match [A-Za-z0-9_-]{{1,64}}",

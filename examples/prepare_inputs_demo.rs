@@ -168,6 +168,7 @@ fn main() -> anyhow::Result<()> {
             &recipe,
             None,
             true,
+            Default::default(),
             || -> anyhow::Result<rhai::Map> {
                 panic!("host fallback must never run under the ginux backend")
             },

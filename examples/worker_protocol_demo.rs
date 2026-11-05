@@ -30,6 +30,7 @@ fn request_fixture() -> FramePayload {
         operation: "install".to_string(),
         persist_ctx: true,
         recipe_digest: "sha256:0123456789abcdef".to_string(),
+        options: Default::default(),
     })
 }
 

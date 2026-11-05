@@ -343,10 +343,17 @@ fn run_operation(
     output: &mut impl Write,
 ) -> std::result::Result<serde_json::Value, EngineFailure> {
     let engine = build_engine(&local.search_path);
-    let defines = vec![(
+    let mut defines = req.options.defines.clone();
+    if defines.iter().any(|(name, _)| name == "BUILD_DIR") {
+        return Err(EngineFailure::workload(
+            "startup",
+            anyhow!("BUILD_DIR is coordinator-owned; select inputs through the invocation instead"),
+        ));
+    }
+    defines.push((
         "BUILD_DIR".to_string(),
         local.build_dir.to_string_lossy().into_owned(),
-    )];
+    ));
     let search_path = Some(local.search_path.as_path());
 
     let mut checkpoint_no: u64 = 0;
@@ -403,7 +410,7 @@ fn run_operation(
             &local.recipe,
             search_path,
             &defines,
-            "manual",
+            &req.options.cleanup_reason,
             req.persist_ctx,
             &mut exec,
         )
