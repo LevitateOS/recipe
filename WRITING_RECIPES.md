@@ -80,6 +80,9 @@ stderr through bounded diagnostic messages. Machine JSON remains on stdout,
 including when child output contains non-UTF-8 bytes. The invocation budget is
 16 MiB or 32768 data messages; one notice reports truncation and excess output
 continues draining so the command can finish. Supervisor audit remains separate.
+Streaming helpers now work for the demonstrated Bash lifecycle. Captured-output
+helpers still need owned-pipe nonblocking ioctl/readiness support in Ginux; a
+real exec_output probe currently fails there.
 Broader signal/robust-futex behavior, threaded exec transitions, and polling of
 owned or remapped descriptors remain unfinished. Exec preparation interrupted
 by signals fails explicitly; generated-file execution still needs storage.
