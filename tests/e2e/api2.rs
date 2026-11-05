@@ -361,7 +361,8 @@ fn cleanup(ctx, reason) { write_file(join_path(RECIPE_DIR, "budget-cleanup"), re
     );
     let output = run_recipe(&["install", "budget-build", "--no-persist-ctx"], &recipes);
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("operations"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("operations"), "{stderr}");
     assert!(!recipes.join("unexpected-install").exists());
     assert_eq!(
         std::fs::read_to_string(recipes.join("budget-cleanup")).unwrap(),
