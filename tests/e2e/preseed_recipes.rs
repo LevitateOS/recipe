@@ -21,6 +21,15 @@ fn preseed_command(recipes: &Path, recipe: &str, action: &str) -> Command {
 
 fn prepare_assets(recipes: &Path, recipe: &str) -> serde_json::Value {
     let path = recipes.join(format!("{recipe}.rhai"));
+    let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../distro-builder/recipes");
+    std::fs::create_dir_all(recipes.join("sources")).unwrap();
+    for distro in ["alpine", "fedora"] {
+        std::fs::copy(
+            source_root.join(format!("sources/{distro}.rhai")),
+            recipes.join(format!("sources/{distro}.rhai")),
+        )
+        .unwrap();
+    }
     let source = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../distro-builder/recipes")
         .join(format!("{recipe}.rhai"));
@@ -39,7 +48,12 @@ fn prepare_assets(recipes: &Path, recipe: &str) -> serde_json::Value {
     } else {
         vec![("iso_path", "sha256")]
     };
-    let mut script = std::fs::read_to_string(&path).unwrap();
+    let facts_path = recipes.join(if alpine {
+        "sources/alpine.rhai"
+    } else {
+        "sources/fedora.rhai"
+    });
+    let mut facts = std::fs::read_to_string(&facts_path).unwrap();
     // Small synthetic inputs replace only package checksum facts. All lifecycle
     // and verification code comes from the actual repository recipe.
     for (path_field, hash_field) in fields {
@@ -48,10 +62,10 @@ fn prepare_assets(recipes: &Path, recipe: &str) -> serde_json::Value {
         let bytes = format!("verified fixture for {path_field}");
         std::fs::write(asset, &bytes).unwrap();
         let digest = format!("{:x}", Sha256::digest(bytes.as_bytes()));
-        script = script.replace(ctx[hash_field].as_str().unwrap(), &digest);
+        facts = facts.replace(ctx[hash_field].as_str().unwrap(), &digest);
         ctx[hash_field] = serde_json::Value::String(digest);
     }
-    std::fs::write(&path, script).unwrap();
+    std::fs::write(facts_path, facts).unwrap();
     let iso_size = std::fs::metadata(ctx["iso_path"].as_str().unwrap())
         .unwrap()
         .len();
@@ -145,6 +159,25 @@ fn cli_preseed_installed_checks_honor_refresh_before_cache_hit() {
 }
 
 #[test]
+fn cli_shared_preseed_markers_handle_quoted_asset_paths() {
+    for recipe in ["alpine-preseed-source-assets", "fedora-preseed-iso"] {
+        let dir = tempfile::Builder::new()
+            .prefix("recipe 'quoted' $(touch INJECTED) ")
+            .tempdir()
+            .unwrap();
+        let recipes = dir.path().join("recipes");
+        std::fs::create_dir(&recipes).unwrap();
+        prepare_assets(&recipes, recipe);
+        let output = preseed_command(&recipes, recipe, "isinstalled")
+            .output()
+            .unwrap();
+        assert_success(&output);
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap();
+        assert!(!dir.path().join("INJECTED").exists());
+    }
+}
+
+#[test]
 fn cli_rootfs_consumers_reject_changed_cache_and_staged_assets() {
     for (producer, consumer, fields, marker) in [
         (
@@ -188,19 +221,14 @@ fn cli_rootfs_consumers_reject_changed_cache_and_staged_assets() {
         let output = command("cleanup").output().unwrap();
         assert_success(&output);
         let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        let mut script = std::fs::read_to_string(&recipe_path).unwrap();
         let mut assets = Vec::new();
-        for (producer_field, cache_field, hash_field) in fields {
-            script = script.replace(
-                ctx[hash_field].as_str().unwrap(),
-                producer_ctx[hash_field].as_str().unwrap(),
-            );
+        // Both recipes import the same fixture checksum facts.
+        for (producer_field, cache_field, _hash_field) in fields {
             let cache_path = std::path::PathBuf::from(ctx[cache_field].as_str().unwrap());
             std::fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
             std::fs::copy(producer_ctx[producer_field].as_str().unwrap(), &cache_path).unwrap();
             assets.push(cache_path);
         }
-        std::fs::write(&recipe_path, script).unwrap();
         std::fs::copy(
             Path::new(producer_ctx["trust_dir"].as_str().unwrap()).join(marker),
             Path::new(ctx["trust_dir"].as_str().unwrap()).join(marker),
