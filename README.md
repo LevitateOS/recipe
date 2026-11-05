@@ -162,6 +162,9 @@ Recipes use a `ctx` map for state.
 - `const RECIPE_API = 2;` opts into initialization once per invocation and checks returning `ready(ctx)` or `needs_work(ctx, reason)`. API 2 preserves imports and rechecks custom readiness after successful phases. See [the author guide](WRITING_RECIPES.md#api-2-initialization-and-readiness) for the implemented migration scope.
 - Phase functions (`acquire/build/install/remove/cleanup`) take `ctx` and return an updated `ctx`.
 - API 2 supplies engine-owned `ctx.runtime` (also `RUNTIME` during setup), plus `ctx.state` and `ctx.outputs` maps. Target selection, durable state, and publication integration remain in progress.
+- `--define KEY=VALUE` and cleanup `--reason` cross the worker boundary using transport v3. Unsupported managed autofix/LLM-profile options fail explicitly.
+- `--input NAME=PATH` imports an explicitly selected file or source tree read-only at `/inputs/NAME`. Tree imports omit root `.git` and `target`, reject symlinks and credential-bearing names, and retain input size/count bounds. The library equivalent is `RecipeEngine::add_input`. A host path in a define does not import that path.
+- Literal imports and `deps`/`build_deps` declarations are discovered without executing Rhai on the coordinator. Nested module paths are preserved; dynamic imports/dependency declarations fail preparation with guidance.
 - Omit `cleanup` when no recipe-specific cleanup is needed. A defined hook must accept `(ctx, reason)` and return `ctx`. Errors after a successful phase fail the command; errors during failure cleanup are reported while preserving the primary failure.
 
 Minimal example:

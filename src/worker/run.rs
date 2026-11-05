@@ -481,25 +481,43 @@ impl PreparedModules {
     fn path(&self, source: Option<&str>, path: &str) -> PathBuf {
         let reference = Path::new(path).with_extension("rhai");
         if let Some(parent) = source.and_then(|name| Path::new(name).parent()) {
-            let parent = if parent.is_absolute() { parent.to_path_buf() } else { self.root.join(parent) };
+            let parent = if parent.is_absolute() {
+                parent.to_path_buf()
+            } else {
+                self.root.join(parent)
+            };
             let candidate = parent.join(&reference);
-            if candidate.is_file() { return candidate; }
+            if candidate.is_file() {
+                return candidate;
+            }
         }
         self.root.join(reference)
     }
 }
 
 impl rhai::ModuleResolver for PreparedModules {
-    fn resolve(&self, engine: &rhai::Engine, source: Option<&str>, path: &str, pos: rhai::Position)
-        -> Result<rhai::Shared<rhai::Module>, Box<rhai::EvalAltResult>> {
+    fn resolve(
+        &self,
+        engine: &rhai::Engine,
+        source: Option<&str>,
+        path: &str,
+        pos: rhai::Position,
+    ) -> Result<rhai::Shared<rhai::Module>, Box<rhai::EvalAltResult>> {
         let full = self.path(source, path);
-        self.files.resolve(engine, source, &full.to_string_lossy(), pos)
+        self.files
+            .resolve(engine, source, &full.to_string_lossy(), pos)
     }
-    fn resolve_raw(&self, engine: &rhai::Engine, global: &mut rhai::GlobalRuntimeState,
-        scope: &mut rhai::Scope, path: &str, pos: rhai::Position)
-        -> Result<rhai::Shared<rhai::Module>, Box<rhai::EvalAltResult>> {
+    fn resolve_raw(
+        &self,
+        engine: &rhai::Engine,
+        global: &mut rhai::GlobalRuntimeState,
+        scope: &mut rhai::Scope,
+        path: &str,
+        pos: rhai::Position,
+    ) -> Result<rhai::Shared<rhai::Module>, Box<rhai::EvalAltResult>> {
         let full = self.path(global.source(), path);
-        self.files.resolve_raw(engine, global, scope, &full.to_string_lossy(), pos)
+        self.files
+            .resolve_raw(engine, global, scope, &full.to_string_lossy(), pos)
     }
 }
 

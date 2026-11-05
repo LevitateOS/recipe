@@ -159,6 +159,7 @@ impl Backend {
         search_path: Option<&Path>,
         persist_ctx: bool,
         options: crate::worker::protocol::InvocationOptions,
+        inputs: &[crate::inputs::ExtraInput],
         _host_op: impl FnOnce() -> Result<rhai::Map>,
     ) -> Result<rhai::Map> {
         match self {
@@ -167,7 +168,7 @@ impl Backend {
                     .validate()
                     .context("backend startup failure: invalid invocation options")?;
                 let prepared =
-                    crate::inputs::prepare_invocation(recipe, operation, search_path, &[], &[])
+                    crate::inputs::prepare_invocation(recipe, operation, search_path, inputs, &[])
                         .map_err(|err| {
                             anyhow!(
                                 "backend startup failure: ginux input preparation failed for \

@@ -148,6 +148,7 @@ pub struct RecipeEngine {
     recipes_path: Option<PathBuf>,
     /// User-defined scope constants (injected via --define KEY=VALUE)
     defines: Vec<(String, String)>,
+    inputs: Vec<inputs::ExtraInput>,
     persist_ctx: bool,
     llm_profile: Option<String>,
     autofix: Option<AutoFixConfig>,
@@ -166,6 +167,7 @@ impl RecipeEngine {
             build_dir,
             recipes_path: None,
             defines: Vec::new(),
+            inputs: Vec::new(),
             persist_ctx: true,
             llm_profile: None,
             autofix: None,
@@ -227,6 +229,12 @@ impl RecipeEngine {
         self.defines.push((key, value));
     }
 
+    /// Import an explicitly selected file or source tree read-only under /inputs.
+    /// Tree imports exclude root .git and target metadata; symlinks are rejected.
+    pub fn add_input(&mut self, name: String, path: PathBuf) {
+        self.inputs.push(inputs::ExtraInput { name, path });
+    }
+
     /// Execute a recipe script (install a package)
     ///
     /// Follows the package lifecycle:
@@ -244,6 +252,7 @@ impl RecipeEngine {
             self.recipes_path.as_deref(),
             self.persist_ctx,
             self.invocation_options("manual")?,
+            &self.inputs,
             || {
                 llm::with_llm_profile(self.llm_profile.as_deref(), || {
                     if let Some(autofix) = self.autofix.as_ref() {
@@ -288,6 +297,7 @@ impl RecipeEngine {
             self.recipes_path.as_deref(),
             self.persist_ctx,
             self.invocation_options("manual")?,
+            &self.inputs,
             || {
                 llm::with_llm_profile(self.llm_profile.as_deref(), || {
                     core::executor::remove(
@@ -319,6 +329,7 @@ impl RecipeEngine {
             self.recipes_path.as_deref(),
             self.persist_ctx,
             self.invocation_options(reason)?,
+            &self.inputs,
             || {
                 llm::with_llm_profile(self.llm_profile.as_deref(), || {
                     core::executor::cleanup(
@@ -343,6 +354,7 @@ impl RecipeEngine {
             self.recipes_path.as_deref(),
             self.persist_ctx,
             self.invocation_options("manual")?,
+            &self.inputs,
             || {
                 llm::with_llm_profile(self.llm_profile.as_deref(), || {
                     core::executor::is_installed(
@@ -365,6 +377,7 @@ impl RecipeEngine {
             self.recipes_path.as_deref(),
             self.persist_ctx,
             self.invocation_options("manual")?,
+            &self.inputs,
             || {
                 llm::with_llm_profile(self.llm_profile.as_deref(), || {
                     core::executor::is_built(
@@ -387,6 +400,7 @@ impl RecipeEngine {
             self.recipes_path.as_deref(),
             self.persist_ctx,
             self.invocation_options("manual")?,
+            &self.inputs,
             || {
                 llm::with_llm_profile(self.llm_profile.as_deref(), || {
                     core::executor::is_acquired(

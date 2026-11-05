@@ -32,6 +32,10 @@ pub(crate) struct Cli {
     #[arg(short, long = "define", global = true, value_name = "KEY=VALUE")]
     pub(crate) defines: Vec<String>,
 
+    /// Import NAME=PATH as read-only /inputs/NAME; trees exclude root .git and target.
+    #[arg(long = "input", global = true, value_name = "NAME=PATH")]
+    pub(crate) inputs: Vec<String>,
+
     /// Write final ctx JSON to a file instead of stdout; useful when scripting around recipe output.
     #[arg(long, global = true)]
     pub(crate) json_output: Option<PathBuf>,

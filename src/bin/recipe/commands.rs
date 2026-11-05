@@ -48,6 +48,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 cli.build_dir.as_deref(),
                 Some(&recipes_path),
                 &cli.defines,
+                &cli.inputs,
                 cli.no_persist_ctx,
                 cli.llm_profile.clone(),
                 autofix_cfg,
@@ -63,6 +64,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 cli.build_dir.as_deref(),
                 Some(&recipes_path),
                 &cli.defines,
+                &cli.inputs,
                 cli.no_persist_ctx,
                 cli.llm_profile.clone(),
                 None,
@@ -78,6 +80,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 cli.build_dir.as_deref(),
                 Some(&recipes_path),
                 &cli.defines,
+                &cli.inputs,
                 cli.no_persist_ctx,
                 cli.llm_profile.clone(),
                 None,
@@ -98,6 +101,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 cli.build_dir.as_deref(),
                 Some(&recipes_path),
                 &cli.defines,
+                &cli.inputs,
                 cli.no_persist_ctx,
                 cli.llm_profile.clone(),
                 None,
@@ -113,6 +117,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 cli.build_dir.as_deref(),
                 Some(&recipes_path),
                 &cli.defines,
+                &cli.inputs,
                 cli.no_persist_ctx,
                 cli.llm_profile.clone(),
                 None,
@@ -128,6 +133,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 cli.build_dir.as_deref(),
                 Some(&recipes_path),
                 &cli.defines,
+                &cli.inputs,
                 cli.no_persist_ctx,
                 cli.llm_profile.clone(),
                 None,
@@ -200,6 +206,7 @@ fn create_engine(
     build_dir: Option<&Path>,
     recipes_path: Option<&Path>,
     defines: &[String],
+    inputs: &[String],
     no_persist_ctx: bool,
     llm_profile: Option<String>,
     autofix: Option<AutoFixConfig>,
@@ -234,6 +241,16 @@ fn create_engine(
         } else {
             anyhow::bail!("Invalid --define format: '{}' (expected KEY=VALUE)", define);
         }
+    }
+
+    for input in inputs {
+        let (name, path) = input
+            .split_once('=')
+            .context("--input requires NAME=PATH")?;
+        if name.is_empty() || path.is_empty() {
+            anyhow::bail!("--input requires nonempty NAME=PATH");
+        }
+        engine.add_input(name.to_owned(), PathBuf::from(path));
     }
 
     Ok(engine)

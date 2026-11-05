@@ -52,7 +52,7 @@ pub struct StagedInput {
     pub referenced_as: String,
 }
 
-/// Caller-declared asset, source-closure, or cache file: `NAME=host-path`.
+/// Caller-declared asset, source-closure, or cache file/tree: `NAME=host-path`.
 #[derive(Debug, Clone)]
 pub struct ExtraInput {
     /// Relative domain name; validated like every other input name.
@@ -104,7 +104,36 @@ pub fn discover_inputs(
     collector.collect_related(&recipe_canonical, MAIN_NAME, &recipe_source, 0)?;
 
     for extra in extra_inputs {
-        collector.stage_named(&extra.name, &extra.path, &extra.name)?;
+        validate_input_name(&extra.name)?;
+        let meta = std::fs::symlink_metadata(&extra.path)?;
+        if meta.is_dir() {
+            for entry in walkdir::WalkDir::new(&extra.path)
+                .follow_links(false)
+                .sort_by_file_name()
+                .into_iter()
+                .filter_entry(|entry| {
+                    entry.depth() != 1
+                        || !matches!(entry.file_name().to_str(), Some(".git" | "target"))
+                })
+            {
+                let entry = entry
+                    .context("input preparation failure: cannot traverse declared input tree")?;
+                if entry.file_type().is_dir() {
+                    continue;
+                }
+                let relative = entry.path().strip_prefix(&extra.path)?;
+                let name = format!(
+                    "{}/{}",
+                    extra.name,
+                    relative
+                        .to_str()
+                        .context("input preparation failure: non-Unicode source name")?
+                );
+                collector.stage_named(&name, entry.path(), &name)?;
+            }
+        } else {
+            collector.stage_named(&extra.name, &extra.path, &extra.name)?;
+        }
         if let Ok(canonical) = extra.path.canonicalize() {
             collector.note_host_dir(&canonical);
         }

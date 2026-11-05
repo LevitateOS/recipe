@@ -269,6 +269,7 @@ fn is_installed(ctx) {
     if is_file(join_path(RUNTIME.paths.tools, "dependency-evidence")) { return ready(ctx); }
     needs_work(ctx, "helper missing")
 }
+
 fn install(ctx) { write_file(join_path(RUNTIME.paths.tools, "dependency-evidence"), "dependency ran"); ctx }
 "#).unwrap();
     let source = r#"
@@ -299,6 +300,48 @@ fn install(ctx) {
         std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
         source
     );
+}
+
+#[test]
+fn managed_declared_source_tree_is_readonly_and_rejects_symlinks() {
+    let (dir, recipes) = create_test_env();
+    let source = dir.path().join("source");
+    std::fs::create_dir_all(source.join("nested")).unwrap();
+    std::fs::write(source.join("nested/value"), "declared input").unwrap();
+    write_recipe(
+        &recipes,
+        "check",
+        r#"
+const RECIPE_API = 2;
+let ctx = #{name: "source-input"};
+fn is_installed(ctx) {
+    ctx.value = read_file("/inputs/source/nested/value");
+    let denied = false;
+    try { write_file("/inputs/source/nested/value", "changed"); } catch (error) { denied = true; }
+    if !denied { throw "input accepted mutation"; }
+    ready(ctx)
+}
+"#,
+    );
+    let selection = format!("source={}", source.display());
+    let output = managed_command(&recipes, "isinstalled")
+        .args(["--input", &selection])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(context["value"], "declared input");
+    assert_eq!(
+        std::fs::read_to_string(source.join("nested/value")).unwrap(),
+        "declared input"
+    );
+    std::os::unix::fs::symlink(source.join("nested/value"), source.join("alias")).unwrap();
+    let rejected = managed_command(&recipes, "isinstalled")
+        .args(["--input", &selection])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("symlink"));
 }
 
 #[test]
