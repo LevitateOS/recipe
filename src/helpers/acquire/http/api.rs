@@ -228,6 +228,13 @@ fn github_download_release_impl(
         .get("name")
         .and_then(|n| n.as_str())
         .ok_or("Asset missing name")?;
+    if Path::new(asset_name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some(asset_name)
+    {
+        return Err(format!("Unsafe GitHub asset filename: {}", asset_name).into());
+    }
     let download_url = asset
         .get("browser_download_url")
         .and_then(|u| u.as_str())
@@ -243,10 +250,7 @@ fn github_download_release_impl(
         .call()
         .map_err(|e| format!("Download failed: {}", e))?;
 
-    let mut reader = response.into_reader();
-    let mut file =
-        std::fs::File::create(&dest_path).map_err(|e| format!("Failed to create file: {}", e))?;
-    std::io::copy(&mut reader, &mut file).map_err(|e| format!("Failed to write file: {}", e))?;
+    super::super::download::save_response(response, &dest_path, asset_name)?;
 
     output::detail(&format!("downloaded {}", asset_name));
     Ok(dest_path.to_string_lossy().to_string())

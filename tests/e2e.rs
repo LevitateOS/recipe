@@ -81,3 +81,5 @@ mod query;
 mod archives;
 #[path = "e2e/kernel_recipes.rs"]
 mod kernel_recipes;
+#[path = "e2e/downloads.rs"]
+mod downloads;
