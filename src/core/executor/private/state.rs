@@ -1,4 +1,4 @@
-use super::context::CheckpointPoint;
+use super::context::{CheckpointPoint, ExecutionContext};
 use crate::core::executor::CompiledRecipe;
 use crate::core::invocation::Runtime;
 use crate::core::{build_deps, ctx};
@@ -111,11 +111,13 @@ pub(crate) fn resolve_deps(
     defines: &[(String, String)],
     dep_names: &[String],
     autofix: Option<&crate::AutoFixConfig>,
+    persist_enabled: bool,
+    exec: &mut ExecutionContext<'_>,
 ) -> Result<EnvRestoreGuard> {
     let original_path = std::env::var("PATH").unwrap_or_default();
-    let mut resolver =
+    let resolver =
         build_deps::BuildDepsResolver::new(engine, build_dir, search_path, defines, autofix);
-    let tools_prefix = resolver.resolve_and_install(dep_names)?;
+    let tools_prefix = resolver.resolve_with_context(dep_names, persist_enabled, exec)?;
 
     // Safety: we're single-threaded during recipe execution
     unsafe {

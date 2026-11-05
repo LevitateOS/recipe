@@ -60,8 +60,17 @@ Unversioned recipes retain top-level reevaluation and deliberate throw as the
 needs-work signal. Interpreter and native-helper errors fail execution. Native
 errors remain catchable in Rhai. Unsupported API versions fail before setup.
 .PP
-Source-based persistence and the acquire/install-only dependency runner remain
-pending migration.
+Source-based persistence remains pending migration. Dependencies now use the
+common install executor, including build hooks, transitive dependencies, custom
+readiness, cleanup, and retry policy. They share one tools prefix with separate
+work directories; canonical source paths detect cycles before another lock or
+evaluation. Dependency declarations must be arrays of relative recipe names.
+.PP
+Transport v1 cannot represent separate dependency checkpoints. Persistent
+dependency execution fails before dependency setup; use \fB--no-persist-ctx\fR
+for explicitly non-resumable execution. Dependency sources are never rewritten
+or serialized as the parent's state. R07 state integration, dependency input
+staging, and actual managed execution/recovery remain outstanding.
 .SH API 2 CONTEXT NAMESPACES
 The engine supplies \fBRUNTIME\fR before top-level setup and attaches the same
 values as \fBctx.runtime\fR before checks and hooks. This namespace contains

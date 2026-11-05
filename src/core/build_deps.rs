@@ -1,35 +1,21 @@
-//! Build dependency resolution for recipes
+//! Recipe dependencies use the same lifecycle executor as their parent.
 //!
-//! When a recipe declares `let build_deps = ["linux-deps"];`, the executor
-//! resolves each dep by finding `{name}.rhai` in the recipes search path,
-//! executing it to install tools into `BUILD_DIR/.tools/`, then prepending
-//! `.tools/` bin dirs to PATH before the build phase.
+//! One invocation shares a tools prefix, disambiguates dependency work paths,
+//! and detects cycles by canonical recipe path before locking or evaluation.
 
-use super::invocation::Runtime;
+use super::executor::{ExecutionContext, InstallAttemptError, install_with_context};
 use super::output;
-use super::runner;
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, bail};
 use rhai::Engine;
-use std::fs;
-use std::path::{Path, PathBuf};
+use sha2::{Digest, Sha256};
+use std::path::{Component, Path, PathBuf};
 
-#[derive(Debug)]
-enum DepAttemptError {
-    Fatal(anyhow::Error),
-    Phase {
-        reason: &'static str,
-        phase: &'static str,
-        error: anyhow::Error,
-    },
-}
-
-/// Resolves and installs build dependencies into a `.tools/` prefix.
+/// Resolves dependency recipes into an invocation's shared tools destination.
 pub struct BuildDepsResolver<'a> {
     engine: &'a Engine,
     build_dir: &'a Path,
     recipes_path: Option<&'a Path>,
     defines: &'a [(String, String)],
-    execution_stack: Vec<String>,
     autofix: Option<crate::AutoFixConfig>,
 }
 
@@ -46,310 +32,97 @@ impl<'a> BuildDepsResolver<'a> {
             build_dir,
             recipes_path,
             defines,
-            execution_stack: Vec::new(),
             autofix: autofix.cloned(),
         }
     }
 
-    /// Resolve and install all build deps, returning the `.tools/` prefix path.
-    pub fn resolve_and_install(&mut self, deps: &[String]) -> Result<PathBuf> {
-        let tools_prefix = self.build_dir.join(".tools");
-
-        for dep in deps {
-            if self.execution_stack.contains(dep) {
-                anyhow::bail!(
-                    "Circular build dependency detected: {} -> {}",
-                    self.execution_stack.join(" -> "),
-                    dep
-                );
+    pub(crate) fn resolve_with_context(
+        &self,
+        deps: &[String],
+        persist_enabled: bool,
+        exec: &mut ExecutionContext<'_>,
+    ) -> Result<PathBuf> {
+        exec.require_dependency_policy(persist_enabled)?;
+        exec.prepare_work_root(self.build_dir);
+        let tools_prefix = exec.tools_prefix()?;
+        for name in deps {
+            exec.prepare_work_root(self.build_dir);
+            let recipe_path = self.find_recipe(name, exec.current_recipe())?;
+            // Path hashing separates equal recipe names in different directories.
+            // It is local work disambiguation, not the durable S3 input identity.
+            let digest = format!(
+                "{:x}",
+                Sha256::digest(recipe_path.as_os_str().as_encoded_bytes())
+            );
+            let stem = recipe_path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy();
+            let dep_build_dir = exec
+                .work_root()?
+                .join(".deps")
+                .join(format!("{stem}-{}", &digest[..16]));
+            std::fs::create_dir_all(&dep_build_dir)
+                .with_context(|| format!("creating dependency work directory for '{name}'"))?;
+            output::hook_event(
+                name,
+                "dependency.prepare",
+                "requested",
+                "executing shared recipe lifecycle",
+            );
+            match install_with_context(
+                self.engine,
+                &dep_build_dir,
+                &recipe_path,
+                self.defines,
+                persist_enabled,
+                self.recipes_path,
+                self.autofix.as_ref(),
+                exec,
+            ) {
+                Ok(_) => output::hook_event(
+                    name,
+                    "dependency.ready",
+                    "success",
+                    "tool dependency prepared",
+                ),
+                Err(
+                    InstallAttemptError::Fatal(error) | InstallAttemptError::Phase { error, .. },
+                ) => {
+                    return Err(error)
+                        .with_context(|| format!("preparing dependency recipe '{name}'"));
+                }
             }
-            self.execution_stack.push(dep.clone());
-            self.install_dep(dep, &tools_prefix)?;
-            self.execution_stack.pop();
         }
-
         Ok(tools_prefix)
     }
 
-    /// Find and execute a single dep recipe.
-    fn install_dep(&self, name: &str, tools_prefix: &Path) -> Result<()> {
-        let recipe_path = self.find_recipe(name)?;
-
-        let max_attempts = self
-            .autofix
-            .as_ref()
-            .map(|c| c.attempts as usize)
-            .unwrap_or(0);
-
-        for attempt in 0..=max_attempts {
-            match self.install_dep_once(name, tools_prefix, &recipe_path) {
-                Ok(()) => return Ok(()),
-                Err(DepAttemptError::Fatal(e)) => return Err(e),
-                Err(DepAttemptError::Phase {
-                    reason,
-                    phase,
-                    error,
-                }) => {
-                    let Some(cfg) = self.autofix.as_ref() else {
-                        return Err(error);
-                    };
-                    if attempt >= max_attempts {
-                        return Err(error);
-                    }
-
-                    output::warning(&format!(
-                        "[autofix] recipe dependency {name} failed ({reason} in {phase}); running LLM (attempt {}/{})",
-                        attempt + 1,
-                        max_attempts
-                    ));
-
-                    let failure = format!("{error:#}");
-                    super::autofix::run_and_apply(
-                        cfg,
-                        &recipe_path,
-                        self.recipes_path,
-                        self.defines,
-                        reason,
-                        &failure,
-                    )
-                    .with_context(|| {
-                        format!("autofix failed for recipe dependency {name} ({reason} in {phase})")
-                    })?;
-                }
-            }
-        }
-
-        unreachable!("attempt loop returns on success or final failure");
-    }
-
-    fn install_dep_once(
-        &self,
-        name: &str,
-        tools_prefix: &Path,
-        recipe_path: &Path,
-    ) -> std::result::Result<(), DepAttemptError> {
-        let compiled = super::executor::compile_recipe(self.engine, recipe_path, self.recipes_path)
-            .map_err(DepAttemptError::Fatal)?;
-        let ast = compiled.ast;
-        let has_cleanup = runner::cleanup_available(&ast).map_err(DepAttemptError::Fatal)?;
-        let base_dir = compiled.base_dir;
-
-        let dep_build_dir = self.build_dir.join(format!(".deps/{}", name));
-        fs::create_dir_all(&dep_build_dir)
-            .with_context(|| format!("Failed to create dep build dir for {}", name))
-            .map_err(DepAttemptError::Fatal)?;
-
-        let scope = super::invocation::scope(
-            &compiled.recipe_path,
-            base_dir.as_deref(),
-            Some(&dep_build_dir),
-            Some(tools_prefix),
-            self.defines,
-        );
-
-        let mut scope = Runtime::new(self.engine, &ast, scope, "install", false)
-            .map_err(DepAttemptError::Fatal)?;
-
-        let mut ctx_map: rhai::Map = scope.scope().get_value("ctx").ok_or_else(|| {
-            DepAttemptError::Fatal(anyhow!("Dependency recipe {} missing ctx", name))
-        })?;
-
-        // Check if already installed
-        let needs_install = match scope
-            .check("is_installed", &ctx_map)
-            .map_err(DepAttemptError::Fatal)?
+    fn find_recipe(&self, name: &str, parent_recipe: Option<&Path>) -> Result<PathBuf> {
+        let name_path = Path::new(name);
+        if name_path.as_os_str().is_empty()
+            || name_path
+                .components()
+                .any(|part| !matches!(part, Component::Normal(_)))
         {
-            super::invocation::Readiness::Ready(_) => false,
-            super::invocation::Readiness::NeedsWork(ctx, _) => {
-                ctx_map = ctx;
-                true
-            }
-        };
-        if !needs_install {
-            output::hook_event(
-                name,
-                "dependency.check.is_installed",
-                "satisfied",
-                "dependency already prepared",
+            bail!(
+                "Dependency name '{name}' must be a nonempty relative recipe name without parent traversal"
             );
-            output::skip(&format!("Tool dependency {} already prepared", name));
-            return Ok(());
         }
-
-        output::action(&format!("Preparing tool recipe: {}", name));
-        output::hook_event(
-            name,
-            "dependency.prepare",
-            "requested",
-            "tool recipe execution requested",
-        );
-
-        // Run acquire → install (simplified, no locking or persistence)
-        let needs_acquire = match scope
-            .check("is_acquired", &ctx_map)
-            .map_err(DepAttemptError::Fatal)?
+        let filename = format!("{name}.rhai");
+        for directory in parent_recipe
+            .and_then(Path::parent)
+            .into_iter()
+            .chain(self.recipes_path)
         {
-            super::invocation::Readiness::Ready(ctx) => {
-                ctx_map = ctx;
-                false
-            }
-            super::invocation::Readiness::NeedsWork(ctx, _) => {
-                ctx_map = ctx;
-                true
-            }
-        };
-
-        let mut ctx = ctx_map;
-        if needs_acquire && runner::has_fn(&ast, "acquire") {
-            output::sub_action("acquire");
-            output::detail("Preparing tool sources");
-            output::hook_event(
-                name,
-                "dependency.acquire",
-                "running",
-                "executing dependency acquire hook",
-            );
-            let ctx_before = ctx.clone();
-            match runner::run_phase(&ast, &mut scope, "acquire", ctx) {
-                Ok(new_ctx) => {
-                    ctx = new_ctx;
-                    output::hook_event(
-                        name,
-                        "dependency.acquire",
-                        "success",
-                        "acquire hook finished",
-                    );
-                    output::success(&format!("{}: source prep step finished", name));
-                    if has_cleanup {
-                        ctx = runner::run_cleanup(
-                            &ast,
-                            &mut scope,
-                            ctx,
-                            "auto.acquire.success",
-                            false,
-                        )
-                        .with_context(|| format!("tool dependency {name} cleanup failed"))
-                        .map_err(DepAttemptError::Fatal)?;
-                    }
-                }
-                Err(e) => {
-                    output::hook_event(name, "dependency.acquire", "failed", &format!("{e}"));
-                    output::error(&format!("{}: source prep step failed", name));
-                    output::detail(&format!("  reason: {e}"));
-                    output::detail(
-                        "  action: fix acquire() in dependency recipe and rerun with RECIPE_TRACE_HELPERS=1",
-                    );
-                    if has_cleanup {
-                        let _ = runner::run_cleanup(
-                            &ast,
-                            &mut scope,
-                            ctx_before,
-                            "auto.acquire.failure",
-                            true,
-                        );
-                    }
-                    return Err(DepAttemptError::Phase {
-                        reason: "auto.acquire.failure",
-                        phase: "acquire",
-                        error: anyhow!("tool dependency {} source prep failed: {}", name, e),
-                    });
-                }
+            let candidate = directory.join(&filename);
+            if candidate.is_file() {
+                return candidate
+                    .canonicalize()
+                    .with_context(|| format!("resolving dependency '{name}'"));
             }
         }
-
-        if runner::has_fn(&ast, "install") {
-            output::sub_action("install");
-            output::detail("Applying tool recipe outputs");
-            output::hook_event(
-                name,
-                "dependency.install",
-                "running",
-                "executing dependency install hook",
-            );
-            let ctx_before = ctx.clone();
-            match runner::run_phase(&ast, &mut scope, "install", ctx) {
-                Ok(new_ctx) => {
-                    ctx = new_ctx;
-                    output::hook_event(
-                        name,
-                        "dependency.install",
-                        "success",
-                        "install hook finished",
-                    );
-                    output::success(&format!("{}: install step finished", name));
-                    if has_cleanup {
-                        ctx = runner::run_cleanup(
-                            &ast,
-                            &mut scope,
-                            ctx,
-                            "auto.install.success",
-                            false,
-                        )
-                        .with_context(|| format!("tool dependency {name} cleanup failed"))
-                        .map_err(DepAttemptError::Fatal)?;
-                    }
-                }
-                Err(e) => {
-                    output::hook_event(name, "dependency.install", "failed", &format!("{e}"));
-                    output::error(&format!("{}: install step failed", name));
-                    output::detail(&format!("  reason: {e}"));
-                    output::detail("  action: fix install() in dependency recipe and rerun.");
-                    if has_cleanup {
-                        let _ = runner::run_cleanup(
-                            &ast,
-                            &mut scope,
-                            ctx_before,
-                            "auto.install.failure",
-                            true,
-                        );
-                    }
-                    return Err(DepAttemptError::Phase {
-                        reason: "auto.install.failure",
-                        phase: "install",
-                        error: anyhow!("tool dependency {} install failed: {}", name, e),
-                    });
-                }
-            }
-        }
-
-        if scope.is_api2() && runner::has_fn(&ast, "is_installed") {
-            if let Err(error) = runner::verify_phase(&mut scope, "is_installed", &ctx) {
-                if has_cleanup {
-                    let _ =
-                        runner::run_cleanup(&ast, &mut scope, ctx, "auto.install.failure", true);
-                }
-                return Err(DepAttemptError::Phase {
-                    reason: "auto.install.failure",
-                    phase: "is_installed",
-                    error,
-                });
-            }
-        }
-
-        output::hook_event(
-            name,
-            "dependency.ready",
-            "success",
-            "tool dependency prepared",
-        );
-        output::success(&format!("Tool dependency {} ready", name));
-        Ok(())
-    }
-
-    /// Find a recipe file by name in the search path.
-    fn find_recipe(&self, name: &str) -> Result<PathBuf> {
-        let filename = format!("{}.rhai", name);
-
-        if let Some(sp) = self.recipes_path {
-            let candidate = sp.join(&filename);
-            if candidate.exists() {
-                return Ok(candidate);
-            }
-        }
-
-        anyhow::bail!(
-            "Dependency recipe '{}' not found (search_path: {:?})",
-            filename,
+        bail!(
+            "Dependency recipe '{filename}' not found (parent: {parent_recipe:?}, search_path: {:?})",
             self.recipes_path
         )
     }

@@ -76,8 +76,9 @@ Unversioned recipes retain top-level reevaluation before hooks and the legacy
 helpers fail execution. Native helper errors remain catchable with Rhai
 `try/catch`, allowing an author to handle a known condition explicitly.
 
-Source-based ctx persistence and the dependency runner's acquire/install-only
-behavior remain pending migration; API 2 does not imply they are done.
+Source-based ctx persistence remains pending migration. Dependency lifecycles now
+share the install executor; managed execution and per-dependency durable state
+still require integration, as described in the dependency section below.
 
 ### Engine-owned invocation inputs
 
@@ -549,8 +550,9 @@ let build_deps = ["meson", "ninja"];
   recipe execution
 - `build_deps` are resolved only if build is still needed after checks
 - `build_deps` are added to `PATH` only for the actual build portion
-- dependency recipes are found by name as `<name>.rhai` under `--recipes-path`
-- tools are installed into `BUILD_DIR/.tools`
+- dependency recipes are found as `<name>.rhai`, beside the requesting recipe
+  first and then under `--recipes-path`; names cannot escape through `..`
+- all transitive dependencies share the invocation's `BUILD_DIR/.tools`
 - tool paths are prepended as `.tools/{usr/bin,usr/sbin,bin,sbin}`
 
 That means your main recipe normally just calls the tool by name:
@@ -565,17 +567,27 @@ fn build(ctx) {
 
 ### How Dependency Recipes Run
 
-Dependency recipes are executed differently from normal recipes:
+Dependency recipes use the same install executor, readiness rules, build hook,
+cleanup handling, and retry policy as their parent. They can declare their own
+`deps` and `build_deps`. Successful checks carry discovered context forward.
+Installed tools are checked again when another graph branch needs them; the
+resolver does not replace custom readiness with a remembered success flag.
 
-- their `BUILD_DIR` becomes `BUILD_DIR/.deps/<dep-name>`
-- they get `TOOLS_PREFIX`
-- they do not use normal per-recipe ctx persistence
-- they do not take the normal recipe lock
-- they use a simplified flow: `is_installed` -> optional `is_acquired` /
-  `acquire` -> `install`
+Each dependency gets a separate work directory under the invocation's
+`BUILD_DIR/.deps/<recipe-stem>-<path-hash>`. This hash disambiguates source paths;
+it is not durable build identity. `TOOLS_PREFIX` and API 2's runtime tools path
+refer to the shared tools destination, including for transitive dependencies.
+Cycles are checked by canonical source path before taking another lock or
+evaluating that recipe. Dependency depth is bounded to 64 active recipes.
 
-Tool recipes use the same optional cleanup and error handling as top-level
-recipes. Return updated context from any defined cleanup hook.
+The current v1 worker protocol cannot identify separate dependency snapshots.
+Use `--no-persist-ctx` for explicitly non-resumable dependency execution. Persistent
+dependency execution fails before dependency setup until the R07 state contract
+is integrated. Dependency sources are never rewritten, and dependency contexts
+are never sent as the parent's v1 checkpoint. In non-persistent mode, parent
+checkpoints still report normally; dependency phases have no durable state/ack
+association yet. This common executor code is compiled, but managed dependency
+execution, closure staging, and durable recovery still require Ginux integration.
 
 ### Environment Fixups for Tool Recipes
 

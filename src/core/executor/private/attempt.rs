@@ -86,6 +86,32 @@ pub(crate) fn install_with_context(
         .canonicalize()
         .unwrap_or_else(|_| recipe_path.to_path_buf());
 
+    exec.enter_recipe(&recipe_path, build_dir)
+        .map_err(InstallAttemptError::Fatal)?;
+    let result = install_active(
+        engine,
+        build_dir,
+        &recipe_path,
+        defines,
+        persist_ctx,
+        search_path,
+        autofix,
+        exec,
+    );
+    exec.leave_recipe();
+    result
+}
+
+fn install_active(
+    engine: &Engine,
+    build_dir: &Path,
+    recipe_path: &Path,
+    defines: &[(String, String)],
+    persist_ctx: bool,
+    search_path: Option<&Path>,
+    autofix: Option<&crate::AutoFixConfig>,
+    exec: &mut ExecutionContext<'_>,
+) -> std::result::Result<rhai::Map, InstallAttemptError> {
     let _lock = exec
         .acquire_lock(&recipe_path)
         .map_err(InstallAttemptError::Fatal)?;

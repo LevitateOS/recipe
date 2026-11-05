@@ -17,8 +17,8 @@
 //! exactly: acquire the lock per operation, file-persist gated on the
 //! caller's persist flag.
 
-use anyhow::Result;
-use std::path::Path;
+use anyhow::{Result, anyhow, bail};
+use std::path::{Path, PathBuf};
 
 use crate::core::executor::CompiledRecipe;
 use crate::core::lock::{RecipeLock, acquire_recipe_lock};
@@ -95,6 +95,8 @@ pub(crate) enum LockOwnership {
 pub(crate) struct ExecutionContext<'a> {
     lock_ownership: LockOwnership,
     persist_sink: PersistSink<'a>,
+    work_root: Option<PathBuf>,
+    active_recipes: Vec<PathBuf>,
 }
 
 impl<'a> ExecutionContext<'a> {
@@ -103,6 +105,8 @@ impl<'a> ExecutionContext<'a> {
         Self {
             lock_ownership: LockOwnership::Acquire,
             persist_sink: PersistSink::File,
+            work_root: None,
+            active_recipes: Vec::new(),
         }
     }
 
@@ -112,7 +116,70 @@ impl<'a> ExecutionContext<'a> {
         Self {
             lock_ownership: LockOwnership::CallerHeld,
             persist_sink: PersistSink::Callback(sink),
+            work_root: None,
+            active_recipes: Vec::new(),
         }
+    }
+
+    pub(crate) fn prepare_work_root(&mut self, build_dir: &Path) {
+        if self.work_root.is_none() {
+            self.work_root = Some(build_dir.to_path_buf());
+        }
+    }
+
+    pub(crate) fn tools_prefix(&self) -> Result<PathBuf> {
+        Ok(self.work_root()?.join(".tools"))
+    }
+
+    pub(crate) fn work_root(&self) -> Result<&Path> {
+        self.work_root
+            .as_deref()
+            .ok_or_else(|| anyhow!("missing recipe invocation work root"))
+    }
+
+    pub(crate) fn current_recipe(&self) -> Option<&Path> {
+        self.active_recipes.last().map(PathBuf::as_path)
+    }
+
+    /// Detect cycles before locking or evaluating the next recipe. Every nested
+    /// install shares this invocation's work root and tools destination.
+    pub(crate) fn enter_recipe(&mut self, recipe: &Path, build_dir: &Path) -> Result<()> {
+        if self.active_recipes.iter().any(|active| active == recipe) {
+            let chain = self
+                .active_recipes
+                .iter()
+                .map(|p| p.display().to_string())
+                .chain(std::iter::once(recipe.display().to_string()))
+                .collect::<Vec<_>>();
+            bail!(
+                "Circular recipe dependency detected: {}",
+                chain.join(" -> ")
+            );
+        }
+        if self.active_recipes.len() >= 64 {
+            bail!("Recipe dependency depth exceeds 64 at {}", recipe.display());
+        }
+        self.prepare_work_root(build_dir);
+        self.active_recipes.push(recipe.to_path_buf());
+        Ok(())
+    }
+
+    pub(crate) fn leave_recipe(&mut self) {
+        self.active_recipes.pop();
+        if self.active_recipes.is_empty() {
+            self.work_root = None;
+        }
+    }
+
+    /// Transport v1 has only a main-recipe snapshot, not per-dependency identity.
+    /// R07 must replace this seam before resumable dependency execution is allowed.
+    pub(crate) fn require_dependency_policy(&self, persist_enabled: bool) -> Result<()> {
+        if persist_enabled && matches!(self.persist_sink, PersistSink::Callback(_)) {
+            bail!(
+                "Worker transport v1 cannot checkpoint dependency state; resumable dependency execution is unavailable. Use --no-persist-ctx for explicitly non-resumable execution."
+            );
+        }
+        Ok(())
     }
 
     /// Acquire the recipe lock when host-owned; no-op when caller-held.
@@ -139,6 +206,13 @@ impl<'a> ExecutionContext<'a> {
         point: CheckpointPoint,
         persist_enabled: bool,
     ) -> Result<()> {
+        if self.active_recipes.len() > 1 {
+            // Never serialize a dependency's ctx as the parent's v1 snapshot or
+            // rewrite an immutable dependency source. Dependency state transport
+            // is separate from this non-resumable lifecycle implementation.
+            self.require_dependency_policy(persist_enabled)?;
+            return Ok(());
+        }
         match &mut self.persist_sink {
             PersistSink::File => {
                 if persist_enabled {

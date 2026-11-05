@@ -12,6 +12,25 @@ use super::{
     state::{check_phase_with_reason, resolve_deps},
 };
 
+/// Malformed dependency declarations are errors, not silently omitted tools.
+fn dependency_names(scope: &rhai::Scope<'_>, field: &str) -> anyhow::Result<Vec<String>> {
+    let Some(value) = scope.get_value::<rhai::Dynamic>(field) else {
+        return Ok(Vec::new());
+    };
+    let values = value
+        .try_cast::<rhai::Array>()
+        .ok_or_else(|| anyhow!("{field} must be an array of recipe names"))?;
+    values
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| {
+            value
+                .into_string()
+                .map_err(|_| anyhow!("{field}[{index}] must be a recipe name string"))
+        })
+        .collect()
+}
+
 pub(crate) fn install_once(
     engine: &Engine,
     build_dir: &Path,
@@ -33,7 +52,7 @@ pub(crate) fn install_once(
         &compiled.recipe_path,
         compiled.base_dir.as_deref(),
         Some(build_dir),
-        None,
+        Some(&exec.tools_prefix().map_err(InstallAttemptError::Fatal)?),
         defines,
     );
 
@@ -123,25 +142,9 @@ pub(crate) fn install_once(
     // Resolve dependencies declared in scope.
     // - `deps`: resolved before all phases (tools needed for acquire/build/install)
     // - `build_deps`: resolved only before build phase (compile-time tools)
-    let deps: Vec<String> = scope
-        .scope()
-        .get_value::<rhai::Array>("deps")
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.clone().into_string().ok())
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let build_deps: Vec<String> = scope
-        .scope()
-        .get_value::<rhai::Array>("build_deps")
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.clone().into_string().ok())
-                .collect()
-        })
-        .unwrap_or_default();
+    let deps = dependency_names(scope.scope(), "deps").map_err(InstallAttemptError::Fatal)?;
+    let build_deps =
+        dependency_names(scope.scope(), "build_deps").map_err(InstallAttemptError::Fatal)?;
 
     if deps.is_empty() {
         output::detail("No runtime dependency recipes declared (`deps`).");
@@ -161,8 +164,17 @@ pub(crate) fn install_once(
     // Resolve `deps` immediately (needed for all phases)
     let _env_guard = if !deps.is_empty() {
         Some(
-            resolve_deps(engine, build_dir, search_path, defines, &deps, autofix)
-                .map_err(InstallAttemptError::Fatal)?,
+            resolve_deps(
+                engine,
+                build_dir,
+                search_path,
+                defines,
+                &deps,
+                autofix,
+                persist_ctx_enabled,
+                exec,
+            )
+            .map_err(InstallAttemptError::Fatal)?,
         )
     } else {
         None
@@ -260,6 +272,8 @@ pub(crate) fn install_once(
                     defines,
                     &build_deps,
                     autofix,
+                    persist_ctx_enabled,
+                    exec,
                 )
                 .map_err(InstallAttemptError::Fatal)?,
             )

@@ -99,3 +99,6 @@ mod cleanup;
 
 #[path = "e2e/torrent_acquisition.rs"]
 mod torrent_acquisition;
+
+#[path = "e2e/dependencies.rs"]
+mod dependencies;
