@@ -1,6 +1,11 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+/// Parse `--backend host|ginux` (also accepts `in-process` as host).
+fn parse_backend(s: &str) -> anyhow::Result<levitate_recipe::BackendKind> {
+    s.parse()
+}
+
 #[derive(Parser)]
 #[command(name = "recipe")]
 #[command(about = "Local-first package manager using Rhai recipes")]
@@ -41,6 +46,13 @@ pub(crate) struct Cli {
     /// Do not persist updated ctx back into recipe source files; useful for inspection and dry debugging.
     #[arg(long, global = true, default_value_t = false)]
     pub(crate) no_persist_ctx: bool,
+
+    /// Select the execution backend for recipe operations: `host` (default) or
+    /// `ginux`. Overrides `RECIPE_BACKEND`. Selecting `ginux` requires a usable
+    /// launcher in `GINUX_BIN` and fails explicitly otherwise (never falls
+    /// back to host).
+    #[arg(long, global = true, value_name = "BACKEND", value_parser = parse_backend)]
+    pub(crate) backend: Option<levitate_recipe::BackendKind>,
 }
 
 #[derive(Subcommand)]

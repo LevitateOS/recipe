@@ -91,11 +91,14 @@
 //! - `NPROC` - Number of CPUs
 //! - `RPM_PATH` - Path to RPM repository (from environment)
 
+pub mod backend;
 mod core;
 pub mod helpers;
 mod llm;
 pub mod logging;
 pub mod worker;
+
+pub use backend::{Backend, BackendKind};
 
 pub use core::output;
 pub use logging::{
@@ -146,6 +149,9 @@ pub struct RecipeEngine {
     persist_ctx: bool,
     llm_profile: Option<String>,
     autofix: Option<AutoFixConfig>,
+    /// Explicit backend choice (R04). Defaults to host; every executable
+    /// operation below routes through it.
+    backend: Backend,
 }
 
 impl RecipeEngine {
@@ -168,7 +174,24 @@ impl RecipeEngine {
             persist_ctx: true,
             llm_profile: None,
             autofix: None,
+            backend: Backend::Host,
         }
+    }
+
+    /// Select the execution backend for every executable recipe operation.
+    ///
+    /// Resolve with [`Backend::select`] (explicit `--backend` choice falling
+    /// back to `RECIPE_BACKEND`, defaulting to host). R06 launches Ginux from
+    /// the selected value; until then a `ginux` backend fails explicitly at
+    /// operation time instead of silently running on the host.
+    pub fn with_backend(mut self, backend: Backend) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// The backend executable recipe operations route through.
+    pub fn backend(&self) -> &Backend {
+        &self.backend
     }
 
     /// Set the recipes path for module resolution
@@ -216,7 +239,8 @@ impl RecipeEngine {
     ///
     /// Returns the final ctx map containing all recipe state.
     pub fn execute(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        llm::with_llm_profile(self.llm_profile.as_deref(), || {
+        self.backend.run("install", || {
+            llm::with_llm_profile(self.llm_profile.as_deref(), || {
             if let Some(autofix) = self.autofix.as_ref() {
                 core::executor::install_with_options(
                     &self.engine,
@@ -237,6 +261,7 @@ impl RecipeEngine {
                     self.recipes_path.as_deref(),
                 )
             }
+            })
         })
     }
 
@@ -244,14 +269,16 @@ impl RecipeEngine {
     ///
     /// Returns the final ctx map after removal.
     pub fn remove(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        llm::with_llm_profile(self.llm_profile.as_deref(), || {
-            core::executor::remove(
-                &self.engine,
-                recipe_path,
-                self.recipes_path.as_deref(),
-                &self.defines,
-                self.persist_ctx,
-            )
+        self.backend.run("remove", || {
+            llm::with_llm_profile(self.llm_profile.as_deref(), || {
+                core::executor::remove(
+                    &self.engine,
+                    recipe_path,
+                    self.recipes_path.as_deref(),
+                    &self.defines,
+                    self.persist_ctx,
+                )
+            })
         })
     }
 
@@ -266,55 +293,63 @@ impl RecipeEngine {
     ///
     /// Returns the final ctx map after cleanup.
     pub fn cleanup_with_reason(&self, recipe_path: &Path, reason: &str) -> Result<rhai::Map> {
-        llm::with_llm_profile(self.llm_profile.as_deref(), || {
-            core::executor::cleanup(
-                &self.engine,
-                &self.build_dir,
-                recipe_path,
-                self.recipes_path.as_deref(),
-                &self.defines,
-                reason,
-                self.persist_ctx,
-            )
+        self.backend.run("cleanup", || {
+            llm::with_llm_profile(self.llm_profile.as_deref(), || {
+                core::executor::cleanup(
+                    &self.engine,
+                    &self.build_dir,
+                    recipe_path,
+                    self.recipes_path.as_deref(),
+                    &self.defines,
+                    reason,
+                    self.persist_ctx,
+                )
+            })
         })
     }
 
     /// Execute `is_installed(ctx)` manually.
     pub fn is_installed(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        llm::with_llm_profile(self.llm_profile.as_deref(), || {
-            core::executor::is_installed(
-                &self.engine,
-                &self.build_dir,
-                recipe_path,
-                self.recipes_path.as_deref(),
-                &self.defines,
-            )
+        self.backend.run("is_installed", || {
+            llm::with_llm_profile(self.llm_profile.as_deref(), || {
+                core::executor::is_installed(
+                    &self.engine,
+                    &self.build_dir,
+                    recipe_path,
+                    self.recipes_path.as_deref(),
+                    &self.defines,
+                )
+            })
         })
     }
 
     /// Execute `is_built(ctx)` manually.
     pub fn is_built(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        llm::with_llm_profile(self.llm_profile.as_deref(), || {
-            core::executor::is_built(
-                &self.engine,
-                &self.build_dir,
-                recipe_path,
-                self.recipes_path.as_deref(),
-                &self.defines,
-            )
+        self.backend.run("is_built", || {
+            llm::with_llm_profile(self.llm_profile.as_deref(), || {
+                core::executor::is_built(
+                    &self.engine,
+                    &self.build_dir,
+                    recipe_path,
+                    self.recipes_path.as_deref(),
+                    &self.defines,
+                )
+            })
         })
     }
 
     /// Execute `is_acquired(ctx)` manually.
     pub fn is_acquired(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        llm::with_llm_profile(self.llm_profile.as_deref(), || {
-            core::executor::is_acquired(
-                &self.engine,
-                &self.build_dir,
-                recipe_path,
-                self.recipes_path.as_deref(),
-                &self.defines,
-            )
+        self.backend.run("is_acquired", || {
+            llm::with_llm_profile(self.llm_profile.as_deref(), || {
+                core::executor::is_acquired(
+                    &self.engine,
+                    &self.build_dir,
+                    recipe_path,
+                    self.recipes_path.as_deref(),
+                    &self.defines,
+                )
+            })
         })
     }
 

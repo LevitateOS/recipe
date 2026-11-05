@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use levitate_recipe::{AutoFixConfig, RecipeEngine, helpers, output};
+use levitate_recipe::{AutoFixConfig, Backend, BackendKind, RecipeEngine, helpers, output};
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -51,6 +51,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 cli.no_persist_ctx,
                 cli.llm_profile.clone(),
                 autofix_cfg,
+                cli.backend,
             )?;
             let ctx = engine.execute(&recipe_path)?;
             emit_json(&ctx, json_output.as_deref())?;
@@ -65,6 +66,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 cli.no_persist_ctx,
                 cli.llm_profile.clone(),
                 None,
+                cli.backend,
             )?;
             let ctx = engine.remove(&recipe_path)?;
             emit_json(&ctx, json_output.as_deref())?;
@@ -79,6 +81,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 cli.no_persist_ctx,
                 cli.llm_profile.clone(),
                 None,
+                cli.backend,
             )?;
             let cleanup_reason = reason
                 .as_deref()
@@ -98,6 +101,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 cli.no_persist_ctx,
                 cli.llm_profile.clone(),
                 None,
+                cli.backend,
             )?;
             let ctx = engine.is_installed(&recipe_path)?;
             emit_json(&ctx, json_output.as_deref())?;
@@ -112,6 +116,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 cli.no_persist_ctx,
                 cli.llm_profile.clone(),
                 None,
+                cli.backend,
             )?;
             let ctx = engine.is_built(&recipe_path)?;
             emit_json(&ctx, json_output.as_deref())?;
@@ -126,6 +131,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 cli.no_persist_ctx,
                 cli.llm_profile.clone(),
                 None,
+                cli.backend,
             )?;
             let ctx = engine.is_acquired(&recipe_path)?;
             emit_json(&ctx, json_output.as_deref())?;
@@ -186,6 +192,10 @@ fn emit_json(ctx: &rhai::Map, path: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
+/// Build the engine for one executable recipe operation, routing through the
+/// single R04 backend selection (`--backend` flag falling back to
+/// `RECIPE_BACKEND`, defaulting to host). List/info/hash never reach this:
+/// they need no execution domain.
 fn create_engine(
     build_dir: Option<&Path>,
     recipes_path: Option<&Path>,
@@ -193,7 +203,9 @@ fn create_engine(
     no_persist_ctx: bool,
     llm_profile: Option<String>,
     autofix: Option<AutoFixConfig>,
+    backend: Option<BackendKind>,
 ) -> Result<RecipeEngine> {
+    let backend = Backend::select(backend)?;
     let build_dir = match build_dir {
         Some(dir) => {
             std::fs::create_dir_all(dir)
@@ -207,6 +219,7 @@ fn create_engine(
     };
 
     let mut engine = RecipeEngine::new(build_dir)
+        .with_backend(backend)
         .with_ctx_persistence(!no_persist_ctx)
         .with_llm_profile(llm_profile)
         .with_autofix(autofix);

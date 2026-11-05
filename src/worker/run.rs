@@ -18,9 +18,9 @@
 //! - Every checkpoint blocks for its `ack` with a bounded 300 s wait (§4).
 //!   The host owns the `{seq → generation}` association; the worker only waits
 //!   for it and logs the generation to stderr.
-//! - `RECIPE_WORKER=1` forces in-process execution: the worker never invokes
-//!   the Ginux backend and fails explicitly if a non-host backend is asked for
-//!   (canonical backend selection is R04's owner).
+//! - `RECIPE_WORKER=1` forces in-process execution through the unified R04
+//!   selection: a requested non-host backend is overridden to in-process (with
+//!   a stderr note), so the worker never invokes the Ginux backend.
 //!
 //! Failure mapping (R03): the engine's [`InstallAttemptError`] shape is
 //! preserved through [`install_with_context`], so an unrecoverable engine
@@ -210,19 +210,22 @@ pub fn run_worker() -> Result<()> {
     }
 }
 
-/// `RECIPE_WORKER=1` forces in-process execution. There is no backend
-/// selection yet (R04 owns it); until then the only knob is the environment,
-/// and anything asking for an out-of-process backend fails explicitly instead
-/// of the worker ever recursively invoking the Ginux backend.
+/// `RECIPE_WORKER=1` forces in-process execution. This goes through the
+/// unified R04 selection ([`crate::backend::Backend::select`]): under the
+/// worker flag selection itself resolves to [`crate::backend::Backend::Host`],
+/// so reaching the `Ginux` arm below is impossible — it stays as the explicit
+/// guard so the worker can never recursively invoke the Ginux backend, with no
+/// second parallel environment check beside the canonical selection.
 fn ensure_in_process_backend() -> Result<()> {
-    match std::env::var("RECIPE_BACKEND") {
-        Ok(want) if !matches!(want.as_str(), "" | "host" | "in-process") => {
+    match crate::backend::Backend::from_env()? {
+        crate::backend::Backend::Host => Ok(()),
+        crate::backend::Backend::Ginux { launcher } => {
             bail!(
-                "worker refuses backend {want:?}: RECIPE_WORKER=1 forces in-process \
-                 execution (no recursive Ginux backend invocation)"
+                "worker refuses ginux backend (launcher {}): RECIPE_WORKER=1 forces \
+                 in-process execution (no recursive Ginux backend invocation)",
+                launcher.display()
             )
         }
-        _ => Ok(()),
     }
 }
 
