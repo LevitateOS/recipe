@@ -143,3 +143,104 @@ fn cli_preseed_installed_checks_honor_refresh_before_cache_hit() {
         assert_eq!(std::fs::read(iso).unwrap(), before);
     }
 }
+
+#[test]
+fn cli_rootfs_consumers_reject_changed_cache_and_staged_assets() {
+    for (producer, consumer, fields, marker) in [
+        (
+            "fedora-preseed-iso",
+            "fedora-dvd-source-rootfs",
+            vec![("iso_path", "preseed_iso_path", "sha256")],
+            ".fedora-iso-trust.marker",
+        ),
+        (
+            "alpine-preseed-source-assets",
+            "alpine-live-source-rootfs",
+            vec![
+                ("iso_path", "iso_preseed_path", "iso_sha256"),
+                (
+                    "apk_tools_path",
+                    "apk_tools_preseed_path",
+                    "apk_tools_sha256",
+                ),
+            ],
+            ".alpine-source-preseed.marker",
+        ),
+    ] {
+        let (dir, recipes) = create_test_env();
+        let producer_ctx = prepare_assets(&recipes, producer);
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../distro-builder/recipes")
+            .join(format!("{consumer}.rhai"));
+        let recipe_path = recipes.join(format!("{consumer}.rhai"));
+        std::fs::copy(source, &recipe_path).unwrap();
+        let work = dir.path().join("work/source");
+        let command = |action: &str| {
+            let mut cmd = recipe_command(&recipes);
+            cmd.args([action, consumer, "--no-persist-ctx"])
+                .arg("--recipes-path")
+                .arg(&recipes)
+                .arg("--build-dir")
+                .arg(&work)
+                .env("FORCE_TRUST_CREATE", "0");
+            cmd
+        };
+        let output = command("cleanup").output().unwrap();
+        assert_success(&output);
+        let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let mut script = std::fs::read_to_string(&recipe_path).unwrap();
+        let mut assets = Vec::new();
+        for (producer_field, cache_field, hash_field) in fields {
+            script = script.replace(
+                ctx[hash_field].as_str().unwrap(),
+                producer_ctx[hash_field].as_str().unwrap(),
+            );
+            let cache_path = std::path::PathBuf::from(ctx[cache_field].as_str().unwrap());
+            std::fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+            std::fs::copy(producer_ctx[producer_field].as_str().unwrap(), &cache_path).unwrap();
+            assets.push(cache_path);
+        }
+        std::fs::write(&recipe_path, script).unwrap();
+        std::fs::copy(
+            Path::new(producer_ctx["trust_dir"].as_str().unwrap()).join(marker),
+            Path::new(ctx["trust_dir"].as_str().unwrap()).join(marker),
+        )
+        .unwrap();
+        if consumer.starts_with("alpine") {
+            // Acquired-state fixture includes a previously extracted tool;
+            // this scenario verifies asset integrity and does not execute it.
+            std::fs::create_dir_all(work.join("apk-tools/sbin")).unwrap();
+            std::fs::write(
+                work.join("apk-tools/sbin/apk.static"),
+                "extracted tool fixture",
+            )
+            .unwrap();
+        }
+        let output = command("isacquired").output().unwrap();
+        assert_success(&output);
+        let acquired: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assets.push(std::path::PathBuf::from(
+            acquired["iso_path"].as_str().unwrap(),
+        ));
+        if consumer.starts_with("alpine") {
+            let apk_name = Path::new(ctx["apk_tools_preseed_path"].as_str().unwrap())
+                .file_name()
+                .unwrap();
+            assets.push(work.join("apk-tools").join(apk_name));
+        }
+        for asset in assets {
+            let original = std::fs::read(&asset).unwrap();
+            let mut changed = original.clone();
+            changed[0] ^= 1;
+            std::fs::write(&asset, changed).unwrap();
+            let output = command("isacquired").output().unwrap();
+            assert!(
+                !output.status.success(),
+                "{consumer} accepted changed asset {}",
+                asset.display()
+            );
+            assert!(String::from_utf8_lossy(&output.stderr).contains("integrity check failed"));
+            std::fs::write(asset, original).unwrap();
+        }
+    }
+}
