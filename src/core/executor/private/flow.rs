@@ -7,7 +7,7 @@ use std::path::Path;
 
 use super::{
     attempt::InstallAttemptError,
-    context::ExecutionContext,
+    context::{CheckpointPoint, ExecutionContext},
     reporting::{friendly_reason, report_check_result, report_phase_failure, report_phase_success},
     state::{check_phase_with_reason, maybe_cleanup, resolve_deps},
 };
@@ -217,7 +217,10 @@ pub(crate) fn install_once(
                 exec.persist_checkpoint(
                     &mut compiled,
                     &ctx_map,
-                    "Failed to persist ctx after acquire",
+                    CheckpointPoint {
+                        phase: "acquire",
+                        reason: "phase:acquire",
+                    },
                     persist_ctx_enabled,
                 )
                 .map_err(InstallAttemptError::Fatal)?;
@@ -237,7 +240,10 @@ pub(crate) fn install_once(
                     exec.persist_checkpoint(
                         &mut compiled,
                         &ctx_map,
-                        "Failed to persist ctx after cleanup",
+                        CheckpointPoint {
+                            phase: "cleanup",
+                            reason: "auto.acquire.success",
+                        },
                         persist_ctx_enabled,
                     )
                     .map_err(InstallAttemptError::Fatal)?;
@@ -309,7 +315,10 @@ pub(crate) fn install_once(
                     exec.persist_checkpoint(
                         &mut compiled,
                         &ctx_map,
-                        "Failed to persist ctx after build",
+                        CheckpointPoint {
+                            phase: "build",
+                            reason: "phase:build",
+                        },
                         persist_ctx_enabled,
                     )
                     .map_err(InstallAttemptError::Fatal)?;
@@ -328,7 +337,10 @@ pub(crate) fn install_once(
                         exec.persist_checkpoint(
                             &mut compiled,
                             &ctx_map,
-                            "Failed to persist ctx after cleanup",
+                            CheckpointPoint {
+                                phase: "cleanup",
+                                reason: "auto.build.success",
+                            },
                             persist_ctx_enabled,
                         )
                         .map_err(InstallAttemptError::Fatal)?;
@@ -369,7 +381,10 @@ pub(crate) fn install_once(
                 exec.persist_checkpoint(
                     &mut compiled,
                     &ctx_map,
-                    "Failed to persist ctx after install",
+                    CheckpointPoint {
+                        phase: "install",
+                        reason: "phase:install",
+                    },
                     persist_ctx_enabled,
                 )
                 .map_err(InstallAttemptError::Fatal)?;
@@ -388,7 +403,10 @@ pub(crate) fn install_once(
                     exec.persist_checkpoint(
                         &mut compiled,
                         &ctx_map,
-                        "Failed to persist ctx after cleanup",
+                        CheckpointPoint {
+                            phase: "cleanup",
+                            reason: "auto.install.success",
+                        },
                         persist_ctx_enabled,
                     )
                     .map_err(InstallAttemptError::Fatal)?;

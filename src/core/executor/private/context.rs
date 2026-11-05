@@ -23,14 +23,48 @@ use std::path::Path;
 use crate::core::executor::CompiledRecipe;
 use crate::core::lock::{RecipeLock, acquire_recipe_lock};
 
-/// Worker-side checkpoint sink (R02 stub transport seam).
+/// One persistence point in the lifecycle (R03 structured checkpoint).
+///
+/// Names the lifecycle phase that just completed (`acquire`, `build`,
+/// `install`, `remove`, `cleanup`) and the machine-readable reason for this
+/// checkpoint: `phase:<phase>` for phase completions, the actual cleanup
+/// reason (`auto.<phase>.success`, `manual`) for cleanup completions. The
+/// worker reports these verbatim in its `checkpoint` frames, so the host
+/// observes the actual checkpoint stream instead of matching on error-context
+/// label strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CheckpointPoint {
+    /// Lifecycle phase that just completed.
+    pub phase: &'static str,
+    /// Machine-readable persistence-point reason.
+    pub reason: &'static str,
+}
+
+impl CheckpointPoint {
+    /// Legacy error-context label for host file persistence
+    /// (`"Failed to persist ctx after <phase>"`). Host error text stays
+    /// byte-identical to before; only the worker transport uses the
+    /// structured `phase`/`reason` directly.
+    pub(crate) fn label(self) -> &'static str {
+        match self.phase {
+            "acquire" => "Failed to persist ctx after acquire",
+            "build" => "Failed to persist ctx after build",
+            "install" => "Failed to persist ctx after install",
+            "remove" => "Failed to persist ctx after remove",
+            "cleanup" => "Failed to persist ctx after cleanup",
+            _ => "Failed to persist ctx",
+        }
+    }
+}
+
+/// Worker-side checkpoint sink (R03 structured transport seam).
 ///
 /// Called at exactly the points where host execution would file-persist:
 /// after successful acquire/build/install phases, their success cleanups,
 /// removal, and manual cleanup. Receives the in-memory compiled recipe
-/// (main/base sources and paths), the updated `ctx`, a static label naming
-/// the persistence point, and the caller's persist flag (`--no-persist-ctx`
-/// negated).
+/// (main/base sources and paths), the updated `ctx`, the structured
+/// [`CheckpointPoint`] naming the persistence point, and the caller's persist
+/// flag (`--no-persist-ctx` negated).
 ///
 /// The sink fires even when persistence is disabled so the worker still
 /// reports phase completion; the host honors `--no-persist-ctx` by skipping
@@ -38,15 +72,13 @@ use crate::core::lock::{RecipeLock, acquire_recipe_lock};
 /// `docs/ginux-recipe-interfaces.md` §4). The sink must never write recipe
 /// sources itself; that stays with the host coordinator.
 pub(crate) type CheckpointSink<'a> =
-    dyn FnMut(&CompiledRecipe, &rhai::Map, &'static str, bool) -> Result<()> + 'a;
+    dyn FnMut(&CompiledRecipe, &rhai::Map, CheckpointPoint, bool) -> Result<()> + 'a;
 
 /// Where checkpointed `ctx` content goes.
 pub(crate) enum PersistSink<'a> {
     /// Host default: atomically rewrite the trusted main/base recipe source.
     File,
-    /// Worker stub (R02): hand the checkpoint to the caller transport.
-    // No in-tree caller yet; R02 constructs this via `ExecutionContext::worker_stub`.
-    #[allow(dead_code)]
+    /// Worker: hand the checkpoint to the caller transport.
     Callback(&'a mut CheckpointSink<'a>),
 }
 
@@ -54,9 +86,7 @@ pub(crate) enum PersistSink<'a> {
 pub(crate) enum LockOwnership {
     /// Host default: acquire the advisory recipe lock inside the operation.
     Acquire,
-    /// Worker stub: the host coordinator already holds the lock.
-    // No in-tree caller yet; R02 constructs this via `ExecutionContext::worker_stub`.
-    #[allow(dead_code)]
+    /// Worker: the host coordinator already holds the lock.
     CallerHeld,
 }
 
@@ -76,10 +106,8 @@ impl<'a> ExecutionContext<'a> {
         }
     }
 
-    /// Worker stub for R02: the caller holds the lock and receives each
+    /// Worker entry point: the caller holds the lock and receives each
     /// checkpoint through `sink` instead of any source file being written.
-    // No in-tree caller yet; R02 is the intended caller.
-    #[allow(dead_code)]
     pub(crate) fn worker_stub(sink: &'a mut CheckpointSink<'a>) -> Self {
         Self {
             lock_ownership: LockOwnership::CallerHeld,
@@ -108,18 +136,18 @@ impl<'a> ExecutionContext<'a> {
         &mut self,
         compiled: &mut CompiledRecipe,
         ctx_map: &rhai::Map,
-        label: &'static str,
+        point: CheckpointPoint,
         persist_enabled: bool,
     ) -> Result<()> {
         match &mut self.persist_sink {
             PersistSink::File => {
                 if persist_enabled {
-                    super::state::persist_ctx(compiled, ctx_map, label)
+                    super::state::persist_ctx(compiled, ctx_map, point)
                 } else {
                     Ok(())
                 }
             }
-            PersistSink::Callback(sink) => sink(compiled, ctx_map, label, persist_enabled),
+            PersistSink::Callback(sink) => sink(compiled, ctx_map, point, persist_enabled),
         }
     }
 }

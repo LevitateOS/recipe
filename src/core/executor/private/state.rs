@@ -1,5 +1,6 @@
 use crate::core::executor::CompiledRecipe;
 use crate::core::{build_deps, ctx, output};
+use super::context::CheckpointPoint;
 use anyhow::{Context, Result, anyhow};
 use rhai::{AST, Engine, Scope};
 use std::fs;
@@ -72,8 +73,9 @@ pub(crate) fn maybe_cleanup(
 pub(crate) fn persist_ctx(
     compiled: &mut CompiledRecipe,
     ctx_map: &rhai::Map,
-    err_ctx: &'static str,
+    point: CheckpointPoint,
 ) -> Result<()> {
+    let err_ctx = point.label();
     // Prefer persisting to the main recipe. If it doesn't declare ctx (common when
     // using `//! extends:` for shared logic), fall back to the base recipe.
     let (path, source): (&Path, &mut String) =

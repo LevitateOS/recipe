@@ -3,7 +3,7 @@ use anyhow::{Result, anyhow};
 use rhai::{Engine, Scope};
 use std::path::Path;
 
-use super::context::ExecutionContext;
+use super::context::{CheckpointPoint, ExecutionContext};
 use super::reporting::{report_phase_failure, report_phase_success};
 use super::state::maybe_cleanup;
 use crate::core::executor::compile_recipe;
@@ -92,7 +92,10 @@ pub(crate) fn remove_with_context(
     exec.persist_checkpoint(
         &mut compiled,
         &ctx_map,
-        "Failed to persist ctx after remove",
+        CheckpointPoint {
+            phase: "remove",
+            reason: "phase:remove",
+        },
         persist_ctx_enabled,
     )?;
 
@@ -198,7 +201,10 @@ pub(crate) fn cleanup_with_context(
     exec.persist_checkpoint(
         &mut compiled,
         &ctx_map,
-        "Failed to persist ctx after cleanup",
+        CheckpointPoint {
+            phase: "cleanup",
+            reason: "manual",
+        },
         persist_ctx_enabled,
     )?;
 

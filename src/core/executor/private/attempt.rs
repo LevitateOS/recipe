@@ -46,7 +46,9 @@ pub(crate) fn install_with_options(
     autofix: Option<&crate::AutoFixConfig>,
 ) -> Result<rhai::Map> {
     let mut exec = ExecutionContext::host();
-    install_with_context(
+    // Host callers keep the historical flattened shape: the retry loop above
+    // already logged, so surface the inner error exactly as before.
+    match install_with_context(
         engine,
         build_dir,
         recipe_path,
@@ -55,14 +57,21 @@ pub(crate) fn install_with_options(
         search_path,
         autofix,
         &mut exec,
-    )
+    ) {
+        Ok(ctx) => Ok(ctx),
+        Err(InstallAttemptError::Fatal(e)) => Err(e),
+        Err(InstallAttemptError::Phase { error, .. }) => Err(error),
+    }
 }
 
 /// Same retry flow with caller-provided lock ownership and checkpoint sink.
 ///
-/// Worker seam (R02 stub): the host coordinator holds the recipe lock and
+/// Worker seam (R03): the host coordinator holds the recipe lock and
 /// receives each checkpoint through `exec` instead of this operation taking
-/// a second lock or rewriting recipe sources itself.
+/// a second lock or rewriting recipe sources itself. Unlike the host
+/// wrappers, this preserves the [`InstallAttemptError`] shape so the worker
+/// can report fatal-vs-phase failures faithfully instead of flattening every
+/// engine error into one `anyhow`.
 pub(crate) fn install_with_context(
     engine: &Engine,
     build_dir: &Path,
@@ -72,12 +81,14 @@ pub(crate) fn install_with_context(
     search_path: Option<&Path>,
     autofix: Option<&crate::AutoFixConfig>,
     exec: &mut ExecutionContext<'_>,
-) -> Result<rhai::Map> {
+) -> std::result::Result<rhai::Map, InstallAttemptError> {
     let recipe_path = recipe_path
         .canonicalize()
         .unwrap_or_else(|_| recipe_path.to_path_buf());
 
-    let _lock = exec.acquire_lock(&recipe_path)?;
+    let _lock = exec
+        .acquire_lock(&recipe_path)
+        .map_err(InstallAttemptError::Fatal)?;
 
     let max_attempts = autofix.map(|c| c.attempts as usize).unwrap_or(0);
 
@@ -99,7 +110,7 @@ pub(crate) fn install_with_context(
                 output::detail(
                     "  action: inspect recipe loading/validation and ensure required helper functions are present.",
                 );
-                return Err(e);
+                return Err(InstallAttemptError::Fatal(e));
             }
             Err(InstallAttemptError::Phase {
                 reason,
@@ -107,12 +118,20 @@ pub(crate) fn install_with_context(
                 error,
             }) => {
                 let Some(cfg) = autofix else {
-                    return Err(error);
+                    return Err(InstallAttemptError::Phase {
+                        reason,
+                        phase,
+                        error,
+                    });
                 };
 
                 let eligible = matches!(reason, "auto.build.failure" | "auto.install.failure");
                 if !eligible || attempt >= max_attempts {
-                    return Err(error);
+                    return Err(InstallAttemptError::Phase {
+                        reason,
+                        phase,
+                        error,
+                    });
                 }
 
                 output::warning(&format!(
@@ -130,7 +149,8 @@ pub(crate) fn install_with_context(
                     reason,
                     &failure,
                 )
-                .with_context(|| format!("autofix failed ({reason} in {phase})"))?;
+                .with_context(|| format!("autofix failed ({reason} in {phase})"))
+                .map_err(InstallAttemptError::Fatal)?;
             }
         }
     }

@@ -12,16 +12,17 @@ use std::path::{Path, PathBuf};
 
 mod private;
 
-// F04 seam: host-owned lock + checkpoint persistence context for the engine
-// flow. The future worker process (R02) dispatches through the
-// `*_with_context` entry points with a caller-held lock and a checkpoint
-// callback sink; normal host callers keep the existing wrappers, whose
-// behavior is unchanged.
-// No in-tree caller of the worker items yet; R02 is the intended caller.
+// Execution seam: host-owned lock + checkpoint persistence context for the
+// engine flow. The worker process dispatches through the `*_with_context`
+// entry points with a caller-held lock and a checkpoint callback sink;
+// normal host callers keep the existing wrappers, whose behavior is
+// unchanged. `install_with_context` preserves the `InstallAttemptError`
+// shape so the worker can report fatal-vs-phase failures.
 #[allow(unused_imports)]
 pub(crate) use private::{
-    CheckpointSink, ExecutionContext, LockOwnership, PersistSink, cleanup_with_context,
-    install_with_context, remove_with_context, run_check_with_context,
+    CheckpointPoint, CheckpointSink, ExecutionContext, InstallAttemptError, LockOwnership,
+    PersistSink, cleanup_with_context, install_with_context, remove_with_context,
+    run_check_with_context,
 };
 
 /// Parse `//! extends: <path>` from leading comments.

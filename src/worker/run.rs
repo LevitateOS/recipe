@@ -1,12 +1,12 @@
-//! Worker entry point (R02): run the existing engine behind protocol v1.
+//! Worker entry point: run the existing engine behind protocol v1.
 //!
 //! The worker is the same `recipe` binary entered with `RECIPE_WORKER=1` (see
 //! the dispatch in `src/bin/`). It reads exactly one request frame from
 //! stdin, dispatches `install` / `remove` / `cleanup` / `<check>` through the
 //! existing engine entry points under [`ExecutionContext::worker_stub`] (the
-//! F04 seam: caller-held lock, checkpoints reported through a sink instead of
-//! rewriting recipe sources), then terminates the stream with exactly one
-//! result frame on stdout and exits 0.
+//! execution seam: caller-held lock, checkpoints reported through a sink
+//! instead of rewriting recipe sources), then terminates the stream with
+//! exactly one result frame on stdout and exits 0.
 //!
 //! Transport discipline (matches `docs/ginux-recipe-interfaces.md` §2/§4):
 //!
@@ -22,12 +22,17 @@
 //!   the Ginux backend and fails explicitly if a non-host backend is asked for
 //!   (canonical backend selection is R04's owner).
 //!
+//! Failure mapping (R03): the engine's [`InstallAttemptError`] shape is
+//! preserved through [`install_with_context`], so an unrecoverable engine
+//! failure reports `fatal: true` while a named phase failure reports
+//! `fatal: false` with its phase and reason (`auto.<phase>.failure`). Other
+//! operations (`remove` / `cleanup` / checks) have no phase-error shape and
+//! still report `fatal: true`, as does any checkpoint/ack transport failure.
+//!
 //! What this does NOT do (owned by later tasks): input preparation and stable
 //! domain paths (R05 — the recipe comes from argv, see [`LocalConfig`]);
-//! structured fatal-vs-phase failure reasons (R03 — every engine error is
-//! reported fatal here because the invocation cannot continue on the same
-//! worker); generation-backed persistence (R07 — the host decides what the
-//! acked generation means for its source files).
+//! generation-backed persistence (R07 — the host decides what the acked
+//! generation means for its source files).
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -36,8 +41,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 
 use crate::core::executor::{
-    CompiledRecipe, ExecutionContext, cleanup_with_context, install_with_context,
-    remove_with_context, run_check_with_context,
+    CheckpointPoint, CompiledRecipe, ExecutionContext, InstallAttemptError, cleanup_with_context,
+    install_with_context, remove_with_context, run_check_with_context,
 };
 use crate::worker::protocol::{
     CheckpointPayload, Direction, FailureInfo, FailurePayload, FramePayload, FrameReceiver,
@@ -94,18 +99,48 @@ impl LocalConfig {
     }
 }
 
-/// One engine failure: always fatal in R02 (the invocation cannot continue on
-/// the same worker), with the operation as phase. R03 refines this into
-/// fatal-vs-phase reasons once the seam carries them.
+/// One engine failure for the `failure` + `result` termination frames.
+/// Install preserves the engine's fatal-vs-phase shape: an unrecoverable
+/// engine failure is fatal (the invocation cannot continue and the host
+/// should not retry it as-is); a named phase failure is non-fatal and carries
+/// the phase and its reason for host retry/autofix policy.
 struct EngineFailure {
+    fatal: bool,
     phase: String,
     reason: &'static str,
     message: String,
 }
 
 impl EngineFailure {
+    /// Map the structured install error faithfully: `Fatal` (unrecoverable
+    /// engine failure) vs `Phase` (named phase failure with its reason).
+    fn from_attempt(operation: &str, err: InstallAttemptError) -> Self {
+        match err {
+            InstallAttemptError::Fatal(err) => Self {
+                fatal: true,
+                phase: operation.to_string(),
+                reason: "fatal",
+                message: format!("{err:#}"),
+            },
+            InstallAttemptError::Phase {
+                reason,
+                phase,
+                error,
+            } => Self {
+                fatal: false,
+                phase: phase.to_string(),
+                reason,
+                message: format!("{error:#}"),
+            },
+        }
+    }
+
+    /// Single-shot operations (`remove` / `cleanup` / checks) and local
+    /// worker problems have no phase-error shape: always fatal, with the
+    /// operation as phase.
     fn workload(phase: &str, err: anyhow::Error) -> Self {
         Self {
+            fatal: true,
             phase: phase.to_string(),
             reason: "workload",
             message: format!("{err:#}"),
@@ -155,7 +190,7 @@ pub fn run_worker() -> Result<()> {
             send_failure(
                 &mut tx,
                 &mut output,
-                true,
+                failure.fatal,
                 &failure.phase,
                 failure.reason,
                 &failure.message,
@@ -225,13 +260,14 @@ fn run_operation(
     let mut checkpoint_no: u64 = 0;
     let mut sink = |compiled: &CompiledRecipe,
                     ctx_map: &rhai::Map,
-                    label: &'static str,
+                    point: CheckpointPoint,
                     _persist: bool|
      -> Result<()> {
         // The sink fires at every persistence point even when persist is
-        // disabled (F04 contract); the host decides what the acked generation
-        // means for its source files. The `_persist` flag is intentionally
-        // unused here: the worker never writes sources either way.
+        // disabled (seam contract); the host decides what the acked
+        // generation means for its source files. The `_persist` flag is
+        // intentionally unused here: the worker never writes sources either
+        // way.
         report_checkpoint(
             tx,
             output,
@@ -240,7 +276,7 @@ fn run_operation(
             &mut checkpoint_no,
             compiled,
             ctx_map,
-            label,
+            point,
         )
         .map_err(|err| anyhow!("checkpoint #{checkpoint_no}: {err:#}"))?;
         Ok(())
@@ -259,7 +295,7 @@ fn run_operation(
             None,
             &mut exec,
         )
-        .map_err(|err| EngineFailure::workload(operation, err))?,
+        .map_err(|err| EngineFailure::from_attempt(operation, err))?,
         "remove" => remove_with_context(
             &engine,
             &local.recipe,
@@ -312,6 +348,7 @@ fn run_operation(
         .map_err(|err| EngineFailure::workload("is_acquired", err))?,
         other => {
             return Err(EngineFailure {
+                fatal: true,
                 phase: other.to_string(),
                 reason: "startup",
                 message: format!(
@@ -343,10 +380,10 @@ fn build_engine(search_path: &Path) -> rhai::Engine {
 
 /// Send one checkpoint for a persistence point and block for its ack.
 ///
-/// The F04 seam hands us an error-context label naming the persistence point
-/// (`"Failed to persist ctx after <phase>"`); [`split_label`] maps the known
-/// labels to protocol `phase`/`reason`. Unknown labels are passed through
-/// verbatim so every checkpoint is still reported.
+/// The engine seam hands us the structured [`CheckpointPoint`] directly, so
+/// the frame reports the actual phase and reason verbatim — no label
+/// matching. Persistence points are unchanged: phase completions
+/// (`phase:<phase>`) and success cleanups (the actual cleanup reason).
 #[allow(clippy::too_many_arguments)]
 fn report_checkpoint(
     tx: &mut FrameSender,
@@ -356,19 +393,18 @@ fn report_checkpoint(
     checkpoint_no: &mut u64,
     compiled: &CompiledRecipe,
     ctx_map: &rhai::Map,
-    label: &'static str,
+    point: CheckpointPoint,
 ) -> Result<u64> {
     *checkpoint_no += 1;
     let seq = *checkpoint_no;
     let main_ctx =
         ctx_json(ctx_map).with_context(|| format!("serialize ctx for checkpoint #{seq}"))?;
-    let (phase, reason) = split_label(label);
     tx.send(
         output,
         &FramePayload::Checkpoint(CheckpointPayload {
             seq,
-            phase,
-            reason,
+            phase: point.phase.to_string(),
+            reason: point.reason.to_string(),
             main_ctx: main_ctx.clone(),
             // `ctx` is a single map shared across `//! extends:`; when a base
             // recipe is present the host needs the same content to decide
@@ -392,29 +428,6 @@ fn report_checkpoint(
     let generation = wait_ack(rx, input, seq)?;
     eprintln!("worker: checkpoint #{seq} acked (generation {generation})");
     Ok(generation)
-}
-
-/// Map the F04 persistence-point labels to protocol phase/reason.
-///
-/// Known call sites today (the complete set — every `persist_checkpoint`
-/// caller passes one of these): `acquire`, `build`, `install`, `remove`,
-/// `cleanup`. Both manual and automatic cleanups share the `cleanup` label;
-/// the cleanup reason distinction stays host-side (R03).
-fn split_label(label: &'static str) -> (String, String) {
-    let phase = if label.contains("after acquire") {
-        "acquire"
-    } else if label.contains("after build") {
-        "build"
-    } else if label.contains("after install") {
-        "install"
-    } else if label.contains("after remove") {
-        "remove"
-    } else if label.contains("after cleanup") {
-        "cleanup"
-    } else {
-        return (label.to_string(), label.to_string());
-    };
-    (phase.to_string(), format!("phase:{phase}"))
 }
 
 /// Wait for the ack of checkpoint `seq` with a bounded wait (§4: 300 s), then
