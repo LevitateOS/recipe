@@ -965,3 +965,65 @@ fn is_installed(ctx) {
         source
     );
 }
+
+#[test]
+fn managed_generated_shebang_build_preserves_path_arguments_and_products() {
+    let (_dir, recipes) = create_test_env();
+    let source = r##"
+const RECIPE_API = 2;
+let ctx = #{name: "managed-owned-script"};
+fn is_acquired(ctx) { ready(ctx) }
+fn is_built(ctx) {
+    if is_file("/work/build/script-result") && ctx.state.contains("captured") {
+        if read_file("/work/build/script-result") == "script-product" && ctx.state.code == 0 &&
+           ctx.state.captured == "/work/build/generated-script|argument with spaces|last" {
+            return ready(ctx);
+        }
+    }
+    needs_work(ctx, "generated script has not produced verified bytes")
+}
+fn build(ctx) {
+    write_file("/work/build/generated-script", "#!/usr/bin/bash --noprofile\nprintf script-product > /work/build/script-result\nprintf '%s|%s|%s' \"$0\" \"$1\" \"$2\"\nprintf script-stderr >&2\n");
+    chmod("/work/build/generated-script", 0o755);
+    ctx.state.captured = exec_output("/work/build/generated-script", ["argument with spaces", "last"]);
+    copy_file("/usr/bin/true", "/work/build/generated-true");
+    ctx.state.code = exec("/work/build/generated-true", []);
+    ctx
+}
+fn is_installed(ctx) {
+    if is_file("/out/script-result") {
+        if read_file("/out/script-result") == "script-product" { return ready(ctx); }
+    }
+    needs_work(ctx, "script product is not installed and checked")
+}
+fn install(ctx) {
+    copy_file("/work/build/script-result", "/out/script-result");
+    ctx.outputs.proof = "/out/script-result";
+    ctx
+}
+"##;
+    write_recipe(&recipes, "check", source);
+    let output = managed_command(&recipes, "install").output().unwrap();
+    assert_success(&output);
+    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(context["state"]["code"], 0);
+    assert_eq!(
+        context["state"]["captured"],
+        "/work/build/generated-script|argument with spaces|last"
+    );
+    assert_eq!(context["outputs"]["proof"], "/out/script-result");
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        diagnostics.contains("script-stderr")
+            && diagnostics.contains("launcher exit 0; result exited"),
+        "{diagnostics}"
+    );
+    assert!(
+        !diagnostics.contains("panicked at") && !diagnostics.contains("ginux: audit"),
+        "{diagnostics}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+        source
+    );
+}
