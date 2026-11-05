@@ -145,3 +145,77 @@ fn cli_kernel_removal_rejects_shared_or_glob_roots() {
         }
     }
 }
+
+#[test]
+fn cli_kernel_checks_honor_force_define_over_legacy_environment() {
+    for (recipe, action, forced_message, missing_message) in [
+        (
+            "linux",
+            "isbuilt",
+            "force rebuild requested",
+            "kernel not built",
+        ),
+        (
+            "linux-prebuilt",
+            "isacquired",
+            "forced prebuilt refresh requested",
+            "Missing kernel.release",
+        ),
+    ] {
+        let (dir, recipes) = create_test_env();
+        copy_kernel_recipes(&recipes);
+        let root_define = format!(
+            "KERNEL_ARTIFACT_ROOT={}",
+            dir.path().join("kernel").display()
+        );
+        for (force, legacy, expected) in [("1", "0", forced_message), ("0", "1", missing_message)] {
+            let define = format!("KERNEL_FORCE_REBUILD={force}");
+            let output = kernel_command(&recipes, action, recipe)
+                .args([
+                    "--define",
+                    "KERNEL_KCONFIG_PATH=",
+                    "--define",
+                    &root_define,
+                    "--define",
+                    &define,
+                ])
+                .env("KERNEL_FORCE_REBUILD", legacy)
+                .output()
+                .unwrap();
+            assert!(!output.status.success());
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains(expected),
+                "{recipe}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(!dir.path().join("kernel").exists());
+        }
+        let output = kernel_command(&recipes, action, recipe)
+            .args(["--define", "KERNEL_KCONFIG_PATH=", "--define", &root_define])
+            .env("KERNEL_FORCE_REBUILD", "1")
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(forced_message));
+    }
+}
+
+#[test]
+fn cli_prebuilt_kernel_check_does_not_require_kconfig_define() {
+    let (dir, recipes) = create_test_env();
+    copy_kernel_recipes(&recipes);
+    let define = format!(
+        "KERNEL_ARTIFACT_ROOT={}",
+        dir.path().join("kernel").display()
+    );
+    let output = kernel_command(&recipes, "isacquired", "linux-prebuilt")
+        .args(["--define", &define])
+        .env_remove("KERNEL_FORCE_REBUILD")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("Missing kernel.release"), "{error}");
+    assert!(!error.contains("Variable not found"));
+    assert!(!dir.path().join("kernel").exists());
+}
