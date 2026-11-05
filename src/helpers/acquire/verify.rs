@@ -22,7 +22,7 @@ use std::path::Path;
 use super::super::internal::hash::{self, HashAlgorithm};
 use super::http;
 
-fn is_valid_sha256(s: &str) -> bool {
+pub(super) fn is_valid_sha256(s: &str) -> bool {
     s.len() == 64 && s.as_bytes().iter().all(|b| b.is_ascii_hexdigit())
 }
 

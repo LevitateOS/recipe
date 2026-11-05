@@ -262,6 +262,10 @@ pub fn register_all(engine: &mut Engine) {
         trace_helper("download");
         acquire::download(url, dest)
     });
+    engine.register_fn("download", |url: &str, dest: &str, sha256: &str| {
+        trace_helper("download");
+        acquire::download::download_verified(url, dest, sha256)
+    });
     engine.register_fn("verify_sha256", |path: &str, expected: &str| {
         trace_helper("verify_sha256");
         acquire::verify_sha256(path, expected)
@@ -326,6 +330,13 @@ pub fn register_all(engine: &mut Engine) {
         |repo: &str, pattern: &str, dest_dir: &str| {
             trace_helper("github_download_release");
             acquire::github_download_release(repo, pattern, dest_dir)
+        },
+    );
+    engine.register_fn(
+        "github_download_release",
+        |repo: &str, pattern: &str, dest_dir: &str, sha256: &str| {
+            trace_helper("github_download_release");
+            acquire::http::github_download_release_verified(repo, pattern, dest_dir, sha256)
         },
     );
     engine.register_fn(
@@ -462,7 +473,7 @@ pub fn register_all(engine: &mut Engine) {
         },
     );
 
-    // Torrent/download utilities (acquire/torrent)
+    // Torrent/download utilities
     // torrent(url, dest_dir) -> path string
     // download_with_resume(url, dest_path) -> path string
     engine.register_fn("torrent", |url: &str, dest_dir: &str| {
@@ -473,6 +484,13 @@ pub fn register_all(engine: &mut Engine) {
         trace_helper("download_with_resume");
         acquire::download_with_resume(url, dest)
     });
+    engine.register_fn(
+        "download_with_resume",
+        |url: &str, dest: &str, sha256: &str| {
+            trace_helper("download_with_resume");
+            acquire::download::download_with_resume_verified(url, dest, sha256)
+        },
+    );
 
     // LLM utilities (for complex version/URL extraction)
     engine.register_fn("llm_extract", |content: &str, prompt: &str| {

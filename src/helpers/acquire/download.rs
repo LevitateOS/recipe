@@ -7,8 +7,7 @@
 //!
 //! ```rhai
 //! fn acquire(ctx) {
-//!     let archive = download(ctx.url, BUILD_DIR + "/foo.tar.gz");
-//!     verify_sha256(archive, ctx.sha256);
+//!     let archive = download(ctx.url, BUILD_DIR + "/foo.tar.gz", ctx.sha256);
 //!     ctx.archive_path = archive;
 //!     ctx
 //! }
@@ -22,6 +21,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use super::super::internal::fs_utils;
+use super::super::internal::hash::{self, HashAlgorithm};
 use super::super::internal::progress::{self, upgrade_to_bytes};
 
 /// Download a file from a URL to a specific destination.
@@ -38,6 +38,31 @@ use super::super::internal::progress::{self, upgrade_to_bytes};
 /// verify_sha256(path, "abc123...");
 /// ```
 pub fn download(url: &str, dest: &str) -> Result<String, Box<EvalAltResult>> {
+    download_impl(url, dest, None)
+}
+
+/// Verify the recipe's SHA256 before publishing the completed destination.
+pub fn download_verified(
+    url: &str,
+    dest: &str,
+    sha256: &str,
+) -> Result<String, Box<EvalAltResult>> {
+    validate_sha256(sha256)?;
+    download_impl(url, dest, Some(sha256))
+}
+
+pub(super) fn validate_sha256(sha256: &str) -> Result<(), Box<EvalAltResult>> {
+    if !super::verify::is_valid_sha256(sha256) {
+        return Err("download SHA256 must contain exactly 64 hexadecimal characters".into());
+    }
+    Ok(())
+}
+
+fn download_impl(
+    url: &str,
+    dest: &str,
+    sha256: Option<&str>,
+) -> Result<String, Box<EvalAltResult>> {
     let dest_path = Path::new(dest);
 
     let filename = dest_path
@@ -48,7 +73,7 @@ pub fn download(url: &str, dest: &str) -> Result<String, Box<EvalAltResult>> {
     let response = request(url)
         .call()
         .map_err(|e| format!("download failed: {}", e))?;
-    let total_bytes = save_response(response, dest_path, &filename)?;
+    let total_bytes = save_response(response, dest_path, &filename, sha256)?;
     output::detail(&format!("downloaded {} ({} bytes)", filename, total_bytes));
 
     Ok(dest.to_string())
@@ -89,6 +114,20 @@ fn content_length(response: &ureq::Response) -> Result<Option<u64>, Box<EvalAltR
 /// A server must honor Range; a size-only 416 response is not integrity evidence.
 /// Recipes must verify the completed file against their declared digest.
 pub fn download_with_resume(url: &str, dest: &str) -> Result<String, Box<EvalAltResult>> {
+    resume_impl(url, dest, None)
+}
+
+/// Resume and verify the complete SHA256 before publication, including 416 reuse.
+pub fn download_with_resume_verified(
+    url: &str,
+    dest: &str,
+    sha256: &str,
+) -> Result<String, Box<EvalAltResult>> {
+    validate_sha256(sha256)?;
+    resume_impl(url, dest, Some(sha256))
+}
+
+fn resume_impl(url: &str, dest: &str, sha256: Option<&str>) -> Result<String, Box<EvalAltResult>> {
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err("HTTP resume requires an http:// or https:// URL".into());
     }
@@ -119,7 +158,7 @@ pub fn download_with_resume(url: &str, dest: &str) -> Result<String, Box<EvalAlt
     };
     let filename = dest_path.file_name().unwrap_or_default().to_string_lossy();
     if existing_len == 0 {
-        save_response(response, dest_path, &filename)?;
+        save_response(response, dest_path, &filename, sha256)?;
         return Ok(dest.to_owned());
     }
     match response.status() {
@@ -131,7 +170,11 @@ pub fn download_with_resume(url: &str, dest: &str) -> Result<String, Box<EvalAlt
             if total != existing_len {
                 return Err(format!("resume prefix size {existing_len} does not match remote size {total}").into());
             }
-            output::detail("download size matches remote; recipe integrity verification is still required");
+            if let Some(expected) = sha256 {
+                hash::verify_file_hash(dest_path, expected, HashAlgorithm::Sha256)?;
+            } else {
+                output::detail("download size matches remote; recipe integrity verification is still required");
+            }
         }
         206 => {
             identity_encoding(&response)?;
@@ -149,7 +192,7 @@ pub fn download_with_resume(url: &str, dest: &str) -> Result<String, Box<EvalAlt
             if content_length(&response)?.is_some_and(|len| len != total - start) {
                 return Err("resume Content-Length does not match Content-Range".into());
             }
-            save_response_with_prefix(response, dest_path, &filename, prefix, Some(total))?;
+            save_response_with_prefix(response, dest_path, &filename, prefix, Some(total), sha256)?;
         }
         200 => return Err("resume requested but server did not honor Range (returned 200); use download to restart explicitly".into()),
         status => return Err(format!("unexpected HTTP status {status} while resuming").into()),
@@ -162,6 +205,7 @@ pub(crate) fn save_response(
     response: ureq::Response,
     dest: &Path,
     filename: &str,
+    sha256: Option<&str>,
 ) -> Result<u64, Box<EvalAltResult>> {
     if response.status() != 200 {
         return Err(format!(
@@ -172,7 +216,7 @@ pub(crate) fn save_response(
     }
     identity_encoding(&response)?;
     let total = content_length(&response)?;
-    save_response_with_prefix(response, dest, filename, None, total)
+    save_response_with_prefix(response, dest, filename, None, total, sha256)
 }
 
 fn save_response_with_prefix(
@@ -181,6 +225,7 @@ fn save_response_with_prefix(
     filename: &str,
     prefix: Option<(File, u64)>,
     expected_total: Option<u64>,
+    sha256: Option<&str>,
 ) -> Result<u64, Box<EvalAltResult>> {
     let pb = progress::create_spinner(&format!("downloading {}", filename));
 
@@ -236,6 +281,9 @@ fn save_response_with_prefix(
         }
         if expected_total.is_some_and(|total| total_bytes != total) {
             return Err("download ended before the declared length".into());
+        }
+        if let Some(expected) = sha256 {
+            hash::verify_file_hash(file.path(), expected, HashAlgorithm::Sha256)?;
         }
         file.as_file()
             .sync_all()

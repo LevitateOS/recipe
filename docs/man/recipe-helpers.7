@@ -385,13 +385,18 @@ Example: \fBcopy_first_existing([a, b], join_path(bin_dir, "mkisofs"))\fR
 .SH ACQUIRE HELPERS
 .TP
 \fBdownload\fR
-Signature: \fBdownload(url, dest)\fR
+Signature: \fBdownload(url, dest [, sha256])\fR
 .br
 Returns: destination path string
 .br
-Fails when: download fails or destination cannot be written
+Fails when: download fails, destination cannot be written, or supplied SHA256 mismatches
 .br
-Example: \fBdownload(ctx.url, join_path(BUILD_DIR, "src.tar.xz"))\fR
+Example: \fBdownload(ctx.url, join_path(BUILD_DIR, "src.tar.xz"), ctx.sha256)\fR
+.PP
+The optional SHA256 must contain 64 hexadecimal characters. It is checked against
+the staged file before publication. Failed downloads or digest checks preserve
+the previous destination. Without a digest argument, recipes must verify the
+completed file separately.
 .TP
 \fBverify_sha256\fR
 Signature: \fBverify_sha256(path, expected)\fR
@@ -466,11 +471,11 @@ Fails when: never
 Example: \fBparse_version("release-1.2.3")\fR
 .TP
 \fBgithub_download_release\fR
-Signature: \fBgithub_download_release(repo, pattern, dest_dir)\fR
+Signature: \fBgithub_download_release(repo, pattern, dest_dir [, sha256])\fR
 .br
 Returns: downloaded asset path
 .br
-Fails when: release discovery or download fails
+Fails when: release discovery, download, or supplied SHA256 verification fails
 .br
 Example: \fBgithub_download_release("owner/proj", "x86_64.rpm", BUILD_DIR)\fR
 .TP
@@ -511,11 +516,11 @@ Fails when: torrent download fails
 Example: \fBtorrent(ctx.magnet, BUILD_DIR)\fR
 .TP
 \fBdownload_with_resume\fR
-Signature: \fBdownload_with_resume(url, dest)\fR
+Signature: \fBdownload_with_resume(url, dest [, sha256])\fR
 .br
 Returns: destination path
 .br
-Fails when: HTTP range download fails
+Fails when: HTTP range download or supplied SHA256 verification fails
 .br
 Example: \fBdownload_with_resume(ctx.url, join_path(BUILD_DIR, "iso"))\fR
 .PP
@@ -525,7 +530,8 @@ HTTP 200 is rejected when resuming; use \fBdownload\fR to restart explicitly.
 Resumed bytes are staged beside the destination and replace it only on completion.
 A failed attempt preserves the destination and discards that attempt's progress.
 Staging requires space for the complete replacement file. A matching remote size
-does not establish integrity: recipes must still verify their declared digest.
+does not establish integrity: supply the SHA256 argument or verify the result
+separately. The digest argument also verifies existing bytes on HTTP 416 reuse.
 .SH BUILD HELPERS
 .TP
 \fBextract\fR

@@ -62,7 +62,7 @@ These names are the Rhai function names.
 | `ln_force` | `helpers/install/filesystem.rs` | `ln_force(target, link) -> ()` | replace existing link/path |
 | `chmod` | `helpers/install/filesystem.rs` | `chmod(path, mode) -> ()` | unix mode |
 | `replace_in_file` | `helpers/install/io.rs` | `replace_in_file(path, from, to) -> ()` | whole-file text replacement |
-| `download` | `helpers/acquire/download.rs` | `download(url, dest) -> String` | explicit destination |
+| `download` | `helpers/acquire/download.rs` | `download(url, dest [, sha256]) -> String` | optional digest before atomic replacement |
 | `verify_sha256` | `helpers/acquire/verify.rs` | `verify_sha256(path, expected) -> ()` | explicit file |
 | `fetch_sha256` | `helpers/acquire/verify.rs` | `fetch_sha256(url, filename) -> String` | parse checksum file |
 | `verify_sha512` | `helpers/acquire/verify.rs` | `verify_sha512(path, expected) -> ()` | explicit file |
@@ -75,7 +75,7 @@ These names are the Rhai function names.
 | `github_latest_release` | `helpers/acquire/http.rs` | `github_latest_release(repo) -> String` | strips common prefixes |
 | `github_latest_tag` | `helpers/acquire/http.rs` | `github_latest_tag(repo) -> String` | strips common prefixes |
 | `parse_version` | `helpers/acquire/http.rs` | `parse_version(s) -> String` | strips v/release-/version- |
-| `github_download_release` | `helpers/acquire/http.rs` | `github_download_release(repo, pattern, dest_dir) -> String` | downloads latest asset |
+| `github_download_release` | `helpers/acquire/http/api.rs` | `github_download_release(repo, pattern, dest_dir [, sha256]) -> String` | latest matching asset; optional digest before replacement |
 | `extract_from_tarball` | `helpers/acquire/http.rs` | `extract_from_tarball(url, pattern, dest) -> String` | downloads + extracts file |
 | `check_disk_space` | `helpers/install/disk.rs` | `check_disk_space(path, required_bytes) -> ()` | `df -k` based |
 | `command_exists` | `helpers/util/process.rs` | `command_exists(name) -> bool` | host command probe |
@@ -98,7 +98,7 @@ These names are the Rhai function names.
 | `git_clone` | `helpers/acquire/git.rs` | `git_clone(url, dest_dir) -> String` | clones into dest_dir/<repo> |
 | `git_clone_depth` | `helpers/acquire/git.rs` | `git_clone_depth(url, dest_dir, depth) -> String` | shallow clone |
 | `torrent` | `helpers/acquire/torrent.rs` | `torrent(url, dest_dir) -> String` | pure Rust (librqbit) |
-| `download_with_resume` | `helpers/acquire/download.rs` | `download_with_resume(url, dest) -> String` | validates HTTP Range; stages before replacement; recipe verifies digest |
+| `download_with_resume` | `helpers/acquire/download.rs` | `download_with_resume(url, dest [, sha256]) -> String` | exact HTTP Range; optional digest before replacement/416 reuse |
 | `llm_extract` | `helpers/llm.rs` | `llm_extract(content, prompt) -> String` | TODO backend |
 | `llm_find_latest_version` | `helpers/llm.rs` | `llm_find_latest_version(url, project) -> String` | TODO backend |
 | `llm_find_download_url` | `helpers/llm.rs` | `llm_find_download_url(content, criteria) -> String` | TODO backend |

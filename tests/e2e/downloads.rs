@@ -71,6 +71,126 @@ fn write_resume_recipe(recipes: &Path, url: &str) {
     .unwrap();
 }
 
+fn add_download_digest(recipes: &Path, expected: &str) {
+    let path = recipes.join("download-payload.rhai");
+    let source = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        path,
+        source.replace(
+            "join_path(RECIPE_DIR, \"payload.dat\"))",
+            &format!("join_path(RECIPE_DIR, \"payload.dat\"), \"{expected}\")"),
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn cli_verified_download_publishes_only_matching_sha256() {
+    use sha2::{Digest, Sha256};
+    let expected = hex::encode(Sha256::digest(b"hello world"));
+    for existing in [false, true] {
+        for body in ["hello world", "wrong world"] {
+            let (dir, recipes) = create_test_env();
+            let payload = recipes.join("payload.dat");
+            if existing {
+                std::fs::write(&payload, "previous verified payload").unwrap();
+            }
+            let (url, server) = serve_download(body, body.len());
+            write_download_recipe(&recipes, &url);
+            add_download_digest(&recipes, &expected);
+            let output = run_recipe(
+                &["install", "download-payload", "--no-persist-ctx"],
+                &recipes,
+            );
+            server.join().unwrap();
+            if body == "hello world" {
+                assert_success(&output);
+                assert_eq!(std::fs::read(&payload).unwrap(), b"hello world");
+                assert_eq!(
+                    std::fs::read(dir.path().join("build/installed.dat")).unwrap(),
+                    b"hello world"
+                );
+            } else {
+                assert!(!output.status.success());
+                assert!(
+                    String::from_utf8_lossy(&output.stderr)
+                        .contains("SHA256 integrity check failed")
+                );
+                if existing {
+                    assert_eq!(
+                        std::fs::read(&payload).unwrap(),
+                        b"previous verified payload"
+                    );
+                } else {
+                    assert!(!payload.exists());
+                }
+                assert!(!dir.path().join("build/installed.dat").exists());
+                assert!(!std::fs::read_dir(&recipes).unwrap().any(|entry| {
+                    entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".recipe-download.")
+                }));
+            }
+        }
+    }
+}
+
+#[test]
+fn cli_verified_resume_checks_completed_bytes_and_matching_size_reuse() {
+    use sha2::{Digest, Sha256};
+    let expected = hex::encode(Sha256::digest(b"hello world"));
+    for complete in [false, true] {
+        for valid in [false, true] {
+            let (dir, recipes) = create_test_env();
+            let payload = recipes.join("payload.dat");
+            let prefix = if complete {
+                if valid { "hello world" } else { "wrong world" }
+            } else {
+                "hello "
+            };
+            std::fs::write(&payload, prefix).unwrap();
+            let (url, server) = if complete {
+                serve_response(
+                    "416 Range Not Satisfiable",
+                    "Content-Range: bytes */11\r\nContent-Length: 0\r\n",
+                    "",
+                )
+            } else {
+                serve_response(
+                    "206 Partial Content",
+                    "Content-Range: bytes 6-10/11\r\nContent-Length: 5\r\n",
+                    if valid { "world" } else { "other" },
+                )
+            };
+            write_resume_recipe(&recipes, &url);
+            add_download_digest(&recipes, &expected);
+            let output = run_recipe(
+                &["install", "download-payload", "--no-persist-ctx"],
+                &recipes,
+            );
+            server.join().unwrap();
+            if valid {
+                assert_success(&output);
+                assert_eq!(std::fs::read(&payload).unwrap(), b"hello world");
+                assert_eq!(
+                    std::fs::read(dir.path().join("build/installed.dat")).unwrap(),
+                    b"hello world"
+                );
+            } else {
+                assert!(!output.status.success());
+                assert!(
+                    String::from_utf8_lossy(&output.stderr)
+                        .contains("SHA256 integrity check failed")
+                );
+                assert_eq!(std::fs::read_to_string(&payload).unwrap(), prefix);
+                assert!(!dir.path().join("build/installed.dat").exists());
+            }
+        }
+    }
+}
+
 #[test]
 fn cli_resumed_download_validates_range_and_installs_complete_payload() {
     let (dir, recipes) = create_test_env();

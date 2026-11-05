@@ -175,7 +175,18 @@ pub fn github_download_release(
     asset_pattern: &str,
     dest_dir: &str,
 ) -> Result<String, Box<EvalAltResult>> {
-    github_download_release_impl(repo, asset_pattern, dest_dir, GITHUB_API_BASE)
+    github_download_release_impl(repo, asset_pattern, dest_dir, GITHUB_API_BASE, None)
+}
+
+/// Download a selected release asset and verify SHA256 before publication.
+pub fn github_download_release_verified(
+    repo: &str,
+    asset_pattern: &str,
+    dest_dir: &str,
+    sha256: &str,
+) -> Result<String, Box<EvalAltResult>> {
+    super::super::download::validate_sha256(sha256)?;
+    github_download_release_impl(repo, asset_pattern, dest_dir, GITHUB_API_BASE, Some(sha256))
 }
 
 /// Internal implementation with configurable base URL (for testing)
@@ -184,6 +195,7 @@ fn github_download_release_impl(
     asset_pattern: &str,
     dest_dir: &str,
     base_url: &str,
+    sha256: Option<&str>,
 ) -> Result<String, Box<EvalAltResult>> {
     // Get latest release info
     let url = format!("{}/repos/{}/releases/latest", base_url, repo);
@@ -251,7 +263,7 @@ fn github_download_release_impl(
         .call()
         .map_err(|e| format!("Download failed: {}", e))?;
 
-    super::super::download::save_response(response, &dest_path, asset_name)?;
+    super::super::download::save_response(response, &dest_path, asset_name, sha256)?;
 
     output::detail(&format!("downloaded {}", asset_name));
     Ok(dest_path.to_string_lossy().to_string())

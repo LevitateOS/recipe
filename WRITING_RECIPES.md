@@ -398,6 +398,11 @@ require appropriate quoting.
 
 ### Helper Footguns Worth Knowing
 
+- Prefer `download(url, dest, ctx.sha256)` when the recipe has a pinned SHA256.
+  The optional digest is checked before replacement, so corrupt responses cannot
+  replace a valid cached file. `download_with_resume(url, dest, ctx.sha256)` and
+  `github_download_release(repo, pattern, dest_dir, ctx.sha256)` support the same
+  verification. Calls without the digest still require separate verification.
 - `download_with_resume(url, dest)` treats an existing file as a prefix and
   requires an exact HTTP Range response. It stages a complete replacement;
   failures preserve the existing file and discard the attempt's new bytes.
