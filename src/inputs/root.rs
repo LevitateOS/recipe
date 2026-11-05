@@ -260,7 +260,10 @@ fn unpack_image(snapshot: File, root: &Path) -> Result<()> {
     let mut paths = HashSet::new();
     let mut directories = HashMap::new();
     let mut total = 0u64;
-    for entry in archive.entries()? {
+    for (index, entry) in archive.entries()?.enumerate() {
+        if index >= MAX_IMAGE_ENTRIES {
+            bail!("rootfs image entry limit exceeded");
+        }
         let mut entry = entry?;
         let relative = relative_path(&entry.path()?)?;
         let kind = entry.header().entry_type();
@@ -281,9 +284,6 @@ fn unpack_image(snapshot: File, root: &Path) -> Result<()> {
         }
         if !paths.insert(relative.clone()) {
             bail!("duplicate rootfs image path: {}", relative.display());
-        }
-        if paths.len() > MAX_IMAGE_ENTRIES {
-            bail!("rootfs image entry limit exceeded");
         }
         ensure_parents(root, &relative)?;
         let destination = root.join(&relative);
