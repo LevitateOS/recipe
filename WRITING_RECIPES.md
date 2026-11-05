@@ -58,9 +58,12 @@ The current backend is limited to 32 objects (including directories), 64 KiB
 per file and 64 open files. It supports regular-file IO and metadata, mkdir,
 file unlink and chmod; directory enumeration/removal, rename, links, duplicate
 descriptors and execution of generated files remain unsupported. It cannot yet
-build ordinary compiler projects. The real child helper now opens its assigned
-null stdin but is denied at `pipe2`; pipes and supervised child execution remain
-unfinished. File effects disappear after the invocation.
+build ordinary compiler projects. Anonymous pipes now use supervisor-owned
+buffers, with tested byte flow, aliases and EOF. Ordinary child startup still
+fails before process creation: the current public descriptor numbers exceed
+the reported descriptor limit and libc rejects them. A shared descriptor table,
+peer scheduling and supervised child execution remain unfinished. File effects
+disappear after the invocation.
 Acknowledgements still use placeholder generation 0 and are not durable-state
 evidence. Child commands, retained writable storage, durable state, complete
 dependency closure staging, target installation views and output publication
