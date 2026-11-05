@@ -28,6 +28,10 @@ pub(crate) struct Cli {
     #[arg(short, long, global = true)]
     pub(crate) build_dir: Option<PathBuf>,
 
+    /// Store resumable state here (default: the per-user application-state directory).
+    #[arg(long, global = true)]
+    pub(crate) state_dir: Option<PathBuf>,
+
     /// Define scope constants (KEY=VALUE), injected into Rhai scope before execution
     #[arg(short, long = "define", global = true, value_name = "KEY=VALUE")]
     pub(crate) defines: Vec<String>,
@@ -48,8 +52,13 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub(crate) llm_profile: Option<String>,
 
-    /// Do not persist updated ctx back into recipe source files; useful for inspection and dry debugging.
-    #[arg(long, global = true, default_value_t = false)]
+    /// Disable state/file recovery; --no-persist-ctx is a deprecated alias. Filesystem effects still occur.
+    #[arg(
+        long = "no-persist-state",
+        alias = "no-persist-ctx",
+        global = true,
+        default_value_t = false
+    )]
     pub(crate) no_persist_ctx: bool,
 
     /// Select the execution backend for recipe operations: `ginux` (also the

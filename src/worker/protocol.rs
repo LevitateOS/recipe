@@ -1,4 +1,4 @@
-//! Worker protocol v3 framing, invocation options and bounded diagnostics.
+//! Worker protocol v4: per-recipe state, invocation options and diagnostics.
 //!
 //! Implements `docs/ginux-recipe-interfaces.md` §4 on the Recipe side. Ginux
 //! treats these frames as opaque bytes; Recipe owns their shape.
@@ -8,13 +8,13 @@
 //! Every frame is:
 //!
 //! ```text
-//! [u32 BE total-length][u32 BE version=3][u32 BE seq][u16 BE op][payload]
+//! [u32 BE total-length][u32 BE version=4][u32 BE seq][u16 BE op][payload]
 //! ```
 //!
 //! - `total-length` is the full frame size **including** its own 4 bytes, so
 //!   `payload.len() == total-length - HEADER_LEN` with
 //!   `HEADER_LEN == 14` (4 + 4 + 4 + 2).
-//! - `version` is always [`PROTOCOL_VERSION`] (3). Anything else is a
+//! - `version` is always [`PROTOCOL_VERSION`] (4). Anything else is a
 //!   `protocol` failure: the receiver aborts, never retries on the same
 //!   invocation.
 //! - `seq` numbers each direction independently starting at 1. The receiver
@@ -28,11 +28,10 @@
 //! ## Payload rules
 //!
 //! Payloads carry no host paths: `invocation_id` values follow the
-//! `[A-Za-z0-9_-]{1,64}` shape, `base_path` names a recipe-side source (never
-//! a host filesystem path), and `main_ctx` / `base_ctx` / `ctx_summary` are
-//! plain JSON values (`*_ctx` must be JSON objects). Validation here rejects
-//! malformed shapes; keeping host paths out is a caller contract documented
-//! on each field.
+//! `[A-Za-z0-9_-]{1,64}` shape. Checkpoints name a canonical `/inputs` recipe
+//! and its JSON object `state`; requests carry matching per-recipe saved state.
+//! The coordinator owns all authoritative host destinations. Final contexts
+//! are JSON objects, with named outputs validated separately before publication.
 //!
 //! ## Use (the exact API R02 should call)
 //!
@@ -55,7 +54,7 @@ use std::io::{Read, Write};
 use serde::{Deserialize, Serialize};
 
 /// Protocol version carried in every frame header.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Maximum total frame size in bytes (4 MiB), header included.
 pub const MAX_FRAME_LEN: usize = 4 * 1024 * 1024;
@@ -139,6 +138,8 @@ pub struct RequestPayload {
     pub recipe_digest: String,
     /// Explicit invocation options; never inferred from coordinator environment.
     pub options: InvocationOptions,
+    /// Matching per-recipe runtime state; the coordinator restores its files.
+    pub restored_states: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,13 +194,10 @@ pub struct CheckpointPayload {
     pub phase: String,
     /// Persistence-point label (e.g. `phase:build`, `cleanup:manual`).
     pub reason: String,
-    /// Updated main-recipe `ctx` (must be a JSON object).
-    pub main_ctx: serde_json::Value,
-    /// Updated base-recipe `ctx` (must be a JSON object).
-    pub base_ctx: serde_json::Value,
-    /// Which base source this pairs with, if any. Never a host path.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base_path: Option<String>,
+    /// Canonical staged recipe identity, never a host state destination.
+    pub recipe: String,
+    /// Only resumable runtime state; package facts and paths are initialized anew.
+    pub state: serde_json::Value,
 }
 
 /// Op 3 (host→worker): acknowledge a checkpoint with a durable generation.
@@ -441,6 +439,18 @@ fn valid_invocation_id(id: &str) -> bool {
 
 fn check_request(p: &RequestPayload) -> Result<(), ProtocolError> {
     p.options.validate()?;
+    if p.restored_states.len() > 1024 || (!p.persist_ctx && !p.restored_states.is_empty()) {
+        return Err(ProtocolError::PayloadInvalid(
+            "invalid restored state set".into(),
+        ));
+    }
+    for (recipe, state) in &p.restored_states {
+        if !valid_recipe_identity(recipe) || !state.is_object() {
+            return Err(ProtocolError::PayloadInvalid(
+                "invalid restored recipe state".into(),
+            ));
+        }
+    }
     if !valid_invocation_id(&p.invocation_id) {
         return Err(ProtocolError::PayloadInvalid(format!(
             "request invocation_id {:?} must match [A-Za-z0-9_-]{{1,64}}",
@@ -455,15 +465,19 @@ fn check_request(p: &RequestPayload) -> Result<(), ProtocolError> {
     Ok(())
 }
 
+fn valid_recipe_identity(path: &str) -> bool {
+    path.len() <= 255
+        && path.starts_with("/inputs/")
+        && !path.contains('\0')
+        && path[8..]
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
 fn check_checkpoint(p: &CheckpointPayload) -> Result<(), ProtocolError> {
-    if !p.main_ctx.is_object() {
+    if !valid_recipe_identity(&p.recipe) || !p.state.is_object() {
         return Err(ProtocolError::PayloadInvalid(
-            "checkpoint main_ctx must be a JSON object".to_string(),
-        ));
-    }
-    if !p.base_ctx.is_object() {
-        return Err(ProtocolError::PayloadInvalid(
-            "checkpoint base_ctx must be a JSON object".to_string(),
+            "checkpoint requires a staged recipe identity and state object".into(),
         ));
     }
     Ok(())

@@ -134,12 +134,18 @@ infinite waits. Image-file polling is unsupported. Nonfatal signal interruption
 and restart, broader signal/robust-futex behavior and threaded exec transitions
 remain unfinished. Exec preparation interrupted by signals fails explicitly;
 generated-file execution still needs storage.
-File effects disappear after the invocation.
-Acknowledgements still use placeholder generation 0 and are not durable-state
-evidence. Child commands, retained writable storage, durable state, complete
-dependency closure staging, target installation views and output publication
-remain unfinished. A successful ephemeral install does not publish a host
-artifact or provide resumable state.
+Owned files under `/work` and `/out` can now be saved and restored with API 2
+`ctx.state`. The coordinator records a matching filesystem snapshot and state
+before acknowledging each checkpoint; dependencies carry distinct state entries.
+Source files remain immutable. Disable recovery with `--no-persist-state` (old
+`--no-persist-ctx` is an alias). Legacy whole-context persistence requires explicit
+migration to API 2; unknown package/runtime fields are never guessed.
+Successful named outputs are exported and validated before returning published
+host paths. Custom readiness checks must rediscover `ctx.outputs` when reusing
+work. See [runtime state and recovery](README.md#runtime-state-and-recovery) for
+identity, storage locations, recovery limits and diagnostics.
+Target installation views, large source-asset support and representative distro
+consumer integration remain in progress.
 
 ## Core Model
 
@@ -150,7 +156,7 @@ They work by:
 - declaring a top-level `ctx` map
 - using independent `is_*` checks (explicit outcomes in API 2; deliberate throws in legacy recipes)
 - mutating and returning `ctx` from phase functions
-- persisting `ctx` back into the recipe file after successful phases
+- retaining `ctx.state` separately with the matching domain filesystem after successful phases
 
 Normal install flow is:
 
@@ -349,52 +355,21 @@ Behavior of missing phases:
 
 ## The `ctx` Contract
 
-### The Exact `ctx` Literal Matters
+### Separate Facts, State and Outputs
 
-`ctx` persistence looks for the exact byte sequence:
+API 2 initializes the top-level `ctx` map normally; literal whitespace does not
+select persistence behavior. Keep recipe/package facts outside `ctx.state`.
+Put resumable values in `ctx.state` and rediscover named paths in `ctx.outputs`.
+Only `ctx.state` is restored into the freshly initialized context.
 
-```rhai
-let ctx = #{
-```
+Arrays, nested maps, strings, integers, finite floats, booleans and `()` round-trip
+through the separate JSON record. Function pointers and other unsupported values
+fail with a field-specific error; they are never stringified into saved state.
 
-That means these are not equivalent for persistence purposes:
-
-- `let ctx = #{` works
-- `let ctx=#{` does not
-- `const ctx = #{` does not
-
-If the exact form is missing, the recipe can still execute, but persistence will
-not find the block and install/remove/cleanup operations will fail when they try
-to write state back.
-
-### Keep `ctx` Values Simple
-
-Current persistence round-trips these types cleanly:
-
-- strings
-- integers
-- booleans
-- `()`
-
-Other Rhai values are serialized by stringifying them and then writing the
-result as a quoted string. That means arrays, maps, timestamps, and other
-non-scalar values are not safe persistent `ctx` state today.
-
-Rule of thumb: keep persistent `ctx` fields scalar and reconstruct richer values
-inside checks/phases.
-
-### `ctx` Is Persisted Incrementally
-
-After a successful phase, `ctx` is written back to the recipe source file.
-
-That means:
-
-- a successful `acquire(ctx)` persists even if `install(ctx)` later fails
-- rerunning the recipe resumes from the persisted state
-- file permissions are preserved where possible
-- keys are written back in sorted order, not original source order
-
-This is intentional. It is how resume behavior works.
+A successful phase checkpoints its state with the filesystem before proceeding.
+If a later phase fails, rerun with the same inputs and destination to resume that
+pair. Custom checks decide whether completed work is still usable. Sources,
+including inherited base recipes, remain unchanged.
 
 ## Writing Checks Correctly
 
@@ -708,14 +683,10 @@ refer to the shared tools destination, including for transitive dependencies.
 Cycles are checked by canonical source path before taking another lock or
 evaluating that recipe. Dependency depth is bounded to 64 active recipes.
 
-The current v1 worker protocol cannot identify separate dependency snapshots.
-Use `--no-persist-ctx` for explicitly non-resumable dependency execution. Persistent
-dependency execution fails before dependency setup until the R07 state contract
-is integrated. Dependency sources are never rewritten, and dependency contexts
-are never sent as the parent's v1 checkpoint. In non-persistent mode, parent
-checkpoints still report normally; dependency phases have no durable state/ack
-association yet. This common executor code is compiled, but managed dependency
-execution, closure staging, and durable recovery still require Ginux integration.
+Protocol v4 checkpoints each dependency under its own canonical staged recipe
+identity, together with the shared filesystem generation. Reused dependencies
+also save state discovered by their checks. `--no-persist-state` explicitly
+selects non-resumable execution. Dependency sources stay immutable in either mode.
 
 ### Environment Fixups for Tool Recipes
 
@@ -755,17 +726,11 @@ recipes should extend `linux.rhai` directly, since extending the alias would
 require recursive inheritance. The unused `leviso/deps/linux.rhai` overlay was
 removed; its Rust caller already delegates to the canonical recipe.
 
-### Important Persistence Caveat
+### Inherited State
 
-If the child recipe does not declare its own `ctx` block, ctx persistence falls
-back to the base recipe's `ctx`.
-
-That is useful for shared state, but it can also be a trap:
-
-- running child installs may mutate the shared base recipe file
-- multiple child recipes can end up sharing one persisted state source
-
-If you want per-child state, define a `ctx` block in the child recipe.
+Initialization merges base and child declarations as usual. Saved runtime state
+belongs to the selected child recipe identity, even when the base declares `ctx`.
+Neither source is rewritten and children do not share a mutable source-state file.
 
 ## Authoring Patterns That Work Well
 
@@ -856,15 +821,16 @@ RECIPE_TRACE_HELPERS=1
 
 This emits helper-level trace lines.
 
-### Dry-ish Runs
+### Disable Recovery
 
 Use:
 
 ```bash
-recipe install mypkg --no-persist-ctx
+recipe install mypkg --no-persist-state
 ```
 
-That disables source mutation while still executing the recipe.
+That disables saved-state recovery. Commands and filesystem effects still run;
+this is not a dry run. Recipe sources remain immutable in both modes.
 
 ## Common Failure Modes
 
@@ -874,29 +840,26 @@ Cleanup may be omitted. If present, its signature must be
 `fn cleanup(ctx, reason) { ...; ctx }`. A one-argument cleanup hook is an error;
 it is not silently treated as an absent hook.
 
-### `ctx` Persistence Broke After Refactoring
+### Legacy Runtime Fields
 
-If persistence suddenly stops working, check whether the recipe still uses:
+Resumable execution requires API 2 and explicit `ctx.state`. Move only runtime
+fields there; retain package facts in the fresh context. Use `--no-persist-state`
+while migrating. A corrupted saved record fails before workload startup; preserve
+it for diagnosis and select a fresh state directory to deliberately restart.
 
-```rhai
-let ctx = #{
-```
+### Host Paths Are Not Domain Inputs
 
-The executor is looking for that exact text.
-
-### Recipe Writes to the Real Host
-
-That is possible today. There is no implemented sysroot/prefix confinement yet.
-
-If you need safe destination routing, pass explicit destinations with
-`--define`, keep installs under a controlled prefix, and audit every path.
+Public execution requires Ginux. A host path supplied as a define neither imports
+that path nor selects a host installation destination. Declare inputs with
+`--input name=PATH`; use their `/inputs/name` paths, owned `/work` or `/out` paths,
+and named outputs for validated publication.
 
 ## Practical Checklist
 
 Before calling a recipe "done", verify:
 
-- `ctx` uses the exact `let ctx = #{` form
-- persistent `ctx` fields are scalar
+- API 2 initializes a `ctx` map
+- resumable fields belong to serializable `ctx.state`
 - `is_installed(ctx)` exists and is truthful
 - any defined cleanup hook accepts `(ctx, reason)` and returns `ctx`
 - `build(ctx)` is only present if the recipe really has a build phase

@@ -109,3 +109,6 @@ mod managed_inputs;
 
 #[path = "e2e/worker_entry.rs"]
 mod worker_entry;
+
+#[path = "e2e/managed_state.rs"]
+mod managed_state;

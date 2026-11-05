@@ -21,6 +21,7 @@ const MAX_WORKER_BYTES: u64 = 512 * 1024 * 1024;
 /// Owns the isolated root until the launcher and worker have been reaped.
 pub(crate) struct PreparedRoot {
     directory: tempfile::TempDir,
+    pub(crate) worker_digest: String,
 }
 
 impl PreparedRoot {
@@ -74,7 +75,8 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
         bail!("Ginux rootfs digest mismatch: expected {digest}, got {actual}");
     }
     snapshot.seek(SeekFrom::Start(0))?;
-    let root = PreparedRoot {
+    let mut root = PreparedRoot {
+        worker_digest: String::new(),
         directory: tempfile::Builder::new()
             .prefix("recipe-domain-")
             .tempdir()?,
@@ -119,7 +121,7 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
         .write(true)
         .create_new(true)
         .open(inputs.join("recipe-worker"))?;
-    copy_hashed(&mut worker, &mut destination, MAX_WORKER_BYTES)?;
+    root.worker_digest = copy_hashed(&mut worker, &mut destination, MAX_WORKER_BYTES)?.1;
     destination.set_permissions(std::fs::Permissions::from_mode(0o555))?;
 
     // No shared cached tree or mutable hardlinks are handed to the domain.

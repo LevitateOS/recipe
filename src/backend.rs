@@ -160,6 +160,8 @@ impl Backend {
         persist_ctx: bool,
         options: crate::worker::protocol::InvocationOptions,
         inputs: &[crate::inputs::ExtraInput],
+        destination: &Path,
+        state_dir: Option<&Path>,
         _host_op: impl FnOnce() -> Result<rhai::Map>,
     ) -> Result<rhai::Map> {
         match self {
@@ -176,7 +178,15 @@ impl Backend {
                                 recipe.display(),
                             )
                         })?;
-                let report = crate::launch::run_domain(&prepared, launcher, persist_ctx, &options)?;
+                let report = crate::launch::run_domain(
+                    &prepared,
+                    launcher,
+                    persist_ctx,
+                    &options,
+                    destination,
+                    state_dir,
+                    recipe,
+                )?;
                 eprintln!(
                     "recipe: invocation {} finished in the Ginux domain: ok={} ({} checkpoint{} \
                      acked; launcher exit {}; result {})",

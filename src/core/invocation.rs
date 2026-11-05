@@ -259,6 +259,27 @@ impl<'a> Runtime<'a> {
         })
     }
 
+    pub(crate) fn restore_state(&mut self, state: &Map) -> Result<()> {
+        if !self.is_api2() {
+            bail!(
+                "resumable execution requires RECIPE_API = 2 and explicit ctx.state; use --no-persist-state while migrating"
+            );
+        }
+        let mut value = self
+            .scope
+            .iter_raw()
+            .find(|(name, _, _)| *name == "ctx")
+            .map(|(_, _, value)| value.clone())
+            .ok_or_else(|| anyhow!("missing initialized ctx"))?;
+        let mut ctx = value
+            .write_lock::<Map>()
+            .ok_or_else(|| anyhow!("initialized ctx is not a map"))?;
+        ctx.insert("state".into(), state.clone().into());
+        drop(ctx);
+        self.scope.set_value("ctx", value);
+        Ok(())
+    }
+
     pub(crate) fn scope(&self) -> &Scope<'static> {
         &self.scope
     }

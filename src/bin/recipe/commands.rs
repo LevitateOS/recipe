@@ -46,6 +46,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             };
             let engine = create_engine(
                 cli.build_dir.as_deref(),
+                cli.state_dir.as_deref(),
                 Some(&recipes_path),
                 &cli.defines,
                 &cli.inputs,
@@ -62,6 +63,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(
                 cli.build_dir.as_deref(),
+                cli.state_dir.as_deref(),
                 Some(&recipes_path),
                 &cli.defines,
                 &cli.inputs,
@@ -78,6 +80,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(
                 cli.build_dir.as_deref(),
+                cli.state_dir.as_deref(),
                 Some(&recipes_path),
                 &cli.defines,
                 &cli.inputs,
@@ -99,6 +102,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(
                 cli.build_dir.as_deref(),
+                cli.state_dir.as_deref(),
                 Some(&recipes_path),
                 &cli.defines,
                 &cli.inputs,
@@ -115,6 +119,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(
                 cli.build_dir.as_deref(),
+                cli.state_dir.as_deref(),
                 Some(&recipes_path),
                 &cli.defines,
                 &cli.inputs,
@@ -131,6 +136,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(
                 cli.build_dir.as_deref(),
+                cli.state_dir.as_deref(),
                 Some(&recipes_path),
                 &cli.defines,
                 &cli.inputs,
@@ -204,6 +210,7 @@ fn emit_json(ctx: &rhai::Map, path: Option<&Path>) -> Result<()> {
 /// they need no execution domain.
 fn create_engine(
     build_dir: Option<&Path>,
+    state_dir: Option<&Path>,
     recipes_path: Option<&Path>,
     defines: &[String],
     inputs: &[String],
@@ -219,15 +226,23 @@ fn create_engine(
                 .with_context(|| format!("Failed to create build directory: {}", dir.display()))?;
             dir.to_path_buf()
         }
-        None => {
+        None if no_persist_ctx => {
             let temp = tempfile::tempdir().context("Failed to create temporary build directory")?;
             temp.keep()
+        }
+        None => {
+            let state = match state_dir {
+                Some(path) => path.to_owned(),
+                None => levitate_recipe::default_state_directory()?,
+            };
+            state.join("default-destination")
         }
     };
 
     let mut engine = RecipeEngine::new(build_dir)
         .with_backend(backend)
         .with_ctx_persistence(!no_persist_ctx)
+        .with_state_dir(state_dir.map(Path::to_owned))
         .with_llm_profile(llm_profile)
         .with_autofix(autofix);
 

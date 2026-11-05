@@ -1,4 +1,4 @@
-//! Worker entry point: run the existing engine behind protocol v2.
+//! Worker entry point: run the existing engine behind protocol v4.
 //!
 //! The worker is the same `recipe` binary entered with a private argv marker (see
 //! the dispatch in `src/bin/`). It reads exactly one request frame from
@@ -27,10 +27,9 @@
 //! operations (`remove` / `cleanup` / checks) have no phase-error shape and
 //! still report `fatal: true`, as does any checkpoint/ack transport failure.
 //!
-//! What this does NOT do (owned by later tasks): input preparation and stable
-//! domain paths (R05 — the recipe comes from argv, see [`LocalConfig`]);
-//! generation-backed persistence (R07 — the host decides what the acked
-//! generation means for its source files).
+//! The coordinator prepares immutable inputs and restores the matching filesystem.
+//! The worker initializes current facts, restores only ctx.state, and reports
+//! per-recipe state at checkpoints. It never rewrites recipe sources.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -368,8 +367,8 @@ fn run_operation(
                     _persist: bool|
      -> Result<()> {
         // The sink fires at every persistence point even when persist is
-        // disabled (seam contract); the host decides what the acked
-        // generation means for its source files. The `_persist` flag is
+        // disabled (seam contract); the host decides whether to retain the
+        // matching state/files generation. The `_persist` flag is
         // intentionally unused here: the worker never writes sources either
         // way.
         report_checkpoint(
@@ -386,6 +385,8 @@ fn run_operation(
         Ok(())
     };
     let mut exec = ExecutionContext::worker_stub(&mut sink);
+    exec.restore_states(&req.restored_states, req.persist_ctx)
+        .map_err(|err| EngineFailure::workload("startup", err))?;
 
     let operation = req.operation.as_str();
     let final_ctx = match operation {
@@ -549,8 +550,10 @@ fn report_checkpoint(
 ) -> Result<u64> {
     *checkpoint_no += 1;
     let seq = *checkpoint_no;
-    let main_ctx =
-        ctx_json(ctx_map).with_context(|| format!("serialize ctx for checkpoint #{seq}"))?;
+    let state = match ctx_map.get("state") {
+        Some(state) => state_json(state)?,
+        None => serde_json::json!({}), // Legacy non-resumable execution only.
+    };
     let mut channel = tx.lock().map_err(|_| anyhow!("worker channel poisoned"))?;
     if channel.failed {
         bail!("worker diagnostic transport failed");
@@ -563,21 +566,12 @@ fn report_checkpoint(
                 seq,
                 phase: point.phase.to_string(),
                 reason: point.reason.to_string(),
-                main_ctx: main_ctx.clone(),
-                // `ctx` is a single map shared across `//! extends:`; when a base
-                // recipe is present the host needs the same content to decide
-                // which trusted source (main or base) the acked generation updates.
-                base_ctx: if compiled.base_path.is_some() {
-                    main_ctx
-                } else {
-                    serde_json::Value::Object(serde_json::Map::new())
-                },
-                // A recipe-side source name, never a host path (§4).
-                base_path: compiled
-                    .base_path
-                    .as_ref()
-                    .and_then(|p| p.file_name())
-                    .map(|s| s.to_string_lossy().into_owned()),
+                recipe: compiled
+                    .recipe_path
+                    .to_str()
+                    .context("recipe identity is not UTF-8")?
+                    .to_owned(),
+                state,
             }),
         )
         .map_err(|e| {
@@ -722,11 +716,60 @@ fn send_result(
 /// Serialize a final/ checkpoint `ctx` map exactly like the CLI's JSON
 /// output does. Must be a JSON object (§4 field rule).
 fn ctx_json(map: &rhai::Map) -> Result<serde_json::Value> {
+    if let Some(state) = map.get("state") {
+        state_json(state)?;
+    }
     let dynamic = rhai::Dynamic::from(map.clone());
     let value: serde_json::Value =
         rhai::serde::from_dynamic(&dynamic).map_err(|e| anyhow!("serialize ctx: {e}"))?;
     if !value.is_object() {
         bail!("ctx did not serialize to a JSON object");
+    }
+    Ok(value)
+}
+
+/// Reject values JSON cannot preserve, with the exact field needing migration.
+fn state_json(state: &rhai::Dynamic) -> Result<serde_json::Value> {
+    fn validate(value: &rhai::Dynamic, path: &str, depth: usize) -> Result<()> {
+        if depth > 64 {
+            bail!("{path}: state nesting exceeds 64");
+        }
+        let value = value.flatten_clone();
+        if value.is_unit() || value.is_bool() || value.is_int() || value.is_string() {
+            return Ok(());
+        }
+        if value.is_float() {
+            if !value
+                .as_float()
+                .map_err(|error| anyhow!("{path}: {error}"))?
+                .is_finite()
+            {
+                bail!("{path}: nonfinite numbers cannot be saved");
+            }
+            return Ok(());
+        }
+        if let Some(array) = value.read_lock::<rhai::Array>() {
+            for (index, child) in array.iter().enumerate() {
+                validate(child, &format!("{path}[{index}]"), depth + 1)?;
+            }
+            return Ok(());
+        }
+        if let Some(map) = value.read_lock::<rhai::Map>() {
+            for (name, child) in map.iter() {
+                validate(child, &format!("{path}[{name:?}]"), depth + 1)?;
+            }
+            return Ok(());
+        }
+        bail!(
+            "{path}: {} is not serializable runtime state",
+            value.type_name()
+        )
+    }
+    validate(state, "ctx.state", 0)?;
+    let value =
+        rhai::serde::from_dynamic::<serde_json::Value>(state).context("serialize ctx.state")?;
+    if !value.is_object() {
+        bail!("ctx.state must be a map");
     }
     Ok(value)
 }

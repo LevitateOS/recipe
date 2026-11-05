@@ -97,6 +97,12 @@ pub mod helpers;
 pub mod inputs;
 pub mod launch;
 mod publication;
+mod retained;
+
+/// Default coordinator-owned runtime state directory.
+pub fn default_state_directory() -> anyhow::Result<std::path::PathBuf> {
+    retained::default_directory()
+}
 mod llm;
 pub mod logging;
 pub mod worker;
@@ -151,6 +157,7 @@ pub struct RecipeEngine {
     defines: Vec<(String, String)>,
     inputs: Vec<inputs::ExtraInput>,
     persist_ctx: bool,
+    state_dir: Option<PathBuf>,
     llm_profile: Option<String>,
     autofix: Option<AutoFixConfig>,
     /// Explicit launcher selection; None resolves mandatory Ginux from the
@@ -170,6 +177,7 @@ impl RecipeEngine {
             defines: Vec::new(),
             inputs: Vec::new(),
             persist_ctx: true,
+            state_dir: None,
             llm_profile: None,
             autofix: None,
             backend: None,
@@ -219,6 +227,12 @@ impl RecipeEngine {
         self
     }
 
+    /// Select coordinator-owned runtime state storage.
+    pub fn with_state_dir(mut self, path: Option<PathBuf>) -> Self {
+        self.state_dir = path;
+        self
+    }
+
     /// Enable Recipe's automatic LLM-based repair loop for this engine execution.
     pub fn with_autofix(mut self, cfg: Option<AutoFixConfig>) -> Self {
         self.autofix = cfg;
@@ -254,6 +268,8 @@ impl RecipeEngine {
             self.persist_ctx,
             self.invocation_options("manual")?,
             &self.inputs,
+            &self.build_dir,
+            self.state_dir.as_deref(),
             || {
                 llm::with_llm_profile(self.llm_profile.as_deref(), || {
                     if let Some(autofix) = self.autofix.as_ref() {
@@ -299,6 +315,8 @@ impl RecipeEngine {
             self.persist_ctx,
             self.invocation_options("manual")?,
             &self.inputs,
+            &self.build_dir,
+            self.state_dir.as_deref(),
             || {
                 llm::with_llm_profile(self.llm_profile.as_deref(), || {
                     core::executor::remove(
@@ -331,6 +349,8 @@ impl RecipeEngine {
             self.persist_ctx,
             self.invocation_options(reason)?,
             &self.inputs,
+            &self.build_dir,
+            self.state_dir.as_deref(),
             || {
                 llm::with_llm_profile(self.llm_profile.as_deref(), || {
                     core::executor::cleanup(
@@ -356,6 +376,8 @@ impl RecipeEngine {
             self.persist_ctx,
             self.invocation_options("manual")?,
             &self.inputs,
+            &self.build_dir,
+            self.state_dir.as_deref(),
             || {
                 llm::with_llm_profile(self.llm_profile.as_deref(), || {
                     core::executor::is_installed(
@@ -379,6 +401,8 @@ impl RecipeEngine {
             self.persist_ctx,
             self.invocation_options("manual")?,
             &self.inputs,
+            &self.build_dir,
+            self.state_dir.as_deref(),
             || {
                 llm::with_llm_profile(self.llm_profile.as_deref(), || {
                     core::executor::is_built(
@@ -402,6 +426,8 @@ impl RecipeEngine {
             self.persist_ctx,
             self.invocation_options("manual")?,
             &self.inputs,
+            &self.build_dir,
+            self.state_dir.as_deref(),
             || {
                 llm::with_llm_profile(self.llm_profile.as_deref(), || {
                     core::executor::is_acquired(

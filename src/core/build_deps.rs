@@ -42,7 +42,6 @@ impl<'a> BuildDepsResolver<'a> {
         persist_enabled: bool,
         exec: &mut ExecutionContext<'_>,
     ) -> Result<PathBuf> {
-        exec.require_dependency_policy(persist_enabled)?;
         exec.prepare_work_root(self.build_dir);
         let tools_prefix = exec.tools_prefix()?;
         for name in deps {

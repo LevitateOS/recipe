@@ -21,8 +21,8 @@
 //!   drained to a log file with a byte cap and never parsed: log bytes only
 //!   appear in human diagnostics, never as results.
 //! - Acknowledged checkpoints record `{seq → generation}` in the returned
-//!   report only. Generations are `0` here (no durable storage claim);
-//!   R07/G12a own durable generations and the state record.
+//!   report after the supervisor snapshot and matching state record are durable.
+//!   Disabled persistence acknowledges generation 0 without promising recovery.
 //!
 //! Before launch, the input owner snapshots and verifies the selected assembled
 //! rootfs tar, creates a fresh domain root, and copies the worker plus staged
@@ -39,6 +39,8 @@
 
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -79,8 +81,7 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 /// Bytes of log tail attached to failure diagnostics.
 const LOG_TAIL_BYTES: usize = 4096;
 
-/// Placeholder durable generation acked per checkpoint until R07/G12a wire
-/// real storage generations through this path.
+/// Explicitly non-resumable acknowledgement when persistence is disabled.
 const UNGROUNDED_GENERATION: u64 = 0;
 
 /// Outcome of one supervised domain run.
@@ -120,17 +121,21 @@ pub struct LaunchReport {
 /// Run the prepared invocation through the launcher and pump the worker
 /// protocol to exactly one result.
 ///
-/// `persist_ctx` travels in the request frame; worker checkpoints are acked
-/// with [`UNGROUNDED_GENERATION`] and recorded in the report. Errors carry
-/// the §1 category (`startup` / `workload` / `protocol`) and refuse host
-/// execution: no path here evaluates recipe code on the host.
+/// Restore matching state/files and acknowledge new checkpoints only after both
+/// are durable. Disabled persistence uses [`UNGROUNDED_GENERATION`]. No path
+/// here evaluates recipe code on the host.
 pub fn run_domain(
     prepared: &PreparedInvocation,
     launcher: &Path,
     persist_ctx: bool,
     options: &crate::worker::protocol::InvocationOptions,
+    destination: &Path,
+    state_dir: Option<&Path>,
+    recipe: &Path,
 ) -> Result<LaunchReport> {
     let invocation = prepared.invocation_id.clone();
+    let timeout = frame_timeout()?;
+    let _destination_lock = crate::retained::lock_destination(destination, timeout)?;
     let run_dir = tempfile::tempdir().context(
         "backend startup failure: cannot create ginux run directory (refusing host fallback)",
     )?;
@@ -148,6 +153,32 @@ pub fn run_domain(
         anyhow!("backend startup failure: cannot prepare Ginux root for invocation {invocation}: {error:#} (refusing host fallback)")
     })?;
 
+    let mut retained = if persist_ctx {
+        Some(crate::retained::Retained::open(
+            state_dir,
+            destination,
+            recipe,
+            prepared,
+            &domain_root.worker_digest,
+            options,
+        )?)
+    } else {
+        None
+    };
+    let restore_path = run_dir.path().join("restore.tar");
+    let restore = retained
+        .as_ref()
+        .map(|state| state.restore_input(&restore_path))
+        .transpose()?
+        .unwrap_or(false);
+    let (mut control, control_server) = if persist_ctx {
+        let (client, server) = UnixStream::pair()?;
+        (Some(DeadlinePipe::new(client, timeout)?), Some(server))
+    } else {
+        (None, None)
+    };
+    let control_fd = control_server.as_ref().map(AsRawFd::as_raw_fd);
+
     let mut command = Command::new(launcher);
     command.process_group(0);
     let parent = unsafe { libc::getpid() };
@@ -155,6 +186,12 @@ pub fn run_domain(
     // PTRACE_O_EXITKILL then tears down the supervised tasks.
     unsafe {
         command.pre_exec(move || {
+            if let Some(fd) = control_fd {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
@@ -164,14 +201,21 @@ pub fn run_domain(
             Ok(())
         });
     }
-    let mut child = command
+    command
         .arg("launch")
         .arg(&config_path)
         .arg(domain_root.path())
         .arg("--result-file")
         .arg(&result_path)
         .arg("--export-file")
-        .arg(&export_path)
+        .arg(&export_path);
+    if let Some(fd) = control_fd {
+        command.arg("--control-fd").arg(fd.to_string());
+    }
+    if restore {
+        command.arg("--restore-file").arg(&restore_path);
+    }
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -184,6 +228,7 @@ pub fn run_domain(
             )
         })?;
 
+    drop(control_server);
     let stdin = child.stdin.take().context(
         "backend startup failure: launcher stdin was not piped (refusing host fallback)",
     )?;
@@ -204,6 +249,8 @@ pub fn run_domain(
         options,
         stdin,
         stdout,
+        &mut retained,
+        &mut control,
     );
     let mut stream = match pump {
         Ok(stream) => stream,
@@ -229,6 +276,18 @@ pub fn run_domain(
     check_agreement(&invocation, &stream.result, &record)?;
     check_launcher_exit(&invocation, &stream.result, &record, exit)?;
     if stream.result.ok {
+        if let Some(state) = retained.as_mut() {
+            let runtime_state = stream
+                .result
+                .ctx_summary
+                .get("state")
+                .filter(|value| value.is_object())
+                .context("successful resumable recipe did not return ctx.state")?
+                .clone();
+            state
+                .finish(&export_path, runtime_state)
+                .context("cannot persist final state/files pair")?;
+        }
         crate::publication::publish(&invocation, &export_path, &mut stream.result.ctx_summary)
             .context("backend storage failure: cannot publish completed domain outputs")?;
     }
@@ -271,6 +330,8 @@ fn pump_protocol(
     options: &crate::worker::protocol::InvocationOptions,
     stdin: std::process::ChildStdin,
     stdout: std::process::ChildStdout,
+    retained: &mut Option<crate::retained::Retained>,
+    control: &mut Option<DeadlinePipe<UnixStream>>,
 ) -> Result<WorkerStream> {
     let timeout = frame_timeout()?;
     let mut stdin = DeadlinePipe::new(stdin, timeout)?;
@@ -286,6 +347,10 @@ fn pump_protocol(
             persist_ctx,
             recipe_digest: recipe_digest.to_string(),
             options: options.clone(),
+            restored_states: retained
+                .as_ref()
+                .map(|state| state.states().clone())
+                .unwrap_or_default(),
         }),
     )
     .map_err(|err| classify_stream_error(invocation, "send request", err, true))?;
@@ -355,14 +420,26 @@ fn pump_protocol(
                     );
                 }
                 let seq = point.seq;
-                generations.push((seq, UNGROUNDED_GENERATION));
+                if seq != checkpoints {
+                    bail!("checkpoint sequence mismatch");
+                }
+                let generation = if let Some(state) = retained.as_mut() {
+                    capture_checkpoint(
+                        state,
+                        control
+                            .as_mut()
+                            .context("missing snapshot control socket")?,
+                        &point,
+                        timeout,
+                    )?
+                } else {
+                    UNGROUNDED_GENERATION
+                };
+                generations.push((seq, generation));
                 stdin.reset(timeout);
                 tx.send(
                     &mut stdin,
-                    &FramePayload::Ack(AckPayload {
-                        seq,
-                        generation: UNGROUNDED_GENERATION,
-                    }),
+                    &FramePayload::Ack(AckPayload { seq, generation }),
                 )
                 .map_err(|err| {
                     classify_stream_error(invocation, "send checkpoint ack", err, false)
@@ -398,6 +475,38 @@ fn pump_protocol(
         generations,
         stdin,
     })
+}
+
+fn capture_checkpoint(
+    retained: &mut crate::retained::Retained,
+    control: &mut DeadlinePipe<UnixStream>,
+    point: &crate::worker::protocol::CheckpointPayload,
+    timeout: Duration,
+) -> Result<u64> {
+    let pending = retained.begin()?;
+    let path = pending.path.as_os_str().as_bytes();
+    let mut request = Vec::with_capacity(14 + path.len());
+    request.extend_from_slice(b"GXS1");
+    request.extend_from_slice(&pending.generation.to_le_bytes());
+    request.extend_from_slice(&(path.len() as u16).to_le_bytes());
+    request.extend_from_slice(path);
+    control.reset(timeout);
+    control
+        .write_all(&request)
+        .context("cannot request filesystem snapshot")?;
+    let mut response = [0u8; 20];
+    control
+        .read_exact(&mut response)
+        .context("filesystem snapshot was not acknowledged")?;
+    if &response[..4] != b"GXA1"
+        || u64::from_le_bytes(response[4..12].try_into().unwrap()) != pending.generation
+        || response[12..].iter().any(|byte| *byte != 0)
+    {
+        bail!("invalid filesystem snapshot acknowledgement");
+    }
+    retained
+        .commit(pending, &point.recipe, point.state.clone())
+        .context("cannot persist checkpoint state/files pair")
 }
 
 /// One absolute deadline covers the complete frame, including partial headers,

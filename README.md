@@ -3,7 +3,7 @@
 Local-first package recipe executor for LevitateOS.
 
 - Recipes are **Rhai scripts**.
-- State lives in the recipe file itself as a `ctx` map (`let ctx = #{ ... };`) and is persisted after each phase.
+- Recipes initialize facts in `ctx`; API 2 saves only `ctx.state` in separate coordinator-owned records paired with filesystem snapshots. Source files stay unchanged.
 - The CLI is designed to keep **stdout machine-readable** (final `ctx` JSON) and send logs/tool output to **stderr**.
 
 If you are looking for deeper docs:
@@ -20,11 +20,11 @@ If you are looking for deeper docs:
 
 Implemented:
 
-- Phase executor with `is_*` checks, `acquire/build/install`, ctx persistence
+- Managed phase executor with custom `is_*` checks, `acquire/build/install`, and recoverable API 2 state
 - `//! extends: <base.rhai>` (AST merge: base runs first, child overrides)
-- Per-recipe execution lock (`.rhai.lock`)
-- Build dependency resolver (`deps` and `build_deps`) that installs tool recipes into `BUILD_DIR/.tools`
-- LLM helpers (`llm_extract`, etc) and an opt-in LLM-based repair loop (`--autofix`)
+- Destination lock shared by different recipes and input versions
+- Build dependency resolver (`deps` and `build_deps`) using the same worker lifecycle and `/work/tools`
+- Explicit failure for unavailable managed capabilities; public execution requires Ginux
 
 Not implemented yet (still in the spec):
 
@@ -161,7 +161,7 @@ Recipes use a `ctx` map for state.
 - Unversioned checks (`is_*`) return `ctx` when ready and deliberately `throw` when work is needed. Interpreter and native-helper failures stop execution.
 - `const RECIPE_API = 2;` opts into initialization once per invocation and checks returning `ready(ctx)` or `needs_work(ctx, reason)`. API 2 preserves imports and rechecks custom readiness after successful phases. See [the author guide](WRITING_RECIPES.md#api-2-initialization-and-readiness) for the implemented migration scope.
 - Phase functions (`acquire/build/install/remove/cleanup`) take `ctx` and return an updated `ctx`.
-- API 2 supplies engine-owned `ctx.runtime` (also `RUNTIME` during setup), plus `ctx.state` and `ctx.outputs` maps. Target selection and durable state remain in progress. Successful named file/directory outputs under `/work` or `/out` are exported through Ginux, validated, and published under the coordinator's `.artifacts/ginux-export/<invocation-id>/<name>`. The returned `ctx.outputs` contains these host paths; recipe hooks continue to use domain paths. Only selected outputs are published. Missing outputs, archive links/traversal, and exceeded bounds fail publication. Current limits are 64 names, 4096 archive entries and 2 GiB; this does not provide checkpoint recovery.
+- API 2 supplies engine-owned `ctx.runtime` (also `RUNTIME` during setup), plus `ctx.state` and `ctx.outputs` maps. Current target selection is the native Linux architecture; explicit target selection remains in progress. Successful named file/directory outputs under `/work` or `/out` are exported through Ginux, validated, and published under the coordinator's `.artifacts/ginux-export/<invocation-id>/<name>`. The returned `ctx.outputs` contains these host paths; recipe hooks continue to use domain paths. Only selected outputs are published. Missing outputs, archive links/traversal, and exceeded bounds fail publication. Current limits are 64 names, 4096 archive entries and 2 GiB; resumable state is described below.
 - `--define KEY=VALUE` and cleanup `--reason` cross the worker boundary using transport v3. Unsupported managed autofix/LLM-profile options fail explicitly.
 - `--input NAME=PATH` imports an explicitly selected file or source tree read-only at `/inputs/NAME`. Tree imports omit root `.git` and `target`, reject symlinks and credential-bearing names, and retain input size/count bounds. The library equivalent is `RecipeEngine::add_input`. A host path in a define does not import that path.
 - Literal imports and `deps`/`build_deps` declarations are discovered without executing Rhai on the coordinator. Nested module paths are preserved; dynamic imports/dependency declarations fail preparation with guidance.
@@ -412,4 +412,40 @@ headers/payloads and blocked writes. `RECIPE_FRAME_TIMEOUT_SECS` selects 1–864
 seconds (default 300). Launcher shutdown has a bounded grace period; remaining
 process-group members are killed, and stderr collection cannot wait forever for
 a pipe holder. On Linux, coordinator death kills its launcher, allowing Ginux
-to terminate traced workloads. This does not yet provide resumable cancellation.
+to terminate traced workloads. A later invocation can resume from its last durable state/files pair.
+
+## Runtime state and recovery
+
+API 2 recipes declare `const RECIPE_API = 2;` and put resumable values in
+`ctx.state`. Initialization runs again on every invocation; only that namespace
+is restored. Current package facts, invocation paths and named outputs are never
+replaced by an old whole-context map. Custom readiness checks still decide
+whether work is needed and rediscover outputs when reusing an installation.
+Arrays, maps, strings, booleans, nulls and finite numbers round-trip; unsupported
+values fail with their `ctx.state` field path.
+
+Use `--state-dir PATH` to select state storage. Otherwise Recipe uses the user's
+application-state directory (`$XDG_STATE_HOME/recipe`, normally
+`~/.local/state/recipe`). `--build-dir` selects the logical destination identity
+and lock; work inside the domain stays under `/work/build`. Without that option,
+a stable default destination is kept under the selected state root.
+
+State identity includes the recipe/module/dependency closure, declared input
+bytes/modes, defines, environment image and worker binary. Changed inputs start
+fresh state. Each dependency has its own state entry in the shared filesystem
+generation. The coordinator acknowledges a checkpoint only after both its
+snapshot and state record are durable. Interrupted operations resume with a
+matching pair; uncheckpointed work is discarded. Final output publication still
+requires successful execution and independent archive validation.
+
+`--no-persist-state` disables recovery, not execution or output publication.
+`--no-persist-ctx` remains a deprecated alias. Legacy recipes without API 2 must
+use this option while moving runtime fields into `ctx.state`; Recipe does not
+guess which old whole-context fields are package facts.
+
+State directories retain previous complete generations. A corrupt current record
+or snapshot fails before workload startup rather than silently starting over.
+Keep the directory for diagnosis; choose a new `--state-dir` to explicitly start
+fresh. Snapshot storage currently has no automatic garbage collection. Abnormal
+coordinator death can also leave temporary prepared roots; workload processes are
+terminated, but temporary-directory cleanup after SIGKILL remains incomplete.

@@ -104,6 +104,7 @@ fn private_worker_rejects_missing_bootstrap_and_mismatched_request_before_setup(
                 persist_ctx: false,
                 recipe_digest: "0".repeat(64),
                 options: Default::default(),
+                restored_states: Default::default(),
             }),
         )
         .unwrap();
@@ -163,6 +164,7 @@ fn private_worker_rejects_previous_transport_before_recipe_setup() {
                 persist_ctx: false,
                 recipe_digest: "0".repeat(64),
                 options: Default::default(),
+                restored_states: Default::default(),
             }),
         )
         .unwrap();

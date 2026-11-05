@@ -60,6 +60,9 @@ pub(crate) fn install_once(
         crate::core::invocation::Runtime::new(engine, &ast, scope, "install", persist_ctx_enabled)
             .map_err(InstallAttemptError::Fatal)?;
 
+    exec.restore_runtime(&compiled.recipe_path, &mut scope)
+        .map_err(InstallAttemptError::Fatal)?;
+
     // Extract ctx from scope
     let mut ctx_map: rhai::Map = scope.scope().get_value("ctx").ok_or_else(|| {
         InstallAttemptError::Fatal(anyhow!("Recipe missing 'let ctx = #{{...}}'"))
@@ -133,6 +136,8 @@ pub(crate) fn install_once(
     }
 
     if !needs_install {
+        exec.checkpoint_reused(&mut compiled, &ctx_map)
+            .map_err(InstallAttemptError::Fatal)?;
         output::hook_event(&name, "install", "skipped", "already installed");
         output::detail("All checks passed; nothing to do.");
         output::skip(&format!("{} already installed, skipping", name));

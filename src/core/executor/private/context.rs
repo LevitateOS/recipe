@@ -97,6 +97,8 @@ pub(crate) struct ExecutionContext<'a> {
     persist_sink: PersistSink<'a>,
     work_root: Option<PathBuf>,
     active_recipes: Vec<PathBuf>,
+    restored_states: std::collections::BTreeMap<PathBuf, rhai::Map>,
+    resumable: bool,
 }
 
 impl<'a> ExecutionContext<'a> {
@@ -107,6 +109,8 @@ impl<'a> ExecutionContext<'a> {
             persist_sink: PersistSink::File,
             work_root: None,
             active_recipes: Vec::new(),
+            restored_states: Default::default(),
+            resumable: false,
         }
     }
 
@@ -118,6 +122,8 @@ impl<'a> ExecutionContext<'a> {
             persist_sink: PersistSink::Callback(sink),
             work_root: None,
             active_recipes: Vec::new(),
+            restored_states: Default::default(),
+            resumable: false,
         }
     }
 
@@ -179,13 +185,55 @@ impl<'a> ExecutionContext<'a> {
         }
     }
 
-    /// Transport v1 has only a main-recipe snapshot, not per-dependency identity.
-    /// R07 must replace this seam before resumable dependency execution is allowed.
-    pub(crate) fn require_dependency_policy(&self, persist_enabled: bool) -> Result<()> {
-        if persist_enabled && matches!(self.persist_sink, PersistSink::Callback(_)) {
+    pub(crate) fn restore_states(
+        &mut self,
+        states: &std::collections::BTreeMap<String, serde_json::Value>,
+        enabled: bool,
+    ) -> Result<()> {
+        self.resumable = enabled;
+        for (path, value) in states {
+            let dynamic = rhai::serde::to_dynamic(value)?;
+            let state = dynamic
+                .try_cast::<rhai::Map>()
+                .ok_or_else(|| anyhow!("saved ctx.state must be a map"))?;
+            self.restored_states.insert(PathBuf::from(path), state);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn restore_runtime(
+        &self,
+        recipe: &Path,
+        runtime: &mut crate::core::invocation::Runtime<'_>,
+    ) -> Result<()> {
+        if self.resumable && !runtime.is_api2() {
             bail!(
-                "Worker transport v1 cannot checkpoint dependency state; resumable dependency execution is unavailable. Use --no-persist-ctx for explicitly non-resumable execution."
+                "resumable execution requires RECIPE_API = 2 and explicit ctx.state; use --no-persist-state while migrating"
             );
+        }
+        if let Some(state) = self.restored_states.get(recipe) {
+            runtime.restore_state(state)?;
+        }
+        Ok(())
+    }
+
+    /// A reused dependency can discover new state in its readiness check.
+    /// Save that state with the same filesystem before the parent continues.
+    pub(crate) fn checkpoint_reused(
+        &mut self,
+        compiled: &mut CompiledRecipe,
+        ctx: &rhai::Map,
+    ) -> Result<()> {
+        if self.resumable {
+            self.persist_checkpoint(
+                compiled,
+                ctx,
+                CheckpointPoint {
+                    phase: "install",
+                    reason: "check:is_installed",
+                },
+                true,
+            )?;
         }
         Ok(())
     }
@@ -214,14 +262,7 @@ impl<'a> ExecutionContext<'a> {
         point: CheckpointPoint,
         persist_enabled: bool,
     ) -> Result<()> {
-        if self.active_recipes.len() > 1 {
-            // Never serialize a dependency's ctx as the parent's v1 snapshot or
-            // rewrite an immutable dependency source. Dependency state transport
-            // is separate from this non-resumable lifecycle implementation.
-            self.require_dependency_policy(persist_enabled)?;
-            return Ok(());
-        }
-        match &mut self.persist_sink {
+        let result = match &mut self.persist_sink {
             PersistSink::File => {
                 if persist_enabled {
                     super::state::persist_ctx(compiled, ctx_map, point)
@@ -230,6 +271,16 @@ impl<'a> ExecutionContext<'a> {
                 }
             }
             PersistSink::Callback(sink) => sink(compiled, ctx_map, point, persist_enabled),
+        };
+        if result.is_ok() && self.resumable {
+            if let Some(state) = ctx_map
+                .get("state")
+                .and_then(|value| value.clone().try_cast::<rhai::Map>())
+            {
+                self.restored_states
+                    .insert(compiled.recipe_path.clone(), state);
+            }
         }
+        result
     }
 }
