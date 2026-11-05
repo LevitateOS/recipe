@@ -1229,3 +1229,80 @@ else:
     );
     assert!(!sentinel.exists());
 }
+
+#[test]
+fn managed_coordinator_death_terminates_launcher_and_worker() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    let (_dir, recipes) = create_test_env();
+    write_recipe(
+        &recipes,
+        "check",
+        r#"
+const RECIPE_API = 2;
+let ctx = #{name: "cancel-check"};
+fn is_installed(ctx) {
+    print("managed-cancellation-ready");
+    exec_checked("/usr/bin/sleep", ["60"]);
+    ready(ctx)
+}
+"#,
+    );
+    let mut child = managed_command(&recipes, "isinstalled")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let stderr = child.stderr.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if line.contains("managed-cancellation-ready") {
+                let _ = tx.send(());
+            }
+        }
+    });
+    if let Err(error) = rx.recv_timeout(std::time::Duration::from_secs(30)) {
+        child.kill().ok();
+        child.wait().ok();
+        panic!("worker did not reach cancellation point: {error}");
+    }
+    fn children(pid: u32) -> Vec<u32> {
+        std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+            .unwrap_or_default()
+            .split_whitespace()
+            .filter_map(|p| p.parse().ok())
+            .collect()
+    }
+    let launchers = children(pid);
+    assert_eq!(launchers.len(), 1);
+    let workers = children(launchers[0]);
+    assert!(!workers.is_empty());
+    unsafe {
+        libc::kill(pid as i32, libc::SIGTERM);
+    }
+    assert!(!child.wait().unwrap().success());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let tracked: Vec<_> = launchers.into_iter().chain(workers).collect();
+    loop {
+        let live = tracked.iter().any(|pid| {
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .ok()
+                .is_some_and(|stat| {
+                    !stat
+                        .rsplit_once(") ")
+                        .is_some_and(|(_, rest)| rest.starts_with('Z'))
+                })
+        });
+        if !live {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "workload survived coordinator death"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    reader.join().unwrap();
+}
