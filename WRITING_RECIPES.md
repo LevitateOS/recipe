@@ -85,8 +85,15 @@ The interpreter's optional shebang argument and environment are preserved.
 The private script backing closes before the interpreter's first syscall;
 failed exec preserves public CLOEXEC descriptors. Script pins release when the
 interpreter starts, while ELF pins retain their process lifetime.
-Owned interpreters and descriptor-named scripts remain unsupported. Absolute
-execve/execveat and cwd-relative execve names work; arrays are bounded to 4096
+Owned scripts also execute through open/unlinked file descriptors and relative
+to owned directory handles, preserving their public /dev/fd/N[/path] names.
+The interpreter reopens through the descriptor owner with a fresh read offset;
+private kernel/backend handles are never path authority. A required CLOEXEC
+source or directory fails before replacement. The same readonly reopening lets
+Bash source an owned script from an inherited descriptor. General /dev/fd
+metadata/procfs behavior and native-image descriptor paths are not provided.
+Owned interpreters remain unsupported. Absolute execve/execveat and cwd-relative
+execve names work; arrays are bounded to 4096
 arguments and 4096 environment entries for scripts. Native-image relative
 directory handles, image subtree mutation, links and guest file mappings remain
 unsupported, so ordinary compiler projects are not supported yet. Executable
