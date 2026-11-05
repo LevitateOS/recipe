@@ -116,7 +116,6 @@ pub use logging::{
 };
 
 use anyhow::Result;
-use rhai::{Engine, module_resolvers::FileModuleResolver};
 use std::path::{Path, PathBuf};
 
 /// Configure Recipe's automatic LLM-based repair loop for failed installs.
@@ -150,7 +149,6 @@ impl Default for AutoFixConfig {
 
 /// Recipe execution engine
 pub struct RecipeEngine {
-    engine: Engine,
     build_dir: PathBuf,
     recipes_path: Option<PathBuf>,
     /// User-defined scope constants (injected via --define KEY=VALUE)
@@ -168,10 +166,7 @@ pub struct RecipeEngine {
 impl RecipeEngine {
     /// Create a new recipe engine
     pub fn new(build_dir: PathBuf) -> Self {
-        let engine = core::invocation::engine();
-
         Self {
-            engine,
             build_dir,
             recipes_path: None,
             defines: Vec::new(),
@@ -206,9 +201,6 @@ impl RecipeEngine {
 
     /// Set the recipes path for module resolution
     pub fn with_recipes_path(mut self, path: PathBuf) -> Self {
-        let mut resolver = FileModuleResolver::new();
-        resolver.set_base_path(&path);
-        self.engine.set_module_resolver(resolver);
         self.recipes_path = Some(path);
         self
     }
@@ -219,7 +211,8 @@ impl RecipeEngine {
         self
     }
 
-    /// Configure whether recipe execution persists ctx back to source files.
+    /// Configure whether runtime state and matching files are retained.
+    /// This compatibility name never enables recipe-source rewriting.
     ///
     /// Default is `true`.
     pub fn with_ctx_persistence(mut self, persist: bool) -> Self {
@@ -270,30 +263,6 @@ impl RecipeEngine {
             &self.inputs,
             &self.build_dir,
             self.state_dir.as_deref(),
-            || {
-                llm::with_llm_profile(self.llm_profile.as_deref(), || {
-                    if let Some(autofix) = self.autofix.as_ref() {
-                        core::executor::install_with_options(
-                            &self.engine,
-                            &self.build_dir,
-                            recipe_path,
-                            &self.defines,
-                            self.persist_ctx,
-                            self.recipes_path.as_deref(),
-                            Some(autofix),
-                        )
-                    } else {
-                        core::executor::install(
-                            &self.engine,
-                            &self.build_dir,
-                            recipe_path,
-                            &self.defines,
-                            self.persist_ctx,
-                            self.recipes_path.as_deref(),
-                        )
-                    }
-                })
-            },
         )
     }
 
@@ -301,13 +270,6 @@ impl RecipeEngine {
     ///
     /// Returns the final ctx map after removal.
     pub fn remove(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        let mut defines = self.defines.clone();
-        if !defines.iter().any(|(key, _)| key == "BUILD_DIR") {
-            defines.push((
-                "BUILD_DIR".to_owned(),
-                self.build_dir.to_string_lossy().into_owned(),
-            ));
-        }
         self.backend()?.run(
             "remove",
             recipe_path,
@@ -317,17 +279,6 @@ impl RecipeEngine {
             &self.inputs,
             &self.build_dir,
             self.state_dir.as_deref(),
-            || {
-                llm::with_llm_profile(self.llm_profile.as_deref(), || {
-                    core::executor::remove(
-                        &self.engine,
-                        recipe_path,
-                        self.recipes_path.as_deref(),
-                        &defines,
-                        self.persist_ctx,
-                    )
-                })
-            },
         )
     }
 
@@ -351,19 +302,6 @@ impl RecipeEngine {
             &self.inputs,
             &self.build_dir,
             self.state_dir.as_deref(),
-            || {
-                llm::with_llm_profile(self.llm_profile.as_deref(), || {
-                    core::executor::cleanup(
-                        &self.engine,
-                        &self.build_dir,
-                        recipe_path,
-                        self.recipes_path.as_deref(),
-                        &self.defines,
-                        reason,
-                        self.persist_ctx,
-                    )
-                })
-            },
         )
     }
 
@@ -378,17 +316,6 @@ impl RecipeEngine {
             &self.inputs,
             &self.build_dir,
             self.state_dir.as_deref(),
-            || {
-                llm::with_llm_profile(self.llm_profile.as_deref(), || {
-                    core::executor::is_installed(
-                        &self.engine,
-                        &self.build_dir,
-                        recipe_path,
-                        self.recipes_path.as_deref(),
-                        &self.defines,
-                    )
-                })
-            },
         )
     }
 
@@ -403,17 +330,6 @@ impl RecipeEngine {
             &self.inputs,
             &self.build_dir,
             self.state_dir.as_deref(),
-            || {
-                llm::with_llm_profile(self.llm_profile.as_deref(), || {
-                    core::executor::is_built(
-                        &self.engine,
-                        &self.build_dir,
-                        recipe_path,
-                        self.recipes_path.as_deref(),
-                        &self.defines,
-                    )
-                })
-            },
         )
     }
 
@@ -428,17 +344,6 @@ impl RecipeEngine {
             &self.inputs,
             &self.build_dir,
             self.state_dir.as_deref(),
-            || {
-                llm::with_llm_profile(self.llm_profile.as_deref(), || {
-                    core::executor::is_acquired(
-                        &self.engine,
-                        &self.build_dir,
-                        recipe_path,
-                        self.recipes_path.as_deref(),
-                        &self.defines,
-                    )
-                })
-            },
         )
     }
 
@@ -460,10 +365,5 @@ impl RecipeEngine {
     /// Get the recipes path
     pub fn recipes_path(&self) -> Option<&Path> {
         self.recipes_path.as_deref()
-    }
-
-    /// Get the underlying Rhai engine (for advanced use)
-    pub fn engine(&self) -> &Engine {
-        &self.engine
     }
 }

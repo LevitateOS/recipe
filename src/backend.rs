@@ -142,16 +142,9 @@ impl Backend {
 
     /// Route one executable recipe operation through the selected backend.
     ///
-    /// The legacy callback is retained until coordinator option transport is
-    /// migrated; it is never invoked. Public recipe evaluation always launches
-    /// Ginux. The private worker calls the shared lifecycle executor directly.
-    ///
-    /// Ginux prepares the invocation inputs for real (R05: discovery, ids,
-    /// allowlisted env, staged files, domain config), launches the domain
-    /// through the resolved launcher, and returns the worker's final context.
-    /// `persist_ctx` is the caller's persistence preference; it travels in
-    /// the worker request frame (checks ignore it) and R07 decides what the
-    /// acked generations mean for durable state.
+    /// Prepare immutable inputs, execute in Ginux, and return the final context
+    /// only after successful completion and validated publication. Persistence
+    /// retains separate state/files pairs; there is no host execution callback.
     pub fn run(
         &self,
         operation: &str,
@@ -162,7 +155,6 @@ impl Backend {
         inputs: &[crate::inputs::ExtraInput],
         destination: &Path,
         state_dir: Option<&Path>,
-        _host_op: impl FnOnce() -> Result<rhai::Map>,
     ) -> Result<rhai::Map> {
         match self {
             Backend::Ginux { launcher } => {

@@ -3,7 +3,7 @@
 //! The worker is the same `recipe` binary entered with a private argv marker (see
 //! the dispatch in `src/bin/`). It reads exactly one request frame from
 //! stdin, dispatches `install` / `remove` / `cleanup` / `<check>` through the
-//! existing engine entry points under [`ExecutionContext::worker_stub`] (the
+//! existing engine entry points under [`ExecutionContext::worker`] (the
 //! execution seam: caller-held lock, checkpoints reported through a sink
 //! instead of rewriting recipe sources), then terminates the stream with
 //! exactly one result frame on stdout and exits 0.
@@ -384,7 +384,7 @@ fn run_operation(
         .map_err(|err| anyhow!("checkpoint #{checkpoint_no}: {err:#}"))?;
         Ok(())
     };
-    let mut exec = ExecutionContext::worker_stub(&mut sink);
+    let mut exec = ExecutionContext::worker(&mut sink);
     exec.restore_states(&req.restored_states, req.persist_ctx)
         .map_err(|err| EngineFailure::workload("startup", err))?;
 

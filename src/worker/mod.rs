@@ -1,8 +1,8 @@
 //! Worker endpoint root (R01 owns framing; R02 owns the worker engine hookup).
 //!
-//! The worker protocol v2 framing lives in [`protocol`]. The worker entry
+//! The worker protocol v4 framing lives in [`protocol`]. The worker entry
 //! point lives in [`run`]: it drives the existing engine through one request
-//! frame, relays bounded human diagnostics, and runs under the F04 [`ExecutionContext::worker_stub`] seam and terminates
+//! frame, relays bounded human diagnostics, and runs under the F04 [`ExecutionContext::worker`] seam and terminates
 //! the stream with exactly one result frame.
 
 pub mod protocol;

@@ -72,6 +72,7 @@ fn managed_state_restores_files_and_nested_values_without_rewriting_sources() {
         assert_success(&output);
         let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(context["version"], fact);
+        assert_eq!(context["runtime"]["options"]["persist_state"], true);
         assert_eq!(context["state"]["builds"], 1);
         assert_eq!(context["state"]["installs"], 1);
         assert_eq!(

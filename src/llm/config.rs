@@ -1,39 +1,11 @@
 use crate::llm::provider::{LlmProviderId, ProviderConfig, ResolvedLlmConfig};
 use serde::Deserialize;
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
 const DEFAULT_MAX_OUTPUT_BYTES: usize = 10 * 1024 * 1024;
 const DEFAULT_MAX_INPUT_BYTES: usize = 10 * 1024 * 1024;
-
-thread_local! {
-    static SELECTED_PROFILE: RefCell<Option<String>> = const { RefCell::new(None) };
-}
-
-pub(crate) fn with_llm_profile<T>(profile: Option<&str>, f: impl FnOnce() -> T) -> T {
-    let prev = SELECTED_PROFILE.with(|p| p.borrow().clone());
-    SELECTED_PROFILE.with(|p| *p.borrow_mut() = profile.map(|s| s.to_owned()));
-
-    // Ensure we always restore the previous profile even if `f()` panics.
-    struct RestoreGuard {
-        prev: Option<String>,
-    }
-    impl Drop for RestoreGuard {
-        fn drop(&mut self) {
-            let prev = std::mem::take(&mut self.prev);
-            SELECTED_PROFILE.with(|p| *p.borrow_mut() = prev);
-        }
-    }
-
-    let _guard = RestoreGuard { prev };
-    f()
-}
-
-fn selected_profile() -> Option<String> {
-    SELECTED_PROFILE.with(|p| p.borrow().clone())
-}
 
 #[derive(Debug, Clone, Deserialize, Default)]
 struct LlmToml {
@@ -317,7 +289,7 @@ fn load_config_impl() -> Result<LlmToml, String> {
 pub(crate) fn resolve_config_for_call() -> Result<ResolvedLlmConfig, String> {
     let merged = load_config_impl()?;
 
-    let selected = selected_profile().or_else(|| merged.default_profile.clone());
+    let selected = merged.default_profile.clone();
 
     let mut effective = merged.clone();
     if let Some(name) = selected {

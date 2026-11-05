@@ -3,7 +3,7 @@
 //! Executes recipes using the ctx pattern where:
 //! - `is_acquired(ctx)`, `is_built(ctx)`, `is_installed(ctx)` throw if phase needed
 //! - `acquire(ctx)`, `build(ctx)`, `install(ctx)` return updated ctx
-//! - `ctx` is persisted to the recipe file after each phase (unless disabled)
+//! - checkpoints send runtime state to the coordinator without source mutation
 
 use anyhow::{Context, Result, anyhow};
 use rhai::{AST, Engine};
@@ -12,17 +12,9 @@ use std::path::{Path, PathBuf};
 
 mod private;
 
-// Execution seam: host-owned lock + checkpoint persistence context for the
-// engine flow. The worker process dispatches through the `*_with_context`
-// entry points with a caller-held lock and a checkpoint callback sink;
-// normal host callers keep the existing wrappers, whose behavior is
-// unchanged. `install_with_context` preserves the `InstallAttemptError`
-// shape so the worker can report fatal-vs-phase failures.
-#[allow(unused_imports)]
 pub(crate) use private::{
-    CheckpointPoint, CheckpointSink, ExecutionContext, InstallAttemptError, LockOwnership,
-    PersistSink, cleanup_with_context, install_with_context, remove_with_context,
-    run_check_with_context,
+    CheckpointPoint, ExecutionContext, InstallAttemptError, cleanup_with_context,
+    install_with_context, remove_with_context, run_check_with_context,
 };
 
 /// Parse `//! extends: <path>` from leading comments.
@@ -82,10 +74,8 @@ pub(crate) struct CompiledRecipe {
     pub ast: AST,
     /// The "main" recipe file (the one the user invoked).
     pub recipe_path: PathBuf,
-    pub recipe_source: String,
     /// Optional base recipe from `//! extends:`.
     pub base_path: Option<PathBuf>,
-    pub base_source: Option<String>,
     pub base_dir: Option<PathBuf>,
 }
 
@@ -95,7 +85,7 @@ pub(crate) struct CompiledRecipe {
 /// and merged with the child AST. Child functions with the same name+arity replace
 /// base functions. Top-level statements run base-first, then child.
 ///
-/// Returns the merged AST plus the source texts/paths needed for ctx persistence.
+/// Returns the merged AST and immutable recipe identities.
 pub(crate) fn compile_recipe(
     engine: &Engine,
     recipe_path: &Path,
@@ -146,9 +136,7 @@ pub(crate) fn compile_recipe(
         Ok(CompiledRecipe {
             ast: base_ast,
             recipe_path,
-            recipe_source: source,
             base_path: Some(base_path),
-            base_source: Some(base_source),
             base_dir,
         })
     } else {
@@ -158,133 +146,8 @@ pub(crate) fn compile_recipe(
         Ok(CompiledRecipe {
             ast,
             recipe_path,
-            recipe_source: source,
             base_path: None,
-            base_source: None,
             base_dir: None,
         })
     }
-}
-
-/// Install a package by executing its recipe
-///
-/// Follows the recipe workflow:
-/// 1. Check is_installed(ctx) - skip if doesn't throw
-/// 2. Check is_built(ctx) - skip build if doesn't throw
-/// 3. Check is_acquired(ctx) - skip acquire if doesn't throw
-/// 4. Execute needed steps (acquire, build, install)
-/// 5. Persist ctx after each step
-///
-/// Returns the final ctx map containing all recipe state.
-pub fn install(
-    engine: &Engine,
-    build_dir: &Path,
-    recipe_path: &Path,
-    defines: &[(String, String)],
-    persist_ctx: bool,
-    search_path: Option<&Path>,
-) -> Result<rhai::Map> {
-    private::install(
-        engine,
-        build_dir,
-        recipe_path,
-        defines,
-        persist_ctx,
-        search_path,
-    )
-}
-
-pub(crate) fn install_with_options(
-    engine: &Engine,
-    build_dir: &Path,
-    recipe_path: &Path,
-    defines: &[(String, String)],
-    persist_ctx: bool,
-    search_path: Option<&Path>,
-    autofix: Option<&crate::AutoFixConfig>,
-) -> Result<rhai::Map> {
-    private::install_with_options(
-        engine,
-        build_dir,
-        recipe_path,
-        defines,
-        persist_ctx,
-        search_path,
-        autofix,
-    )
-}
-
-/// Remove an installed package
-///
-/// Returns the final ctx map after removal.
-pub fn remove(
-    engine: &Engine,
-    recipe_path: &Path,
-    search_path: Option<&Path>,
-    defines: &[(String, String)],
-    persist_ctx: bool,
-) -> Result<rhai::Map> {
-    private::remove(engine, recipe_path, search_path, defines, persist_ctx)
-}
-
-/// Clean up build artifacts
-///
-/// Returns the final ctx map after cleanup.
-pub fn cleanup(
-    engine: &Engine,
-    build_dir: &Path,
-    recipe_path: &Path,
-    search_path: Option<&Path>,
-    defines: &[(String, String)],
-    reason: &str,
-    persist_ctx: bool,
-) -> Result<rhai::Map> {
-    private::cleanup(
-        engine,
-        build_dir,
-        recipe_path,
-        search_path,
-        defines,
-        reason,
-        persist_ctx,
-    )
-}
-
-/// Execute `is_installed(ctx)` manually.
-///
-/// Returns the updated ctx map on success.
-pub fn is_installed(
-    engine: &Engine,
-    build_dir: &Path,
-    recipe_path: &Path,
-    search_path: Option<&Path>,
-    defines: &[(String, String)],
-) -> Result<rhai::Map> {
-    private::is_installed(engine, build_dir, recipe_path, search_path, defines)
-}
-
-/// Execute `is_built(ctx)` manually.
-///
-/// Returns the updated ctx map on success.
-pub fn is_built(
-    engine: &Engine,
-    build_dir: &Path,
-    recipe_path: &Path,
-    search_path: Option<&Path>,
-    defines: &[(String, String)],
-) -> Result<rhai::Map> {
-    private::is_built(engine, build_dir, recipe_path, search_path, defines)
-}
-
-/// Execute `is_acquired(ctx)` manually.
-///
-/// Returns the updated ctx map on success.
-pub fn is_acquired(
-    engine: &Engine,
-    build_dir: &Path,
-    recipe_path: &Path,
-    search_path: Option<&Path>,
-    defines: &[(String, String)],
-) -> Result<rhai::Map> {
-    private::is_acquired(engine, build_dir, recipe_path, search_path, defines)
 }
