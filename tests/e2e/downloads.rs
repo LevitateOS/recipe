@@ -4,7 +4,7 @@ use std::net::TcpListener;
 use std::time::{Duration, Instant};
 
 pub(super) fn serve_download(
-    body: &str,
+    body: impl AsRef<[u8]>,
     advertised_length: usize,
 ) -> (String, std::thread::JoinHandle<String>) {
     serve_response(
@@ -17,13 +17,13 @@ pub(super) fn serve_download(
 fn serve_response(
     status: &'static str,
     headers: &str,
-    body: &str,
+    body: impl AsRef<[u8]>,
 ) -> (String, std::thread::JoinHandle<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let url = format!("http://{}/payload", listener.local_addr().unwrap());
     let headers = headers.to_owned();
-    let body = body.to_owned();
+    let body = body.as_ref().to_vec();
     let server = std::thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(15);
         let (mut stream, _) = loop {
@@ -53,9 +53,10 @@ fn serve_response(
         }
         write!(
             stream,
-            "HTTP/1.1 {status}\r\n{headers}Connection: close\r\n\r\n{body}"
+            "HTTP/1.1 {status}\r\n{headers}Connection: close\r\n\r\n"
         )
         .unwrap();
+        stream.write_all(&body).unwrap();
         received
     });
     (url, server)

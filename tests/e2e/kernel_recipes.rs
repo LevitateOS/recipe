@@ -1,6 +1,6 @@
 use super::*;
 
-fn copy_kernel_recipes(recipes: &Path) {
+pub(super) fn copy_kernel_recipes(recipes: &Path) {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../distro-builder/recipes");
     for name in ["linux.rhai", "linux-base.rhai", "linux-prebuilt.rhai"] {
         std::fs::copy(source.join(name), recipes.join(name)).unwrap();
@@ -13,7 +13,7 @@ fn copy_kernel_recipes(recipes: &Path) {
     .unwrap();
 }
 
-fn kernel_command(recipes: &Path, action: &str, recipe: &str) -> Command {
+pub(super) fn kernel_command(recipes: &Path, action: &str, recipe: &str) -> Command {
     let mut command = recipe_command(recipes);
     command
         .args([action, recipe, "--no-persist-ctx"])

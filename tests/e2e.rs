@@ -91,3 +91,5 @@ mod preseed_recipes;
 mod command_options;
 #[path = "e2e/git_acquisition.rs"]
 mod git_acquisition;
+#[path = "e2e/kernel_acquisition.rs"]
+mod kernel_acquisition;
