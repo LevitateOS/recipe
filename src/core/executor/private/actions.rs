@@ -54,7 +54,7 @@ pub(crate) fn remove_with_context(
         .rev()
         .find(|(key, _)| key == "BUILD_DIR")
         .map(|(_, value)| Path::new(value));
-    let mut scope = crate::core::invocation::scope(
+    let scope = crate::core::invocation::scope(
         &compiled.recipe_path,
         compiled.base_dir.as_deref(),
         build_dir,
@@ -62,10 +62,10 @@ pub(crate) fn remove_with_context(
         defines,
     );
 
-    // Run script to populate scope
-    engine.run_ast_with_scope(&mut scope, &ast)?;
+    let mut scope = crate::core::invocation::Runtime::new(engine, &ast, scope)?;
 
     let mut ctx_map: rhai::Map = scope
+        .scope()
         .get_value("ctx")
         .ok_or_else(|| anyhow!("Recipe missing ctx"))?;
 
@@ -83,7 +83,7 @@ pub(crate) fn remove_with_context(
     output::sub_action("remove");
     output::hook_event(&name, "remove", "running", "executing recipe hook");
 
-    ctx_map = runner::run_phase(engine, &ast, &mut scope, "remove", ctx_map).inspect_err(|e| {
+    ctx_map = runner::run_phase(&ast, &mut scope, "remove", ctx_map).inspect_err(|e| {
         report_phase_failure(&name, "remove", e);
     })?;
     report_phase_success(&name, "remove");
@@ -150,7 +150,7 @@ pub(crate) fn cleanup_with_context(
     let mut compiled = compile_recipe(engine, &recipe_path, search_path)?;
     let ast = compiled.ast.clone();
 
-    let mut scope = crate::core::invocation::scope(
+    let scope = crate::core::invocation::scope(
         &compiled.recipe_path,
         compiled.base_dir.as_deref(),
         Some(build_dir),
@@ -158,10 +158,10 @@ pub(crate) fn cleanup_with_context(
         defines,
     );
 
-    // Run script to populate scope
-    engine.run_ast_with_scope(&mut scope, &ast)?;
+    let mut scope = crate::core::invocation::Runtime::new(engine, &ast, scope)?;
 
     let mut ctx_map: rhai::Map = scope
+        .scope()
         .get_value("ctx")
         .ok_or_else(|| anyhow!("Recipe missing ctx"))?;
 
@@ -180,7 +180,7 @@ pub(crate) fn cleanup_with_context(
     output::hook_event(&name, "cleanup", "running", "executing recipe hook");
 
     ctx_map = maybe_cleanup(
-        engine, &ast, &mut scope, ctx_map, reason, /* best_effort */ false,
+        &ast, &mut scope, ctx_map, reason, /* best_effort */ false,
         /* require_defined */ true,
     )
     .inspect_err(|e| {
@@ -304,7 +304,7 @@ pub(crate) fn run_check_with_context(
     let compiled = compile_recipe(engine, &recipe_path, search_path)?;
     let ast = compiled.ast.clone();
 
-    let mut scope = crate::core::invocation::scope(
+    let scope = crate::core::invocation::scope(
         &compiled.recipe_path,
         compiled.base_dir.as_deref(),
         Some(build_dir),
@@ -312,10 +312,10 @@ pub(crate) fn run_check_with_context(
         defines,
     );
 
-    // Run script to populate scope
-    engine.run_ast_with_scope(&mut scope, &ast)?;
+    let mut scope = crate::core::invocation::Runtime::new(engine, &ast, scope)?;
 
     let ctx_map: rhai::Map = scope
+        .scope()
         .get_value("ctx")
         .ok_or_else(|| anyhow!("Recipe missing ctx"))?;
 
@@ -349,8 +349,7 @@ pub(crate) fn run_check_with_context(
         "manual check requested",
     );
 
-    let checked_ctx = engine
-        .call_fn::<rhai::Map>(&mut scope, &ast, check_name, (ctx_map,))
+    let checked_ctx = runner::verify_phase(&mut scope, check_name, &ctx_map)
         .map_err(|e| {
             output::hook_event(&name, &format!("check.{check_name}"), "failed", &format!("{e}"));
             output::error(&format!("{name}: {check_name} check failed"));

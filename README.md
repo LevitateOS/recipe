@@ -158,7 +158,8 @@ The `recipe` CLI prints the final `ctx` JSON to stdout (or writes it to `--json-
 
 Recipes use a `ctx` map for state.
 
-- Check functions (`is_*`) should `throw` when the phase needs to run.
+- Unversioned checks (`is_*`) return `ctx` when ready and deliberately `throw` when work is needed. Interpreter and native-helper failures stop execution.
+- `const RECIPE_API = 2;` opts into initialization once per invocation and checks returning `ready(ctx)` or `needs_work(ctx, reason)`. API 2 preserves imports and rechecks custom readiness after successful phases. See [the author guide](WRITING_RECIPES.md#api-2-initialization-and-readiness) for the implemented migration scope.
 - Phase functions (`acquire/build/install/remove/cleanup`) take `ctx` and return an updated `ctx`.
 - `cleanup(ctx, reason)` is **required** for normal installs in this repo. If you do not need cleanup, make it a no-op that returns `ctx`.
 

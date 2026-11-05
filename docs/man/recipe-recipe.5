@@ -48,6 +48,23 @@ fn cleanup(ctx, reason) {
     ctx
 }
 .fi
+.SH API 2 INITIALIZATION AND READINESS
+A top-level \fBconst RECIPE_API = 2;\fR opts into setup once per invocation.
+Imports, initialized globals, constants, and inherited functions remain available
+to hooks. Put observations that must refresh between phases inside the hooks or
+checks. Check variable scopes are isolated; return discovered values through ctx.
+.PP
+API 2 checks return \fBready(ctx)\fR or \fBneeds_work(ctx, reason)\fR. Reasons
+must be nonempty strings. Errors and malformed results fail execution. Phase
+hooks still return plain ctx. Custom readiness checks run again after a producer;
+installation is also checked after success cleanup.
+.PP
+Unversioned recipes retain top-level reevaluation and deliberate throw as the
+needs-work signal. Interpreter and native-helper errors fail execution. Native
+errors remain catchable in Rhai. Unsupported API versions fail before setup.
+.PP
+Source-based persistence, required cleanup, and the acquire/install-only dependency
+runner are unchanged by this migration slice.
 .SH CTX CONTRACT
 .TP
 \fBCanonical declaration\fR

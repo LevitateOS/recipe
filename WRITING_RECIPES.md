@@ -20,7 +20,7 @@ Recipes are Rhai scripts.
 They work by:
 
 - declaring a top-level `ctx` map
-- using `is_*` checks that throw when work is needed
+- using independent `is_*` checks (explicit outcomes in API 2; deliberate throws in legacy recipes)
 - mutating and returning `ctx` from phase functions
 - persisting `ctx` back into the recipe file after successful phases
 
@@ -36,6 +36,49 @@ Normal install flow is:
 
 Important: `cleanup(ctx, reason)` is effectively mandatory for normal installs
 in this repo. If you do not need cleanup, define a no-op hook.
+
+## API 2 initialization and readiness
+
+Opt in with a top-level `const RECIPE_API = 2;`. This declaration selects the
+semantics of the entire recipe, including an inherited base. Unsupported API
+versions fail before setup executes.
+
+API 2 evaluates top-level setup once per invocation. Imports (including dynamic
+import expressions), initialized globals, global constants, and inherited
+functions remain available to hooks. A new worker invocation refreshes setup and imported facts. Put observations
+that must refresh between phases inside checks or explicit functions called by
+hooks. Check scopes are isolated; return discovered values through `ctx`.
+
+All three checks remain independent Rhai functions with package-specific rules:
+
+```rhai
+const RECIPE_API = 2;
+let ctx = #{name: "example", product: join_path(BUILD_DIR, "example.txt")};
+fn is_installed(ctx) {
+    if !is_file(ctx.product) { return needs_work(ctx, "product is missing"); }
+    ready(ctx)
+}
+fn is_built(ctx) { ready(ctx) }
+fn install(ctx) { mkdir(BUILD_DIR); write_file(ctx.product, "example"); ctx }
+fn cleanup(ctx, reason) { ctx }
+```
+
+`ready(ctx)` reports readiness; `needs_work(ctx, reason)` requests the relevant
+phase and carries updated context. The reason must be a nonempty string. Any
+thrown error or malformed result fails execution. Phase hooks still return plain
+`ctx`. Existing custom checks run again after their producer succeeds, and the
+installation check also runs after success cleanup. A check that still requests
+work fails that producer instead of declaring success. Missing checks request
+work conservatively; a missing build hook still skips building.
+
+Unversioned recipes retain top-level reevaluation before hooks and the legacy
+`ctx`/deliberate-`throw` readiness convention. Interpreter errors and failed native
+helpers fail execution. Native helper errors remain catchable with Rhai
+`try/catch`, allowing an author to handle a known condition explicitly.
+
+This migration slice does not change the current source-based ctx persistence,
+cleanup requirement, or dependency runner's acquire/install-only behavior. Those
+parts of the simplification remain pending; API 2 does not imply they are done.
 
 ## Minimal Template
 

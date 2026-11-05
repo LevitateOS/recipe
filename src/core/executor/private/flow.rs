@@ -27,7 +27,7 @@ pub(crate) fn install_once(
         compile_recipe(engine, recipe_path, search_path).map_err(InstallAttemptError::Fatal)?;
     let ast = compiled.ast.clone();
 
-    let mut scope = crate::core::invocation::scope(
+    let scope = crate::core::invocation::scope(
         &compiled.recipe_path,
         compiled.base_dir.as_deref(),
         Some(build_dir),
@@ -35,13 +35,11 @@ pub(crate) fn install_once(
         defines,
     );
 
-    // Run script to populate scope (this sets up ctx)
-    engine
-        .run_ast_with_scope(&mut scope, &ast)
-        .map_err(|e| InstallAttemptError::Fatal(anyhow!("Failed to run recipe: {}", e)))?;
+    let mut scope = crate::core::invocation::Runtime::new(engine, &ast, scope)
+        .map_err(InstallAttemptError::Fatal)?;
 
     // Extract ctx from scope
-    let mut ctx_map: rhai::Map = scope.get_value("ctx").ok_or_else(|| {
+    let mut ctx_map: rhai::Map = scope.scope().get_value("ctx").ok_or_else(|| {
         InstallAttemptError::Fatal(anyhow!("Recipe missing 'let ctx = #{{...}}'"))
     })?;
 
@@ -70,7 +68,8 @@ pub(crate) fn install_once(
     // `ctx.source_path` or `ctx.build_dir`). When the check passes, we must carry
     // the returned ctx forward even if the phase is skipped.
     let (needs_install, checked_ctx, needs_install_reason) =
-        check_phase_with_reason(engine, &ast, &scope, "is_installed", &ctx_map);
+        check_phase_with_reason(&mut scope, "is_installed", &ctx_map)
+            .map_err(InstallAttemptError::Fatal)?;
     report_check_result(
         &name,
         "is_installed",
@@ -83,14 +82,16 @@ pub(crate) fn install_once(
     let mut needs_acquire = false;
     if needs_install {
         let (nb, checked_ctx, build_reason) =
-            check_phase_with_reason(engine, &ast, &scope, "is_built", &ctx_map);
+            check_phase_with_reason(&mut scope, "is_built", &ctx_map)
+                .map_err(InstallAttemptError::Fatal)?;
         report_check_result(&name, "is_built", nb, build_reason.as_deref());
         needs_build = nb;
         ctx_map = checked_ctx;
 
         if needs_build {
             let (na, checked_ctx, acquire_reason) =
-                check_phase_with_reason(engine, &ast, &scope, "is_acquired", &ctx_map);
+                check_phase_with_reason(&mut scope, "is_acquired", &ctx_map)
+                    .map_err(InstallAttemptError::Fatal)?;
             report_check_result(&name, "is_acquired", na, acquire_reason.as_deref());
             needs_acquire = na;
             ctx_map = checked_ctx;
@@ -145,6 +146,7 @@ pub(crate) fn install_once(
     // - `deps`: resolved before all phases (tools needed for acquire/build/install)
     // - `build_deps`: resolved only before build phase (compile-time tools)
     let deps: Vec<String> = scope
+        .scope()
         .get_value::<rhai::Array>("deps")
         .map(|arr| {
             arr.iter()
@@ -154,6 +156,7 @@ pub(crate) fn install_once(
         .unwrap_or_default();
 
     let build_deps: Vec<String> = scope
+        .scope()
         .get_value::<rhai::Array>("build_deps")
         .map(|arr| {
             arr.iter()
@@ -196,7 +199,7 @@ pub(crate) fn install_once(
         output::detail("Checking/refreshing source artifacts");
         output::hook_event(&name, "acquire", "running", "executing recipe hook");
         let ctx_before = ctx_map.clone();
-        match runner::run_phase(engine, &ast, &mut scope, "acquire", ctx_map) {
+        match runner::run_phase(&ast, &mut scope, "acquire", ctx_map) {
             Ok(new_ctx) => {
                 ctx_map = new_ctx;
                 report_phase_success(&name, "acquire");
@@ -214,7 +217,6 @@ pub(crate) fn install_once(
                 // Hygiene: allow recipes to clean up intermediate acquire artifacts.
                 if cleanup_auto_supported {
                     ctx_map = maybe_cleanup(
-                        engine,
                         &ast,
                         &mut scope,
                         ctx_map,
@@ -240,7 +242,6 @@ pub(crate) fn install_once(
                 // Best-effort failure hygiene: don't mask the original error.
                 if cleanup_auto_supported {
                     let _ = maybe_cleanup(
-                        engine,
                         &ast,
                         &mut scope,
                         ctx_before,
@@ -262,7 +263,8 @@ pub(crate) fn install_once(
         // Re-check: does the recipe still need building after acquire ran?
         // (acquire may have updated ctx such that is_built now passes)
         let (still_needs_build, checked_ctx, post_acquire_build_reason) =
-            check_phase_with_reason(engine, &ast, &scope, "is_built", &ctx_map);
+            check_phase_with_reason(&mut scope, "is_built", &ctx_map)
+                .map_err(InstallAttemptError::Fatal)?;
         if let Some(reason) = post_acquire_build_reason {
             output::detail(&friendly_reason(
                 "is_built (post acquire)",
@@ -294,7 +296,7 @@ pub(crate) fn install_once(
             output::detail("Compiling or assembling build products");
             output::hook_event(&name, "build", "running", "executing recipe hook");
             let ctx_before = ctx_map.clone();
-            match runner::run_phase(engine, &ast, &mut scope, "build", ctx_map) {
+            match runner::run_phase(&ast, &mut scope, "build", ctx_map) {
                 Ok(new_ctx) => {
                     ctx_map = new_ctx;
                     report_phase_success(&name, "build");
@@ -311,7 +313,6 @@ pub(crate) fn install_once(
 
                     if cleanup_auto_supported {
                         ctx_map = maybe_cleanup(
-                            engine,
                             &ast,
                             &mut scope,
                             ctx_map,
@@ -336,7 +337,6 @@ pub(crate) fn install_once(
                     report_phase_failure(&name, "build", &e);
                     if cleanup_auto_supported {
                         let _ = maybe_cleanup(
-                            engine,
                             &ast,
                             &mut scope,
                             ctx_before,
@@ -360,7 +360,7 @@ pub(crate) fn install_once(
         output::detail("Applying package files to destination");
         output::hook_event(&name, "install", "running", "executing recipe hook");
         let ctx_before = ctx_map.clone();
-        match runner::run_phase(engine, &ast, &mut scope, "install", ctx_map) {
+        match runner::run_phase(&ast, &mut scope, "install", ctx_map) {
             Ok(new_ctx) => {
                 ctx_map = new_ctx;
                 report_phase_success(&name, "install");
@@ -377,7 +377,6 @@ pub(crate) fn install_once(
 
                 if cleanup_auto_supported {
                     ctx_map = maybe_cleanup(
-                        engine,
                         &ast,
                         &mut scope,
                         ctx_map,
@@ -402,7 +401,6 @@ pub(crate) fn install_once(
                 report_phase_failure(&name, "install", &e);
                 if cleanup_auto_supported {
                     let _ = maybe_cleanup(
-                        engine,
                         &ast,
                         &mut scope,
                         ctx_before,
@@ -420,42 +418,41 @@ pub(crate) fn install_once(
         }
     }
 
-    // Anti-reward-hack / correctness: if autofix mode is enabled, require the recipe's
-    // `is_installed(ctx)` check to pass after install completes.
-    if autofix_enabled
-        && runner::has_fn_arity(&ast, "is_installed", 1)
-        && let Err(e) = engine.call_fn::<rhai::Map>(
-            &mut scope.clone(),
-            &ast,
-            "is_installed",
-            (ctx_map.clone(),),
-        )
-    {
-        report_phase_failure(
-            &name,
-            "post-install verification",
-            &anyhow!("is_installed failed after install: {e}"),
-        );
-        // Allow best-effort failure hygiene.
-        if cleanup_auto_supported {
-            let _ = maybe_cleanup(
-                engine,
-                &ast,
-                &mut scope,
-                ctx_map.clone(),
-                "auto.install.failure",
-                /* best_effort */ true,
-                /* require_defined */ false,
+    // API 2 verifies final installation after success cleanup as well. Autofix
+    // keeps this verification for legacy recipes too.
+    let verified =
+        if (autofix_enabled || scope.is_api2()) && runner::has_fn_arity(&ast, "is_installed", 1) {
+            runner::verify_phase(&mut scope, "is_installed", &ctx_map)
+        } else {
+            Ok(ctx_map.clone())
+        };
+    ctx_map = match verified {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            report_phase_failure(
+                &name,
+                "post-install verification",
+                &anyhow!("is_installed failed after install: {e}"),
             );
+            // Allow best-effort failure hygiene.
+            if cleanup_auto_supported {
+                let _ = maybe_cleanup(
+                    &ast,
+                    &mut scope,
+                    ctx_map.clone(),
+                    "auto.install.failure",
+                    /* best_effort */ true,
+                    /* require_defined */ false,
+                );
+            }
+
+            return Err(InstallAttemptError::Phase {
+                reason: "auto.install.failure",
+                phase: "is_installed",
+                error: anyhow!("is_installed failed after install: {e}"),
+            });
         }
-
-        return Err(InstallAttemptError::Phase {
-            reason: "auto.install.failure",
-            phase: "is_installed",
-            error: anyhow!("is_installed failed after install: {e}"),
-        });
-    }
-
+    };
     output::success(&format!("{} installed", name));
     output::hook_event(&name, "install", "success", "recipe completed");
     Ok(ctx_map)

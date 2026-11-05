@@ -1,7 +1,8 @@
 //! Shared runtime helpers for recipe execution and dependency resolution.
 
+use super::invocation::Runtime;
 use anyhow::{Result, anyhow};
-use rhai::{AST, Engine, Scope};
+use rhai::AST;
 
 /// Check whether an AST contains a function by name.
 pub fn has_fn(ast: &AST, name: &str) -> bool {
@@ -15,31 +16,39 @@ pub fn has_fn_arity(ast: &AST, name: &str, arity: usize) -> bool {
 }
 
 /// Execute a phase function that takes and returns `ctx`.
-pub fn run_phase(
-    engine: &Engine,
+pub(crate) fn run_phase(
     ast: &AST,
-    scope: &mut Scope,
+    scope: &mut Runtime<'_>,
     fn_name: &str,
     ctx: rhai::Map,
 ) -> Result<rhai::Map> {
-    engine
-        .call_fn::<rhai::Map>(scope, ast, fn_name, (ctx,))
-        .map_err(|e| anyhow!("{} failed: {}", fn_name, e))
+    let ctx = scope
+        .call_map(fn_name, vec![ctx.into()], false)
+        .map_err(|e| anyhow!("{} failed: {}", fn_name, e))?;
+    if scope.is_api2() {
+        let check = match fn_name {
+            "acquire" => Some("is_acquired"),
+            "build" => Some("is_built"),
+            "install" => Some("is_installed"),
+            _ => None,
+        };
+        if let Some(check) = check.filter(|check| has_fn(ast, check)) {
+            return verify_phase(scope, check, &ctx);
+        }
+    }
+    Ok(ctx)
 }
 
-/// Return `true` when a check function throws.
-pub fn check_throws(
-    engine: &Engine,
-    ast: &AST,
-    scope: &Scope,
-    fn_name: &str,
+/// Run the actual recipe check again after a producer, preserving discovered ctx.
+pub(crate) fn verify_phase(
+    scope: &mut Runtime<'_>,
+    name: &str,
     ctx: &rhai::Map,
-) -> bool {
-    if !has_fn(ast, fn_name) {
-        return true;
+) -> Result<rhai::Map> {
+    match scope.check(name, ctx)? {
+        super::invocation::Readiness::Ready(ctx) => Ok(ctx),
+        super::invocation::Readiness::NeedsWork(_, reason) => {
+            Err(anyhow!("{name} is not ready: {reason}"))
+        }
     }
-
-    engine
-        .call_fn::<rhai::Map>(&mut scope.clone(), ast, fn_name, (ctx.clone(),))
-        .is_err()
 }

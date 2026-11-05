@@ -16,6 +16,18 @@ Schema used below:
 \fBFails when\fR: common failure modes
 .IP "\[bu]" 4
 \fBExample\fR: minimal concrete invocation
+.SH READINESS HELPERS
+.TP
+\fBready(ctx)\fR
+Returns an API 2 readiness map with status "ready" and the updated ctx map.
+.TP
+\fBneeds_work(ctx, reason)\fR
+Returns an API 2 readiness map with status "needs_work", updated ctx, and a
+reason string. The executor rejects empty reasons and malformed results.
+.PP
+These constructors are for checks, not phase hooks. API 2 check errors fail
+execution. Native helper errors remain catchable but are not implicit legacy
+needs-work signals.
 .SH PATH HELPERS
 .TP
 \fBjoin_path\fR

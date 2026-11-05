@@ -5,10 +5,11 @@
 //! executing it to install tools into `BUILD_DIR/.tools/`, then prepending
 //! `.tools/` bin dirs to PATH before the build phase.
 
+use super::invocation::Runtime;
 use super::output;
 use super::runner;
 use anyhow::{Context, Result, anyhow};
-use rhai::{Engine, Scope};
+use rhai::Engine;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -137,7 +138,7 @@ impl<'a> BuildDepsResolver<'a> {
             .with_context(|| format!("Failed to create dep build dir for {}", name))
             .map_err(DepAttemptError::Fatal)?;
 
-        let mut scope = super::invocation::scope(
+        let scope = super::invocation::scope(
             &compiled.recipe_path,
             base_dir.as_deref(),
             Some(&dep_build_dir),
@@ -145,20 +146,23 @@ impl<'a> BuildDepsResolver<'a> {
             self.defines,
         );
 
-        // Run top-level to populate ctx
-        self.engine
-            .run_ast_with_scope(&mut scope, &ast)
-            .map_err(|e| {
-                DepAttemptError::Fatal(anyhow!("Failed to run dependency recipe {}: {}", name, e))
-            })?;
+        let mut scope = Runtime::new(self.engine, &ast, scope).map_err(DepAttemptError::Fatal)?;
 
-        let ctx_map: rhai::Map = scope.get_value("ctx").ok_or_else(|| {
+        let mut ctx_map: rhai::Map = scope.scope().get_value("ctx").ok_or_else(|| {
             DepAttemptError::Fatal(anyhow!("Dependency recipe {} missing ctx", name))
         })?;
 
         // Check if already installed
-        let needs_install =
-            runner::check_throws(self.engine, &ast, &scope, "is_installed", &ctx_map);
+        let needs_install = match scope
+            .check("is_installed", &ctx_map)
+            .map_err(DepAttemptError::Fatal)?
+        {
+            super::invocation::Readiness::Ready(_) => false,
+            super::invocation::Readiness::NeedsWork(ctx, _) => {
+                ctx_map = ctx;
+                true
+            }
+        };
         if !needs_install {
             output::hook_event(
                 name,
@@ -179,8 +183,19 @@ impl<'a> BuildDepsResolver<'a> {
         );
 
         // Run acquire → install (simplified, no locking or persistence)
-        let needs_acquire =
-            runner::check_throws(self.engine, &ast, &scope, "is_acquired", &ctx_map);
+        let needs_acquire = match scope
+            .check("is_acquired", &ctx_map)
+            .map_err(DepAttemptError::Fatal)?
+        {
+            super::invocation::Readiness::Ready(ctx) => {
+                ctx_map = ctx;
+                false
+            }
+            super::invocation::Readiness::NeedsWork(ctx, _) => {
+                ctx_map = ctx;
+                true
+            }
+        };
         let has_cleanup = runner::has_fn(&ast, "cleanup");
 
         let mut ctx = ctx_map;
@@ -194,10 +209,7 @@ impl<'a> BuildDepsResolver<'a> {
                 "executing dependency acquire hook",
             );
             let ctx_before = ctx.clone();
-            match self
-                .engine
-                .call_fn::<rhai::Map>(&mut scope, &ast, "acquire", (ctx,))
-            {
+            match runner::run_phase(&ast, &mut scope, "acquire", ctx) {
                 Ok(new_ctx) => {
                     ctx = new_ctx;
                     output::hook_event(
@@ -208,13 +220,7 @@ impl<'a> BuildDepsResolver<'a> {
                     );
                     output::success(&format!("{}: source prep step finished", name));
                     if has_cleanup {
-                        ctx = cleanup_hook(
-                            self.engine,
-                            &ast,
-                            &mut scope,
-                            ctx,
-                            "auto.acquire.success",
-                        );
+                        ctx = cleanup_hook(&ast, &mut scope, ctx, "auto.acquire.success");
                     }
                 }
                 Err(e) => {
@@ -225,13 +231,7 @@ impl<'a> BuildDepsResolver<'a> {
                         "  action: fix acquire() in dependency recipe and rerun with RECIPE_TRACE_HELPERS=1",
                     );
                     if has_cleanup {
-                        let _ = cleanup_hook(
-                            self.engine,
-                            &ast,
-                            &mut scope,
-                            ctx_before,
-                            "auto.acquire.failure",
-                        );
+                        let _ = cleanup_hook(&ast, &mut scope, ctx_before, "auto.acquire.failure");
                     }
                     return Err(DepAttemptError::Phase {
                         reason: "auto.acquire.failure",
@@ -252,10 +252,7 @@ impl<'a> BuildDepsResolver<'a> {
                 "executing dependency install hook",
             );
             let ctx_before = ctx.clone();
-            match self
-                .engine
-                .call_fn::<rhai::Map>(&mut scope, &ast, "install", (ctx,))
-            {
+            match runner::run_phase(&ast, &mut scope, "install", ctx) {
                 Ok(new_ctx) => {
                     ctx = new_ctx;
                     output::hook_event(
@@ -266,13 +263,7 @@ impl<'a> BuildDepsResolver<'a> {
                     );
                     output::success(&format!("{}: install step finished", name));
                     if has_cleanup {
-                        let _ = cleanup_hook(
-                            self.engine,
-                            &ast,
-                            &mut scope,
-                            ctx,
-                            "auto.install.success",
-                        );
+                        ctx = cleanup_hook(&ast, &mut scope, ctx, "auto.install.success");
                     }
                 }
                 Err(e) => {
@@ -281,13 +272,7 @@ impl<'a> BuildDepsResolver<'a> {
                     output::detail(&format!("  reason: {e}"));
                     output::detail("  action: fix install() in dependency recipe and rerun.");
                     if has_cleanup {
-                        let _ = cleanup_hook(
-                            self.engine,
-                            &ast,
-                            &mut scope,
-                            ctx_before,
-                            "auto.install.failure",
-                        );
+                        let _ = cleanup_hook(&ast, &mut scope, ctx_before, "auto.install.failure");
                     }
                     return Err(DepAttemptError::Phase {
                         reason: "auto.install.failure",
@@ -295,6 +280,19 @@ impl<'a> BuildDepsResolver<'a> {
                         error: anyhow!("tool dependency {} install failed: {}", name, e),
                     });
                 }
+            }
+        }
+
+        if scope.is_api2() && runner::has_fn(&ast, "is_installed") {
+            if let Err(error) = runner::verify_phase(&mut scope, "is_installed", &ctx) {
+                if has_cleanup {
+                    let _ = cleanup_hook(&ast, &mut scope, ctx, "auto.install.failure");
+                }
+                return Err(DepAttemptError::Phase {
+                    reason: "auto.install.failure",
+                    phase: "is_installed",
+                    error,
+                });
             }
         }
 
@@ -328,9 +326,8 @@ impl<'a> BuildDepsResolver<'a> {
 }
 
 fn cleanup_hook(
-    engine: &Engine,
     ast: &rhai::AST,
-    scope: &mut Scope,
+    scope: &mut Runtime<'_>,
     ctx: rhai::Map,
     reason: &str,
 ) -> rhai::Map {
@@ -339,8 +336,7 @@ fn cleanup_hook(
         return ctx;
     }
 
-    let result =
-        engine.call_fn::<rhai::Map>(scope, ast, "cleanup", (ctx.clone(), reason.to_string()));
+    let result = scope.call_map("cleanup", vec![ctx.clone().into(), reason.into()], false);
 
     match result {
         Ok(ctx) => ctx,

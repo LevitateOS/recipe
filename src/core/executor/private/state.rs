@@ -1,44 +1,31 @@
-use crate::core::executor::CompiledRecipe;
-use crate::core::{build_deps, ctx, output};
 use super::context::CheckpointPoint;
+use crate::core::executor::CompiledRecipe;
+use crate::core::invocation::Runtime;
+use crate::core::{build_deps, ctx, output};
 use anyhow::{Context, Result, anyhow};
-use rhai::{AST, Engine, Scope};
+use rhai::{AST, Engine};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// Check whether a step is needed (true when the check throws).
+/// Evaluate readiness, preserving discovered context and genuine errors.
 ///
 /// If the check passes, returns the ctx value that the check returned.
 pub(crate) fn check_phase_with_reason(
-    engine: &Engine,
-    ast: &AST,
-    scope: &Scope,
+    scope: &mut Runtime<'_>,
     fn_name: &str,
     ctx: &rhai::Map,
-) -> (bool, rhai::Map, Option<String>) {
-    if !crate::core::runner::has_fn(ast, fn_name) {
-        return (
-            true,
-            ctx.clone(),
-            Some("check function is missing (default: needs work)".to_string()),
-        );
-    }
-
-    match engine.call_fn::<rhai::Map>(&mut scope.clone(), ast, fn_name, (ctx.clone(),)) {
-        Ok(new_ctx) => (false, new_ctx, None),
-        Err(e) => {
-            let msg = format!("{e}");
-            (true, ctx.clone(), Some(msg))
-        }
+) -> Result<(bool, rhai::Map, Option<String>)> {
+    match scope.check(fn_name, ctx)? {
+        crate::core::invocation::Readiness::Ready(ctx) => Ok((false, ctx, None)),
+        crate::core::invocation::Readiness::NeedsWork(ctx, reason) => Ok((true, ctx, Some(reason))),
     }
 }
 
 /// Run recipe cleanup hook and return the updated ctx.
 pub(crate) fn maybe_cleanup(
-    engine: &Engine,
     ast: &AST,
-    scope: &mut Scope,
+    scope: &mut Runtime<'_>,
     ctx: rhai::Map,
     reason: &str,
     best_effort: bool,
@@ -57,8 +44,7 @@ pub(crate) fn maybe_cleanup(
         ));
     }
 
-    let result =
-        engine.call_fn::<rhai::Map>(scope, ast, "cleanup", (ctx.clone(), reason.to_string()));
+    let result = scope.call_map("cleanup", vec![ctx.clone().into(), reason.into()], false);
 
     match result {
         Ok(ctx) => Ok(ctx),

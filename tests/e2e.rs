@@ -95,3 +95,6 @@ mod git_acquisition;
 mod kernel_acquisition;
 #[path = "e2e/invocation.rs"]
 mod invocation;
+
+#[path = "e2e/api2.rs"]
+mod api2;
