@@ -56,15 +56,20 @@ registry; no host device node is mounted or copied. Unknown image entries under
 
 The current backend is limited to 32 objects (including directories), 64 KiB
 per file and 64 open files. It supports regular-file IO and metadata, mkdir,
-file unlink and chmod; directory enumeration/removal, rename, links, duplicate
-descriptors and execution of generated files remain unsupported. It cannot yet
+file unlink and chmod; directory enumeration/removal, rename, links and
+execution of generated files remain unsupported. It cannot yet
 build ordinary compiler projects. Anonymous pipes now use supervisor-owned
 buffers, with tested byte flow, aliases and EOF. Files, devices, pipes and stdio
 now share small public descriptors; aliases share file offsets and handle
 lifetimes. The real descriptor limit is capped at 256 while preserving a lower
-operator limit. Libc spawn preflight now succeeds, and the actual child helper
-reaches explicit clone3/clone denial. Process/thread supervision, inherited
-handle lifetimes, peer scheduling and exec-time close-on-exec remain unfinished.
+operator limit. The configured launcher now supervises up to 16 processes,
+registering children before they run. Fork/vfork and the supported libc clone
+forms inherit descriptor tables; owned handles survive parent/child closes,
+blocking pipes wake for peer IO, and waits use virtual child IDs and observed
+exit statuses. Root exit or supervisor failure kills and reaps descendants.
+The actual child helper now passes spawn setup and reaches explicit execve
+denial. Exec/close-on-exec, threads, broader wait/signal semantics and polling
+of owned or remapped descriptors remain unfinished.
 File effects disappear after the invocation.
 Acknowledgements still use placeholder generation 0 and are not durable-state
 evidence. Child commands, retained writable storage, durable state, complete
