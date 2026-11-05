@@ -1564,3 +1564,36 @@ with tarfile.open(path, 'w') as archive:
         }
     }
 }
+
+#[test]
+fn managed_generated_scripts_use_owned_and_image_interpreter_chains() {
+    let (_dir, recipes) = create_test_env();
+    write_recipe(
+        &recipes,
+        "check",
+        r##"
+const RECIPE_API = 2;
+let ctx = #{name: "interpreter-chain"};
+fn is_installed(ctx) {
+    copy_file("/usr/bin/bash", "/work/tools/bash"); chmod("/work/tools/bash", 0o755);
+    let body = "\nprintf '%s|%s|%s|%s|%s' \"$0\" \"$1\" \"$2\" \"$3\" \"$4\"\n";
+    write_file("/work/tools/middle", "#!/work/tools/bash --noprofile" + body);
+    chmod("/work/tools/middle", 0o755);
+    write_file("/work/tools/outer", "#!/work/tools/middle outer option\n");
+    chmod("/work/tools/outer", 0o755);
+    ctx.owned = exec_output("/work/tools/outer", ["spaced argument", "last"]);
+    // A completed interpreter releases script pins so a later launch can use
+    // changed contents while the original executable input stays immutable.
+    write_file("/work/tools/middle", "#!/usr/bin/bash --noprofile" + body);
+    ctx.image = exec_output("/work/tools/outer", ["spaced argument", "last"]);
+    ready(ctx)
+}
+"##,
+    );
+    let output = managed_command(&recipes, "isinstalled").output().unwrap();
+    assert_success(&output);
+    let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let expected = "/work/tools/middle|outer option|/work/tools/outer|spaced argument|last";
+    assert_eq!(ctx["owned"], expected);
+    assert_eq!(ctx["image"], expected);
+}
