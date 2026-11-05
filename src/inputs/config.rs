@@ -25,7 +25,7 @@ const MAX_CONFIG: usize = 4096;
 /// enter domain config). Override with `GINUX_ROOT`; the override must pass
 /// the same reference validation. How the launcher resolves this reference
 /// to retained image storage is owned by G-launch/G11.
-const DEFAULT_ROOT_REF: &str = "oci:rocky-10.2.20260525.0-amd64-rootfs@sha256:1026f8d3b36eaea1bcab8e609045991f08c70eb745cb7a158f03ba8b40be9c";
+const DEFAULT_ROOT_REF: &str = "oci:rocky-10.2.20260525.0-amd64-rootfs@sha256:1026f8d3b36eaea1bcab8e609045991f08c70eb7645cb37f58f48faa8b40be9c";
 
 /// Domain init: the worker binary shipped inside `/inputs` (I01/R02).
 const WORKER_INIT: &str = "/inputs/recipe-worker";
