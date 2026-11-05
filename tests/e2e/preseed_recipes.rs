@@ -112,6 +112,11 @@ fn cli_preseed_checks_reject_same_size_corruption_of_verified_assets() {
             .unwrap();
         assert_success(&output);
         assert!(String::from_utf8_lossy(&output.stderr).contains("already installed"));
+        let installed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(installed["outputs"]["iso"], ctx["iso_path"]);
+        if recipe.starts_with("alpine") {
+            assert_eq!(installed["outputs"]["apk_tools"], ctx["apk_tools_path"]);
+        }
 
         let fields = if recipe.starts_with("alpine") {
             vec!["iso_path", "apk_tools_path"]

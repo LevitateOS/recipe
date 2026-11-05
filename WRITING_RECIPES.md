@@ -114,6 +114,24 @@ Separate durable state import/storage, strict nested-value persistence, output
 contracts, and publication remain pending. The persistence option alone does not
 establish resumable storage.
 
+### Named product paths
+
+Declare products in `ctx.outputs`, including on a successful readiness check when
+installation is reused. For path products, use a nonempty absolute path string:
+
+```rhai
+ctx.outputs.rootfs = rootfs;
+```
+
+Rust consumers select required names and validate file/directory types. A missing
+name is an error; consumers do not infer filenames or substitute an old build
+directory. These contract checks supplement the recipe's custom readiness rules.
+
+Worker paths such as `/out/rootfs` identify domain artifacts. The coordinator
+must export selected products and return their published host paths before a
+host consumer uses them. Declaring a path does not publish it or authorize access
+to that host path. This publication bridge remains R08 work.
+
 ## Minimal Template
 
 This is the smallest useful install recipe shape for the current executor:

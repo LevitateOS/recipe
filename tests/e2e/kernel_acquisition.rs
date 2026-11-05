@@ -93,6 +93,14 @@ fn cli_prebuilt_kernel_acquisition_validates_download_and_layout_before_publicat
             assert_success(&output);
             let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
             assert_eq!(ctx["kernel_version"], "6.19.0-acorn");
+            assert_eq!(ctx["outputs"]["kernel"], image.to_str().unwrap());
+            assert_eq!(
+                ctx["outputs"]["modules"],
+                root.join("staging/usr/lib/modules/6.19.0-acorn")
+                    .to_str()
+                    .unwrap()
+            );
+            assert!(ctx["outputs"].get("source").is_none());
             assert_eq!(
                 std::fs::read_to_string(&image).unwrap(),
                 "downloaded disposable image"

@@ -267,6 +267,13 @@ fn cli_kernel_readiness_preserves_release_and_module_rules() {
                 let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
                 assert_eq!(ctx["kernel_version"], release);
                 assert_eq!(ctx["build_dir"], build.to_str().unwrap());
+                if action == "isinstalled" {
+                    assert_eq!(
+                        ctx["outputs"]["kernel"],
+                        artifacts.join("staging/boot/vmlinuz").to_str().unwrap()
+                    );
+                    assert_eq!(ctx["outputs"]["modules"], modules.to_str().unwrap());
+                }
             }
             std::fs::write(&release_file, "6.18-wrong").unwrap();
             for action in ["isbuilt", "isinstalled"] {
