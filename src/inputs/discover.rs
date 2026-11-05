@@ -6,13 +6,11 @@
 //! symlinks, directories, secret-bearing names — fails with an explicit
 //! error instead of staging unchecked host state.
 //!
-//! Staged domain names are flat (`/inputs/NAME`). A file keeps its original
-//! file name when that name is valid and unused, so same-directory
-//! `extends:`/`import` references resolve against the domain search path
-//! `/inputs` with no worker changes; renamed files are recorded in
-//! `sources.txt` for R06/I02 layout reconstruction.
+//! Staged domain names preserve relative directories under `/inputs`. Literal
+//! imports and dependency declarations are discovered by parsing, never by
+//! evaluating recipe code on the coordinator.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -39,7 +37,7 @@ const MAX_IMPORT_DEPTH: usize = 16;
 /// One staged host file and its `/inputs/NAME` identity.
 #[derive(Debug, Clone)]
 pub struct StagedInput {
-    /// Flat domain name (`/inputs/{name}`); charset `[A-Za-z0-9._-]`.
+    /// Relative domain name under `/inputs`; each component uses `[A-Za-z0-9._-]`.
     pub name: String,
     /// Host file this was staged from (never crosses into the domain).
     pub host_path: PathBuf,
@@ -57,7 +55,7 @@ pub struct StagedInput {
 /// Caller-declared asset, source-closure, or cache file: `NAME=host-path`.
 #[derive(Debug, Clone)]
 pub struct ExtraInput {
-    /// Flat domain name; validated like every other input name.
+    /// Relative domain name; validated like every other input name.
     pub name: String,
     /// Host file to stage at `/inputs/{name}`.
     pub path: PathBuf,
@@ -100,7 +98,10 @@ pub fn discover_inputs(
     let recipe_canonical = canonical_host(recipe)?;
     collector.note_host_dir(&recipe_canonical);
     collector.stage_named(MAIN_NAME, recipe, MAIN_NAME)?;
-    collector.collect_related(&recipe_canonical, &recipe_source, 0)?;
+    collector
+        .visited
+        .insert((recipe_canonical.clone(), MAIN_NAME.to_owned()));
+    collector.collect_related(&recipe_canonical, MAIN_NAME, &recipe_source, 0)?;
 
     for extra in extra_inputs {
         collector.stage_named(&extra.name, &extra.path, &extra.name)?;
@@ -141,8 +142,12 @@ fn read_recipe_file(path: &Path) -> Result<String> {
 
 /// Canonical host identity for cycle detection (internal only).
 fn canonical_host(path: &Path) -> Result<PathBuf> {
-    path.canonicalize()
-        .with_context(|| format!("input preparation failure: cannot resolve {}", path.display()))
+    path.canonicalize().with_context(|| {
+        format!(
+            "input preparation failure: cannot resolve {}",
+            path.display()
+        )
+    })
 }
 
 /// Collector stages each domain name at most once and tracks the byte total.
@@ -150,10 +155,9 @@ struct Collector<'a> {
     search_path: Option<&'a Path>,
     staged: Vec<StagedInput>,
     by_name: HashMap<String, PathBuf>,
-    visited: HashMap<PathBuf, String>,
+    visited: HashSet<(PathBuf, String)>,
     total: u64,
     host_dirs: Vec<PathBuf>,
-    fallback_counter: usize,
 }
 
 impl<'a> Collector<'a> {
@@ -162,10 +166,9 @@ impl<'a> Collector<'a> {
             search_path,
             staged: Vec::new(),
             by_name: HashMap::new(),
-            visited: HashMap::new(),
+            visited: HashSet::new(),
             total: 0,
             host_dirs: Vec::new(),
-            fallback_counter: 0,
         }
     }
 
@@ -196,6 +199,9 @@ impl<'a> Collector<'a> {
                 host.display()
             );
         }
+        if self.staged.len() >= 100_000 {
+            bail!("input preparation failure: too many input files");
+        }
         let mut staged = validate_and_hash(name, host)?;
         staged.referenced_as = referenced_as.to_string();
         self.total = self.total.checked_add(staged.size).with_context(|| {
@@ -213,74 +219,57 @@ impl<'a> Collector<'a> {
         Ok(())
     }
 
-    /// Prefer the file's own name (keeps same-dir references working in the
-    /// domain); fall back to a generated unique name and record the mapping
-    /// in `referenced_as`.
-    fn domain_name_for(&mut self, host: &Path, referenced_as: &str, fallback_prefix: &str) -> String {
-        let original = host
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        if !original.is_empty()
-            && validate_input_name(&original).is_ok()
-            && !self.by_name.contains_key(&original)
-        {
-            return original;
-        }
-        loop {
-            self.fallback_counter += 1;
-            let stem = Path::new(referenced_as)
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "module".to_string());
-            let candidate = truncate_name(&format!(
-                "{fallback_prefix}-{}-{}.rhai",
-                self.fallback_counter,
-                sanitize_name(&stem),
-            ));
-            if !self.by_name.contains_key(&candidate) {
-                return candidate;
-            }
-        }
-    }
-
-    /// Collect the base recipe and transitive imports of one source file.
-    fn collect_related(&mut self, canonical: &Path, source: &str, depth: usize) -> Result<()> {
+    /// Preserve each reference's directory layout instead of flattening names.
+    fn collect_related(
+        &mut self,
+        canonical: &Path,
+        domain_name: &str,
+        source: &str,
+        depth: usize,
+    ) -> Result<()> {
         if depth > MAX_IMPORT_DEPTH {
             bail!(
-                "input preparation failure: import nesting exceeds {MAX_IMPORT_DEPTH} levels \
-                 at {} (cycle or runaway import chain)",
-                canonical.display()
+                "input preparation failure: import/dependency nesting exceeds {MAX_IMPORT_DEPTH}"
             );
         }
-
-        if let Some(base_rel) = parse_extends(source) {
-            let base = self.resolve_related(&base_rel, canonical, "extends")?;
-            self.collect_file(&base, &base_rel, depth)?;
+        let mut references = static_references(source)?;
+        if let Some(base) = parse_extends(source) {
+            references.push((base, false));
         }
-
-        let imports = scan_imports(source);
-        for import_rel in &imports {
-            let imported = self.resolve_related(import_rel, canonical, "import")?;
-            self.collect_file(&imported, import_rel, depth)?;
+        for (target, module) in references {
+            let target = if module {
+                let mut path = PathBuf::from(&target);
+                path.set_extension("rhai");
+                path.to_string_lossy().into_owned()
+            } else {
+                target
+            };
+            let host = self.resolve_related(&target, canonical, "recipe/module")?;
+            let beside_referrer = canonical
+                .parent()
+                .is_some_and(|parent| parent.join(&target).is_file());
+            let name = if beside_referrer {
+                Path::new(domain_name)
+                    .parent()
+                    .unwrap_or(Path::new(""))
+                    .join(&target)
+            } else {
+                PathBuf::from(&target)
+            };
+            let name = name
+                .to_str()
+                .context("input preparation failure: non-Unicode domain path")?;
+            validate_input_name(name)?;
+            // Validate the selected path before canonicalization, preserving symlink rejection.
+            let source = read_recipe_file(&host)?;
+            let canonical = canonical_host(&host)?;
+            self.note_host_dir(&canonical);
+            self.stage_named(name, &host, &target)?;
+            if self.visited.insert((canonical.clone(), name.to_owned())) {
+                self.collect_related(&canonical, name, &source, depth + 1)?;
+            }
         }
         Ok(())
-    }
-
-    /// Stage one related file (base or import) and recurse into its imports.
-    /// Files already staged keep their first domain name; the alias still
-    /// resolves because Rhai de-duplicates identical module content by path.
-    fn collect_file(&mut self, host: &Path, referenced_as: &str, depth: usize) -> Result<()> {
-        let canonical = canonical_host(host)?;
-        self.note_host_dir(&canonical);
-        if self.visited.contains_key(&canonical) {
-            return Ok(());
-        }
-        let name = self.domain_name_for(&canonical, referenced_as, "import");
-        self.visited.insert(canonical.clone(), name.clone());
-        self.stage_named(&name, &canonical, referenced_as)?;
-        let source = read_recipe_file(&canonical)?;
-        self.collect_related(&canonical, &source, depth + 1)
     }
 
     /// Resolve an `extends:`/`import` target like the executor does, refusing
@@ -361,9 +350,7 @@ fn reject_secret_bearing_host(host: &Path, name: &str) -> Result<()> {
             }
             _ => {}
         }
-        if component.len() > 4
-            && (component.ends_with(b".pem") || component.ends_with(b".key"))
-        {
+        if component.len() > 4 && (component.ends_with(b".pem") || component.ends_with(b".key")) {
             bail!(
                 "input preparation failure: refusing secret-bearing input {name:?} \
                  (host path names key material; stage only declared build inputs)"
@@ -374,7 +361,7 @@ fn reject_secret_bearing_host(host: &Path, name: &str) -> Result<()> {
 }
 
 /// G10 input-name rules mirrored: charset, length, reserved names.
-fn validate_input_name(name: &str) -> Result<()> {
+pub(super) fn validate_input_name(name: &str) -> Result<()> {
     if name.is_empty() || name.len() > MAX_INPUT_NAME {
         bail!(
             "input preparation failure: input name {name:?} has {} B, want 1..={MAX_INPUT_NAME} B \
@@ -382,12 +369,16 @@ fn validate_input_name(name: &str) -> Result<()> {
             name.len(),
         );
     }
-    if name == "." || name == ".." {
+    if name
+        .split('/')
+        .any(|part| part.is_empty() || part == "." || part == "..")
+        || name.split('/').next() == Some("recipe-worker")
+    {
         bail!("input preparation failure: input name {name:?} is reserved");
     }
     if !name
         .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/'))
     {
         bail!(
             "input preparation failure: input name {name:?} has unexpected characters \
@@ -400,7 +391,10 @@ fn validate_input_name(name: &str) -> Result<()> {
 /// Validate one host file and hash it by streaming (never fully buffered).
 fn validate_and_hash(name: &str, host: &Path) -> Result<StagedInput> {
     let meta = std::fs::symlink_metadata(host).with_context(|| {
-        format!("input preparation failure: cannot stat input {name:?} at {}", host.display())
+        format!(
+            "input preparation failure: cannot stat input {name:?} at {}",
+            host.display()
+        )
     })?;
     if meta.file_type().is_symlink() {
         bail!(
@@ -470,89 +464,57 @@ impl Write for WriterHasher<'_> {
     }
 }
 
-/// Scan Rhai source for `import "path" [as name]` targets (string-literal
-/// form only; dynamic imports cannot be staged and fail at resolve time).
-fn scan_imports(source: &str) -> Vec<String> {
-    let mut targets = Vec::new();
-    for line in source.lines() {
-        let code = match line.find("//") {
-            Some(index) => &line[..index],
-            None => line,
-        };
-        let mut rest = code;
-        while let Some(index) = rest.find("import") {
-            let preceded = rest[..index]
-                .chars()
-                .next_back()
-                .is_none_or(|ch| !(ch.is_alphanumeric() || ch == '_'));
-            if !preceded {
-                rest = rest.get(index + 1..).unwrap_or("");
-                continue;
+/// Compile only: no module loading, top-level evaluation or native helpers on
+/// the coordinator. Dynamic imports/dependency declarations need explicit inputs.
+fn static_references(source: &str) -> Result<Vec<(String, bool)>> {
+    use rhai::{ASTNode, Expr, OptimizationLevel, Stmt};
+    let mut engine = rhai::Engine::new();
+    engine.set_optimization_level(OptimizationLevel::None);
+    let ast = engine
+        .compile(source)
+        .context("input preparation failure: invalid Rhai source")?;
+    let mut references = Vec::new();
+    let mut invalid = None;
+    ast.walk(&mut |nodes| {
+        if let Some(ASTNode::Stmt(Stmt::Import(import, _))) = nodes.last() {
+            match &import.0 {
+                Expr::StringConstant(path, _) => references.push((path.to_string(), true)),
+                _ => invalid = Some("dynamic import cannot be prepared; use a literal module path"),
             }
-            let after_keyword = &rest[index + "import".len()..];
-            let boundary = after_keyword
-                .chars()
-                .next()
-                .is_none_or(|ch| ch.is_whitespace() || ch == '"');
-            if !boundary {
-                rest = after_keyword.get(1..).unwrap_or("");
-                continue;
-            }
-            let Some(quote) = after_keyword.find('"') else {
-                break;
-            };
-            let quoted = &after_keyword[quote + 1..];
-            let mut target = String::new();
-            let mut escaped = false;
-            let mut closed_at: Option<usize> = None;
-            for (offset, ch) in quoted.char_indices() {
-                if escaped {
-                    target.push(ch);
-                    escaped = false;
-                } else if ch == '\\' {
-                    escaped = true;
-                } else if ch == '"' {
-                    closed_at = Some(offset);
-                    break;
-                } else {
-                    target.push(ch);
-                }
-            }
-            match closed_at {
-                Some(offset) => {
-                    if !target.is_empty() {
-                        targets.push(target);
+        }
+        true
+    });
+    for statement in ast.statements() {
+        if let Stmt::Var(declaration, _, _) = statement {
+            if matches!(declaration.0.name.as_str(), "deps" | "build_deps") {
+                match &declaration.1 {
+                    Expr::Array(items, _) => {
+                        for item in items {
+                            match item {
+                                Expr::StringConstant(name, _) => {
+                                    references.push((format!("{name}.rhai"), false))
+                                }
+                                _ => {
+                                    invalid = Some(
+                                        "dependency names must be literal strings for input preparation",
+                                    )
+                                }
+                            }
+                        }
                     }
-                    rest = quoted.get(offset + 1..).unwrap_or("");
+                    _ => {
+                        invalid = Some(
+                            "dependency declarations must be literal arrays for input preparation",
+                        )
+                    }
                 }
-                None => break,
             }
         }
     }
-    targets
-}
-
-/// Map an arbitrary file stem into the input-name charset.
-fn sanitize_name(stem: &str) -> String {
-    stem.bytes()
-        .map(|byte| {
-            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') {
-                byte as char
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
-/// Shorten an auto-generated domain name to the input-name bound.
-fn truncate_name(name: &str) -> String {
-    const SUFFIX: &str = ".rhai";
-    if name.len() <= MAX_INPUT_NAME {
-        return name.to_string();
+    if let Some(reason) = invalid {
+        bail!("input preparation failure: {reason}");
     }
-    let keep = MAX_INPUT_NAME.saturating_sub(SUFFIX.len()).max(1);
-    format!("{}{SUFFIX}", &name[..keep.min(name.len())])
+    Ok(references)
 }
 
 /// Same host file reached under two names (e.g. via search path overlap).

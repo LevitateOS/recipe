@@ -84,20 +84,8 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
     let inputs = root.path().join("inputs");
     std::fs::create_dir(&inputs)?;
     for input in &invocation.inputs {
-        if input.name.is_empty()
-            || input.name.len() > 92
-            || input.name == "."
-            || input.name == ".."
-            || !input
-                .name
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
-        {
-            bail!("invalid staged input name: {:?}", input.name);
-        }
-        if input.name == "recipe-worker" {
-            bail!("input name recipe-worker is reserved for the managed worker executable");
-        }
+        super::discover::validate_input_name(&input.name)?;
+        ensure_parents(&inputs, Path::new(&input.name))?;
         let mut source = regular_file(&invocation.staging_dir().join(&input.name))?;
         let mut destination = OpenOptions::new()
             .write(true)

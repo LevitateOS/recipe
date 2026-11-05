@@ -249,6 +249,59 @@ fn cleanup(ctx, reason) { ctx.reason = reason; ctx }
 }
 
 #[test]
+fn managed_inputs_preserve_nested_modules_and_dependency_closure() {
+    let (_dir, recipes) = create_test_env();
+    for name in ["left", "right", "tools"] {
+        std::fs::create_dir(recipes.join(name)).unwrap();
+    }
+    std::fs::write(recipes.join("left/facts.rhai"), "fn value() { \"left\" }").unwrap();
+    std::fs::write(recipes.join("right/facts.rhai"), "fn value() { \"right\" }").unwrap();
+    std::fs::write(
+        recipes.join("left/wrapper.rhai"),
+        "import \"facts\" as facts; fn value() { facts::value() }",
+    )
+    .unwrap();
+    std::fs::write(recipes.join("tools/helper.rhai"), r#"
+const RECIPE_API = 2;
+let ctx = #{name: "helper"};
+fn is_acquired(ctx) { ready(ctx) }
+fn is_installed(ctx) {
+    if is_file(join_path(RUNTIME.paths.tools, "dependency-evidence")) { return ready(ctx); }
+    needs_work(ctx, "helper missing")
+}
+fn install(ctx) { write_file(join_path(RUNTIME.paths.tools, "dependency-evidence"), "dependency ran"); ctx }
+"#).unwrap();
+    let source = r#"
+const RECIPE_API = 2;
+import "left/wrapper" as left;
+import "right/facts.rhai" as right;
+let deps = ["tools/helper"];
+let ctx = #{name: "nested-inputs"};
+fn is_acquired(ctx) { ready(ctx) }
+fn is_installed(ctx) {
+    if ctx.contains("complete") { return ready(ctx); }
+    needs_work(ctx, "parent missing")
+}
+fn install(ctx) {
+    ctx.modules = left::value() + ":" + right::value();
+    ctx.dependency = read_file(join_path(RUNTIME.paths.tools, "dependency-evidence"));
+    ctx.complete = true;
+    ctx
+}
+"#;
+    write_recipe(&recipes, "check", source);
+    let output = managed_command(&recipes, "install").output().unwrap();
+    assert_success(&output);
+    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(context["modules"], "left:right");
+    assert_eq!(context["dependency"], "dependency ran");
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+        source
+    );
+}
+
+#[test]
 fn managed_custom_checks_run_independently_and_return_discovered_context() {
     use std::os::unix::fs::PermissionsExt;
     let (_dir, recipes) = create_test_env();

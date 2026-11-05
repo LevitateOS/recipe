@@ -350,10 +350,15 @@ fn run_operation(
             anyhow!("BUILD_DIR is coordinator-owned; select inputs through the invocation instead"),
         ));
     }
-    defines.push((
-        "BUILD_DIR".to_string(),
-        local.build_dir.to_string_lossy().into_owned(),
-    ));
+    // Other operations already receive their own work directory explicitly.
+    // Inheriting the parent's BUILD_DIR define would override a dependency's
+    // work directory and violate API 2's invocation bindings.
+    if req.operation == "remove" {
+        defines.push((
+            "BUILD_DIR".to_string(),
+            local.build_dir.to_string_lossy().into_owned(),
+        ));
+    }
     let search_path = Some(local.search_path.as_path());
 
     let mut checkpoint_no: u64 = 0;
@@ -465,11 +470,45 @@ fn run_operation(
 /// plus module resolution against the worker search path. No autofix/LLM: the
 /// host coordinator owns retry policy (R11), and no credentials cross into
 /// the worker.
+/// Resolve relative to the importing module, then the prepared recipe root.
+/// Pass an absolute path to Rhai so nested modules retain their source directory.
+struct PreparedModules {
+    root: PathBuf,
+    files: rhai::module_resolvers::FileModuleResolver,
+}
+
+impl PreparedModules {
+    fn path(&self, source: Option<&str>, path: &str) -> PathBuf {
+        let reference = Path::new(path).with_extension("rhai");
+        if let Some(parent) = source.and_then(|name| Path::new(name).parent()) {
+            let parent = if parent.is_absolute() { parent.to_path_buf() } else { self.root.join(parent) };
+            let candidate = parent.join(&reference);
+            if candidate.is_file() { return candidate; }
+        }
+        self.root.join(reference)
+    }
+}
+
+impl rhai::ModuleResolver for PreparedModules {
+    fn resolve(&self, engine: &rhai::Engine, source: Option<&str>, path: &str, pos: rhai::Position)
+        -> Result<rhai::Shared<rhai::Module>, Box<rhai::EvalAltResult>> {
+        let full = self.path(source, path);
+        self.files.resolve(engine, source, &full.to_string_lossy(), pos)
+    }
+    fn resolve_raw(&self, engine: &rhai::Engine, global: &mut rhai::GlobalRuntimeState,
+        scope: &mut rhai::Scope, path: &str, pos: rhai::Position)
+        -> Result<rhai::Shared<rhai::Module>, Box<rhai::EvalAltResult>> {
+        let full = self.path(global.source(), path);
+        self.files.resolve_raw(engine, global, scope, &full.to_string_lossy(), pos)
+    }
+}
+
 fn build_engine(search_path: &Path) -> rhai::Engine {
     let mut engine = crate::core::invocation::engine();
-    let mut resolver = rhai::module_resolvers::FileModuleResolver::new();
-    resolver.set_base_path(search_path);
-    engine.set_module_resolver(resolver);
+    engine.set_module_resolver(PreparedModules {
+        root: search_path.to_path_buf(),
+        files: rhai::module_resolvers::FileModuleResolver::new(),
+    });
     engine
 }
 

@@ -12,13 +12,13 @@
 //! and renders the domain-facing artifacts R06 consumes: an invocation id,
 //! the allowlisted environment (interfaces §5), and the domain config text
 //! (interfaces §2). Nothing staged embeds an absolute host checkout path or
-//! a secret: host files are selected explicitly, copied under flat
+//! a secret: host files are selected explicitly, copied under relative
 //! `/inputs/NAME` domain paths, and referenced only by content hash.
 //!
 //! What this does NOT do (owned by later tasks): domain launch and channel
 //! transport (R06), retained storage backing and generations (G11/G12a),
-//! export of results (G13/R08), dependency-closure discovery, or recipe layout
-//! reconstruction for nested domain paths (I02). Unsupported input discovery fails here with an explicit error
+//! export of results (G13/R08). Literal dependency and module closures preserve
+//! their relative directory layout. Unsupported input discovery fails with an explicit error
 //! instead of silently staging the wrong bytes.
 //!
 //! Hard limits enforced (interfaces §2, no silent truncation):
@@ -123,6 +123,9 @@ pub fn prepare_invocation(
         tempfile::tempdir().context("input preparation failure: cannot create staging dir")?;
     for input in &discovered.inputs {
         let dest = staging.path().join(&input.name);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         std::fs::copy(&input.host_path, &dest).with_context(|| {
             format!(
                 "input preparation failure: cannot stage /inputs/{} from {}",
