@@ -306,8 +306,8 @@ fn install(ctx) {
 fn managed_declared_source_tree_is_readonly_and_rejects_symlinks() {
     let (dir, recipes) = create_test_env();
     let source = dir.path().join("source");
-    std::fs::create_dir_all(source.join("nested")).unwrap();
-    std::fs::write(source.join("nested/value"), "declared input").unwrap();
+    std::fs::create_dir_all(source.join("nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/")).unwrap();
+    std::fs::write(source.join("nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/value"), "declared input").unwrap();
     write_recipe(
         &recipes,
         "check",
@@ -315,9 +315,9 @@ fn managed_declared_source_tree_is_readonly_and_rejects_symlinks() {
 const RECIPE_API = 2;
 let ctx = #{name: "source-input"};
 fn is_installed(ctx) {
-    ctx.value = read_file("/inputs/source/nested/value");
+    ctx.value = read_file("/inputs/source/nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/value");
     let denied = false;
-    try { write_file("/inputs/source/nested/value", "changed"); } catch (error) { denied = true; }
+    try { write_file("/inputs/source/nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/value", "changed"); } catch (error) { denied = true; }
     if !denied { throw "input accepted mutation"; }
     ready(ctx)
 }
@@ -332,10 +332,10 @@ fn is_installed(ctx) {
     let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(context["value"], "declared input");
     assert_eq!(
-        std::fs::read_to_string(source.join("nested/value")).unwrap(),
+        std::fs::read_to_string(source.join("nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/value")).unwrap(),
         "declared input"
     );
-    std::os::unix::fs::symlink(source.join("nested/value"), source.join("alias")).unwrap();
+    std::os::unix::fs::symlink(source.join("nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/value"), source.join("alias")).unwrap();
     let rejected = managed_command(&recipes, "isinstalled")
         .args(["--input", &selection])
         .output()

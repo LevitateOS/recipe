@@ -25,9 +25,9 @@ pub const MAIN_NAME: &str = "main.rhai";
 /// Domain path of the main recipe inside `/inputs`.
 pub const MAIN_NAME_DOMAIN: &str = "/inputs/main.rhai";
 
-/// G10 input-name bound mirrored: `inputs/` + NAME fits the 100-byte ustar
-/// field and `/inputs/` + NAME fits the §2 ≤ 128 B domain-path bound.
-const MAX_INPUT_NAME: usize = 92;
+/// Configured-launch inputs are copied directly, not through a ustar name field.
+/// Keep `/inputs/` + NAME + NUL within the launcher's 256-byte path buffer.
+const MAX_INPUT_NAME: usize = 247;
 /// G10 per-file/total caps mirrored (streamed, never fully buffered).
 const MAX_INPUT_FILE: u64 = 512 * 1024 * 1024;
 const MAX_INPUTS_TOTAL: u64 = 2 * 1024 * 1024 * 1024;
@@ -394,7 +394,7 @@ pub(super) fn validate_input_name(name: &str) -> Result<()> {
     if name.is_empty() || name.len() > MAX_INPUT_NAME {
         bail!(
             "input preparation failure: input name {name:?} has {} B, want 1..={MAX_INPUT_NAME} B \
-             (so `/inputs/` + NAME fits the §2 domain-path bound)",
+             (so `/inputs/` + NAME fits the launcher path bound)",
             name.len(),
         );
     }
