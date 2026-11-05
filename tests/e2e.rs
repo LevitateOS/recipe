@@ -85,3 +85,5 @@ mod kernel_recipes;
 mod downloads;
 #[path = "e2e/process.rs"]
 mod process;
+#[path = "e2e/preseed_recipes.rs"]
+mod preseed_recipes;

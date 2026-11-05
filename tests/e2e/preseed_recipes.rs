@@ -1,0 +1,145 @@
+use super::*;
+use sha2::{Digest, Sha256};
+
+fn preseed_command(recipes: &Path, recipe: &str, action: &str) -> Command {
+    let mut command = recipe_command(recipes);
+    command
+        .args([action, recipe, "--no-persist-ctx"])
+        .arg("--recipes-path")
+        .arg(recipes)
+        .arg("--build-dir")
+        .arg(recipes.parent().unwrap().join("build"));
+    for name in [
+        "ALPINE_FORCE_REFRESH",
+        "FEDORA_FORCE_REFRESH",
+        "ROOTFS_SOURCE_FORCE_REFRESH",
+    ] {
+        command.env_remove(name);
+    }
+    command
+}
+
+fn prepare_assets(recipes: &Path, recipe: &str) -> serde_json::Value {
+    let path = recipes.join(format!("{recipe}.rhai"));
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../distro-builder/recipes")
+        .join(format!("{recipe}.rhai"));
+    std::fs::copy(source, &path).unwrap();
+    let output = preseed_command(recipes, recipe, "cleanup")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let mut ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let alpine = recipe.starts_with("alpine");
+    let fields = if alpine {
+        vec![
+            ("iso_path", "iso_sha256"),
+            ("apk_tools_path", "apk_tools_sha256"),
+        ]
+    } else {
+        vec![("iso_path", "sha256")]
+    };
+    let mut script = std::fs::read_to_string(&path).unwrap();
+    // Small synthetic inputs replace only package checksum facts. All lifecycle
+    // and verification code comes from the actual repository recipe.
+    for (path_field, hash_field) in fields {
+        let asset = Path::new(ctx[path_field].as_str().unwrap());
+        std::fs::create_dir_all(asset.parent().unwrap()).unwrap();
+        let bytes = format!("verified fixture for {path_field}");
+        std::fs::write(asset, &bytes).unwrap();
+        let digest = format!("{:x}", Sha256::digest(bytes.as_bytes()));
+        script = script.replace(ctx[hash_field].as_str().unwrap(), &digest);
+        ctx[hash_field] = serde_json::Value::String(digest);
+    }
+    std::fs::write(&path, script).unwrap();
+    let iso_size = std::fs::metadata(ctx["iso_path"].as_str().unwrap())
+        .unwrap()
+        .len();
+    let (marker_name, marker) = if alpine {
+        let apk_size = std::fs::metadata(ctx["apk_tools_path"].as_str().unwrap())
+            .unwrap()
+            .len();
+        (
+            ".alpine-source-preseed.marker",
+            format!(
+                "iso_sha256={}\niso_fingerprint={iso_size}\napk_tools_sha256={}\napk_tools_fingerprint={apk_size}\n",
+                ctx["iso_sha256"].as_str().unwrap(),
+                ctx["apk_tools_sha256"].as_str().unwrap()
+            ),
+        )
+    } else {
+        (
+            ".fedora-iso-trust.marker",
+            format!(
+                "sha256={}\nfingerprint={iso_size}\n",
+                ctx["sha256"].as_str().unwrap()
+            ),
+        )
+    };
+    std::fs::write(
+        Path::new(ctx["trust_dir"].as_str().unwrap()).join(marker_name),
+        marker,
+    )
+    .unwrap();
+    ctx
+}
+
+#[test]
+fn cli_preseed_checks_reject_same_size_corruption_of_verified_assets() {
+    for recipe in ["alpine-preseed-source-assets", "fedora-preseed-iso"] {
+        let (_dir, recipes) = create_test_env();
+        let ctx = prepare_assets(&recipes, recipe);
+        for action in ["isacquired", "isbuilt", "isinstalled"] {
+            let output = preseed_command(&recipes, recipe, action).output().unwrap();
+            assert_success(&output);
+        }
+        let output = preseed_command(&recipes, recipe, "install")
+            .output()
+            .unwrap();
+        assert_success(&output);
+        assert!(String::from_utf8_lossy(&output.stderr).contains("already installed"));
+
+        let fields = if recipe.starts_with("alpine") {
+            vec!["iso_path", "apk_tools_path"]
+        } else {
+            vec!["iso_path"]
+        };
+        for field in fields {
+            let asset = Path::new(ctx[field].as_str().unwrap());
+            let original = std::fs::read(asset).unwrap();
+            let mut bytes = original.clone();
+            bytes[0] ^= 1;
+            std::fs::write(asset, bytes).unwrap();
+            for action in ["isacquired", "isbuilt", "isinstalled"] {
+                let output = preseed_command(&recipes, recipe, action).output().unwrap();
+                assert!(
+                    !output.status.success(),
+                    "{recipe} {action} accepted changed {field} content"
+                );
+                assert!(String::from_utf8_lossy(&output.stderr).contains("integrity check failed"));
+            }
+            std::fs::write(asset, original).unwrap();
+        }
+    }
+}
+
+#[test]
+fn cli_preseed_installed_checks_honor_refresh_before_cache_hit() {
+    for (recipe, refresh) in [
+        ("alpine-preseed-source-assets", "ALPINE_FORCE_REFRESH"),
+        ("fedora-preseed-iso", "FEDORA_FORCE_REFRESH"),
+        ("fedora-preseed-iso", "ROOTFS_SOURCE_FORCE_REFRESH"),
+    ] {
+        let (_dir, recipes) = create_test_env();
+        let ctx = prepare_assets(&recipes, recipe);
+        let iso = ctx["iso_path"].as_str().unwrap();
+        let before = std::fs::read(iso).unwrap();
+        let output = preseed_command(&recipes, recipe, "isinstalled")
+            .env(refresh, "1")
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{recipe} ignored {refresh}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("forced refresh"));
+        assert_eq!(std::fs::read(iso).unwrap(), before);
+    }
+}
