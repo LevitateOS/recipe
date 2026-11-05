@@ -95,8 +95,9 @@ These names are the Rhai function names.
 | `dnf_install_allow_erasing` | `helpers/util/process.rs` | `dnf_install_allow_erasing(packages:Array) -> ()` | fails fast if `dnf` is absent or no `sudo`/`doas` privilege runner is available |
 | `dnf_add_repo` | `helpers/util/process.rs` | `dnf_add_repo(url) -> ()` | fails fast if `dnf` is absent or no `sudo`/`doas` privilege runner is available |
 | `dnf_download` | `helpers/util/process.rs` | `dnf_download(packages:Array, dest_dir, arches:Array[, resolve]) -> Array` | fails fast if `dnf` is absent or no `sudo`/`doas` privilege runner is available |
-| `git_clone` | `helpers/acquire/git.rs` | `git_clone(url, dest_dir) -> String` | clones into dest_dir/<repo> |
-| `git_clone_depth` | `helpers/acquire/git.rs` | `git_clone_depth(url, dest_dir, depth) -> String` | shallow clone |
+| `git_clone` | `helpers/acquire/git.rs` | `git_clone(url, dest_dir) -> String` | dest_dir/<repo>; verifies origin on reuse |
+| `git_clone_depth` | `helpers/acquire/git.rs` | `git_clone_depth(url, dest_dir, depth) -> String` | same destination convention; shallow initial clone |
+| `git_checkout` | `helpers/acquire/git.rs` | `git_checkout(url, dest, commit) -> String` | exact destination; full pinned commit; origin/cleanliness checks |
 | `torrent` | `helpers/acquire/torrent.rs` | `torrent(url, dest_dir) -> String` | pure Rust (librqbit) |
 | `download_with_resume` | `helpers/acquire/download.rs` | `download_with_resume(url, dest [, sha256]) -> String` | exact HTTP Range; optional digest before replacement/416 reuse |
 | `llm_extract` | `helpers/llm.rs` | `llm_extract(content, prompt) -> String` | TODO backend |

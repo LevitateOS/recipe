@@ -506,6 +506,31 @@ Fails when: git invocation fails
 .br
 Example: \fBgit_clone_depth(ctx.repo, BUILD_DIR, 1)\fR
 .TP
+\fBgit_checkout\fR
+Signature: \fBgit_checkout(url, dest, commit)\fR
+.br
+Returns: exact destination path
+.br
+Fails when: acquisition fails, origin differs, the checkout has local changes,
+or commit is not a full 40- or 64-character hexadecimal commit ID
+.br
+Example: \fBgit_checkout(ctx.repo, join_path(BUILD_DIR, "source"), ctx.commit)\fR
+.PP
+Pinned acquisition selects detached HEAD. A missing commit is fetched from the
+declared origin. A clean checkout already at that commit can be reused offline.
+Tracked modifications and untracked files are rejected; ignored build files are
+outside this check, so package-specific source readiness rules still apply.
+No reset or clean operation is performed.
+.PP
+All Git helpers verify the configured origin before reusing a standalone clone.
+Wrong-origin, damaged, linked, or non-directory destinations fail without deletion.
+Legacy clone calls reuse the selected revision and preserve local edits; their
+depth argument applies only to the initial clone. Fresh clones are staged beside
+the destination and published only on success. HTTP(S), SSH, and explicit
+\fBfile://\fR origins are supported. Inherited Git repository/index locator
+variables are cleared for these child commands. Whole-process limits remain the
+execution runtime's responsibility; Git's HTTP low-speed bound is 600 seconds.
+.TP
 \fBtorrent\fR
 Signature: \fBtorrent(url, dest_dir)\fR
 .br

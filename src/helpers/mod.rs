@@ -459,6 +459,10 @@ pub fn register_all(engine: &mut Engine) {
     );
 
     // Git utilities (acquire/git)
+    engine.register_fn("git_checkout", |url: &str, dest: &str, commit: &str| {
+        trace_helper("git_checkout");
+        acquire::git_checkout(url, dest, commit)
+    });
     // git_clone(url, dest_dir) -> path string
     // git_clone_depth(url, dest_dir, depth) -> path string
     engine.register_fn("git_clone", |url: &str, dest_dir: &str| {

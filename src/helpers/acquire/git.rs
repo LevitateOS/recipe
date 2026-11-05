@@ -1,285 +1,243 @@
-//! Git helpers for recipe scripts
-//!
-//! Pure functions for cloning git repositories.
-//! All functions take explicit inputs and return explicit outputs.
-//!
-//! ## Example
-//!
-//! ```rhai
-//! fn acquire(ctx) {
-//!     let repo_dir = git_clone("https://github.com/user/repo.git", BUILD_DIR);
-//!     ctx.src_dir = repo_dir;
-//!     ctx
-//! }
-//! ```
+//! Git acquisition with explicit origin checks and optional pinned commits.
+//! Legacy clone helpers keep their destination-parent convention.
 
 use crate::core::output;
-use indicatif::{ProgressBar, ProgressStyle};
+use crate::helpers::internal::{cmd, progress};
 use rhai::EvalAltResult;
-use std::path::Path;
+use std::path::{Component, Path};
 use std::process::Command;
-use std::time::Duration;
 
-/// Git clone timeout (10 minutes). Prevents hangs on network issues.
-const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(600);
-
-/// RAII guard for progress bars - ensures cleanup on any exit path
-struct ProgressGuard(ProgressBar);
-
-impl Drop for ProgressGuard {
-    fn drop(&mut self) {
-        self.0.finish_and_clear();
-    }
-}
-
-/// Validate that a URL uses an allowed scheme for git operations.
-/// Only https://, http://, and git@ (SSH) URLs are supported.
-fn validate_git_url(url: &str) -> Result<(), Box<EvalAltResult>> {
-    if url.starts_with("https://")
-        || url.starts_with("http://")
-        || url.starts_with("git@")
-        || url.starts_with("ssh://")
+fn validate_origin(url: &str) -> Result<(), Box<EvalAltResult>> {
+    if url.contains(['\0', '\n', '\r'])
+        || !["https://", "http://", "ssh://", "git@", "file://"]
+            .iter()
+            .any(|prefix| url.starts_with(prefix))
     {
-        Ok(())
-    } else {
-        Err(format!(
-            "Unsupported git URL scheme: {}\n\
-             Only https://, http://, ssh://, and git@ URLs are supported",
-            url
-        )
-        .into())
+        return Err("Git origin must use https://, http://, ssh://, git@, or file://".into());
     }
+    Ok(())
 }
 
-/// Clone a git repository to a specified directory.
-///
-/// The repository is cloned into dest_dir/{repo-name}. The repo name is
-/// extracted from the URL (e.g., "linux" from "https://github.com/torvalds/linux.git").
-///
-/// Returns the path to the cloned repository.
-///
-/// # Example
-/// ```rhai
-/// let repo = git_clone("https://github.com/torvalds/linux.git", BUILD_DIR);
-/// // Results in BUILD_DIR/linux/
-/// ```
-pub fn git_clone(url: &str, dest_dir: &str) -> Result<String, Box<EvalAltResult>> {
-    // Validate URL scheme for security
-    validate_git_url(url)?;
-
-    let repo_name = extract_repo_name(url)?;
-    let dest = Path::new(dest_dir).join(&repo_name);
-
-    // Skip if already cloned AND valid
-    if dest.join(".git").exists() {
-        // Verify repo is valid before skipping
-        let verify = Command::new("git")
-            .args(["-C", &dest.to_string_lossy(), "rev-parse", "HEAD"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        if verify.map(|s| s.success()).unwrap_or(false) {
-            output::detail(&format!("git: {} already cloned", repo_name));
-            return Ok(dest.to_string_lossy().to_string());
-        }
-        // If invalid, warn and re-clone
-        output::warning(&format!(
-            "git: {} exists but is invalid, re-cloning",
-            repo_name
-        ));
-        // Remove the invalid repo
-        let _ = std::fs::remove_dir_all(&dest);
-    }
-
-    output::detail(&format!("git clone {}", url));
-
-    // Create progress spinner with RAII guard for cleanup
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .template("     {spinner:.cyan} {msg}")
-            .unwrap()
-            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-    );
-    pb.set_message(format!("cloning {}", repo_name));
-    pb.enable_steady_tick(Duration::from_millis(80));
-    let _guard = ProgressGuard(pb);
-
-    // Get destination path as string, handling non-UTF8 gracefully
-    let dest_str = dest
-        .to_str()
-        .ok_or("destination path contains invalid UTF-8")?;
-
-    // Run git clone with stderr capture and network timeout
-    let timeout_secs = GIT_CLONE_TIMEOUT.as_secs().to_string();
-    let output = Command::new("git")
+fn git(dir: Option<&Path>, args: &[&str]) -> Command {
+    let mut command = Command::new("git");
+    // These are HTTP low-speed bounds, not a whole-process timeout.
+    command
         .args([
             "-c",
             "http.lowSpeedLimit=1000",
             "-c",
-            &format!("http.lowSpeedTime={}", timeout_secs),
-            "clone",
-            "--progress",
-            url,
-            dest_str,
+            "http.lowSpeedTime=600",
         ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .map_err(|e| format!("failed to run git: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("git clone failed for {}\nDetails: {}", url, stderr.trim()).into());
+        .env("GIT_TERMINAL_PROMPT", "0");
+    // Inherited repository locators must not redirect this command's writes.
+    for name in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ] {
+        command.env_remove(name);
     }
-
-    output::detail(&format!("cloned {} to {}", repo_name, dest.display()));
-    Ok(dest.to_string_lossy().to_string())
+    if let Some(dir) = dir {
+        command
+            .arg("-C")
+            .arg(dir)
+            .args(["--git-dir=.git", "--work-tree=."]);
+    }
+    command.args(args);
+    command
 }
 
-/// Clone a git repository with a shallow depth.
-///
-/// Faster than full clone for large repositories. The `depth` parameter
-/// specifies how many commits to fetch (1 = only latest).
-///
-/// Returns the path to the cloned repository.
-///
-/// # Example
-/// ```rhai
-/// let repo = git_clone_depth("https://github.com/torvalds/linux.git", BUILD_DIR, 1);
-/// ```
+fn query(dir: &Path, args: &[&str]) -> Result<String, Box<EvalAltResult>> {
+    let output = cmd::checked_capture(git(Some(dir), args))?;
+    String::from_utf8(output.stdout)
+        .map(|text| text.trim_end_matches(['\r', '\n']).to_owned())
+        .map_err(|error| format!("invalid Git output: {error}").into())
+}
+
+fn validate_checkout(dest: &Path, url: &str) -> Result<(), Box<EvalAltResult>> {
+    // Do not accidentally discover a parent repository or traverse a linked .git.
+    let metadata = std::fs::symlink_metadata(dest.join(".git")).map_err(|error| {
+        format!(
+            "Git destination {} is not a standalone clone: {error}",
+            dest.display()
+        )
+    })?;
+    if !metadata.is_dir() {
+        return Err(format!(
+            "Git destination {} needs a regular .git directory",
+            dest.display()
+        )
+        .into());
+    }
+    query(dest, &["rev-parse", "--verify", "HEAD"])
+        .map_err(|error| format!("invalid Git checkout at {}: {error}", dest.display()))?;
+    let actual = query(dest, &["config", "--get", "remote.origin.url"])
+        .map_err(|error| format!("cannot read Git origin at {}: {error}", dest.display()))?;
+    if actual != url {
+        return Err(format!(
+            "Git origin mismatch at {}; refusing to reuse or replace this checkout",
+            dest.display()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn select_commit(dest: &Path, commit: &str) -> Result<(), Box<EvalAltResult>> {
+    if !query(dest, &["status", "--porcelain", "--untracked-files=all"])?.is_empty() {
+        return Err(format!(
+            "Git checkout {} has local changes; refusing to replace them",
+            dest.display()
+        )
+        .into());
+    }
+    let current = query(dest, &["rev-parse", "--verify", "HEAD"])?;
+    if current.eq_ignore_ascii_case(commit) {
+        return Ok(());
+    }
+    let object = format!("{commit}^{{commit}}");
+    let present = cmd::capture(git(Some(dest), &["cat-file", "-e", &object]))?;
+    if !present.status.success() {
+        cmd::run_checked(git(Some(dest), &["fetch", "--no-tags", "origin", commit]))?;
+    }
+    let resolved = query(
+        dest,
+        &["rev-parse", "--verify", "--end-of-options", &object],
+    )?;
+    if !resolved.eq_ignore_ascii_case(commit) {
+        return Err("Git revision did not resolve to the requested commit".into());
+    }
+    cmd::run_checked(git(Some(dest), &["checkout", "--detach", commit]))
+}
+
+fn acquire(
+    url: &str,
+    dest: &Path,
+    depth: Option<i64>,
+    commit: Option<&str>,
+) -> Result<String, Box<EvalAltResult>> {
+    validate_origin(url)?;
+    if dest.file_name().is_none() {
+        return Err("Git destination must name a checkout directory".into());
+    }
+    match std::fs::symlink_metadata(dest) {
+        Ok(metadata) => {
+            if !metadata.is_dir() {
+                return Err(format!(
+                    "Git destination {} is not a regular directory",
+                    dest.display()
+                )
+                .into());
+            }
+            validate_checkout(dest, url)?;
+            if let Some(commit) = commit {
+                select_commit(dest, commit)?;
+            }
+            output::detail(&format!("git: reusing {}", dest.display()));
+            return Ok(dest.to_string_lossy().into_owned());
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(
+                format!("cannot inspect Git destination {}: {error}", dest.display()).into(),
+            );
+        }
+    }
+
+    let parent = dest
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("cannot create Git destination parent: {error}"))?;
+    let staging = tempfile::Builder::new()
+        .prefix(".recipe-git.")
+        .tempdir_in(parent)
+        .map_err(|error| format!("cannot create Git staging directory: {error}"))?;
+    let staged = staging.path().join("checkout");
+    let mut command = git(None, &["clone", "--no-local", "--progress"]);
+    if let Some(depth) = depth {
+        command.arg("--depth").arg(depth.to_string());
+    }
+    command.arg("--").arg(url).arg(&staged);
+    let pb = progress::create_spinner("cloning Git source");
+    let _guard = progress::ProgressGuard::new(&pb);
+    cmd::run_checked(command)?;
+    validate_checkout(&staged, url)?;
+    if let Some(commit) = commit {
+        select_commit(&staged, commit)?;
+    }
+    std::fs::rename(&staged, dest)
+        .map_err(|error| format!("cannot publish Git checkout {}: {error}", dest.display()))?;
+    output::detail(&format!("git: acquired {}", dest.display()));
+    Ok(dest.to_string_lossy().into_owned())
+}
+
+/// Clone to dest_dir/repo-name, or reuse a valid clone with the same origin.
+/// No revision is selected; existing local changes are preserved.
+pub fn git_clone(url: &str, dest_dir: &str) -> Result<String, Box<EvalAltResult>> {
+    validate_origin(url)?;
+    acquire(
+        url,
+        &Path::new(dest_dir).join(extract_repo_name(url)?),
+        None,
+        None,
+    )
+}
+
+/// Shallow clone with the legacy dest_dir/repo-name convention.
+/// Reusing an existing clone does not change its depth or selected revision.
 pub fn git_clone_depth(
     url: &str,
     dest_dir: &str,
     depth: i64,
 ) -> Result<String, Box<EvalAltResult>> {
-    // Validate depth parameter
-    if depth <= 0 || depth > 1_000_000 {
+    if !(1..=1_000_000).contains(&depth) {
         return Err("depth must be between 1 and 1000000".into());
     }
-
-    // Validate URL scheme for security
-    validate_git_url(url)?;
-
-    let repo_name = extract_repo_name(url)?;
-    let dest = Path::new(dest_dir).join(&repo_name);
-
-    // Skip if already cloned AND valid
-    if dest.join(".git").exists() {
-        // Verify repo is valid before skipping
-        let verify = Command::new("git")
-            .args(["-C", &dest.to_string_lossy(), "rev-parse", "HEAD"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        if verify.map(|s| s.success()).unwrap_or(false) {
-            output::detail(&format!("git: {} already cloned", repo_name));
-            return Ok(dest.to_string_lossy().to_string());
-        }
-        // If invalid, warn and re-clone
-        output::warning(&format!(
-            "git: {} exists but is invalid, re-cloning",
-            repo_name
-        ));
-        // Remove the invalid repo
-        let _ = std::fs::remove_dir_all(&dest);
-    }
-
-    output::detail(&format!("git clone --depth {} {}", depth, url));
-
-    // Create progress spinner with RAII guard for cleanup
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .template("     {spinner:.cyan} {msg}")
-            .unwrap()
-            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-    );
-    pb.set_message(format!("shallow cloning {}", repo_name));
-    pb.enable_steady_tick(Duration::from_millis(80));
-    let _guard = ProgressGuard(pb);
-
-    // Get destination path as string, handling non-UTF8 gracefully
-    let dest_str = dest
-        .to_str()
-        .ok_or("destination path contains invalid UTF-8")?;
-
-    // Run git clone with stderr capture and network timeout
-    let timeout_secs = GIT_CLONE_TIMEOUT.as_secs().to_string();
-    let output = Command::new("git")
-        .args([
-            "-c",
-            "http.lowSpeedLimit=1000",
-            "-c",
-            &format!("http.lowSpeedTime={}", timeout_secs),
-            "clone",
-            "--depth",
-            &depth.to_string(),
-            "--progress",
-            url,
-            dest_str,
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .map_err(|e| format!("failed to run git: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("git clone failed for {}\nDetails: {}", url, stderr.trim()).into());
-    }
-
-    output::detail(&format!(
-        "shallow cloned {} to {} (depth={})",
-        repo_name,
-        dest.display(),
-        depth
-    ));
-    Ok(dest.to_string_lossy().to_string())
+    validate_origin(url)?;
+    acquire(
+        url,
+        &Path::new(dest_dir).join(extract_repo_name(url)?),
+        Some(depth),
+        None,
+    )
 }
 
-/// Extract repository name from a git URL
-fn extract_repo_name(url: &str) -> Result<String, Box<EvalAltResult>> {
-    // Strip fragments and query strings first
-    // https://github.com/user/repo.git#branch -> https://github.com/user/repo.git
-    // https://github.com/user/repo.git?token=xxx -> https://github.com/user/repo.git
-    let url = url.split('#').next().unwrap_or(url);
-    let url = url.split('?').next().unwrap_or(url);
-
-    // Handle both HTTPS and SSH URLs:
-    // https://github.com/user/repo.git -> repo
-    // git@github.com:user/repo.git -> repo
-    // https://github.com/user/repo -> repo
-    let url = url.trim_end_matches('/');
-    let url = url.strip_suffix(".git").unwrap_or(url);
-
-    // Need at least a path segment after the host
-    // https://example.com -> invalid (no path)
-    // https://example.com/repo -> valid
-    let path_part = if let Some(after_scheme) = url.strip_prefix("https://") {
-        after_scheme
-    } else if let Some(after_scheme) = url.strip_prefix("http://") {
-        after_scheme
-    } else if let Some(after_scheme) = url.strip_prefix("ssh://") {
-        after_scheme
-    } else if let Some(after_colon) = url.strip_prefix("git@") {
-        // SSH URLs like git@github.com:user/repo
-        after_colon
-    } else {
-        url
-    };
-
-    // Count path segments after the host
-    // "github.com/user/repo" -> ["github.com", "user", "repo"]
-    // "github.com" -> ["github.com"]
-    let segments: Vec<&str> = path_part.split('/').collect();
-    if segments.len() < 2 {
-        return Err("URL has no repository path (just a domain)".into());
+/// Acquire an exact destination at a full SHA-1 or SHA-256 commit ID.
+/// Cached checkouts must have the same origin and no local changes.
+/// Selection uses detached HEAD and never resets or cleans a dirty checkout.
+pub fn git_checkout(url: &str, dest: &str, commit: &str) -> Result<String, Box<EvalAltResult>> {
+    if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(
+            "git_checkout requires a full 40- or 64-character hexadecimal commit ID".into(),
+        );
     }
+    acquire(url, Path::new(dest), None, Some(commit))
+}
 
-    url.rsplit('/')
+fn extract_repo_name(url: &str) -> Result<String, Box<EvalAltResult>> {
+    let plain = url
+        .split(['?', '#'])
         .next()
-        .map(|s| s.to_string())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "cannot extract repository name from URL".into())
+        .unwrap_or(url)
+        .trim_end_matches('/');
+    let path = if let Some((_, rest)) = plain.split_once("://") {
+        rest.split_once('/').map(|(_, path)| path)
+    } else {
+        plain
+            .strip_prefix("git@")
+            .and_then(|rest| rest.split_once(':').map(|(_, path)| path))
+    }
+    .ok_or("Git origin has no repository path")?;
+    let name = path.rsplit('/').next().unwrap_or("");
+    let name = name.strip_suffix(".git").unwrap_or(name);
+    let mut components = Path::new(name).components();
+    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+        return Err("Git origin has no safe repository name".into());
+    }
+    Ok(name.to_owned())
 }

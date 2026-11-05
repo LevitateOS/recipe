@@ -20,7 +20,7 @@ pub mod verify;
 
 // Re-export commonly used items
 pub use download::{download, download_with_resume};
-pub use git::{git_clone, git_clone_depth};
+pub use git::{git_checkout, git_clone, git_clone_depth};
 pub use http::{
     extract_from_tarball, github_download_release, github_latest_release, github_latest_tag,
     http_get, parse_version,

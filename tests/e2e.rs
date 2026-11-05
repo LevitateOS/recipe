@@ -89,3 +89,5 @@ mod process;
 mod preseed_recipes;
 #[path = "e2e/command_options.rs"]
 mod command_options;
+#[path = "e2e/git_acquisition.rs"]
+mod git_acquisition;

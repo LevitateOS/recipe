@@ -358,7 +358,7 @@ that do not exist yet.
   `is_dir`, `mkdir`, `rm`, `mv`, `ln`, `chmod`
 - network/acquire helpers: `download`, `verify_sha256`, `verify_sha512`,
   `verify_blake3`, `fetch_sha256`, `http_get`, `git_clone`,
-  `git_clone_depth`, `torrent`, `download_with_resume`
+  `git_clone_depth`, `git_checkout`, `torrent`, `download_with_resume`
 - GitHub helpers: `github_latest_release`, `github_latest_tag`,
   `github_download_release`, `extract_from_tarball`, `parse_version`
 - build helpers: `extract`, `extract_with_format`
@@ -410,6 +410,14 @@ require appropriate quoting.
 - `git_clone(url, dest_dir)` clones into `dest_dir/<repo-name>`, not exactly to
   `dest_dir`
 - `git_clone_depth(url, dest_dir, depth)` behaves the same way
+- `git_checkout(url, dest, commit)` uses the exact destination and a full
+  40- or 64-character commit ID. It checks origin, rejects tracked/untracked
+  local changes, and selects detached HEAD. A missing commit is fetched from
+  the declared origin; an already matching checkout can be reused offline.
+  The clone helpers also check origin, and never delete a damaged destination.
+  They preserve the existing revision and local edits when reusing a clone.
+  HTTP(S), SSH, and explicit `file://` origins are supported. Fresh clones are
+  staged beside the destination and published after successful acquisition.
 - `extract()` is native Rust and does not depend on host `tar`
 - `extract_from_tarball()` does rely on host `tar`
 - `rm(pattern)` can recursively remove matched directories; treat it as
