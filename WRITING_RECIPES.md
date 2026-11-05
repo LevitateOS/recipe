@@ -43,14 +43,23 @@ The public library defaults to Ginux as well. `RecipeEngine::backend()` returns
 bootstrap environment variables never select host execution for public CLI or
 library operations; worker dispatch uses a separate private command.
 
-Managed readiness queries and cleanup/removal hooks now run through the
+Managed readiness queries and file-producing lifecycle hooks run through the
 configured supervisor, including custom outcomes, discovered context, script
-failures, and v1 checkpoint acknowledgements. These acknowledgements are not
-durable-state evidence. Integration remains
-in progress: installation, child commands, retained writable storage, durable
-state, complete dependency closure staging, and publication still need
-integration and managed runtime verification. An ephemeral invocation root does
-not provide resumable state.
+failures, and v1 checkpoint acknowledgements. Recipe declares ephemeral memory
+storage at `/work`, `/work/build`, `/work/tools`, `/work/tmp`, and `/out`.
+A real acquire/build/install transforms file contents, and cleanup/removal can
+read and delete domain files. No writable host directory is assigned.
+
+The current backend is limited to 32 objects (including directories), 64 KiB
+per file and 64 open files. It supports regular-file IO and metadata, mkdir,
+file unlink and chmod; directory enumeration/removal, rename, links, duplicate
+descriptors and execution of generated files remain unsupported. It cannot yet
+build ordinary compiler projects. File effects disappear after the invocation.
+Acknowledgements still use placeholder generation 0 and are not durable-state
+evidence. Child commands, retained writable storage, durable state, complete
+dependency closure staging, target installation views and output publication
+remain unfinished. A successful ephemeral install does not publish a host
+artifact or provide resumable state.
 
 ## Core Model
 

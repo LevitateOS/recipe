@@ -402,3 +402,86 @@ fn managed_cleanup_without_a_hook_is_a_noop() {
         source
     );
 }
+
+#[test]
+fn managed_lifecycle_transforms_files_and_cleanup_reads_actual_product() {
+    let (_dir, recipes) = create_test_env();
+    let source = r#"
+const RECIPE_API = 2;
+let ctx = #{name: "file-lifecycle", source: "/work/build/source", built: "/work/build/built", product: "/out/product", state: #{trace: ""}};
+fn is_acquired(ctx) { if !is_file(ctx.source) { return needs_work(ctx, "source missing"); } ready(ctx) }
+fn is_built(ctx) { if !is_file(ctx.built) { return needs_work(ctx, "build missing"); } ready(ctx) }
+fn is_installed(ctx) { if !is_file(ctx.product) { return needs_work(ctx, "product missing"); } ready(ctx) }
+fn acquire(ctx) { write_file(ctx.source, "prepared source"); ctx.state.trace += "acquire;"; ctx }
+fn build(ctx) { write_file(ctx.built, read_file(ctx.source) + ": built"); ctx.state.trace += "build;"; ctx }
+fn install(ctx) { write_file(ctx.product, read_file(ctx.built) + ": installed"); ctx.state.trace += "install;"; ctx }
+fn cleanup(ctx, reason) {
+    if reason == "auto.install.success" {
+        ctx.state.product = read_file(ctx.product);
+        rm(ctx.built);
+        ctx.state.build_removed = !is_file(ctx.built);
+        ctx.state.product_present = is_file(ctx.product);
+    }
+    ctx.state.trace += reason + ";";
+    ctx
+}
+"#;
+    write_recipe(&recipes, "check", source);
+    let output = managed_command(&recipes, "install").output().unwrap();
+    assert_success(&output);
+    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        context["state"]["product"],
+        "prepared source: built: installed"
+    );
+    assert_eq!(context["state"]["build_removed"], true);
+    assert_eq!(context["state"]["product_present"], true);
+    assert_eq!(
+        context["state"]["trace"],
+        "acquire;auto.acquire.success;build;auto.build.success;install;auto.install.success;"
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("6 checkpoints acked"));
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+        source
+    );
+}
+
+#[test]
+fn managed_cleanup_and_remove_mutate_domain_files() {
+    let (_dir, recipes) = create_test_env();
+    let source = r#"
+const RECIPE_API = 2;
+let ctx = #{name: "file-hooks", product: "/out/product"};
+write_file(ctx.product, "actual domain artifact");
+fn cleanup(ctx, reason) {
+    ctx.state.before = read_file(ctx.product);
+    rm(ctx.product);
+    ctx.state.absent = !is_file(ctx.product);
+    ctx.state.reason = reason;
+    ctx
+}
+fn remove(ctx) { cleanup(ctx, "remove") }
+"#;
+    write_recipe(&recipes, "check", source);
+    for operation in ["cleanup", "remove"] {
+        let output = managed_command(&recipes, operation).output().unwrap();
+        assert_success(&output);
+        let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(context["state"]["before"], "actual domain artifact");
+        assert_eq!(context["state"]["absent"], true);
+        assert_eq!(
+            context["state"]["reason"],
+            if operation == "cleanup" {
+                "manual"
+            } else {
+                "remove"
+            }
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("1 checkpoint acked"));
+        assert_eq!(
+            std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+            source
+        );
+    }
+}

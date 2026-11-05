@@ -122,7 +122,9 @@ impl DomainConfig {
         out.push_str(&format!("memory_mib = {}\n", self.memory_mib));
         out.push_str("\n[execution]\nprofile = \"balanced\"\nbackend = \"ptrace-native\"\n");
         out.push_str("\n[contract]\nprofile = \"balanced\"\n");
-        out.push_str("\n[storage]\nassignments = []\n");
+        // Only domain paths cross this interface. The launcher's memory backend
+        // owns these bytes; no writable host directory is assigned.
+        out.push_str("\n[storage]\nassignments = [\"memory:/work\", \"memory:/work/build\", \"memory:/work/tools\", \"memory:/work/tmp\", \"memory:/out\"]\n");
         out.push_str("\n[devices]\nassignments = []\n");
         out.push_str("\n[network]\nbackend = \"none\"\n");
         out.push_str("\n[audit]\nmode = \"stderr\"\n");
