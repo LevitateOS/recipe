@@ -1,11 +1,11 @@
-use crate::core::lock::acquire_recipe_lock;
 use crate::core::{output, runner};
 use anyhow::{Result, anyhow};
 use rhai::{Engine, Scope};
 use std::path::Path;
 
+use super::context::ExecutionContext;
 use super::reporting::{report_phase_failure, report_phase_success};
-use super::state::{maybe_cleanup, persist_ctx};
+use super::state::maybe_cleanup;
 use crate::core::executor::compile_recipe;
 
 pub(crate) fn remove(
@@ -15,11 +15,35 @@ pub(crate) fn remove(
     defines: &[(String, String)],
     persist_ctx_enabled: bool,
 ) -> Result<rhai::Map> {
+    let mut exec = ExecutionContext::host();
+    remove_with_context(
+        engine,
+        recipe_path,
+        search_path,
+        defines,
+        persist_ctx_enabled,
+        &mut exec,
+    )
+}
+
+/// Same removal flow with caller-provided lock ownership and checkpoint sink.
+///
+/// Worker seam (R02 stub): the host coordinator holds the recipe lock and
+/// receives the checkpoint through `exec` instead of this operation taking
+/// a second lock or rewriting recipe sources itself.
+pub(crate) fn remove_with_context(
+    engine: &Engine,
+    recipe_path: &Path,
+    search_path: Option<&Path>,
+    defines: &[(String, String)],
+    persist_ctx_enabled: bool,
+    exec: &mut ExecutionContext<'_>,
+) -> Result<rhai::Map> {
     let recipe_path = recipe_path
         .canonicalize()
         .unwrap_or_else(|_| recipe_path.to_path_buf());
 
-    let _lock = acquire_recipe_lock(&recipe_path)?;
+    let _lock = exec.acquire_lock(&recipe_path)?;
 
     let mut compiled = compile_recipe(engine, &recipe_path, search_path)?;
     let ast = compiled.ast.clone();
@@ -65,13 +89,12 @@ pub(crate) fn remove(
         report_phase_failure(&name, "remove", e);
     })?;
     report_phase_success(&name, "remove");
-    if persist_ctx_enabled {
-        persist_ctx(
-            &mut compiled,
-            &ctx_map,
-            "Failed to persist ctx after remove",
-        )?;
-    }
+    exec.persist_checkpoint(
+        &mut compiled,
+        &ctx_map,
+        "Failed to persist ctx after remove",
+        persist_ctx_enabled,
+    )?;
 
     output::success(&format!("{} removed", name));
     Ok(ctx_map)
@@ -89,11 +112,39 @@ pub(crate) fn cleanup(
     reason: &str,
     persist_ctx_enabled: bool,
 ) -> Result<rhai::Map> {
+    let mut exec = ExecutionContext::host();
+    cleanup_with_context(
+        engine,
+        build_dir,
+        recipe_path,
+        search_path,
+        defines,
+        reason,
+        persist_ctx_enabled,
+        &mut exec,
+    )
+}
+
+/// Same cleanup flow with caller-provided lock ownership and checkpoint sink.
+///
+/// Worker seam (R02 stub): the host coordinator holds the recipe lock and
+/// receives the checkpoint through `exec` instead of this operation taking
+/// a second lock or rewriting recipe sources itself.
+pub(crate) fn cleanup_with_context(
+    engine: &Engine,
+    build_dir: &Path,
+    recipe_path: &Path,
+    search_path: Option<&Path>,
+    defines: &[(String, String)],
+    reason: &str,
+    persist_ctx_enabled: bool,
+    exec: &mut ExecutionContext<'_>,
+) -> Result<rhai::Map> {
     let recipe_path = recipe_path
         .canonicalize()
         .unwrap_or_else(|_| recipe_path.to_path_buf());
 
-    let _lock = acquire_recipe_lock(&recipe_path)?;
+    let _lock = exec.acquire_lock(&recipe_path)?;
 
     let mut compiled = compile_recipe(engine, &recipe_path, search_path)?;
     let ast = compiled.ast.clone();
@@ -144,13 +195,12 @@ pub(crate) fn cleanup(
         report_phase_failure(&name, "cleanup", e);
     })?;
     report_phase_success(&name, "cleanup");
-    if persist_ctx_enabled {
-        persist_ctx(
-            &mut compiled,
-            &ctx_map,
-            "Failed to persist ctx after cleanup",
-        )?;
-    }
+    exec.persist_checkpoint(
+        &mut compiled,
+        &ctx_map,
+        "Failed to persist ctx after cleanup",
+        persist_ctx_enabled,
+    )?;
 
     output::success(&format!("{} cleaned", name));
     Ok(ctx_map)
@@ -224,11 +274,37 @@ pub(crate) fn run_check(
     defines: &[(String, String)],
     check_name: &str,
 ) -> Result<rhai::Map> {
+    let mut exec = ExecutionContext::host();
+    run_check_with_context(
+        engine,
+        build_dir,
+        recipe_path,
+        search_path,
+        defines,
+        check_name,
+        &mut exec,
+    )
+}
+
+/// Same manual-check flow with caller-provided lock ownership.
+///
+/// Worker seam (R02 stub): checks report no checkpoints (they never persist),
+/// but the lock must still be coordinator-owned so the worker does not take
+/// a second lock.
+pub(crate) fn run_check_with_context(
+    engine: &Engine,
+    build_dir: &Path,
+    recipe_path: &Path,
+    search_path: Option<&Path>,
+    defines: &[(String, String)],
+    check_name: &str,
+    exec: &mut ExecutionContext<'_>,
+) -> Result<rhai::Map> {
     let recipe_path = recipe_path
         .canonicalize()
         .unwrap_or_else(|_| recipe_path.to_path_buf());
 
-    let _lock = acquire_recipe_lock(&recipe_path)?;
+    let _lock = exec.acquire_lock(&recipe_path)?;
 
     let compiled = compile_recipe(engine, &recipe_path, search_path)?;
     let ast = compiled.ast.clone();

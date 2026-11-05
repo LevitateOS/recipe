@@ -7,8 +7,9 @@ use std::path::Path;
 
 use super::{
     attempt::InstallAttemptError,
+    context::ExecutionContext,
     reporting::{friendly_reason, report_check_result, report_phase_failure, report_phase_success},
-    state::{check_phase_with_reason, maybe_cleanup, persist_ctx, resolve_deps},
+    state::{check_phase_with_reason, maybe_cleanup, resolve_deps},
 };
 
 pub(crate) fn install_once(
@@ -19,6 +20,7 @@ pub(crate) fn install_once(
     persist_ctx_enabled: bool,
     search_path: Option<&Path>,
     autofix: Option<&crate::AutoFixConfig>,
+    exec: &mut ExecutionContext<'_>,
 ) -> std::result::Result<rhai::Map, InstallAttemptError> {
     let autofix_enabled = autofix.is_some();
     let mut compiled =
@@ -212,14 +214,13 @@ pub(crate) fn install_once(
             Ok(new_ctx) => {
                 ctx_map = new_ctx;
                 report_phase_success(&name, "acquire");
-                if persist_ctx_enabled {
-                    persist_ctx(
-                        &mut compiled,
-                        &ctx_map,
-                        "Failed to persist ctx after acquire",
-                    )
-                    .map_err(InstallAttemptError::Fatal)?;
-                }
+                exec.persist_checkpoint(
+                    &mut compiled,
+                    &ctx_map,
+                    "Failed to persist ctx after acquire",
+                    persist_ctx_enabled,
+                )
+                .map_err(InstallAttemptError::Fatal)?;
 
                 // Hygiene: allow recipes to clean up intermediate acquire artifacts.
                 if cleanup_auto_supported {
@@ -233,14 +234,13 @@ pub(crate) fn install_once(
                         /* require_defined */ false,
                     )
                     .map_err(InstallAttemptError::Fatal)?;
-                    if persist_ctx_enabled {
-                        persist_ctx(
-                            &mut compiled,
-                            &ctx_map,
-                            "Failed to persist ctx after cleanup",
-                        )
-                        .map_err(InstallAttemptError::Fatal)?;
-                    }
+                    exec.persist_checkpoint(
+                        &mut compiled,
+                        &ctx_map,
+                        "Failed to persist ctx after cleanup",
+                        persist_ctx_enabled,
+                    )
+                    .map_err(InstallAttemptError::Fatal)?;
                 }
             }
             Err(e) => {
@@ -306,10 +306,13 @@ pub(crate) fn install_once(
                 Ok(new_ctx) => {
                     ctx_map = new_ctx;
                     report_phase_success(&name, "build");
-                    if persist_ctx_enabled {
-                        persist_ctx(&mut compiled, &ctx_map, "Failed to persist ctx after build")
-                            .map_err(InstallAttemptError::Fatal)?;
-                    }
+                    exec.persist_checkpoint(
+                        &mut compiled,
+                        &ctx_map,
+                        "Failed to persist ctx after build",
+                        persist_ctx_enabled,
+                    )
+                    .map_err(InstallAttemptError::Fatal)?;
 
                     if cleanup_auto_supported {
                         ctx_map = maybe_cleanup(
@@ -322,14 +325,13 @@ pub(crate) fn install_once(
                             /* require_defined */ false,
                         )
                         .map_err(InstallAttemptError::Fatal)?;
-                        if persist_ctx_enabled {
-                            persist_ctx(
-                                &mut compiled,
-                                &ctx_map,
-                                "Failed to persist ctx after cleanup",
-                            )
-                            .map_err(InstallAttemptError::Fatal)?;
-                        }
+                        exec.persist_checkpoint(
+                            &mut compiled,
+                            &ctx_map,
+                            "Failed to persist ctx after cleanup",
+                            persist_ctx_enabled,
+                        )
+                        .map_err(InstallAttemptError::Fatal)?;
                     }
                 }
                 Err(e) => {
@@ -364,14 +366,13 @@ pub(crate) fn install_once(
             Ok(new_ctx) => {
                 ctx_map = new_ctx;
                 report_phase_success(&name, "install");
-                if persist_ctx_enabled {
-                    persist_ctx(
-                        &mut compiled,
-                        &ctx_map,
-                        "Failed to persist ctx after install",
-                    )
-                    .map_err(InstallAttemptError::Fatal)?;
-                }
+                exec.persist_checkpoint(
+                    &mut compiled,
+                    &ctx_map,
+                    "Failed to persist ctx after install",
+                    persist_ctx_enabled,
+                )
+                .map_err(InstallAttemptError::Fatal)?;
 
                 if cleanup_auto_supported {
                     ctx_map = maybe_cleanup(
@@ -384,14 +385,13 @@ pub(crate) fn install_once(
                         /* require_defined */ false,
                     )
                     .map_err(InstallAttemptError::Fatal)?;
-                    if persist_ctx_enabled {
-                        persist_ctx(
-                            &mut compiled,
-                            &ctx_map,
-                            "Failed to persist ctx after cleanup",
-                        )
-                        .map_err(InstallAttemptError::Fatal)?;
-                    }
+                    exec.persist_checkpoint(
+                        &mut compiled,
+                        &ctx_map,
+                        "Failed to persist ctx after cleanup",
+                        persist_ctx_enabled,
+                    )
+                    .map_err(InstallAttemptError::Fatal)?;
                 }
             }
             Err(e) => {

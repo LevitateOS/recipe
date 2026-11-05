@@ -2,9 +2,9 @@ use anyhow::{Context, Result};
 use rhai::Engine;
 use std::path::Path;
 
-use crate::core::lock::acquire_recipe_lock;
 use crate::core::output;
 
+use super::context::ExecutionContext;
 use super::flow::install_once;
 
 #[derive(Debug)]
@@ -45,11 +45,39 @@ pub(crate) fn install_with_options(
     search_path: Option<&Path>,
     autofix: Option<&crate::AutoFixConfig>,
 ) -> Result<rhai::Map> {
+    let mut exec = ExecutionContext::host();
+    install_with_context(
+        engine,
+        build_dir,
+        recipe_path,
+        defines,
+        persist_ctx,
+        search_path,
+        autofix,
+        &mut exec,
+    )
+}
+
+/// Same retry flow with caller-provided lock ownership and checkpoint sink.
+///
+/// Worker seam (R02 stub): the host coordinator holds the recipe lock and
+/// receives each checkpoint through `exec` instead of this operation taking
+/// a second lock or rewriting recipe sources itself.
+pub(crate) fn install_with_context(
+    engine: &Engine,
+    build_dir: &Path,
+    recipe_path: &Path,
+    defines: &[(String, String)],
+    persist_ctx: bool,
+    search_path: Option<&Path>,
+    autofix: Option<&crate::AutoFixConfig>,
+    exec: &mut ExecutionContext<'_>,
+) -> Result<rhai::Map> {
     let recipe_path = recipe_path
         .canonicalize()
         .unwrap_or_else(|_| recipe_path.to_path_buf());
 
-    let _lock = acquire_recipe_lock(&recipe_path)?;
+    let _lock = exec.acquire_lock(&recipe_path)?;
 
     let max_attempts = autofix.map(|c| c.attempts as usize).unwrap_or(0);
 
@@ -62,6 +90,7 @@ pub(crate) fn install_with_options(
             persist_ctx,
             search_path,
             autofix,
+            exec,
         ) {
             Ok(ctx) => return Ok(ctx),
             Err(InstallAttemptError::Fatal(e)) => {
