@@ -79,3 +79,5 @@ mod failures;
 mod query;
 #[path = "e2e/archives.rs"]
 mod archives;
+#[path = "e2e/kernel_recipes.rs"]
+mod kernel_recipes;
