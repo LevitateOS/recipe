@@ -1,6 +1,6 @@
 //! Build phase helpers
 //!
-//! Pure functions for extracting archives.
+//! Archive extraction with explicit source and destination paths.
 //! All functions take explicit inputs and return explicit outputs.
 //!
 //! ## Example
@@ -66,25 +66,34 @@ fn normalize_lexical(path: &Path) -> PathBuf {
 }
 
 fn ensure_no_symlink_components(dest: &Path, full_path: &Path) -> Result<(), Box<EvalAltResult>> {
-    let rel = full_path.strip_prefix(dest).map_err(|_| {
+    full_path.strip_prefix(dest).map_err(|_| {
         format!(
-            "tar contains path outside destination: {}",
+            "archive contains path outside destination: {}",
             full_path.display()
         )
     })?;
 
-    // Reject if any existing path component (including leaf) is a symlink.
-    let mut cur = dest.to_path_buf();
-    for comp in rel.components() {
-        cur.push(comp);
-        if let Ok(md) = std::fs::symlink_metadata(&cur)
-            && md.file_type().is_symlink()
-        {
-            return Err(format!(
-                "tar extraction blocked: symlink in path component: {}",
-                cur.display()
-            )
-            .into());
+    // Include the destination and its ancestors: even a safe archive member
+    // escapes if extraction creates its destination through an existing link.
+    for path in full_path.ancestors().filter(|p| !p.as_os_str().is_empty()) {
+        match std::fs::symlink_metadata(path) {
+            Ok(md) if md.file_type().is_symlink() => {
+                return Err(format!(
+                    "archive extraction blocked: symlink in path component: {}",
+                    path.display()
+                )
+                .into());
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(format!(
+                    "cannot inspect archive destination {}: {}",
+                    path.display(),
+                    e
+                )
+                .into());
+            }
         }
     }
 
@@ -300,14 +309,14 @@ pub(crate) fn extract_zip(archive_path: &Path, dest: &Path) -> Result<(), Box<Ev
             .by_index(i)
             .map_err(|e| format!("zip entry error: {}", e))?;
 
-        // Get the path from the zip entry
-        let outpath = match file.enclosed_name() {
-            Some(path) => dest.join(path),
-            None => {
-                // Skip entries with unsafe paths
-                continue;
-            }
-        };
+        let path = file
+            .enclosed_name()
+            .ok_or_else(|| format!("zip contains unsafe path: {}", file.name()))?;
+        if path.components().any(|c| matches!(c, Component::ParentDir)) {
+            return Err(format!("zip contains unsafe path: {}", file.name()).into());
+        }
+        let outpath = dest.join(path);
+        ensure_no_symlink_components(dest, &outpath)?;
 
         if file.is_dir() {
             std::fs::create_dir_all(&outpath)
@@ -330,7 +339,10 @@ pub(crate) fn extract_zip(archive_path: &Path, dest: &Path) -> Result<(), Box<Ev
             {
                 use std::os::unix::fs::PermissionsExt;
                 if let Some(mode) = file.unix_mode() {
-                    std::fs::set_permissions(&outpath, std::fs::Permissions::from_mode(mode)).ok();
+                    std::fs::set_permissions(&outpath, std::fs::Permissions::from_mode(mode))
+                        .map_err(|e| {
+                            format!("cannot set permissions for {}: {}", outpath.display(), e)
+                        })?;
                 }
             }
         }
@@ -340,7 +352,7 @@ pub(crate) fn extract_zip(archive_path: &Path, dest: &Path) -> Result<(), Box<Ev
 }
 
 // ============================================================================
-// Public API - Pure functions
+// Public API
 // ============================================================================
 
 /// Detect archive format from filename extension
@@ -399,7 +411,8 @@ pub fn extract_with_format(
     let archive_path = Path::new(archive);
     let dest_path = Path::new(dest);
 
-    // Create destination directory if needed
+    ensure_no_symlink_components(dest_path, dest_path)?;
+    // Create destination directory if needed, after validating existing ancestors.
     std::fs::create_dir_all(dest_path)
         .map_err(|e| format!("cannot create destination directory: {}", e))?;
 

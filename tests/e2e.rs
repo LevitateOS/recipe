@@ -77,3 +77,5 @@ mod cli;
 mod failures;
 #[path = "e2e/query.rs"]
 mod query;
+#[path = "e2e/archives.rs"]
+mod archives;
