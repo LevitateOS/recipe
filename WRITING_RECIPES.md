@@ -60,11 +60,20 @@ the combined mapped capacity is bounded by the domain's memory_mib setting
 instead of a fixed 64 KiB limit for every file. That bound covers file backing,
 not total process RAM. It supports regular-file IO, ftruncate and metadata,
 mkdir, file unlink and chmod. Sparse gaps and regrown bytes read as zero;
-unlinked bytes survive until the last open reference closes. Directory
-enumeration/removal, rename, links, file mappings and execution of generated
-files remain unsupported, so ordinary compiler projects are not supported yet.
-An actual CLI lifecycle now writes and verifies 131072-byte build/install
-products using independent custom content checks. Anonymous pipes now use supervisor-owned
+unlinked bytes survive until the last open reference closes. Owned directory
+handles now support enumeration and relative operations, with shared cursors
+across aliases/fork and retry after faulty output buffers. File/tree moves
+preserve open objects; empty-directory removal and recursive Recipe cleanup
+work. Minimal assignment roots stay fixed, while overlapping seeded directories
+remain ordinary removable directories. A real CLI lifecycle copies and moves a
+nested tree, verifies its 131072-byte file using custom checks, and removes
+scratch trees through cleanup(ctx, reason). Attempts to rename into the staged
+input tree fail before mutation.
+Native-image relative directory handles, image subtree mutation, links, file
+mappings and execution of generated files remain unsupported, so ordinary
+compiler projects are not supported yet. A probe that copies /usr/bin/true into
+/work/build then executes the copy now fails explicitly with EOPNOTSUPP;
+streaming/captured execution of the immutable image executable remains supported. Anonymous pipes now use supervisor-owned
 buffers, with tested byte flow, aliases and EOF. Files, devices, pipes and stdio
 now share small public descriptors; aliases share file offsets and handle
 lifetimes. The real descriptor limit is capped at 256 while preserving a lower

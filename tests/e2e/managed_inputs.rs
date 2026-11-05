@@ -784,3 +784,99 @@ fn install(ctx) {
         source
     );
 }
+
+#[test]
+fn managed_directory_lifecycle_copies_moves_and_cleans_nested_products() {
+    let (_dir, recipes) = create_test_env();
+    let source = r#"
+const RECIPE_API = 2;
+let ctx = #{name: "managed-directory", state: #{cleaned: false}};
+fn expected_content() {
+    let value = "d";
+    for index in 0..17 { value += value; }
+    value
+}
+fn is_acquired(ctx) { ready(ctx) }
+fn is_built(ctx) {
+    if is_file("/work/build/source/nested/input") {
+        if read_file("/work/build/source/nested/input") == expected_content() { return ready(ctx); }
+    }
+    needs_work(ctx, "source tree has not been produced and checked")
+}
+fn build(ctx) {
+    mkdir("/work/build/source/nested");
+    write_file("/work/build/source/nested/input", expected_content());
+    write_file("/work/build/source/manifest", "directory-product-v1");
+    mkdir("/work/tmp/copy-scratch/nested");
+    write_file("/work/tmp/copy-scratch/nested/discard", "temporary");
+    ctx
+}
+fn cleanup(ctx, reason) {
+    if is_dir("/work/tmp/copy-scratch") { rm("/work/tmp/copy-scratch"); }
+    ctx.state.cleaned = true;
+    ctx
+}
+fn is_installed(ctx) {
+    if is_file("/out/final/nested/input") && is_file("/out/final/manifest") {
+        if read_file("/out/final/nested/input") == expected_content() &&
+           read_file("/out/final/manifest") == "directory-product-v1" &&
+           !is_dir("/out/staged") && !is_dir("/work/tmp/copy-scratch") { return ready(ctx); }
+    }
+    needs_work(ctx, "copied, moved and cleaned products have not been verified")
+}
+fn install(ctx) {
+    if is_dir("/work/tmp/copy-scratch") { throw "build cleanup did not remove its tree"; }
+    mkdir("/out/staged");
+    copy_tree_contents("/work/build/source", "/out/staged");
+    mv("/out/staged", "/out/final");
+    ctx.outputs.tree = "/out/final";
+    ctx
+}
+"#;
+    write_recipe(&recipes, "check", source);
+    let output = managed_command(&recipes, "install").output().unwrap();
+    assert_success(&output);
+    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(context["outputs"]["tree"], "/out/final");
+    assert_eq!(context["state"]["cleaned"], true);
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        diagnostics.contains("launcher exit 0; result exited"),
+        "{diagnostics}"
+    );
+    assert!(
+        !diagnostics.contains("panicked at") && !diagnostics.contains("ginux: audit"),
+        "{diagnostics}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+        source
+    );
+}
+
+#[test]
+fn managed_rename_cannot_replace_staged_recipe_source() {
+    let (_dir, recipes) = create_test_env();
+    let source = r#"
+const RECIPE_API = 2;
+let ctx = #{name: "managed-rename-guard"};
+fn is_installed(ctx) {
+    write_file("/work/build/replacement", "replace staged recipe");
+    mv("/work/build/replacement", "/inputs/main.rhai");
+    ready(ctx)
+}
+"#;
+    write_recipe(&recipes, "check", source);
+    let output = managed_command(&recipes, "isinstalled").output().unwrap();
+    assert!(!output.status.success() && output.stdout.is_empty());
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostics.contains("os error 18"), "{diagnostics}");
+    assert!(
+        !diagnostics.contains("panicked at") && !diagnostics.contains("backend protocol failure"),
+        "{diagnostics}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+        source
+    );
+}
