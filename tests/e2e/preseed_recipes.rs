@@ -178,6 +178,96 @@ fn cli_shared_preseed_markers_handle_quoted_asset_paths() {
 }
 
 #[test]
+fn cli_alpine_refresh_publishes_verified_assets_and_preserves_cache_on_failure() {
+    use super::downloads::serve_download;
+
+    for failure in [None, Some("iso"), Some("apk")] {
+        let (_dir, recipes) = create_test_env();
+        let recipe = "alpine-preseed-source-assets";
+        let ctx = prepare_assets(&recipes, recipe);
+        let iso = std::path::PathBuf::from(ctx["iso_path"].as_str().unwrap());
+        let apk = std::path::PathBuf::from(ctx["apk_tools_path"].as_str().unwrap());
+        let marker =
+            Path::new(ctx["trust_dir"].as_str().unwrap()).join(".alpine-source-preseed.marker");
+        let before: Vec<_> = [&iso, &apk, &marker]
+            .into_iter()
+            .map(|path| (path.clone(), std::fs::read(path).unwrap()))
+            .collect();
+        let iso_body = std::fs::read_to_string(&iso).unwrap();
+        let apk_body = std::fs::read_to_string(&apk).unwrap();
+        let (iso_url, iso_server) = serve_download(
+            if failure == Some("iso") {
+                "corrupt ISO"
+            } else {
+                &iso_body
+            },
+            if failure == Some("iso") {
+                "corrupt ISO".len()
+            } else {
+                iso_body.len()
+            },
+        );
+        let apk_response = if failure != Some("iso") {
+            Some(serve_download(
+                if failure == Some("apk") {
+                    "corrupt APK"
+                } else {
+                    &apk_body
+                },
+                if failure == Some("apk") {
+                    "corrupt APK".len()
+                } else {
+                    apk_body.len()
+                },
+            ))
+        } else {
+            None
+        };
+        let path = recipes.join(format!("{recipe}.rhai"));
+        // Only source URLs change; use the actual acquisition and cleanup hooks.
+        let mut script = std::fs::read_to_string(&path).unwrap().replace(
+            "iso_url: assets.iso_url,",
+            &format!("iso_url: {iso_url:?},"),
+        );
+        if let Some((url, _)) = &apk_response {
+            script = script.replace(
+                "apk_tools_url: assets.apk_tools_url,",
+                &format!("apk_tools_url: {url:?},"),
+            );
+        }
+        std::fs::write(path, script).unwrap();
+        let output = preseed_command(&recipes, recipe, "install")
+            .env("ALPINE_FORCE_REFRESH", "1")
+            .output()
+            .unwrap();
+        iso_server.join().unwrap();
+        if let Some((_, server)) = apk_response {
+            server.join().unwrap();
+        }
+        if failure.is_some() {
+            assert!(!output.status.success());
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("SHA256 integrity check failed")
+            );
+        } else {
+            assert_success(&output);
+            serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap();
+        }
+        for (path, bytes) in before {
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                bytes,
+                "refresh changed verified asset {path:?}"
+            );
+        }
+        let output = preseed_command(&recipes, recipe, "isinstalled")
+            .output()
+            .unwrap();
+        assert_success(&output);
+    }
+}
+
+#[test]
 fn cli_rootfs_consumers_reject_changed_cache_and_staged_assets() {
     for (producer, consumer, fields, marker) in [
         (

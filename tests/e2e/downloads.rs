@@ -3,8 +3,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::time::{Duration, Instant};
 
-fn serve_download(
-    body: &'static str,
+pub(super) fn serve_download(
+    body: &str,
     advertised_length: usize,
 ) -> (String, std::thread::JoinHandle<String>) {
     serve_response(
@@ -17,12 +17,13 @@ fn serve_download(
 fn serve_response(
     status: &'static str,
     headers: &str,
-    body: &'static str,
+    body: &str,
 ) -> (String, std::thread::JoinHandle<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let url = format!("http://{}/payload", listener.local_addr().unwrap());
     let headers = headers.to_owned();
+    let body = body.to_owned();
     let server = std::thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(15);
         let (mut stream, _) = loop {
