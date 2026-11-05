@@ -141,6 +141,11 @@ impl<'a> Runtime<'a> {
         persist_state: bool,
     ) -> Result<Self> {
         let api2 = api2(ast)?;
+        if persist_state && !api2 {
+            bail!(
+                "resumable execution requires RECIPE_API = 2 and explicit ctx.state; use --no-persist-state while migrating"
+            );
+        }
         let PreparedScope {
             bindings: mut scope,
             mut runtime,
