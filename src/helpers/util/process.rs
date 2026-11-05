@@ -198,11 +198,13 @@ fn apk_repositories_file() -> String {
 ///
 /// # Returns
 /// Exit code of the command
+/// Child stdout streams to Recipe's stderr so machine output stays intact.
 pub fn exec(cmd: &str, args: rhai::Array) -> Result<i64, Box<EvalAltResult>> {
     let args: Vec<String> = args.into_iter().map(|v| v.to_string()).collect();
 
     let status = Command::new(cmd)
         .args(&args)
+        .stdout(std::io::stderr())
         .status()
         .map_err(|e| format!("Failed to execute {}: {}", cmd, e))?;
 

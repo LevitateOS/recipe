@@ -83,3 +83,5 @@ mod archives;
 mod kernel_recipes;
 #[path = "e2e/downloads.rs"]
 mod downloads;
+#[path = "e2e/process.rs"]
+mod process;
