@@ -54,11 +54,17 @@ identifies it as a character device. The supervisor uses its existing device
 registry; no host device node is mounted or copied. Unknown image entries under
 `/dev` stay hidden.
 
-The current backend is limited to 32 objects (including directories), 64 KiB
-per file and 64 open files. It supports regular-file IO and metadata, mkdir,
-file unlink and chmod; directory enumeration/removal, rename, links and
-execution of generated files remain unsupported. It cannot yet
-build ordinary compiler projects. Anonymous pipes now use supervisor-owned
+The current backend supports 4096 objects (including directories) and 64 open
+files. Writable bytes grow on demand in supervisor-owned anonymous memory;
+the combined mapped capacity is bounded by the domain's memory_mib setting
+instead of a fixed 64 KiB limit for every file. That bound covers file backing,
+not total process RAM. It supports regular-file IO, ftruncate and metadata,
+mkdir, file unlink and chmod. Sparse gaps and regrown bytes read as zero;
+unlinked bytes survive until the last open reference closes. Directory
+enumeration/removal, rename, links, file mappings and execution of generated
+files remain unsupported, so ordinary compiler projects are not supported yet.
+An actual CLI lifecycle now writes and verifies 131072-byte build/install
+products using independent custom content checks. Anonymous pipes now use supervisor-owned
 buffers, with tested byte flow, aliases and EOF. Files, devices, pipes and stdio
 now share small public descriptors; aliases share file offsets and handle
 lifetimes. The real descriptor limit is capped at 256 while preserving a lower

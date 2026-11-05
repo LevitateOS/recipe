@@ -736,3 +736,51 @@ fn is_installed(ctx) {
         source
     );
 }
+
+#[test]
+fn managed_large_file_lifecycle_preserves_custom_content_checks() {
+    let (_dir, recipes) = create_test_env();
+    let source = r#"
+const RECIPE_API = 2;
+let ctx = #{name: "managed-large-file"};
+fn expected_content() {
+    let value = "x";
+    for index in 0..17 { value += value; }
+    value
+}
+fn is_acquired(ctx) { ready(ctx) }
+fn is_built(ctx) {
+    if is_file("/work/build/large-file") {
+        if read_file("/work/build/large-file") == expected_content() { return ready(ctx); }
+    }
+    needs_work(ctx, "large source product has not been verified")
+}
+fn build(ctx) {
+    write_file("/work/build/large-file", expected_content());
+    ctx
+}
+fn is_installed(ctx) {
+    if is_file("/out/large-file") {
+        if read_file("/out/large-file") == expected_content() { return ready(ctx); }
+    }
+    needs_work(ctx, "large installed bytes are missing or invalid")
+}
+fn install(ctx) {
+    write_file("/out/large-file", read_file("/work/build/large-file"));
+    ctx.outputs.proof = "/out/large-file";
+    ctx.state.verified_bytes = 131072;
+    ctx
+}
+"#;
+    write_recipe(&recipes, "check", source);
+    let output = managed_command(&recipes, "install").output().unwrap();
+    assert_success(&output);
+    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(context["state"]["verified_bytes"], 131072);
+    assert_eq!(context["outputs"]["proof"], "/out/large-file");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("launcher exit 0; result exited"));
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+        source
+    );
+}
