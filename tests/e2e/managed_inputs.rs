@@ -880,3 +880,88 @@ fn is_installed(ctx) {
         source
     );
 }
+
+#[test]
+fn managed_owned_elf_build_executes_and_validates_its_product() {
+    let (_dir, recipes) = create_test_env();
+    let source = r#"
+const RECIPE_API = 2;
+let ctx = #{name: "managed-owned-elf"};
+fn is_acquired(ctx) { ready(ctx) }
+fn is_built(ctx) {
+    if is_file("/work/build/owned-result") && ctx.state.contains("captured") {
+        if read_file("/work/build/owned-result") == "owned-elf-product" &&
+           ctx.state.code == 0 && ctx.state.captured == "owned-elf-capture" { return ready(ctx); }
+    }
+    needs_work(ctx, "generated ELF has not produced verified bytes")
+}
+fn build(ctx) {
+    copy_file("/usr/bin/bash", "/work/build/generated-bash");
+    ctx.state.code = exec("/work/build/generated-bash", ["--noprofile", "--norc", "-c",
+        "printf owned-elf-product > /work/build/owned-result; printf owned-elf-stdout; printf owned-elf-stderr >&2"]);
+    ctx.state.captured = exec_output("/work/build/generated-bash", ["--noprofile", "--norc", "-c", "printf owned-elf-capture"]);
+    ctx
+}
+fn is_installed(ctx) {
+    if is_file("/out/owned-result") {
+        if read_file("/out/owned-result") == "owned-elf-product" { return ready(ctx); }
+    }
+    needs_work(ctx, "owned executable result has not been installed and checked")
+}
+fn install(ctx) {
+    copy_file("/work/build/owned-result", "/out/owned-result");
+    ctx.outputs.proof = "/out/owned-result";
+    ctx
+}
+"#;
+    write_recipe(&recipes, "check", source);
+    let output = managed_command(&recipes, "install").output().unwrap();
+    assert_success(&output);
+    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(context["state"]["code"], 0);
+    assert_eq!(context["state"]["captured"], "owned-elf-capture");
+    assert_eq!(context["outputs"]["proof"], "/out/owned-result");
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    for message in [
+        "owned-elf-stdout",
+        "owned-elf-stderr",
+        "launcher exit 0; result exited",
+    ] {
+        assert!(diagnostics.contains(message), "{diagnostics}");
+    }
+    assert!(
+        !diagnostics.contains("panicked at") && !diagnostics.contains("ginux: audit"),
+        "{diagnostics}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+        source
+    );
+}
+
+#[test]
+fn managed_owned_exec_requires_executable_permissions() {
+    let (_dir, recipes) = create_test_env();
+    let source = r#"
+const RECIPE_API = 2;
+let ctx = #{name: "managed-owned-permissions"};
+fn is_installed(ctx) {
+    write_file("/work/build/not-executable", "ordinary data");
+    exec_checked("/work/build/not-executable", []);
+    ready(ctx)
+}
+"#;
+    write_recipe(&recipes, "check", source);
+    let output = managed_command(&recipes, "isinstalled").output().unwrap();
+    assert!(!output.status.success() && output.stdout.is_empty());
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostics.contains("os error 13"), "{diagnostics}");
+    assert!(
+        !diagnostics.contains("backend protocol failure") && !diagnostics.contains("panicked at"),
+        "{diagnostics}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+        source
+    );
+}

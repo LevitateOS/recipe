@@ -69,11 +69,20 @@ remain ordinary removable directories. A real CLI lifecycle copies and moves a
 nested tree, verifies its 131072-byte file using custom checks, and removes
 scratch trees through cleanup(ctx, reason). Attempts to rename into the staged
 input tree fail before mutation.
-Native-image relative directory handles, image subtree mutation, links, file
-mappings and execution of generated files remain unsupported, so ordinary
-compiler projects are not supported yet. A probe that copies /usr/bin/true into
-/work/build then executes the copy now fails explicitly with EOPNOTSUPP;
-streaming/captured execution of the immutable image executable remains supported. Anonymous pipes now use supervisor-owned
+Owned ELF64 x86-64 files now execute through the same supervised exec path.
+The VFS checks executable bits and excludes writers while processes execute the
+file. Executable references survive fork and keep unlinked bytes alive until
+final exec/exit. A sealed anonymous backing stays private to the stopped tracee;
+its kernel fd closes on success or before returning a failed exec. A real CLI
+lifecycle copies the image's Bash ELF into /work/build, executes that copy using
+both streaming and captured helpers, then custom-validates its installed product.
+This demonstrates ELF execution, not compilation of a source project.
+Native-image relative directory handles, image subtree mutation, links, guest
+file mappings and generated shebang scripts remain unsupported, so ordinary
+compiler projects are not supported yet. The prepared image's /usr/bin/true is
+a 51-byte shebang wrapper, not an ELF; copying and directly executing that
+wrapper still reports EOPNOTSUPP. Executable snapshots use extra kernel memory;
+total process/kernel accounting remains unfinished. Anonymous pipes now use supervisor-owned
 buffers, with tested byte flow, aliases and EOF. Files, devices, pipes and stdio
 now share small public descriptors; aliases share file offsets and handle
 lifetimes. The real descriptor limit is capped at 256 while preserving a lower
