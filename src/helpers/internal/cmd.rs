@@ -68,9 +68,25 @@ fn stream(mut command: Command) -> Result<(ExitStatus, Vec<u8>), Box<EvalAltResu
     let stderr = child.stderr.take().ok_or("failed to open child stderr")?;
     let tail = Arc::new(Mutex::new(VecDeque::with_capacity(8192)));
     let out_tail = Arc::clone(&tail);
-    let out = std::thread::spawn(move || drain(stdout, out_tail));
+    let out = match std::thread::Builder::new().spawn(move || drain(stdout, out_tail)) {
+        Ok(thread) => thread,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("command stdout reader failed to start: {label}: {error}").into());
+        }
+    };
     let err_tail = Arc::clone(&tail);
-    let err = std::thread::spawn(move || drain(stderr, err_tail));
+    let err = match std::thread::Builder::new().spawn(move || drain(stderr, err_tail)) {
+        Ok(thread) => thread,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            // The child is stopped, so the already-running reader reaches EOF.
+            let _ = out.join();
+            return Err(format!("command stderr reader failed to start: {label}: {error}").into());
+        }
+    };
     let status = child.wait();
     if status.is_err() {
         let _ = child.kill();

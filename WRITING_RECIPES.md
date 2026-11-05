@@ -67,9 +67,14 @@ registering children before they run. Fork/vfork and the supported libc clone
 forms inherit descriptor tables; owned handles survive parent/child closes,
 blocking pipes wake for peer IO, and waits use virtual child IDs and observed
 exit statuses. Root exit or supervisor failure kills and reaps descendants.
-The actual child helper now passes spawn setup and reaches explicit execve
-denial. Exec/close-on-exec, threads, broader wait/signal semantics and polling
-of owned or remapped descriptors remain unfinished.
+Image execve/execveat now preserve task identity, retire CLOEXEC descriptors only
+after successful replacement, and retain every descriptor after failed exec.
+The actual child helper reaches Bash's dynamic loader, then fails because its
+output-draining threads are still unsupported. Reader startup failures return
+structured command errors and reap the child; they no longer panic the worker.
+Threads, broader wait/signal semantics and polling of owned or remapped
+descriptors remain unfinished. Exec preparation interrupted by signals fails
+explicitly; generated-file execution still needs storage integration.
 File effects disappear after the invocation.
 Acknowledgements still use placeholder generation 0 and are not durable-state
 evidence. Child commands, retained writable storage, durable state, complete
