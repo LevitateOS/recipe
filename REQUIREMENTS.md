@@ -2015,7 +2015,7 @@ this spec.
 
 - `tools/recipe/OS_UPGRADES_BRAINDUMP.md` (recipe + A/B upgrade model)
 - `docs/ab-default-plan.md` (repo-wide A/B default plan)
-- `checkpoints.md` (07Update Slot B Trial Boot)
+- `architecture.md` (A/B update and rollback validation)
 - `tools/recab/REQUIREMENTS.md` (slot state machine responsibilities)
 - `docs/content/src/content/04-architecture/03-atomic-updates.ts` (product docs)
 - `docs/content/src/content/02-package-manager/01-cli-reference.ts` (recipe docs)
@@ -2034,7 +2034,7 @@ this spec.
 | REQ-CLI-013 | `tools/recipe/OS_UPGRADES_BRAINDUMP.md` | TODO | TODO |
 | REQ-CLI-014 | `tools/recipe/OS_UPGRADES_BRAINDUMP.md` | TODO | TODO |
 | REQ-CLI-015 | `docs/ab-default-plan.md`, `docs/content/src/content/04-architecture/03-atomic-updates.ts` | TODO | TODO |
-| REQ-CLI-016 | `checkpoints.md`, `docs/content/src/content/02-package-manager/01-cli-reference.ts` | TODO | TODO |
+| REQ-CLI-016 | `architecture.md`, `docs/content/src/content/02-package-manager/01-cli-reference.ts` | TODO | TODO |
 | REQ-CLI-017 | `tools/recab/REQUIREMENTS.md` | TODO | TODO |
 | REQ-CLI-018 | `tools/recab/REQUIREMENTS.md` | TODO | TODO |
 | REQ-CLI-044 | `tools/recipe/OS_UPGRADES_BRAINDUMP.md` | TODO | TODO |
