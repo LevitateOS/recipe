@@ -202,3 +202,156 @@ fn cli_invalid_worker_cleans_up_a_prepared_readonly_image() {
             .starts_with("recipe-domain-")
     }));
 }
+
+// These cases require the real configured launcher and its prepared image.
+// Run with GINUX_BIN/GINUX_ROOTFS configured and the launcher's bootstrap
+// privilege available. Missing prerequisites are failures, never skipped tests.
+fn managed_command(recipes: &Path, operation: &str) -> Command {
+    let launcher = std::env::var_os("GINUX_BIN")
+        .expect("managed CLI checks require GINUX_BIN pointing to the real supervisor");
+    let mut command = recipe_command(recipes);
+    command
+        .env("GINUX_BIN", launcher)
+        .env_remove("RECIPE_WORKER")
+        .env_remove("RECIPE_INVOCATION")
+        .args([operation, "check", "--no-persist-ctx", "--recipes-path"])
+        .arg(recipes);
+    command
+}
+
+#[test]
+fn managed_custom_checks_run_independently_and_return_discovered_context() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_dir, recipes) = create_test_env();
+    let source = r#"
+const RECIPE_API = 2;
+let ctx = #{ name: "managed-check", expected: "x86_64" };
+fn is_acquired(ctx) { ctx.observation = "custom source revision"; ready(ctx) }
+fn is_built(ctx) { ctx.observation = "custom compiler configuration"; ready(ctx) }
+fn is_installed(ctx) {
+    if ctx.expected != RUNTIME.target.arch { return needs_work(ctx, "target differs"); }
+    ctx.observation = "custom installation rule";
+    ready(ctx)
+}
+"#;
+    write_recipe(&recipes, "check", source);
+    std::fs::set_permissions(
+        recipes.join("check.rhai"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    for (operation, observation) in [
+        ("isacquired", "custom source revision"),
+        ("isbuilt", "custom compiler configuration"),
+        ("isinstalled", "custom installation rule"),
+    ] {
+        let output = managed_command(&recipes, operation).output().unwrap();
+        assert_success(&output);
+        let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(context["observation"], observation);
+        assert_eq!(context["runtime"]["paths"]["inputs"], "/inputs");
+        assert_eq!(context["runtime"]["paths"]["build"], "/work/build");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("launcher exit 0; result exited"));
+        assert_eq!(
+            std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+            source
+        );
+    }
+}
+
+#[test]
+fn managed_not_ready_and_real_script_errors_remain_failures() {
+    let (_dir, recipes) = create_test_env();
+    for (body, wanted) in [
+        (
+            "needs_work(ctx, \"configuration differs\")",
+            "configuration differs",
+        ),
+        (
+            "undefined_managed_function(ctx)",
+            "undefined_managed_function",
+        ),
+    ] {
+        let source = format!(
+            "const RECIPE_API = 2; let ctx = #{{name: \"negative-check\"}}; fn is_installed(ctx) {{ {body} }}\n"
+        );
+        write_recipe(&recipes, "check", &source);
+        let output = managed_command(&recipes, "isinstalled").output().unwrap();
+        assert!(!output.status.success());
+        let diagnostics = String::from_utf8_lossy(&output.stderr);
+        assert!(diagnostics.contains(wanted), "{diagnostics}");
+        assert!(diagnostics.contains("workload failure"), "{diagnostics}");
+        assert_eq!(
+            std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+            source
+        );
+    }
+}
+
+#[test]
+fn managed_setup_cannot_write_to_an_absolute_host_path() {
+    let (dir, recipes) = create_test_env();
+    let sentinel = dir.path().join("host-only-marker");
+    std::fs::write(&sentinel, "keep host content").unwrap();
+    let source = guarded_recipe(&recipes, &sentinel);
+    let output = managed_command(&recipes, "isinstalled").output().unwrap();
+    assert!(!output.status.success());
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostics.contains("workload failure"), "{diagnostics}");
+    assert!(
+        diagnostics.contains("write_file") || diagnostics.contains("Permission denied"),
+        "{diagnostics}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&sentinel).unwrap(),
+        "keep host content"
+    );
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+        source
+    );
+}
+
+#[test]
+fn managed_check_reads_staged_base_and_imported_module() {
+    let (_dir, recipes) = create_test_env();
+    let module = "fn selected_fact() { \"pinned module fact\" }\n";
+    let base = r#"
+const RECIPE_API = 2;
+import "facts.rhai" as facts;
+let ctx = #{name: "base"};
+fn inherited(ctx) { ctx.base_fact = facts::selected_fact(); ctx }
+fn is_installed(ctx) { ready(inherited(ctx)) }
+"#;
+    let plain_child =
+        "//! extends: base.rhai\nconst RECIPE_API = 2; let ctx = #{name: \"child\"};\n";
+    let shared_child = r#"//! extends: base.rhai
+const RECIPE_API = 2;
+let ctx = #{name: "child"};
+let captured_name = || ctx.name;
+fn is_installed(ctx) {
+    ctx = inherited(ctx);
+    ctx.captured = call(captured_name);
+    ready(ctx)
+}
+"#;
+    write_recipe(&recipes, "facts", module);
+    write_recipe(&recipes, "base", base);
+    for child in [plain_child, shared_child] {
+        write_recipe(&recipes, "check", child);
+        let output = managed_command(&recipes, "isinstalled").output().unwrap();
+        assert_success(&output);
+        let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(context["name"], "child");
+        assert_eq!(context["base_fact"], "pinned module fact");
+        if child == shared_child {
+            assert_eq!(context["captured"], "child");
+        }
+        for (name, source) in [("facts", module), ("base", base), ("check", child)] {
+            assert_eq!(
+                std::fs::read_to_string(recipes.join(format!("{name}.rhai"))).unwrap(),
+                source
+            );
+        }
+    }
+}

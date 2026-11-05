@@ -225,9 +225,10 @@ impl<'a> Runtime<'a> {
             // Preserve a shared ctx captured by a Rhai closure. get_value_mut
             // panics for shared values; a Dynamic write lock handles both forms.
             let mut ctx_value = scope
+                // Rhai iter_raw visits the newest binding first. Preserve
+                // the child's shadowing ctx, including shared closure captures.
                 .iter_raw()
-                .filter(|(name, _, _)| *name == "ctx")
-                .last()
+                .find(|(name, _, _)| *name == "ctx")
                 .map(|(_, _, value)| value.clone())
                 .ok_or_else(|| anyhow!("API 2 recipe must declare a ctx map"))?;
             let mut ctx = ctx_value

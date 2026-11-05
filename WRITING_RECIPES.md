@@ -39,10 +39,12 @@ installed `recipe` executable on PATH or explicitly select `RECIPE_WORKER_BIN`;
 the caller's unrelated executable is never treated as a Recipe worker. These
 host selections are coordinator inputs, not worker environment variables.
 
-Integration remains in progress: the configured worker currently fails during
-Rust startup. Retained writable storage, durable state, complete dependency
-closure staging, and publication still need integration and managed runtime
-verification. An ephemeral invocation root does not provide resumable state.
+Managed readiness queries now run through the configured supervisor, including
+custom outcomes, discovered context, and script failures. Integration remains
+in progress: installation, child commands, retained writable storage, durable
+state, complete dependency closure staging, and publication still need
+integration and managed runtime verification. An ephemeral invocation root does
+not provide resumable state.
 
 ## Core Model
 
