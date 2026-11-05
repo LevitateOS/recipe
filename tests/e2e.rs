@@ -8,17 +8,15 @@ use tempfile::TempDir;
 
 /// Get the path to the recipe binary
 fn recipe_bin() -> std::path::PathBuf {
-    // During tests, the binary is in target/debug/
-    let mut path = std::env::current_exe().unwrap();
-    path.pop(); // Remove test binary name
-    path.pop(); // Remove deps
-    path.push("recipe");
-    path
+    env!("CARGO_BIN_EXE_recipe").into()
 }
 
 /// Create a test environment
 fn create_test_env() -> (TempDir, std::path::PathBuf) {
-    let dir = TempDir::new().unwrap();
+    let dir = tempfile::Builder::new()
+        .prefix("recipe e2e ")
+        .tempdir()
+        .unwrap();
     let recipes = dir.path().join("recipes");
     std::fs::create_dir_all(&recipes).unwrap();
     (dir, recipes)
@@ -37,11 +35,37 @@ fn write_recipe(recipes_dir: &Path, name: &str, content: &str) {
 
 /// Run recipe CLI with arguments
 fn run_recipe(args: &[&str], recipes: &Path) -> std::process::Output {
-    Command::new(recipe_bin())
+    recipe_command(recipes)
         .args(args)
-        .args(["--recipes-path", recipes.to_str().unwrap()])
+        .arg("--recipes-path")
+        .arg(recipes)
+        .arg("--build-dir")
+        .arg(recipes.parent().unwrap().join("build"))
         .output()
         .expect("Failed to execute recipe command")
+}
+
+fn recipe_command(recipes: &Path) -> Command {
+    let root = recipes
+        .parent()
+        .expect("recipes directory has a fixture root");
+    let mut command = Command::new(recipe_bin());
+    command
+        .current_dir(root)
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_CACHE_HOME", root.join("cache"));
+    command
+}
+
+fn assert_success(output: &std::process::Output) {
+    assert!(
+        output.status.success(),
+        "recipe failed: {}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 // =============================================================================

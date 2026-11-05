@@ -137,7 +137,9 @@ fn require_apk(helper: &str) -> Result<(), Box<EvalAltResult>> {
     )
 }
 
-fn parse_apk_policy(output: &str) -> Vec<(String, Vec<String>)> {
+type ApkPolicyEntries = Vec<(String, Vec<String>)>;
+
+fn parse_apk_policy(output: &str) -> ApkPolicyEntries {
     let mut entries = Vec::new();
     let mut current_version: Option<String> = None;
     let mut current_sources: Vec<String> = Vec::new();
@@ -168,10 +170,7 @@ fn parse_apk_policy(output: &str) -> Vec<(String, Vec<String>)> {
     entries
 }
 
-fn apk_policy(
-    helper: &str,
-    name: &str,
-) -> Result<Option<Vec<(String, Vec<String>)>>, Box<EvalAltResult>> {
+fn apk_policy(helper: &str, name: &str) -> Result<Option<ApkPolicyEntries>, Box<EvalAltResult>> {
     require_apk(helper)?;
     let args = strings(&["policy", name]);
     let output = run_command("apk", &args)?;

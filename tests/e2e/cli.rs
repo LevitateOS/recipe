@@ -76,41 +76,92 @@ fn test_cli_install_nonexistent_package() {
 #[test]
 fn test_cli_install_success() {
     let (_dir, recipes) = create_test_env();
-
     write_recipe(
         &recipes,
         "simple",
         r#"
 let ctx = #{
     name: "simple",
-    version: "1.0.0",
     installed: false,
+    source: join_path(RECIPE_DIR, "source.txt"),
+    built: join_path(BUILD_DIR, "built.txt"),
+    installed_file: join_path(RECIPE_DIR, "installed.txt"),
+    trace: join_path(RECIPE_DIR, "lifecycle.log"),
 };
-
-fn is_installed(ctx) {
-    if !ctx.installed { throw "not installed"; }
+fn is_acquired(ctx) { if !is_file(ctx.source) { throw "source missing"; } ctx }
+fn is_built(ctx) { if !is_file(ctx.built) { throw "build missing"; } ctx }
+fn is_installed(ctx) { if !is_file(ctx.installed_file) { throw "install missing"; } ctx }
+fn acquire(ctx) {
+    write_file(ctx.source, "payload-v1");
+    append_file(ctx.trace, "acquire\n");
     ctx
 }
-
-fn acquire(ctx) { ctx }
+fn build(ctx) {
+    copy_file(ctx.source, ctx.built);
+    append_file(ctx.trace, "build\n");
+    ctx
+}
 fn install(ctx) {
+    copy_file(ctx.built, ctx.installed_file);
+    append_file(ctx.trace, "install\n");
     ctx.installed = true;
     ctx
 }
+fn remove(ctx) {
+    rm(ctx.installed_file);
+    append_file(ctx.trace, "remove\n");
+    ctx.installed = false;
+    ctx
+}
+fn cleanup(ctx, reason) { ctx }
 "#,
     );
-
     let output = run_recipe(&["install", "simple"], &recipes);
-
-    assert!(
-        output.status.success(),
-        "Install failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+    assert_success(&output);
+    let installed: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .expect("install stdout contains only final ctx JSON");
+    assert_eq!(installed["installed"], true);
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("installed.txt")).unwrap(),
+        "payload-v1"
+    );
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("lifecycle.log")).unwrap(),
+        "acquire\nbuild\ninstall\n"
     );
 
-    // Verify ctx was persisted
-    let content = std::fs::read_to_string(recipes.join("simple.rhai")).unwrap();
-    assert!(content.contains("installed: true"));
+    let original = std::fs::read(recipes.join("simple.rhai")).unwrap();
+    assert_success(&run_recipe(&["install", "simple"], &recipes));
+    assert_eq!(
+        std::fs::read(recipes.join("simple.rhai")).unwrap(),
+        original,
+        "an already-installed recipe should not be rewritten"
+    );
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("lifecycle.log")).unwrap(),
+        "acquire\nbuild\ninstall\n",
+        "reinstall reran completed lifecycle phases"
+    );
+
+    assert_success(&run_recipe(&["isinstalled", "simple"], &recipes));
+    let output = run_recipe(&["remove", "simple"], &recipes);
+    assert_success(&output);
+    let removed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(removed["installed"], false);
+    assert!(
+        !recipes.join("installed.txt").exists(),
+        "remove left the installed payload behind"
+    );
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("lifecycle.log")).unwrap(),
+        "acquire\nbuild\ninstall\nremove\n"
+    );
+    let output = run_recipe(&["isinstalled", "simple"], &recipes);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "removed package was still reported installed"
+    );
 }
 
 #[test]
@@ -168,7 +219,7 @@ fn cleanup(ctx, reason) { ctx }
     )
     .unwrap();
 
-    let output = Command::new(recipe_bin())
+    let output = recipe_command(&recipes)
         .args(["install", recipe_path.to_str().unwrap()])
         .output()
         .expect("Failed to execute recipe command");
@@ -287,7 +338,7 @@ fn remove(ctx) {
 "#,
     );
 
-    let output = Command::new(recipe_bin())
+    let output = recipe_command(&recipes)
         .args([
             "remove",
             "remove-define",
@@ -310,3 +361,50 @@ fn remove(ctx) {
 }
 
 // =============================================================================
+
+#[test]
+fn test_cli_inherited_recipe_preserves_base_and_installs_child_payload() {
+    let (_dir, recipes) = create_test_env();
+    write_recipe(
+        &recipes,
+        "base",
+        r#"
+let ctx = #{ name: "base", message: "base payload", installed: false };
+fn is_installed(ctx) { if !ctx.installed { throw "not installed"; } ctx }
+fn acquire(ctx) { ctx }
+fn install(ctx) {
+    write_file(join_path(RECIPE_DIR, "inherited-payload.txt"), ctx.message);
+    ctx.installed = true;
+    ctx
+}
+fn cleanup(ctx, reason) { ctx }
+"#,
+    );
+    std::fs::write(
+        recipes.join("child.rhai"),
+        r#"//! extends: base.rhai
+let ctx = #{ name: "child", message: "child \"quoted\" \\ payload", installed: false };
+"#,
+    )
+    .unwrap();
+    let base = std::fs::read(recipes.join("base.rhai")).unwrap();
+    let output = run_recipe(&["install", "child"], &recipes);
+    assert_success(&output);
+    let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(ctx["name"], "child");
+    assert_eq!(ctx["installed"], true);
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("inherited-payload.txt")).unwrap(),
+        "child \"quoted\" \\ payload"
+    );
+    assert_eq!(
+        std::fs::read(recipes.join("base.rhai")).unwrap(),
+        base,
+        "child state overwrote the shared base recipe"
+    );
+    // Reparse persisted state in a separate CLI process.
+    let output = run_recipe(&["isinstalled", "child"], &recipes);
+    assert_success(&output);
+    let persisted: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(persisted, ctx);
+}

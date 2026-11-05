@@ -56,7 +56,7 @@ fn cleanup(ctx, reason) {
 "#,
     );
 
-    let output = Command::new(recipe_bin())
+    let output = recipe_command(&recipes)
         .args([
             "cleanup",
             "cleanup-define",
@@ -328,7 +328,8 @@ let ctx = #{
     let output = run_recipe(&["list"], &recipes);
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("pkg1") || stdout.contains("pkg2"));
+    assert!(stdout.contains("pkg1"), "pkg1 missing from list: {stdout}");
+    assert!(stdout.contains("pkg2"), "pkg2 missing from list: {stdout}");
 }
 
 // =============================================================================

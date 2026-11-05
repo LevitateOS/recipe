@@ -394,3 +394,9 @@ cargo install --path .
 ## License
 
 MIT OR Apache-2.0
+
+The CLI end-to-end suite uses the Cargo-built binary and isolated working, build, and XDG directories. It verifies actual payload files through install/remove and checks that a failed build resumes without reacquiring completed sources:
+
+```bash
+cargo test -p levitate-recipe --test e2e
+```
