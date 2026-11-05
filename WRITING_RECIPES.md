@@ -59,11 +59,13 @@ per file and 64 open files. It supports regular-file IO and metadata, mkdir,
 file unlink and chmod; directory enumeration/removal, rename, links, duplicate
 descriptors and execution of generated files remain unsupported. It cannot yet
 build ordinary compiler projects. Anonymous pipes now use supervisor-owned
-buffers, with tested byte flow, aliases and EOF. Ordinary child startup still
-fails before process creation: the current public descriptor numbers exceed
-the reported descriptor limit and libc rejects them. A shared descriptor table,
-peer scheduling and supervised child execution remain unfinished. File effects
-disappear after the invocation.
+buffers, with tested byte flow, aliases and EOF. Files, devices, pipes and stdio
+now share small public descriptors; aliases share file offsets and handle
+lifetimes. The real descriptor limit is capped at 256 while preserving a lower
+operator limit. Libc spawn preflight now succeeds, and the actual child helper
+reaches explicit clone3/clone denial. Process/thread supervision, inherited
+handle lifetimes, peer scheduling and exec-time close-on-exec remain unfinished.
+File effects disappear after the invocation.
 Acknowledgements still use placeholder generation 0 and are not durable-state
 evidence. Child commands, retained writable storage, durable state, complete
 dependency closure staging, target installation views and output publication
