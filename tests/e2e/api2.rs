@@ -74,11 +74,6 @@ fn remove(ctx) { rm(ctx.installed); inherited(ctx) }
 append_file(join_path(RECIPE_DIR, "child-setup"), "child\n");
 "##,
     );
-    // write_recipe's default cleanup would override the inherited implementation.
-    let child = std::fs::read_to_string(recipes.join("api2.rhai"))
-        .unwrap()
-        .replace("\nfn cleanup(ctx, reason) { ctx }\n", "");
-    std::fs::write(recipes.join("api2.rhai"), child).unwrap();
     let output = run_recipe(&["install", "api2", "--no-persist-ctx"], &recipes);
     assert_success(&output);
     let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -268,6 +263,7 @@ fn install(ctx) {
     write_file(join_path(BUILD_DIR, "observed-refreshes"), read_file(join_path(RECIPE_DIR, "refreshes")));
     ctx
 }
+fn cleanup(ctx, reason) { write_file(join_path(BUILD_DIR, "refresh-cleanup"), reason); ctx }
 "##,
     );
     assert_success(&run_recipe(

@@ -5,7 +5,6 @@ use std::path::Path;
 
 use super::context::{CheckpointPoint, ExecutionContext};
 use super::reporting::{report_phase_failure, report_phase_success};
-use super::state::maybe_cleanup;
 use crate::core::executor::compile_recipe;
 
 pub(crate) fn remove(
@@ -149,6 +148,7 @@ pub(crate) fn cleanup_with_context(
 
     let mut compiled = compile_recipe(engine, &recipe_path, search_path)?;
     let ast = compiled.ast.clone();
+    let has_cleanup = runner::cleanup_available(&ast)?;
 
     let scope = crate::core::invocation::scope(
         &compiled.recipe_path,
@@ -170,20 +170,17 @@ pub(crate) fn cleanup_with_context(
         .and_then(|v| v.clone().into_string().ok())
         .unwrap_or_else(|| "package".to_string());
 
-    if !runner::has_fn(&ast, "cleanup") {
-        output::hook_event(&name, "cleanup", "missing", "required cleanup hook missing");
-        return Err(anyhow!("{} has no cleanup function", name));
+    if !has_cleanup {
+        output::hook_event(&name, "cleanup", "skipped", "recipe has no cleanup hook");
+        output::skip(&format!("{name} has no cleanup hook; nothing to clean"));
+        return Ok(ctx_map);
     }
 
     output::action(&format!("Cleaning up {}", name));
     output::sub_action("cleanup");
     output::hook_event(&name, "cleanup", "running", "executing recipe hook");
 
-    ctx_map = maybe_cleanup(
-        &ast, &mut scope, ctx_map, reason, /* best_effort */ false,
-        /* require_defined */ true,
-    )
-    .inspect_err(|e| {
+    ctx_map = runner::run_cleanup(&ast, &mut scope, ctx_map, reason, false).inspect_err(|e| {
         report_phase_failure(&name, "cleanup", e);
     })?;
     report_phase_success(&name, "cleanup");

@@ -44,9 +44,6 @@ fn install(ctx) {
     ctx
 }
 
-fn cleanup(ctx, reason) {
-    ctx
-}
 .fi
 .SH API 2 INITIALIZATION AND READINESS
 A top-level \fBconst RECIPE_API = 2;\fR opts into setup once per invocation.
@@ -63,8 +60,8 @@ Unversioned recipes retain top-level reevaluation and deliberate throw as the
 needs-work signal. Interpreter and native-helper errors fail execution. Native
 errors remain catchable in Rhai. Unsupported API versions fail before setup.
 .PP
-Source-based persistence, required cleanup, and the acquire/install-only dependency
-runner are unchanged by this migration slice.
+Source-based persistence and the acquire/install-only dependency runner remain
+pending migration.
 .SH CTX CONTRACT
 .TP
 \fBCanonical declaration\fR
@@ -109,8 +106,12 @@ Place files, symlinks, configuration, or other install state.
 Undo install state for \fBrecipe remove\fR.
 .TP
 \fBcleanup(ctx, reason)\fR
-Cleanup hook used by both automatic phase cleanup and manual
-\fBrecipe cleanup\fR.
+Optional hook used by automatic phase cleanup and manual \fBrecipe cleanup\fR.
+An absent hook is a no-op. A present hook must take ctx and reason and return ctx.
+Errors after successful phases fail execution. Errors during failure cleanup are
+reported without replacing the original phase failure. Dependencies use the same
+rules. Manual cleanup without a hook returns initialized ctx and does not write
+a cleanup checkpoint.
 .SH HOOK ORDER
 Normal install flow:
 .IP "1." 4
@@ -132,7 +133,7 @@ Run \fBbuild(ctx)\fR only if build is still needed.
 .IP "9." 4
 Run \fBinstall(ctx)\fR.
 .IP "10." 4
-Run \fBcleanup(ctx, reason)\fR on success and failure paths.
+Run \fBcleanup(ctx, reason)\fR on success and failure paths when defined.
 .SH RETURN VALUES AND STATE
 Checks and phases return an updated \fBctx\fR map. The executor uses that returned
 map as the input to the next phase. A check can therefore rediscover paths or
@@ -152,8 +153,7 @@ missing \fBbuild(ctx)\fR is allowed for prebuilt payload
 .IP "\[bu]" 4
 missing \fBremove(ctx)\fR means \fBrecipe remove\fR will fail
 .IP "\[bu]" 4
-missing \fBcleanup(ctx, reason)\fR is not appropriate for normal repo usage; use
-a no-op hook if no cleanup is required
+missing \fBcleanup(ctx, reason)\fR is allowed; no no-op stub is needed
 .SH PATHS AND FILES
 Recipes currently receive these commonly used bindings and environment-derived
 values through the executor:
@@ -199,9 +199,6 @@ fn install(ctx) {
     ctx
 }
 
-fn cleanup(ctx, reason) {
-    ctx
-}
 .fi
 .SH EXTENDS
 Recipes may declare:

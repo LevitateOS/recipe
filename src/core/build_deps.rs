@@ -131,6 +131,7 @@ impl<'a> BuildDepsResolver<'a> {
         let compiled = super::executor::compile_recipe(self.engine, recipe_path, self.recipes_path)
             .map_err(DepAttemptError::Fatal)?;
         let ast = compiled.ast;
+        let has_cleanup = runner::cleanup_available(&ast).map_err(DepAttemptError::Fatal)?;
         let base_dir = compiled.base_dir;
 
         let dep_build_dir = self.build_dir.join(format!(".deps/{}", name));
@@ -196,7 +197,6 @@ impl<'a> BuildDepsResolver<'a> {
                 true
             }
         };
-        let has_cleanup = runner::has_fn(&ast, "cleanup");
 
         let mut ctx = ctx_map;
         if needs_acquire && runner::has_fn(&ast, "acquire") {
@@ -220,7 +220,15 @@ impl<'a> BuildDepsResolver<'a> {
                     );
                     output::success(&format!("{}: source prep step finished", name));
                     if has_cleanup {
-                        ctx = cleanup_hook(&ast, &mut scope, ctx, "auto.acquire.success");
+                        ctx = runner::run_cleanup(
+                            &ast,
+                            &mut scope,
+                            ctx,
+                            "auto.acquire.success",
+                            false,
+                        )
+                        .with_context(|| format!("tool dependency {name} cleanup failed"))
+                        .map_err(DepAttemptError::Fatal)?;
                     }
                 }
                 Err(e) => {
@@ -231,7 +239,13 @@ impl<'a> BuildDepsResolver<'a> {
                         "  action: fix acquire() in dependency recipe and rerun with RECIPE_TRACE_HELPERS=1",
                     );
                     if has_cleanup {
-                        let _ = cleanup_hook(&ast, &mut scope, ctx_before, "auto.acquire.failure");
+                        let _ = runner::run_cleanup(
+                            &ast,
+                            &mut scope,
+                            ctx_before,
+                            "auto.acquire.failure",
+                            true,
+                        );
                     }
                     return Err(DepAttemptError::Phase {
                         reason: "auto.acquire.failure",
@@ -263,7 +277,15 @@ impl<'a> BuildDepsResolver<'a> {
                     );
                     output::success(&format!("{}: install step finished", name));
                     if has_cleanup {
-                        ctx = cleanup_hook(&ast, &mut scope, ctx, "auto.install.success");
+                        ctx = runner::run_cleanup(
+                            &ast,
+                            &mut scope,
+                            ctx,
+                            "auto.install.success",
+                            false,
+                        )
+                        .with_context(|| format!("tool dependency {name} cleanup failed"))
+                        .map_err(DepAttemptError::Fatal)?;
                     }
                 }
                 Err(e) => {
@@ -272,7 +294,13 @@ impl<'a> BuildDepsResolver<'a> {
                     output::detail(&format!("  reason: {e}"));
                     output::detail("  action: fix install() in dependency recipe and rerun.");
                     if has_cleanup {
-                        let _ = cleanup_hook(&ast, &mut scope, ctx_before, "auto.install.failure");
+                        let _ = runner::run_cleanup(
+                            &ast,
+                            &mut scope,
+                            ctx_before,
+                            "auto.install.failure",
+                            true,
+                        );
                     }
                     return Err(DepAttemptError::Phase {
                         reason: "auto.install.failure",
@@ -286,7 +314,8 @@ impl<'a> BuildDepsResolver<'a> {
         if scope.is_api2() && runner::has_fn(&ast, "is_installed") {
             if let Err(error) = runner::verify_phase(&mut scope, "is_installed", &ctx) {
                 if has_cleanup {
-                    let _ = cleanup_hook(&ast, &mut scope, ctx, "auto.install.failure");
+                    let _ =
+                        runner::run_cleanup(&ast, &mut scope, ctx, "auto.install.failure", true);
                 }
                 return Err(DepAttemptError::Phase {
                     reason: "auto.install.failure",
@@ -322,27 +351,5 @@ impl<'a> BuildDepsResolver<'a> {
             filename,
             self.recipes_path
         )
-    }
-}
-
-fn cleanup_hook(
-    ast: &rhai::AST,
-    scope: &mut Runtime<'_>,
-    ctx: rhai::Map,
-    reason: &str,
-) -> rhai::Map {
-    if !runner::has_fn_arity(ast, "cleanup", 2) {
-        output::warning("cleanup hook must be cleanup(ctx, reason); skipping cleanup");
-        return ctx;
-    }
-
-    let result = scope.call_map("cleanup", vec![ctx.clone().into(), reason.into()], false);
-
-    match result {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            output::warning(&format!("cleanup hook failed (reason={reason}): {e}"));
-            ctx
-        }
     }
 }

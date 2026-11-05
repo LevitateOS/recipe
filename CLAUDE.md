@@ -51,7 +51,7 @@ use `HELPERS_AUDIT.md` to confirm the helper surface that actually exists today.
 - Current script constants are `RECIPE_DIR`, `BUILD_DIR`, `ARCH`, `NPROC`, and `RPM_PATH`.
 - `BASE_RECIPE_DIR` is only present when a recipe extends a base recipe.
 - `TOOLS_PREFIX` is only present while resolving dependency recipes.
-- `cleanup(ctx, reason)` is required by this repo's install flow.
+- `cleanup(ctx, reason)` is optional; a defined hook must accept two arguments and return `ctx`.
 
 Fresh Fedora minimal bootstrap:
 

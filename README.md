@@ -42,7 +42,7 @@ Not implemented yet (still in the spec):
 - Recipes currently get `RECIPE_DIR`, `BUILD_DIR`, `ARCH`, `NPROC`, and `RPM_PATH`.
 - Base/dependency execution may also provide `BASE_RECIPE_DIR` and `TOOLS_PREFIX`.
 - Filesystem helpers operate on explicit paths. Higher-level helpers such as `install_bin` and `install_to_dir` are not implemented yet.
-- `cleanup(ctx, reason)` with two arguments is required by this repository's install flow.
+- `cleanup(ctx, reason)` is optional. When defined, it runs on phase success/failure and manual cleanup.
 
 If you are debugging behavior, trust the current source and this README before you trust the broader spec.
 
@@ -161,7 +161,7 @@ Recipes use a `ctx` map for state.
 - Unversioned checks (`is_*`) return `ctx` when ready and deliberately `throw` when work is needed. Interpreter and native-helper failures stop execution.
 - `const RECIPE_API = 2;` opts into initialization once per invocation and checks returning `ready(ctx)` or `needs_work(ctx, reason)`. API 2 preserves imports and rechecks custom readiness after successful phases. See [the author guide](WRITING_RECIPES.md#api-2-initialization-and-readiness) for the implemented migration scope.
 - Phase functions (`acquire/build/install/remove/cleanup`) take `ctx` and return an updated `ctx`.
-- `cleanup(ctx, reason)` is **required** for normal installs in this repo. If you do not need cleanup, make it a no-op that returns `ctx`.
+- Omit `cleanup` when no recipe-specific cleanup is needed. A defined hook must accept `(ctx, reason)` and return `ctx`. Errors after a successful phase fail the command; errors during failure cleanup are reported while preserving the primary failure.
 
 Minimal example:
 
@@ -199,15 +199,11 @@ fn install(ctx) {
     ctx
 }
 
-fn cleanup(ctx, reason) {
-    // Called automatically on success/failure paths, and via `recipe cleanup`.
-    ctx
-}
 ```
 
 ### Cleanup Reasons
 
-`cleanup(ctx, reason)` is invoked with:
+`cleanup(ctx, reason)`, when defined, is invoked with:
 
 - `manual` for `recipe cleanup`
 - `auto.acquire.success`, `auto.acquire.failure`

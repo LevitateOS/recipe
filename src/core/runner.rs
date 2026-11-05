@@ -52,3 +52,39 @@ pub(crate) fn verify_phase(
         }
     }
 }
+
+/// Cleanup is optional, but a present lifecycle hook must accept ctx and reason.
+/// Validate before phase execution so a typo cannot silently disable hygiene.
+pub(crate) fn cleanup_available(ast: &AST) -> Result<bool> {
+    if !has_fn(ast, "cleanup") {
+        return Ok(false);
+    }
+    if !has_fn_arity(ast, "cleanup", 2) {
+        return Err(anyhow!(
+            "cleanup hook must be cleanup(ctx, reason) (found no 2-arg cleanup)"
+        ));
+    }
+    Ok(true)
+}
+
+/// An absent hook is a no-op. After a failed phase, preserve its primary error;
+/// after a successful phase, a cleanup failure is itself a command failure.
+pub(crate) fn run_cleanup(
+    ast: &AST,
+    scope: &mut Runtime<'_>,
+    ctx: rhai::Map,
+    reason: &str,
+    best_effort: bool,
+) -> Result<rhai::Map> {
+    if !cleanup_available(ast)? {
+        return Ok(ctx);
+    }
+    match scope.call_map("cleanup", vec![ctx.clone().into(), reason.into()], false) {
+        Ok(ctx) => Ok(ctx),
+        Err(error) if best_effort => {
+            super::output::warning(&format!("cleanup failed (reason={reason}): {error}"));
+            Ok(ctx)
+        }
+        Err(error) => Err(anyhow!("cleanup failed (reason={reason}): {error}")),
+    }
+}

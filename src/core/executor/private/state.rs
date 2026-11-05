@@ -1,9 +1,9 @@
 use super::context::CheckpointPoint;
 use crate::core::executor::CompiledRecipe;
 use crate::core::invocation::Runtime;
-use crate::core::{build_deps, ctx, output};
+use crate::core::{build_deps, ctx};
 use anyhow::{Context, Result, anyhow};
-use rhai::{AST, Engine};
+use rhai::Engine;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -19,40 +19,6 @@ pub(crate) fn check_phase_with_reason(
     match scope.check(fn_name, ctx)? {
         crate::core::invocation::Readiness::Ready(ctx) => Ok((false, ctx, None)),
         crate::core::invocation::Readiness::NeedsWork(ctx, reason) => Ok((true, ctx, Some(reason))),
-    }
-}
-
-/// Run recipe cleanup hook and return the updated ctx.
-pub(crate) fn maybe_cleanup(
-    ast: &AST,
-    scope: &mut Runtime<'_>,
-    ctx: rhai::Map,
-    reason: &str,
-    best_effort: bool,
-    require_defined: bool,
-) -> Result<rhai::Map> {
-    if !crate::core::runner::has_fn(ast, "cleanup") {
-        if require_defined {
-            return Err(anyhow!("Recipe has no cleanup function"));
-        }
-        return Ok(ctx);
-    }
-
-    if !crate::core::runner::has_fn_arity(ast, "cleanup", 2) {
-        return Err(anyhow!(
-            "cleanup hook must be cleanup(ctx, reason) (found non-2-arg cleanup)"
-        ));
-    }
-
-    let result = scope.call_map("cleanup", vec![ctx.clone().into(), reason.into()], false);
-
-    match result {
-        Ok(ctx) => Ok(ctx),
-        Err(e) if best_effort => {
-            output::warning(&format!("cleanup hook failed (reason={reason}): {e}"));
-            Ok(ctx)
-        }
-        Err(e) => Err(anyhow!("cleanup failed: {}", e)),
     }
 }
 

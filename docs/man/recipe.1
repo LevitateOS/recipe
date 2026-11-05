@@ -81,7 +81,8 @@ authoring and debugging.
 Run the recipe's \fBremove(ctx)\fR hook and persist the resulting \fBctx\fR.
 .TP
 \fBcleanup\fR
-Run the recipe's \fBcleanup(ctx, reason)\fR hook manually.
+Run the recipe's optional \fBcleanup(ctx, reason)\fR hook manually. If absent,
+return initialized ctx without removing installed products.
 .TP
 \fBisinstalled\fR
 Evaluate \fBis_installed(ctx)\fR manually.
@@ -167,7 +168,7 @@ hooks. The normal install flow is:
 .IP "6." 4
 \fBinstall(ctx)\fR
 .IP "7." 4
-\fBcleanup(ctx, reason)\fR on success or failure
+\fBcleanup(ctx, reason)\fR on success or failure, when defined
 .PP
 Checks are throw-based gates, not boolean predicates. A check should return an
 updated \fBctx\fR when the phase is already satisfied, and \fBthrow\fR when work

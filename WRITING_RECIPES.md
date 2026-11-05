@@ -32,10 +32,10 @@ Normal install flow is:
 4. `acquire(ctx)` if needed
 5. `build(ctx)` if needed and defined
 6. `install(ctx)`
-7. `cleanup(ctx, reason)` automatically on phase success/failure
+7. `cleanup(ctx, reason)` automatically on phase success/failure, when defined
 
-Important: `cleanup(ctx, reason)` is effectively mandatory for normal installs
-in this repo. If you do not need cleanup, define a no-op hook.
+Cleanup is optional. Omit the hook when the recipe has nothing to clean. A
+present hook must accept `(ctx, reason)` and return updated `ctx`.
 
 ## API 2 initialization and readiness
 
@@ -45,8 +45,9 @@ versions fail before setup executes.
 
 API 2 evaluates top-level setup once per invocation. Imports (including dynamic
 import expressions), initialized globals, global constants, and inherited
-functions remain available to hooks. A new worker invocation refreshes setup and imported facts. Put observations
-that must refresh between phases inside checks or explicit functions called by
+functions remain available to hooks. A new worker invocation refreshes setup and
+imported facts. Put observations that must refresh between phases inside checks
+or explicit functions called by
 hooks. Check scopes are isolated; return discovered values through `ctx`.
 
 All three checks remain independent Rhai functions with package-specific rules:
@@ -60,7 +61,6 @@ fn is_installed(ctx) {
 }
 fn is_built(ctx) { ready(ctx) }
 fn install(ctx) { mkdir(BUILD_DIR); write_file(ctx.product, "example"); ctx }
-fn cleanup(ctx, reason) { ctx }
 ```
 
 `ready(ctx)` reports readiness; `needs_work(ctx, reason)` requests the relevant
@@ -76,9 +76,8 @@ Unversioned recipes retain top-level reevaluation before hooks and the legacy
 helpers fail execution. Native helper errors remain catchable with Rhai
 `try/catch`, allowing an author to handle a known condition explicitly.
 
-This migration slice does not change the current source-based ctx persistence,
-cleanup requirement, or dependency runner's acquire/install-only behavior. Those
-parts of the simplification remain pending; API 2 does not imply they are done.
+Source-based ctx persistence and the dependency runner's acquire/install-only
+behavior remain pending migration; API 2 does not imply they are done.
 
 ## Minimal Template
 
@@ -127,9 +126,6 @@ fn install(ctx) {
     ctx
 }
 
-fn cleanup(ctx, reason) {
-    ctx
-}
 ```
 
 Notes:
@@ -144,7 +140,6 @@ Notes:
 
 - `let ctx = #{ ... };`
 - `install(ctx)`
-- `cleanup(ctx, reason)`
 
 In practice, most real recipes should also define:
 
@@ -157,6 +152,7 @@ In practice, most real recipes should also define:
 - `is_built(ctx)`
 - `build(ctx)`
 - `remove(ctx)`
+- `cleanup(ctx, reason)`
 
 Behavior of missing checks:
 
@@ -314,12 +310,23 @@ your install code points at host paths, it will mutate the host.
 
 ### `cleanup(ctx, reason)`
 
-Always define it.
+Omit this hook when the recipe needs no custom cleanup. A manual `recipe cleanup`
+then returns initialized `ctx` without removing products or writing a cleanup
+checkpoint. This applies to legacy recipes and API 2.
 
-Even if you do nothing:
+When present, the hook must accept `(ctx, reason)` and return `ctx`. Invalid
+signatures fail before install or cleanup setup executes. A cleanup error after
+a successful phase fails the operation. If the phase already failed, a secondary
+cleanup error is reported without replacing the primary failure. Dependencies use
+the same cleanup behavior.
+
+For example, remove only a known intermediate owned by this recipe:
 
 ```rhai
-fn cleanup(ctx, reason) { ctx }
+fn cleanup(ctx, reason) {
+    if reason == "auto.build.failure" { rm(join_path(BUILD_DIR, "build.tmp")); }
+    ctx
+}
 ```
 
 Automatic reasons used by the executor:
@@ -514,9 +521,8 @@ Dependency recipes are executed differently from normal recipes:
 - they use a simplified flow: `is_installed` -> optional `is_acquired` /
   `acquire` -> `install`
 
-If you are authoring a tool recipe meant for `build_deps`, still define
-`cleanup(ctx, reason)` if you want cleanup behavior, but the normal top-level
-install strictness around cleanup is looser there.
+Tool recipes use the same optional cleanup and error handling as top-level
+recipes. Return updated context from any defined cleanup hook.
 
 ### Environment Fixups for Tool Recipes
 
@@ -669,16 +675,11 @@ That disables source mutation while still executing the recipe.
 
 ## Common Failure Modes
 
-### Missing `cleanup(ctx, reason)`
+### Malformed cleanup hook
 
-Normal install flow will fail before doing work if the recipe lacks a 2-arg
-cleanup hook.
-
-Fix:
-
-```rhai
-fn cleanup(ctx, reason) { ctx }
-```
+Cleanup may be omitted. If present, its signature must be
+`fn cleanup(ctx, reason) { ...; ctx }`. A one-argument cleanup hook is an error;
+it is not silently treated as an absent hook.
 
 ### `ctx` Persistence Broke After Refactoring
 
@@ -704,7 +705,7 @@ Before calling a recipe "done", verify:
 - `ctx` uses the exact `let ctx = #{` form
 - persistent `ctx` fields are scalar
 - `is_installed(ctx)` exists and is truthful
-- `cleanup(ctx, reason)` exists
+- any defined cleanup hook accepts `(ctx, reason)` and returns `ctx`
 - `build(ctx)` is only present if the recipe really has a build phase
 - `is_built(ctx)` only passes when build can truly be skipped
 - destination paths are explicit and safe

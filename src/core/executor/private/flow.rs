@@ -9,7 +9,7 @@ use super::{
     attempt::InstallAttemptError,
     context::{CheckpointPoint, ExecutionContext},
     reporting::{friendly_reason, report_check_result, report_phase_failure, report_phase_success},
-    state::{check_phase_with_reason, maybe_cleanup, resolve_deps},
+    state::{check_phase_with_reason, resolve_deps},
 };
 
 pub(crate) fn install_once(
@@ -26,6 +26,8 @@ pub(crate) fn install_once(
     let mut compiled =
         compile_recipe(engine, recipe_path, search_path).map_err(InstallAttemptError::Fatal)?;
     let ast = compiled.ast.clone();
+    let cleanup_auto_supported =
+        runner::cleanup_available(&ast).map_err(InstallAttemptError::Fatal)?;
 
     let scope = crate::core::invocation::scope(
         &compiled.recipe_path,
@@ -110,36 +112,11 @@ pub(crate) fn install_once(
         output::detail(&format!("Recipe flow: {}", planned.join(" → ")));
     }
 
-    let cleanup_auto_supported = runner::has_fn_arity(&ast, "cleanup", 2);
-
     if !needs_install {
         output::hook_event(&name, "install", "skipped", "already installed");
         output::detail("All checks passed; nothing to do.");
         output::skip(&format!("{} already installed, skipping", name));
         return Ok(ctx_map);
-    }
-
-    // Cleanup is required in this repository: it provides the hygiene hooks needed
-    // for consistent build dir behavior (especially on failure paths).
-    if !cleanup_auto_supported {
-        output::hook_event(
-            &name,
-            "cleanup",
-            "missing",
-            "required cleanup(ctx, reason) hook missing",
-        );
-        output::error(&format!(
-            "{} requires cleanup(ctx, reason) for this repo and it is missing.",
-            name
-        ));
-        output::detail("Expected signature: fn cleanup(ctx, reason) -> { ... }");
-        output::detail(
-            "Action: add a cleanup hook to your recipe or temporarily run in a test environment that allows skipping it.",
-        );
-        return Err(InstallAttemptError::Fatal(anyhow!(
-            "{} missing required cleanup(ctx, reason) hook (found no 2-arg cleanup)",
-            name
-        )));
     }
 
     // Resolve dependencies declared in scope.
@@ -216,13 +193,12 @@ pub(crate) fn install_once(
 
                 // Hygiene: allow recipes to clean up intermediate acquire artifacts.
                 if cleanup_auto_supported {
-                    ctx_map = maybe_cleanup(
+                    ctx_map = runner::run_cleanup(
                         &ast,
                         &mut scope,
                         ctx_map,
                         "auto.acquire.success",
-                        /* best_effort */ true,
-                        /* require_defined */ false,
+                        /* best_effort */ false,
                     )
                     .map_err(InstallAttemptError::Fatal)?;
                     exec.persist_checkpoint(
@@ -241,13 +217,12 @@ pub(crate) fn install_once(
                 report_phase_failure(&name, "acquire", &e);
                 // Best-effort failure hygiene: don't mask the original error.
                 if cleanup_auto_supported {
-                    let _ = maybe_cleanup(
+                    let _ = runner::run_cleanup(
                         &ast,
                         &mut scope,
                         ctx_before,
                         "auto.acquire.failure",
                         /* best_effort */ true,
-                        /* require_defined */ false,
                     );
                 }
                 return Err(InstallAttemptError::Phase {
@@ -312,13 +287,12 @@ pub(crate) fn install_once(
                     .map_err(InstallAttemptError::Fatal)?;
 
                     if cleanup_auto_supported {
-                        ctx_map = maybe_cleanup(
+                        ctx_map = runner::run_cleanup(
                             &ast,
                             &mut scope,
                             ctx_map,
                             "auto.build.success",
-                            /* best_effort */ true,
-                            /* require_defined */ false,
+                            /* best_effort */ false,
                         )
                         .map_err(InstallAttemptError::Fatal)?;
                         exec.persist_checkpoint(
@@ -336,13 +310,12 @@ pub(crate) fn install_once(
                 Err(e) => {
                     report_phase_failure(&name, "build", &e);
                     if cleanup_auto_supported {
-                        let _ = maybe_cleanup(
+                        let _ = runner::run_cleanup(
                             &ast,
                             &mut scope,
                             ctx_before,
                             "auto.build.failure",
                             /* best_effort */ true,
-                            /* require_defined */ false,
                         );
                     }
                     return Err(InstallAttemptError::Phase {
@@ -376,13 +349,12 @@ pub(crate) fn install_once(
                 .map_err(InstallAttemptError::Fatal)?;
 
                 if cleanup_auto_supported {
-                    ctx_map = maybe_cleanup(
+                    ctx_map = runner::run_cleanup(
                         &ast,
                         &mut scope,
                         ctx_map,
                         "auto.install.success",
-                        /* best_effort */ true,
-                        /* require_defined */ false,
+                        /* best_effort */ false,
                     )
                     .map_err(InstallAttemptError::Fatal)?;
                     exec.persist_checkpoint(
@@ -400,13 +372,12 @@ pub(crate) fn install_once(
             Err(e) => {
                 report_phase_failure(&name, "install", &e);
                 if cleanup_auto_supported {
-                    let _ = maybe_cleanup(
+                    let _ = runner::run_cleanup(
                         &ast,
                         &mut scope,
                         ctx_before,
                         "auto.install.failure",
                         /* best_effort */ true,
-                        /* require_defined */ false,
                     );
                 }
                 return Err(InstallAttemptError::Phase {
@@ -436,13 +407,12 @@ pub(crate) fn install_once(
             );
             // Allow best-effort failure hygiene.
             if cleanup_auto_supported {
-                let _ = maybe_cleanup(
+                let _ = runner::run_cleanup(
                     &ast,
                     &mut scope,
                     ctx_map.clone(),
                     "auto.install.failure",
                     /* best_effort */ true,
-                    /* require_defined */ false,
                 );
             }
 
