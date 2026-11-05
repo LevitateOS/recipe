@@ -306,6 +306,7 @@ fn managed_declared_source_tree_preserves_empty_directories_and_confined_links()
     let source = dir.path().join("source");
     std::fs::create_dir_all(source.join("nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/")).unwrap();
     std::fs::write(source.join("nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/value"), "declared input").unwrap();
+    std::fs::write(source.join("C++ résumé.txt"), "named bytes").unwrap();
     write_recipe(
         &recipes,
         "check",
@@ -315,6 +316,8 @@ let ctx = #{name: "source-input"};
 fn is_installed(ctx) {
     if !is_dir("/inputs/source/empty") { throw "empty input directory missing"; }
     ctx.value = read_file("/inputs/source/chain");
+    if read_file("/inputs/source/C++ résumé.txt") != "named bytes" { throw "source name changed"; }
+    if read_file("/inputs/config.toml") != "named bytes" { throw "input collided with coordinator metadata"; }
     let denied = false;
     try { write_file("/inputs/source/nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/value", "changed"); } catch (error) { denied = true; }
     if !denied { throw "input accepted mutation"; }
@@ -327,7 +330,12 @@ fn is_installed(ctx) {
     std::os::unix::fs::symlink("alias", source.join("chain")).unwrap();
     let selection = format!("source={}", source.display());
     let output = managed_command(&recipes, "isinstalled")
-        .args(["--input", &selection])
+        .args([
+            "--input",
+            &selection,
+            "--input",
+            &format!("config.toml={}", source.join("C++ résumé.txt").display()),
+        ])
         .output()
         .unwrap();
     assert_success(&output);

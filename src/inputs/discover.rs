@@ -47,7 +47,7 @@ pub enum InputKind {
 #[derive(Debug, Clone)]
 pub struct StagedInput {
     pub kind: InputKind,
-    /// Relative domain name under `/inputs`; each component uses `[A-Za-z0-9._-]`.
+    /// Relative UTF-8 domain name under `/inputs`, without traversal or control bytes.
     pub name: String,
     /// Host file this was staged from (never crosses into the domain).
     pub host_path: PathBuf,
@@ -490,7 +490,8 @@ fn reject_secret_bearing_host(host: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// G10 input-name rules mirrored: charset, length, reserved names.
+/// Domain-path bounds, traversal and reserved names. Source filenames may use
+/// spaces, punctuation and Unicode; they are never interpolated into commands.
 pub(super) fn validate_input_name(name: &str) -> Result<()> {
     if name.is_empty() || name.len() > MAX_INPUT_NAME {
         bail!(
@@ -506,14 +507,8 @@ pub(super) fn validate_input_name(name: &str) -> Result<()> {
     {
         bail!("input preparation failure: input name {name:?} is reserved");
     }
-    if !name
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/'))
-    {
-        bail!(
-            "input preparation failure: input name {name:?} has unexpected characters \
-             (want `[A-Za-z0-9._-]`, so the NAME is a safe tar member and domain path)"
-        );
+    if name.chars().any(char::is_control) {
+        bail!("input preparation failure: input name {name:?} contains control characters");
     }
     Ok(())
 }
