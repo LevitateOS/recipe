@@ -1234,4 +1234,17 @@ Special cases: **168** at audit start.
   - `llm::complete(prompt, cwd, profile)` is the only entry point: it hides provider dispatch and codex's last-message-file lifetime. Provider internals are private (E46/E47/E44). The fence-stripper copy went with `helpers/llm.rs` in X11 (E45), and the runner's autofix-specific vocabulary went with the X12 rewrite (E70).
   - Config requires only the selected provider's block (E61). Limits below their minimum are rejected instead of silently clamped (E62).
   - Still open in X14: the provider trait with a per-provider no-tools policy (E49), generic config merge (E59, E60, J25), XDG order (E64), the `recipe/llm.toml` string copies (E65), the cwd fallback (E63), autofix's single patch validator and prompt rules (E78–E86), generic extra context (E87), `git apply`/cwd docs (E90, E91), `build_prompt` parameters (E92), module naming (E93), `AutoFixConfig` placement (H15), E25, E94–E96, J12, J17, J18, J23, J24.
+- [~] **X5** Ginux adapter (first part). Commit: `git log --grep "X5:"`.
+  - `DomainConfig::for_invocation` takes the network policy as a required argument; the `NetworkPolicy::default()` plus chained `with_network` trap is gone (B30).
+  - `inputs` owns the staged config's file name (`PreparedInvocation::config_path()`), and launch no longer re-derives it (A16).
+  - A non-UTF-8 `GINUX_ROOT` is an error instead of silently selecting the default pin (J45).
+  - The result-record `signal` rejects negative values instead of casting (A57).
+  - `init` validation against the wrong bound is moot: the init is the `domain` constant (B36).
+  - Still open in X5:
+    - A `ginux` module owning the result-record and snapshot-control wire formats (A18, A19).
+    - Two-meaning restore-file handling (A47/J34/B46/B54–B56).
+    - The fd-inheritance registry (A48).
+    - Resolving `GINUX_*`/`RECIPE_WORKER_BIN` once in a setup value (B19–B24).
+    - The ginux-domain limit copies (B11, B12, B14, B15, B17).
+    - Single-held network policy (B31), its field access (B33), the leak re-parse (B37/B38), getent polling (B39), and the exporter contract (J58, A67, A68).
 

@@ -36,6 +36,9 @@ mod root;
 pub(crate) use root::{prepare_root, seed_target};
 
 pub(crate) use config::DomainConfig;
+
+/// Name of the staged domain config inside the staging directory.
+const CONFIG_FILE: &str = "config.toml";
 pub(crate) use discover::{ExtraInput, InputKind, StagedInput, discover_inputs};
 pub(crate) use env::{allowlisted_env, invocation_id};
 
@@ -66,6 +69,11 @@ impl PreparedInvocation {
     pub(crate) fn lease_fd(&self) -> std::os::fd::RawFd {
         self.staging.lease_fd()
     }
+    /// The staged domain config the launcher reads.
+    pub(crate) fn config_path(&self) -> PathBuf {
+        self.staging.path().join(CONFIG_FILE)
+    }
+
     /// Fresh per-invocation staging directory holding the input files and `config.toml`.
     pub fn staging_dir(&self) -> &Path {
         self.staging.path()
@@ -92,8 +100,7 @@ pub fn prepare_invocation(
     let env = allowlisted_env(&invocation_id)?;
 
     let network = network::NetworkPolicy::resolve(options)?;
-    let config = DomainConfig::for_invocation(&invocation_id, &env, options)?
-        .with_network(network.clone());
+    let config = DomainConfig::for_invocation(&invocation_id, &env, options, network.clone())?;
     let config_text = config.render()?;
 
     let staging = crate::temporary::TemporaryDirectory::new()
@@ -118,7 +125,7 @@ pub fn prepare_invocation(
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(input.mode))?;
     }
-    std::fs::write(staging.path().join("config.toml"), &config_text)?;
+    std::fs::write(staging.path().join(CONFIG_FILE), &config_text)?;
 
     reject_host_leak(&config_text, &env, staging.path(), &discovered.host_dirs)?;
 

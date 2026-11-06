@@ -168,7 +168,7 @@ fn run_domain_inner(
     let run_dir = crate::temporary::TemporaryDirectory::new().context(crate::failure::Category::Startup.error("cannot create ginux run directory (refusing host fallback)"))?;
     let result_path = run_dir.path().join("result.json");
     let export_path = run_dir.path().join("export.tar");
-    let config_path = prepared.staging_dir().join("config.toml");
+    let config_path = prepared.config_path();
     if !config_path.is_file() {
         bail!(crate::failure::Category::Startup.error(format!("invocation {invocation} has no staged config.toml \
              (refusing host fallback)"
@@ -985,7 +985,14 @@ fn read_result_record(result_path: &Path, invocation: &str) -> Result<ResultReco
     Ok(ResultRecord {
         outcome: outcome.to_string(),
         code: field("code")?,
-        signal: field("signal")?.map(|n| n as u64),
+        signal: field("signal")?
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| {
+                crate::failure::Category::Protocol.error(format!(
+                    "invocation {invocation} result file field \"signal\" is negative (refusing host fallback)"
+                ))
+            })?,
     })
 }
 

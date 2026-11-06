@@ -51,6 +51,7 @@ impl DomainConfig {
         invocation_id: &str,
         env: &[(String, String)],
         options: &crate::ExecutionOptions,
+        network: super::network::NetworkPolicy,
     ) -> Result<Self> {
         validate_id(invocation_id)?;
         let root = root_reference()?;
@@ -85,13 +86,8 @@ impl DomainConfig {
             memory_mib: options.memory_mib,
             storage_max_objects: options.storage_max_objects,
             storage_max_bytes: options.storage_max_bytes,
-            network: super::network::NetworkPolicy::default(),
+            network,
         })
-    }
-
-    pub(crate) fn with_network(mut self, network: super::network::NetworkPolicy) -> Self {
-        self.network = network;
-        self
     }
 
     pub(crate) fn root_reference(&self) -> &str {
@@ -157,7 +153,13 @@ impl DomainConfig {
 /// Mirrors the domain parser's reference rule (no leading `/`, no `..`,
 /// charset `[A-Za-z0-9_.:/@-]`), plus the §2 ≤ 128 B bound.
 fn root_reference() -> Result<String> {
-    let root = std::env::var("GINUX_ROOT").unwrap_or_else(|_| DEFAULT_ROOT_REF.to_string());
+    let root = match std::env::var("GINUX_ROOT") {
+        Ok(root) => root,
+        Err(std::env::VarError::NotPresent) => DEFAULT_ROOT_REF.to_string(),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            bail!("input preparation failure: GINUX_ROOT is not valid UTF-8")
+        }
+    };
     if root.is_empty() || root.len() > MAX_PATH {
         bail!(
             "input preparation failure: domain root {root:?} has {} B, want 1..={MAX_PATH} B (§2)",
