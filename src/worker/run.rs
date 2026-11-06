@@ -248,8 +248,9 @@ fn run_operation(
     ctx_json(&final_ctx).map_err(|err| engine_failure(err.into()))
 }
 
-/// Resolve relative to the importing module, then the prepared recipe root.
-/// Pass an absolute path to Rhai so nested modules retain their source directory.
+/// Resolve modules by [`crate::recipes::find_related`]: beside the importing
+/// module, then the prepared recipe root. Rhai gets an absolute path so nested
+/// modules keep their source directory.
 struct PreparedModules {
     root: PathBuf,
     files: rhai::module_resolvers::FileModuleResolver,
@@ -257,19 +258,11 @@ struct PreparedModules {
 
 impl PreparedModules {
     fn path(&self, source: Option<&str>, path: &str) -> PathBuf {
-        let reference = Path::new(path).with_extension("rhai");
-        if let Some(parent) = source.and_then(|name| Path::new(name).parent()) {
-            let parent = if parent.is_absolute() {
-                parent.to_path_buf()
-            } else {
-                self.root.join(parent)
-            };
-            let candidate = parent.join(&reference);
-            if candidate.is_file() {
-                return candidate;
-            }
-        }
-        self.root.join(reference)
+        let reference = crate::recipes::module_file(path);
+        source
+            .map(|source| self.root.join(source))
+            .and_then(|referrer| crate::recipes::find_related(&reference, &referrer, Some(&self.root)))
+            .unwrap_or_else(|| self.root.join(reference))
     }
 }
 

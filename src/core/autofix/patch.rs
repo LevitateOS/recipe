@@ -267,6 +267,7 @@ pub(crate) fn run_and_apply(
     let extends = crate::recipes::parse_extends(&child_source);
     let base_path = extends
         .as_deref()
+        .filter(|base_rel| crate::recipes::check_related_target(base_rel).is_ok())
         .and_then(|base_rel| crate::recipes::find_related(base_rel, recipe_path, search_path));
     let base_source = match &base_path {
         Some(p) => Some(prompt::read_file(p)?),

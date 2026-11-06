@@ -355,9 +355,7 @@ impl<'a> Collector<'a> {
         }
         for (target, module) in references {
             let target = if module {
-                let mut path = PathBuf::from(&target);
-                path.set_extension("rhai");
-                path.to_string_lossy().into_owned()
+                crate::recipes::module_file(&target)
             } else {
                 target
             };

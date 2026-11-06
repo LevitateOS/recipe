@@ -62,6 +62,11 @@ pub fn find_related(target: &str, referrer: &Path, search_path: Option<&Path>) -
         .find(|candidate| candidate.is_file())
 }
 
+/// The file an `import "target"` names: `target.rhai`.
+pub fn module_file(target: &str) -> String {
+    Path::new(target).with_extension("rhai").to_string_lossy().into_owned()
+}
+
 /// The recipe file a `deps`/`build_deps` entry names: `<name>.rhai`, where
 /// `name` is a plain relative name.
 pub fn dependency_file(name: &str) -> Result<String, String> {
