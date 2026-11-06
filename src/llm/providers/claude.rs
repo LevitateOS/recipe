@@ -27,12 +27,12 @@ pub(crate) fn build(
     }
 
     // Ensure stdin is interpreted as text prompt when used with --print.
-    if !cfg.claude.args.iter().any(|a| a == "--input-format") {
+    if !has_flag(&cfg.claude.args, "--input-format") {
         cmd.args(["--input-format", "text"]);
     }
 
     // Default output format to plain text unless user configured otherwise.
-    if !cfg.claude.args.iter().any(|a| a == "--output-format") {
+    if !has_flag(&cfg.claude.args, "--output-format") {
         cmd.args(["--output-format", "text"]);
     }
 

@@ -35,7 +35,7 @@ pub(crate) use config::DomainConfig;
 
 /// Name of the staged domain config inside the staging directory.
 const CONFIG_FILE: &str = "config.toml";
-pub(crate) use discover::{ExtraInput, InputKind, StagedInput, discover_inputs};
+pub(crate) use discover::{ExtraInput, InputKind, StagedInput, discover_inputs, static_references};
 pub(crate) use env::{allowlisted_env, invocation_id};
 
 use std::path::{Path, PathBuf};

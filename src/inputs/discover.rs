@@ -559,7 +559,7 @@ pub fn hash_file(host: &Path, expected: u64) -> Result<[u8; 32]> {
 
 /// Compile only: no module loading, top-level evaluation or native helpers on
 /// the coordinator. Dynamic imports/dependency declarations need explicit inputs.
-fn static_references(source: &str) -> Result<Vec<(String, bool)>> {
+pub(crate) fn static_references(source: &str) -> Result<Vec<(String, bool)>> {
     use rhai::{ASTNode, Expr, OptimizationLevel, Stmt};
     let mut engine = rhai::Engine::new();
     engine.set_optimization_level(OptimizationLevel::None);

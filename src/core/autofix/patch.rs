@@ -279,19 +279,21 @@ pub(crate) fn run_and_apply(
         comment_prompt = prompt::extract_autofix_prompt_block(bs);
     }
 
-    // Kernel-specific context: if we can find linux-deps, include it too.
+    // Context: the recipes this one declares as `deps`/`build_deps`, found by
+    // the engine's rule. Input preparation already rejected dynamic declarations.
     let mut extra_files: Vec<(PathBuf, String)> = Vec::new();
-    if let Some(sp) = search_path {
-        let linux_deps = sp.join("linux-deps.rhai");
-        if linux_deps.is_file() {
-            let combined = format!(
-                "{}\n{}",
-                child_source,
-                base_source.as_deref().unwrap_or_default()
-            );
-            if combined.contains("linux-deps") {
-                let content = prompt::read_file(&linux_deps)?;
-                extra_files.push((linux_deps, content));
+    for source in std::iter::once(child_source.as_str()).chain(base_source.as_deref()) {
+        let references = crate::inputs::static_references(source).unwrap_or_default();
+        for (file, module) in references {
+            let Some(path) = (!module)
+                .then(|| crate::recipes::find_related(&file, recipe_path, search_path))
+                .flatten()
+            else {
+                continue;
+            };
+            if !extra_files.iter().any(|(known, _)| *known == path) {
+                let content = prompt::read_file(&path)?;
+                extra_files.push((path, content));
             }
         }
     }
