@@ -185,6 +185,8 @@ impl Run {
     }
 
     /// Kill the child (and its group, if any) when it outlives `deadline`.
+    /// Deadline runs poll and also stop on cancellation; they are for the
+    /// coordinator, because the Ginux domain does not emulate sleeping.
     pub(crate) fn deadline(mut self, deadline: Duration) -> Self {
         self.deadline = Some(deadline);
         self
@@ -280,33 +282,42 @@ impl Run {
         };
 
         let mut problem = None;
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Ok(None) => {}
+        // Without a deadline, block in wait(): the Ginux domain does not
+        // emulate sleeping, so only deadline-bound (coordinator) runs poll.
+        let status = match self.deadline {
+            None => match child.wait() {
+                Ok(status) => Some(status),
                 Err(error) => {
                     problem = Some(format!("command failed to run: {label}: {error}"));
+                    None
+                }
+            },
+            Some(deadline) => loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break Some(status),
+                    Ok(None) => {}
+                    Err(error) => {
+                        problem = Some(format!("command failed to run: {label}: {error}"));
+                        break None;
+                    }
+                }
+                if over_limit.load(std::sync::atomic::Ordering::Relaxed) {
+                    problem = Some(format!("command output exceeded its byte limit: {label}"));
                     break None;
                 }
-            }
-            if over_limit.load(std::sync::atomic::Ordering::Relaxed) {
-                problem = Some(format!("command output exceeded its byte limit: {label}"));
-                break None;
-            }
-            if crate::cancellation::signal() != 0 {
-                problem = Some(format!("command cancelled: {label}"));
-                break None;
-            }
-            if let Some(deadline) = self.deadline
-                && started.elapsed() > deadline
-            {
-                problem = Some(format!(
-                    "command timed out after {}s: {label}",
-                    deadline.as_secs()
-                ));
-                break None;
-            }
-            std::thread::sleep(Duration::from_millis(25));
+                if crate::cancellation::signal() != 0 {
+                    problem = Some(format!("command cancelled: {label}"));
+                    break None;
+                }
+                if started.elapsed() > deadline {
+                    problem = Some(format!(
+                        "command timed out after {}s: {label}",
+                        deadline.as_secs()
+                    ));
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            },
         };
         if status.is_none() {
             let _ = child.kill();
@@ -349,6 +360,9 @@ impl Run {
                     problem.get_or_insert(format!("command input writer panicked: {label}"));
                 }
             }
+        }
+        if problem.is_none() && over_limit.load(std::sync::atomic::Ordering::Relaxed) {
+            problem = Some(format!("command output exceeded its byte limit: {label}"));
         }
         if let Some(problem) = problem {
             return Err(Error::Failed(problem));
