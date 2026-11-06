@@ -42,7 +42,13 @@ pub fn append_line_if_missing(path: &str, line: &str) -> Result<bool, Box<EvalAl
         return Err("append_line_if_missing requires a single line without newline".into());
     }
 
-    let existing = read_file_or_empty(path);
+    // Only a missing file counts as empty; an unreadable one must not get a
+    // duplicate line.
+    let existing = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(format!("read failed: {error}").into()),
+    };
     if existing.lines().any(|candidate| candidate == line) {
         return Ok(false);
     }

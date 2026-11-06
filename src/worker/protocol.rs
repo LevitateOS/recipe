@@ -155,6 +155,17 @@ impl Operation {
         }
     }
 
+    /// The readiness check a check operation runs.
+    pub fn check(self) -> Option<&'static str> {
+        use crate::lifecycle::Phase;
+        match self {
+            Self::IsInstalled => Some(Phase::Install.check()),
+            Self::IsBuilt => Some(Phase::Build.check()),
+            Self::IsAcquired => Some(Phase::Acquire.check()),
+            Self::Install | Self::Remove | Self::Cleanup => None,
+        }
+    }
+
     /// Only install runs phases, so only install accepts force options.
     pub fn accepts_force(self) -> bool {
         self == Self::Install

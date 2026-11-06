@@ -21,13 +21,14 @@ pub(crate) fn install(
     engine: &Engine,
     exec: &mut ExecutionContext<'_>,
     load: &Load<'_>,
+    base: Option<&Path>,
     names: &[String],
 ) -> Result<Option<crate::process::EnvironmentGuard>> {
     if names.is_empty() {
         return Ok(None);
     }
     for name in names {
-        let recipe = locate(name, exec.current_recipe(), load.search_path)?;
+        let recipe = locate(name, exec.current_recipe(), base, load.search_path)?;
         let build_dir = work_dir(exec.work_root(), &recipe);
         std::fs::create_dir_all(&build_dir)
             .with_context(|| format!("creating dependency work directory for '{name}'"))?;
@@ -51,11 +52,21 @@ pub(crate) fn install(
     Ok(Some(tools_environment()?))
 }
 
-/// The dependency recipe file, by the same rule as bases and modules.
-fn locate(name: &str, parent: Option<&Path>, search_path: Option<&Path>) -> Result<PathBuf> {
+/// The dependency recipe file, by the same rule as bases and modules: beside
+/// the recipe, beside its base (whose declarations it inherits, and beside
+/// which discovery stages them), then in the search path.
+fn locate(
+    name: &str,
+    parent: Option<&Path>,
+    base: Option<&Path>,
+    search_path: Option<&Path>,
+) -> Result<PathBuf> {
     let file = crate::recipes::dependency_file(name).map_err(anyhow::Error::msg)?;
     let found = parent
-        .and_then(|parent| crate::recipes::find_related(&file, parent, search_path))
+        .into_iter()
+        .chain(base)
+        .find_map(|referrer| crate::recipes::find_related(&file, referrer, None))
+        .or_else(|| parent.and_then(|parent| crate::recipes::find_related(&file, parent, search_path)))
         .ok_or_else(|| {
             anyhow!("Dependency recipe '{file}' not found (parent: {parent:?}, search_path: {search_path:?})")
         })?;

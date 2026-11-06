@@ -9,7 +9,7 @@ Goal: fix the failing `recipe install` by editing code/config files as needed.
 Hard constraints:
 - Output MUST be a single unified diff suitable for `git apply` (no prose, no markdown, no code fences).
 - Do NOT change or weaken lifecycle checks:
-  - Do NOT modify `fn is_installed`, `fn is_built`, or `fn is_acquired`.
+  - Do NOT modify the lifecycle check functions: {CHECKS}.
 - Do NOT "paper over" failures:
   - Do NOT add `|| true` or other patterns that ignore errors from critical commands.
 - Assume you cannot run commands or inspect the filesystem: all relevant context is included below.
@@ -144,7 +144,8 @@ pub(super) fn build_prompt(
     extra_prompt: Option<&str>,
 ) -> String {
     let mut p = String::new();
-    p.push_str(AUTOFIX_PROMPT);
+    let checks = crate::lifecycle::CHECKS.map(|check| format!("`fn {check}`")).join(", ");
+    p.push_str(&AUTOFIX_PROMPT.replace("{CHECKS}", &checks));
 
     p.push_str("\nWORKING DIRECTORY:\n");
     p.push_str(&cwd.display().to_string());

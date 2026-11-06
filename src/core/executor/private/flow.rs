@@ -44,7 +44,7 @@ pub(crate) fn install(
         describe_dependencies("Runtime dependencies", "deps", &deps);
         describe_dependencies("Build-time dependencies", "build_deps", &build_deps);
         // `deps` are needed by every phase; their environment lasts until install ends.
-        let _deps_environment = super::dependencies::install(engine, exec, load, &deps)?;
+        let _deps_environment = super::dependencies::install(engine, exec, load, recipe.base_path.as_deref(), &deps)?;
 
         output::action(&format!("Installing {name}"));
         output::hook_event(&name, "install", HookStatus::Requested, "hook execution queued");
@@ -55,7 +55,7 @@ pub(crate) fn install(
                 if acquires && !still_needs_build(recipe, exec, &mut ctx)? {
                     continue;
                 }
-                super::dependencies::install(engine, exec, load, &build_deps)?
+                super::dependencies::install(engine, exec, load, recipe.base_path.as_deref(), &build_deps)?
             } else {
                 None
             };

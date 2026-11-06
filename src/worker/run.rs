@@ -241,7 +241,8 @@ fn run_operation(
             None => return Err(request_failure("cleanup request without a reason".into())),
         },
         Operation::IsInstalled | Operation::IsBuilt | Operation::IsAcquired => {
-            engine_ops::check(&engine, &mut exec, recipe, &load, req.operation.as_str())
+            let check = req.operation.check().unwrap_or_default();
+            engine_ops::check(&engine, &mut exec, recipe, &load, check)
         }
     }
     .map_err(engine_failure)?;
