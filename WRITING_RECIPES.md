@@ -62,7 +62,7 @@ setup on a later invocation.
 | Field | Contract |
 | --- | --- |
 | `runtime.paths.recipe_dir` | Staged directory of the selected recipe. |
-| `runtime.paths.base_recipe_dir` | Staged base directory when extending a recipe. |
+| `runtime.paths.base_recipe_dir` | Staged base directory when extending a recipe; empty otherwise. |
 | `runtime.paths.inputs` | `/inputs`, containing explicitly imported inputs. |
 | `runtime.paths.build` | `/work/build`, owned build/acquisition work. |
 | `runtime.paths.tools` | `/work/tools`, shared dependency products. |
@@ -70,6 +70,8 @@ setup on a later invocation.
 | `runtime.paths.output` | `/out`, selectable product files/directories. |
 | `runtime.paths.target` | `/out`, the owned installed-target view. |
 | `runtime.target.os`, `.arch` | Explicit supported execution target. |
+| `runtime.host.os`, `.arch` | The worker's own platform. |
+| `runtime.operation` | The running operation (`install`, `remove`, `cleanup`, `is_installed`, `is_built`, `is_acquired`). |
 | `runtime.options.jobs` | Requested job count. |
 | `runtime.options.force_acquire`, `.force_build`, `.force_install` | Current force selection for the main recipe. |
 | `runtime.options.persist_state` | Whether recovery is enabled. |
@@ -231,8 +233,9 @@ Do not depend on host build-directory conventions or per-dependency publication.
 
 A child can start with `//! extends: base.rhai`. The loader compiles/merges the
 base first; child functions of the same name/arity override it. Setup statements
-run base-first. Literal imports preserve module paths. Cycles and dynamic
-imports/dependency declarations fail preparation. Pure facts modules need no
+run base-first. Only one level is supported: a base that itself extends fails.
+Literal imports preserve module paths. Cycles and dynamic imports/dependency
+declarations fail preparation. Pure facts modules need no
 executable lifecycle.
 
 ## Cleanup and failure

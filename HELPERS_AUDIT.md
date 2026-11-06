@@ -51,8 +51,8 @@ check unless the recipe explicitly handles them. Phase hooks return context.
 | `fetch_sha256` | ``helpers/acquire/verify.rs`` | `fetch_sha256(url, filename) -> String` | parse checksum file |
 | `git_checkout` | `helpers/acquire/git.rs` | `git_checkout(url, exact_dest, full_commit) -> String` | Exact destination and full 40/64-hex commit; validates origin and checkout. |
 | `github_download_release` | `helpers/acquire/http/api.rs` | `github_download_release(repo, pattern, dest_dir, sha256) -> String` | Selects matching release asset into dest_dir/asset_name; required digest and staged verified download. |
-| `github_latest_release` | ``helpers/acquire/http.rs`` | `github_latest_release(repo) -> String` | strips common prefixes |
-| `github_latest_tag` | ``helpers/acquire/http.rs`` | `github_latest_tag(repo) -> String` | strips common prefixes |
+| `github_latest_release` | ``helpers/acquire/http.rs`` | `github_latest_release(repo) -> String` | strips a leading `v` |
+| `github_latest_tag` | ``helpers/acquire/http.rs`` | `github_latest_tag(repo) -> String` | strips a leading `v` |
 | `glob_exists` | ``helpers/install/filesystem.rs`` | `glob_exists(pattern) -> bool` | true if any match |
 | `glob_list` | ``helpers/install/io.rs`` | `glob_list(pattern) -> Array` | returns string paths |
 | `http_get` | `helpers/acquire/http/api.rs` | `http_get(url) -> String` | Bounded metadata text; requires invocation network permission. |
@@ -64,7 +64,7 @@ check unless the recipe explicitly handles them. Phase hooks return context.
 | `llm_find_latest_version` | `helpers/llm.rs` | `llm_find_latest_version(url, project) -> String` | Unavailable inside the worker. |
 | `ln` | ``helpers/install/filesystem.rs`` | `ln(target, link) -> ()` | symlink (unix) |
 | `ln_force` | ``helpers/install/filesystem.rs`` | `ln_force(target, link) -> ()` | replace existing link/path |
-| `log` | ``helpers/util/log.rs`` | `log(msg) -> ()` | stderr formatting via `core/output.rs` |
+| `log` | ``helpers/util/log.rs`` | `log(msg) -> ()` | diagnostic stream via `src/diagnostics.rs` |
 | `mkdir` | ``helpers/install/filesystem.rs`` | `mkdir(path) -> ()` | side-effecting |
 | `mv` | ``helpers/install/filesystem.rs`` | `mv(src, dst) -> ()` | rename |
 | `needs_work` | `core readiness` | `needs_work(ctx, reason) -> Map` | Check requests work with a nonempty reason. |

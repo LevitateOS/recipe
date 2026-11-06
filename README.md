@@ -37,7 +37,8 @@ export GINUX_ROOT=oci:compiler@sha256:IMAGE_SHA256_FROM_PROVENANCE
 export RECIPE_WORKER_BIN=/absolute/path/to/recipe
 ```
 
-`GINUX_ROOTFS` must match the digest in `GINUX_ROOT`. If omitted, the image tar is
+`GINUX_ROOTFS` must match the digest in `GINUX_ROOT`. Without `GINUX_ROOT`, the
+pinned bare Rocky base (no compiler) is selected. If `GINUX_ROOTFS` is omitted, the image tar is
 looked up at `$XDG_CACHE_HOME/recipe/images/<digest>.tar`. The worker is staged
 separately; changing Recipe does not require rebuilding an unchanged image.
 The current native launcher requires Linux x86_64 and privileges for its chroot
@@ -223,12 +224,16 @@ default_provider = "codex"
 
 [providers.codex]
 bin = "codex"
+
+# Both provider blocks are required, even when only one is used.
+[providers.claude]
+bin = "claude"
 ```
 
 Use the chosen provider's installed CLI/configuration; there is no implicit
 provider fallback. A named profile can override provider settings.
 
-Use `--autofix-attempts` (1–8), `--autofix-cwd`, `--autofix-prompt-file` and repeated
+Use `--autofix-attempts` (1–8, default 2), `--autofix-cwd`, `--autofix-prompt-file` and repeated
 `--autofix-allow-path` to bound repair. Patches cannot alter readiness checks,
 change disallowed paths or hide command failures. Changed recipe bytes create a
 new invocation identity; old state is not restored across a patch. Recipe-side

@@ -1188,4 +1188,17 @@ Special cases: **168** at audit start.
   - A85 moved to leave-as-is: the help text was correct.
   - Still open in X4 (CLI-visible): flatten the options into one clap `Args` (B65), remove the fixed `--target-*` flags (A83), make `--force-*` install-only (B28), scope `--llm-profile` (B69), stop global flags leaking into list/info/hash (B70), stop creating the recipes dir everywhere (B71), `RECIPE_PATH` via clap env (B79), split `ExecutionOptions` by concern (H16), plus B16, B34, B57, B66, B67, B68, J47.
   - Checks: build clean, CLI snapshots byte-identical. Privileged suite: pending.
+- [~] **X15** Docs with single sources (first part). Commit: `git log --grep "X15:"`.
+  - Deleted the obsolete `RECIPE_DEPENDENCY_MANAGEMENT.md`, `SYSTEM_VS_USER_RECIPES.md`, `OS_UPGRADES_BRAINDUMP.md` and `APOLOGY.md` (G46–G49), plus `scripts/podman-test.sh`, which ran the managed e2e suite without Ginux (F57/G52).
+  - `CLAUDE.md` is rewritten as a short pointer document with the current design rules and source map (A92, D8, G1–G8).
+  - `CHANGELOG.md`: the stale 0.1.0 feature list is replaced by a pointer (G50), and `[Unreleased]` records this branch's behavior changes and fixes (G51).
+  - `Cargo.toml`: the repository/homepage URL is fixed (G34), `recipe-image` is declared as a bin (G37/B89), and the rhai pin comment lists every `internals` user (G43). `build-apk.sh` gets the URL fix and stops printing a hard-coded arch (G53).
+  - `README.md`/`WRITING_RECIPES.md`:
+    - the runtime map gains `runtime.host`/`runtime.operation`, and `base_recipe_dir` is noted as empty when unused (G9);
+    - extends supports one level (G11);
+    - the `GINUX_ROOT` default is documented (G25);
+    - the llm.toml example has both provider blocks (G27);
+    - the autofix-attempts default is documented (G21).
+  - `HELPERS_AUDIT.md`/`recipe-helpers.7`: the `log` owner is corrected (G16), and `github_latest_*` "strips a leading `v`" (D5). The owner paths `helpers/acquire/http.rs` and `helpers/build/extract.rs` are accurate again after X1 (D4).
+  - Still open in X15: generate the helper tables from the registry (X11), the remaining restated-contract copies (G12–G14, G19–G24, G26, G28–G33, G38–G42), D56, B80, B81, B91, E97, H11.
 

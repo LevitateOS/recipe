@@ -120,10 +120,10 @@ Exact destination and full 40/64-hex commit; validates origin and checkout.
 Selects matching release asset into dest_dir/asset_name; required digest and staged verified download.
 .TP
 \fBgithub_latest_release(repo) -> String\fR
-strips common prefixes
+strips a leading `v`
 .TP
 \fBgithub_latest_tag(repo) -> String\fR
-strips common prefixes
+strips a leading `v`
 .TP
 \fBglob_exists(pattern) -> bool\fR
 true if any match
@@ -159,7 +159,7 @@ symlink (unix)
 replace existing link/path
 .TP
 \fBlog(msg) -> ()\fR
-stderr formatting via `core/output.rs`
+diagnostic stream via `src/diagnostics.rs`
 .TP
 \fBmkdir(path) -> ()\fR
 side-effecting

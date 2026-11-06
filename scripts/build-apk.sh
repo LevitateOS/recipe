@@ -49,8 +49,8 @@ podman run --rm \
       --info arch:\$arch \
       --info license:MIT\ OR\ Apache-2.0 \
       --info origin:levitate-recipe \
-      --info url:https://github.com/levitate-os/levitate-recipe \
+      --info url:https://github.com/LevitateOS/recipe \
       --output \"\$outdir/levitate-recipe-${version}-r0.\$arch.apk\"
   "
 
-echo "built target/packages/apk/levitate-recipe-${version}-r0.x86_64.apk"
+echo "built target/packages/apk/levitate-recipe-${version}-r0.<arch>.apk"
