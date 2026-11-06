@@ -88,7 +88,7 @@ For the repository's actual offline live-tool producer:
 
 ```sh
 distro-builder artifact prepare-tool-source recfstab .artifacts/recfstab-source
-recipe install distro-builder/recipes/recfstab.rhai \
+recipe install distro/builder/recipes/recfstab.rhai \
   --input source=.artifacts/recfstab-source \
   --build-dir .artifacts/work/recfstab --json-output .artifacts/recfstab.json
 ```

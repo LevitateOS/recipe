@@ -17,7 +17,7 @@ fn preseed_command(recipes: &Path, recipe: &str, action: &str, target: &Path) ->
 /// Small real files replace only the source facts for these integrity cases.
 /// They are never presented as usable ISO/APK products or executed build tools.
 fn prepare_assets(recipes: &Path, recipe: &str) -> (PathBuf, Vec<PathBuf>) {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../distro-builder/recipes");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../distro/builder/recipes");
     std::fs::create_dir_all(recipes.join("sources")).unwrap();
     for distro in ["alpine", "fedora"] {
         std::fs::copy(
@@ -203,7 +203,7 @@ fn cli_rootfs_consumers_reject_changed_explicit_assets() {
     ] {
         let (dir, recipes) = create_test_env();
         let (_target, files) = prepare_assets(&recipes, producer);
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../distro-builder/recipes");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../distro/builder/recipes");
         std::fs::copy(
             source.join(format!("{consumer}.rhai")),
             recipes.join(format!("{consumer}.rhai")),
