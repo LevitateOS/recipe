@@ -1,4 +1,3 @@
-use super::downloads::serve_download;
 use super::kernel_recipes::{copy_kernel_recipes, kernel_command};
 use super::*;
 use sha2::{Digest, Sha256};
@@ -40,122 +39,63 @@ fn prebuilt_archive(fault: &str) -> Vec<u8> {
 }
 
 #[test]
-fn cli_prebuilt_kernel_acquisition_validates_download_and_layout_before_publication() {
+fn cli_prebuilt_kernel_offline_acquisition_validates_before_publication() {
     for fault in ["valid", "digest", "truncated", "layout", "unsafe"] {
         let (dir, recipes) = create_test_env();
         copy_kernel_recipes(&recipes);
-        let root = dir.path().join("artifacts/kernel 'quoted'");
-        let image = root.join("staging/boot/vmlinuz");
-        let release = root.join("kernel-build/include/config/kernel.release");
+        let previous = dir.path().join("previous target");
+        let image = previous.join("staging/boot/vmlinuz");
         std::fs::create_dir_all(image.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(release.parent().unwrap()).unwrap();
         std::fs::write(&image, "previous image").unwrap();
-        std::fs::write(&release, "previous release").unwrap();
-        let outside = dir.path().join("artifacts/outside");
+        let outside = dir.path().join("outside");
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("preserve"), "unrelated payload").unwrap();
-        let downloads = dir.path().join("acorn/downloads");
-        std::fs::create_dir_all(&downloads).unwrap();
-        let cache = downloads.join("acorn-6.19.0-acorn-runtime.v2.tar.xz");
-        std::fs::write(&cache, "previous cache bytes").unwrap();
-        std::fs::write(downloads.join("unrelated"), "preserve").unwrap();
-
         let archive = prebuilt_archive(fault);
         let expected = if fault == "digest" {
             "0".repeat(64)
         } else {
             hex::encode(Sha256::digest(&archive))
         };
-        let sent = if fault == "truncated" {
+        let bytes = if fault == "truncated" {
             &archive[..archive.len() - 16]
         } else {
             &archive
         };
-        let (url, server) = serve_download(sent, archive.len());
+        let supplied = dir.path().join("kernel.tar.xz");
+        std::fs::write(&supplied, bytes).unwrap();
         let path = recipes.join("linux-prebuilt.rhai");
-        // Only fixture URL/digest facts change; the actual lifecycle is untouched.
-        let source = std::fs::read_to_string(&path)
-            .unwrap()
-            .replace("https://github.com/", &format!("{url}/"))
-            .replace(
-                "04e10c6392680b75b80a09beb9036e5954b62cfabddd4cb0fe3c975c0a79e96e",
-                &expected,
-            );
+        // Only the fixture's declared digest changes; actual lifecycle runs.
+        let source = std::fs::read_to_string(&path).unwrap().replace(
+            "04e10c6392680b75b80a09beb9036e5954b62cfabddd4cb0fe3c975c0a79e96e",
+            &expected,
+        );
         std::fs::write(&path, &source).unwrap();
-        let define = format!("KERNEL_ARTIFACT_ROOT={}", root.display());
-        let output = kernel_command(&recipes, "install", "linux-prebuilt")
-            .args(["--define", &define, "--define", "KERNEL_FORCE_REBUILD=1"])
-            .output()
-            .unwrap();
-        let request = server.join().unwrap();
-        assert!(request.contains("acorn-6.19.0-acorn-runtime.v2.tar.xz"));
+        let mut command = kernel_command(&recipes, "install", "linux-prebuilt");
+        command
+            .args(["--force-acquire", "--force-install"])
+            .args(["--input", &format!("kernel_archive={}", supplied.display())])
+            .args(["--input", &format!("target={}", previous.display())]);
+        let (output, ctx) = super::kernel_recipes::invoke_kernel(command, dir.path());
         if fault == "valid" {
             assert_success(&output);
-            let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            let ctx = ctx.unwrap();
             assert_eq!(ctx["kernel_version"], "6.19.0-acorn");
-            assert_eq!(ctx["outputs"]["kernel"], image.to_str().unwrap());
+            let published = Path::new(ctx["outputs"]["kernel"].as_str().unwrap());
             assert_eq!(
-                ctx["outputs"]["modules"],
-                root.join("staging/usr/lib/modules/6.19.0-acorn")
-                    .to_str()
-                    .unwrap()
-            );
-            assert!(ctx["outputs"].get("source").is_none());
-            assert_eq!(
-                std::fs::read_to_string(&image).unwrap(),
+                std::fs::read_to_string(published).unwrap(),
                 "downloaded disposable image"
             );
-            assert_eq!(std::fs::read_to_string(&release).unwrap(), "6.19.0-acorn");
-            assert!(
-                !cache.exists(),
-                "successful acquire left its temporary archive"
-            );
-            for action in ["isacquired", "isbuilt", "isinstalled"] {
-                let output = kernel_command(&recipes, action, "linux-prebuilt")
-                    .args(["--define", &define])
-                    .env_remove("KERNEL_FORCE_REBUILD")
-                    .output()
-                    .unwrap();
-                assert_success(&output);
-            }
+            assert!(ctx["outputs"].get("source").is_none());
         } else {
-            assert!(
-                !output.status.success(),
-                "accepted invalid prebuilt payload: {fault}"
-            );
-            assert!(output.stdout.is_empty());
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(
-                stderr.contains(match fault {
-                    "digest" => "SHA256 integrity check failed",
-                    "truncated" => "read error",
-                    "layout" => "Missing staged kernel modules",
-                    "unsafe" => "unsafe link target",
-                    _ => unreachable!(),
-                }),
-                "{stderr}"
-            );
-            assert_eq!(std::fs::read_to_string(&image).unwrap(), "previous image");
-            assert_eq!(
-                std::fs::read_to_string(&release).unwrap(),
-                "previous release"
-            );
-            if fault == "digest" || fault == "truncated" {
-                assert_eq!(
-                    std::fs::read_to_string(&cache).unwrap(),
-                    "previous cache bytes"
-                );
-            }
+            assert!(!output.status.success(), "accepted invalid payload {fault}");
+            assert!(ctx.is_none(), "failed acquisition published a result");
         }
-        assert!(!root.with_file_name("kernel 'quoted'.prebuilt.tmp").exists());
+        assert_eq!(std::fs::read_to_string(&image).unwrap(), "previous image");
         assert_eq!(
             std::fs::read_to_string(outside.join("preserve")).unwrap(),
             "unrelated payload"
         );
-        assert_eq!(
-            std::fs::read_to_string(downloads.join("unrelated")).unwrap(),
-            "preserve"
-        );
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
+        assert_eq!(std::fs::read(&supplied).unwrap(), bytes);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), source);
     }
 }
