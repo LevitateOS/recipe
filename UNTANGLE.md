@@ -1766,15 +1766,22 @@ Two fresh reviewers, told to report only problems worth fixing (at most 40 each)
 
 ### Resume here
 
-- Every fix has had a first pass except **X6** (the run pipeline). The `[~]` entries above list exactly what is still open in each fix.
-- The next loop should take the biggest open clusters in this order:
-  1. **X10** phase table and recipe roles;
-  2. **X6** run pipeline (teardown errors, cancellation token, publish/commit order, deadlines);
-  3. **X11** per-family registration and generated catalogs;
-  4. **X4** CLI-visible flag cleanup;
-  5. **X5** `ginux` module;
-  6. **X16** test harness;
-  7. **X3** stdout/stdin coupling (also the suspect in the intermittent git test).
-- Verification commands: `bash .untangle/priv-test.sh <dir>` (privileged suite) and `bash .untangle/cli-snapshots.sh <bin> <dir>`, compared with `.untangle/out/baseline-cli/`.
-- Intended snapshot differences so far: only `hash-hello.txt` (the `verify_sha256(path, …)` hint).
-
+- **Special cases.** Of the 168 at audit start:
+  - 93 are gone.
+  - 23 are left as is, each with a reason.
+  - 52 are still open: listed in the `[~]` entries above, minus the 10 loop 2 finished (A35, C46–C49, C54, C55, H27, I23, I25) and the 6 it moved to leave-as-is (C43, C45, C50, C51, C52, I26).
+  - The re-audits (K–N) found further special cases, mostly consequences of known clusters. Loops 2–3 fixed or settled about half of them; the rest are listed under "Still open" in loops 2 and 3.
+- **Biggest open clusters**, in order:
+  1. hook/event vocabulary as data;
+  2. one static recipe analyzer;
+  3. the run pipeline's implicit call order, two child-lifecycle implementations and the global cancellation latch;
+  4. coordinator-only code out of `core/`;
+  5. the X4 CLI flag cleanup;
+  6. the X16 test harness.
+- **Verification commands:**
+  - `bash .untangle/priv-test.sh <dir>` (privileged suite);
+  - `bash .untangle/cli-snapshots.sh <bin> <dir>`, compared with `.untangle/out/baseline-cli/`.
+- **Intended snapshot differences:**
+  - `hash-hello.txt` (`verify_sha256(path, …)`);
+  - `help-install.txt` (the `--autofix-cwd` default is described correctly);
+  - `install-hello-unprivileged.txt` (no "refusing host fallback").
