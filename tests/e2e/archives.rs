@@ -104,6 +104,35 @@ fn cli_tar_extracts_payload_with_contained_symlink() {
 }
 
 #[test]
+fn cli_tar_hardlink_targets_resolve_inside_the_destination() {
+    let (_dir, recipes) = create_test_env();
+    let file = std::fs::File::create(recipes.join("payload.tar")).unwrap();
+    let mut archive = tar::Builder::new(file);
+    let content = b"shared payload\n";
+    let mut header = tar::Header::new_gnu();
+    header.set_size(content.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+    archive
+        .append_data(&mut header, "share/original", &content[..])
+        .unwrap();
+    let mut link = tar::Header::new_gnu();
+    link.set_entry_type(tar::EntryType::Link);
+    link.set_size(0);
+    link.set_mode(0o644);
+    archive
+        .append_link(&mut link, "bin/alias", "share/original")
+        .unwrap();
+    archive.finish().unwrap();
+    write_extraction_recipe(&recipes, "payload.tar");
+
+    let output = extract_command(&recipes, "payload.tar").output().unwrap();
+    let root = extracted_root(&output);
+    assert_eq!(std::fs::read(root.join("bin/alias")).unwrap(), content);
+    assert_eq!(std::fs::read(root.join("share/original")).unwrap(), content);
+}
+
+#[test]
 fn cli_zip_extracts_payload_and_preserves_executable_mode() {
     let (_dir, recipes) = create_test_env();
     write_zip(

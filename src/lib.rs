@@ -30,7 +30,11 @@ mod cancellation;
 mod core;
 mod diagnostics;
 mod domain;
+#[doc(hidden)]
+pub mod fsx;
 mod helpers;
+#[doc(hidden)]
+pub mod image;
 mod inputs;
 mod launch;
 mod llm;

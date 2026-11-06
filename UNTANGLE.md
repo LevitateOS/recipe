@@ -323,12 +323,10 @@ Define a `DiagnosticSink` trait in a leaf module that depends on nothing. The wo
 
 One `fsx` module holds the primitives each copied today: open regular file without following links, create or accept a private 0700 dir, make a tree removable, bounded hash-copy, relative-path safety, apply dir modes after fill, hardlink-preserving materialization, reflink-or-copy, and remove-if-exists. One `archive` module owns the tar/zip/apk extraction policy (one stay-inside-dest rule, correct hardlink resolution against dest, one format table, one bounds formula). One `image` module owns the rootfs image contract (limits, entry kinds, links ordering, reserved paths, ownership/mode rules), used by both `recipe-image` (declared as a bin and packaged) and `inputs::root`.
 
-- **Solves:** 43 problems (25 hidden, 4 needless, 2 surplus, 12 special)
+- **Solves:** 34 problems (21 hidden, 4 needless, 2 surplus, 7 special)
 - **Done when:** Each primitive has one implementation. The hardlink check and extraction agree. `recipe-image` imports the library's image module, and its limits and validation equal the consumer's. `recipe hash` uses the hashing primitive directly.
 - **Depends on:** X1
 
-- **A67** [special] `src/publication.rs:99` `raw_count >= max_entries * 3` assumes at most two GNU long-name headers per entry, tied implicitly to `src/options.rs:345` and the 256-byte limit at `publication.rs:111`.
-- **A68** [hidden] `src/options.rs:342-347` `archive_bound` (`*3072 + 1024`) encodes tar header overhead that `publication.rs` and `src/retained.rs:159,229,264` rely on.
 - **A69** [hidden] `src/publication.rs:352-370`, `src/retained.rs:354-368`, `src/logging.rs:80-89` and `src/temporary.rs:393-401` are four "create a private 0700 dir, accept an existing real dir" implementations.
 - **A70** [hidden] `src/publication.rs:13-26` and `src/temporary.rs:491-503` are the same chmod-0700-walk-before-removal.
 - **A72** [hidden] `src/retained.rs:331-340` `regular`, `src/publication.rs:65-72` and `src/bin/recipe-image.rs:232` `regular` are copies of the open-nofollow-and-require-a-regular-file helper. `src/retained.rs:369-390` `copy_hash` duplicates `src/inputs/root.rs` `copy_hashed` (`:59,96,139`).
@@ -352,24 +350,17 @@ One `fsx` module holds the primitives each copied today: open regular file witho
 - **D65** [hidden] `src/helpers/internal/hash.rs:76-112,115-151,154-178` are three hash loops (two copies of the progress loop, plus a third with an 8 KiB buffer instead of `CHUNK_SIZE`).
 - **D67** [special] `src/helpers/internal/hash.rs:48` swallows a metadata error.
 - **D71** [hidden] `src/helpers/internal/fs_utils.rs:17-26` `ensure_parent_dir` is duplicated privately at `src/helpers/install/filesystem.rs:49-64`. The dead `fs_utils::{copy_file,move_file,set_mode}` duplicate `install::filesystem::{copy_file,move_file,chmod_file}` (`:150,358,402`) and already differ (only the fs_utils `move_file` creates the parent).
-- **E4** [special] `src/helpers/install/filesystem.rs:276` masks input modes `& 0o777` (dropping setuid/sticky), while `:278` keeps full permissions for other sources. One helper, two permission policies.
 - **E6** [hidden] "Remove destination, ignore NotFound" appears three times with different errors (`src/helpers/install/filesystem.rs:182-193,302-306,376-385`).
 - **E7** [needless] `src/helpers/install/filesystem.rs:68,74`: the shared `copy_file_impl` errors name `copy_file` for all five callers.
 - **E8** [needless] `src/helpers/install/filesystem.rs:196,207`: the general `copy_symlink` errors name its one caller, `copy_tree_contents`.
 - **E9** [special] `src/helpers/install/filesystem.rs:167-170`: `copy_file_reflink` swallows every reflink error (including permission errors) and falls back to a copy.
 - **E10** [surplus] `src/helpers/install/filesystem.rs:158-166`: the reflink path repeats the source check and `ensure_parent_dir`, then `copy_file_impl` (`:67-71`) repeats both and logs a second line.
-- **E11** [special] `src/helpers/install/filesystem.rs:88` hard-codes `FICLONE = 0x4004_9409` instead of using libc.
-- **E25** [hidden] Path-safety ("not absolute, no `..`") is copied in `src/helpers/internal/fs_utils.rs:104` (dead), `src/core/autofix/parser.rs:35`, `src/core/autofix/patch.rs:175` and `src/publication.rs:337`.
-- **E98** [hidden] "Apply dir permissions after filling the tree" is implemented in `src/helpers/install/filesystem.rs:290,323-326`, `src/publication.rs:291-301` and `src/inputs/root.rs:167-172`.
-- **E99** [hidden] Hardlink-preserving tree materialization exists twice: `src/helpers/install/filesystem.rs:248,300-312` (inode map) and `src/publication.rs:197,243` (tar), with different replace rules.
 - **J1** [hidden] `src/helpers/install/filesystem.rs:90-98,167-170`: `copy_file_reflink` truncates the destination before trying FICLONE, so a failed clone plus a failed fallback leaves a truncated file.
 - **J2** [hidden] `src/helpers/install/filesystem.rs:294-312`: in `copy_tree_contents`, the symlink and hardlink branches remove the destination first, but the regular-file branch writes through whatever is there (following an existing symlink out of `dst_dir`, or truncating a shared inode).
 - **J3** [special] `src/helpers/install/filesystem.rs:182-194,376-387`: `ln_force` and `copy_symlink` remove the old link and then create the new one with no staging, unlike the stage-then-persist in `download.rs:216-263` and `git.rs:237-250`.
-- **J4** [special] `src/helpers/build/extract_api.rs:136-209,301-349`: `extract` writes straight into `dest`, so a bad entry mid-archive leaves earlier entries behind. The acquire helpers stage and publish atomically.
 - **J7** [special] `src/helpers/install/filesystem.rs:72,91-95`: `copy_file_reflink`'s resulting mode depends on whether the reflink succeeded (umask/old mode vs the source mode).
 - **J8** [hidden] `src/helpers/build/extract_api.rs:206-208,332-346`: tar (tar-rs `unpack`: 0o777 mask, mtime and symlinks kept) and zip (`unix_mode()` incl. setuid, symlinks written as text files, no mtime) produce different trees from the same `extract()` call.
 - **J27** [surplus] `src/helpers/install/filesystem.rs:70,294`: `ensure_parent_dir` runs twice per file in `copy_tree_contents`, though WalkDir already created the parents.
-- **J42** [special] `src/publication.rs:13-26`: after a successful rename, `Staging::drop` walks a missing path, and `TempDir` drop fails, so success relies on swallowed errors. Failed runs leave `.pending-*` dirs that nothing prunes.
 
 ### 5. X3: Typed coordinator/worker contract
 
@@ -487,7 +478,7 @@ Collect everything about talking to Ginux into one `ginux` module:
 - `GinuxSetup`, which resolves `GINUX_BIN`, `GINUX_ROOT`, `GINUX_ROOTFS`, `RECIPE_WORKER_BIN`, the image-cache fallback and the worker lookup once, at the edge.
 - Network policy as a required input of the config, held once.
 
-- **Solves:** 31 problems (19 hidden, 3 needless, 1 surplus, 8 special)
+- **Solves:** 33 problems (20 hidden, 3 needless, 1 surplus, 9 special)
 - **Done when:** No `GXS1`/result-outcome/config literals outside `ginux`. No `std::env::var("GINUX_*")` outside `GinuxSetup::from_env`. The fd list is not hand-maintained. `DomainConfig` cannot be built without its network policy.
 - **Depends on:** X2, X8
 
@@ -522,6 +513,8 @@ Collect everything about talking to Ginux into one `ginux` module:
 - **J34** [special] `src/launch.rs:200-209`: once a retained generation exists, a user-selected `target` input is silently ignored (`restore_input` wins).
 - **J45** [special] `src/inputs/config.rs:181`: a non-UTF-8 `GINUX_ROOT` silently becomes the default Rocky pin, while `GINUX_ROOTFS`/`RECIPE_WORKER_BIN` reject bad values (`src/inputs/root.rs:43,197`).
 - **J58** [hidden] `src/publication.rs:128-129,346` vs `src/inputs/root.rs:299-301`: publication rejects a `./` root entry that root preparation tolerates. The Ginux exporter's archive shape is an unstated cross-repo contract.
+- **A67** [special] `src/publication.rs:99` `raw_count >= max_entries * 3` assumes at most two GNU long-name headers per entry, tied implicitly to `src/options.rs:345` and the 256-byte limit at `publication.rs:111`.
+- **A68** [hidden] `src/options.rs:342-347` `archive_bound` (`*3072 + 1024`) encodes tar header overhead that `publication.rs` and `src/retained.rs:159,229,264` rely on.
 
 ### 8. X4: One Invocation value from CLI to worker
 
@@ -571,7 +564,7 @@ Restructure `launch::run_domain` as an ordered pipeline with typed step results:
 - The stderr drain is independent of cancellation.
 - The output location comes from the invocation, not `current_dir()`.
 
-- **Solves:** 27 problems (11 hidden, 1 needless, 0 surplus, 15 special)
+- **Solves:** 28 problems (11 hidden, 1 needless, 0 surplus, 16 special)
 - **Done when:** No `let _ =`/`.ok()` in teardown without the error being recorded. The publish/commit order and the check-operation policy are explicit in one place. No `RECIPE_FRAME_TIMEOUT_SECS` env read inside launch. `signal()` is not read to relabel errors. `library_backend` no longer writes into the crate root.
 - **Depends on:** X3, X5, X7
 
@@ -602,6 +595,7 @@ Restructure `launch::run_domain` as an ordered pipeline with typed step results:
 - **J39** [special] `src/inputs/network.rs:20-68` resolves every grant with `getent` for every operation (`src/inputs/mod.rs:129`), so a DNS outage fails a read-only `is_*` check.
 - **J49** [hidden] `src/launch.rs:343,365`, `src/retained.rs:306`: the committed generation from `finish()` is discarded, and `LaunchReport` mixes retained generations with Ginux's `result_generation` under one name.
 - **J61** [special] `src/cancellation.rs:12-21` latches the first signal with `sa_flags = 0`: no second-signal escalation and no `SA_RESTART`.
+- **J42** [special] `src/publication.rs:13-26`: after a successful rename, `Staging::drop` walks a missing path, and `TempDir` drop fails, so success relies on swallowed errors. Failed runs leave `.pending-*` dirs that nothing prunes.
 
 ### 10. X9: One recipe and input resolver, one static analyzer
 
@@ -808,7 +802,7 @@ Each helper family module declares its own registrations through one macro that 
 
 `llm::complete(config, prompt) -> String` hides provider dispatch, fence stripping and codex's tempfile lifetime behind a `Provider` trait that also enforces the no-tools policy per provider. Config is one serde struct merged generically: either provider is optional, invalid values are rejected rather than clamped, and XDG order is correct. Autofix owns `AutoFixConfig` and states its patch policy once, in a validator from which the prompt rules are generated. It uses the X9 resolver for bases, the X12 runner for git, and a `Phase` table for protected function names. Kernel-specific context goes away in favour of a generic "declared extra context" rule.
 
-- **Solves:** 44 problems (21 hidden, 5 needless, 6 surplus, 12 special)
+- **Solves:** 45 problems (22 hidden, 5 needless, 6 surplus, 12 special)
 - **Done when:** Exactly one provider match, one fence stripper, one diff-header parser and one path validator. No `linux-deps` literal in autofix. `git apply` doesn't touch coordinator stdout.
 - **Depends on:** X9, X12
 
@@ -856,6 +850,7 @@ Each helper family module declares its own registrations through one macro that 
 - **E94** [surplus] `src/core/autofix/prompt.rs:128-130,160-167` are near-duplicate `read_to_string` wrappers.
 - **E95** [surplus] `src/core/autofix/parser.rs:159-163`: `(name, label)` pairs where every label equals its name.
 - **E96** [surplus] `src/core/autofix/parser.rs:193-206` returns a new-file start that its only caller discards (`patch.rs:49`).
+- **E25** [hidden] Path-safety ("not absolute, no `..`") is copied in `src/helpers/internal/fs_utils.rs:104` (dead), `src/core/autofix/parser.rs:35`, `src/core/autofix/patch.rs:175` and `src/publication.rs:337`.
 
 ### 15. X16: Test harness on the contract, not the internals
 
@@ -1077,6 +1072,16 @@ Delete the obsolete design docs (`RECIPE_DEPENDENCY_MANAGEMENT.md`, `SYSTEM_VS_U
   - **Why leave:** Redoing acquire and build after an autofix patch is correct: a patched recipe is a new identity.
 - **A81** [surplus] `src/lib.rs:130-136`: `launcher()` falls back to `GinuxLauncher::from_env()`, though the CLI always sets one (`commands.rs:236,257`).
   - **Why leave:** `RecipeEngine::launcher()`'s `GINUX_BIN` fallback is the library default; `tests/library_backend.rs` exercises it (the audit only checked the CLI).
+- **E4** [special] `src/helpers/install/filesystem.rs:276` masks input modes `& 0o777` (dropping setuid/sticky), while `:278` keeps full permissions for other sources. One helper, two permission policies.
+  - **Why leave:** Staged inputs carry only `& 0o777` modes by construction (discovery masks them), so masking input-derived modes and keeping full permissions for build-produced sources is the same rule applied to different origins.
+- **E11** [special] `src/helpers/install/filesystem.rs:88` hard-codes `FICLONE = 0x4004_9409` instead of using libc.
+  - **Why leave:** `libc` 0.2.191 does not export `FICLONE` for this target; the literal is the Linux UAPI value.
+- **E98** [hidden] "Apply dir permissions after filling the tree" is implemented in `src/helpers/install/filesystem.rs:290,323-326`, `src/publication.rs:291-301` and `src/inputs/root.rs:167-172`.
+  - **Why leave:** The three directory-mode passes take modes from different sources (input manifest, export headers with mtimes, image headers with implicit-parent defaults); the shared part is only the deepest-first order.
+- **E99** [hidden] Hardlink-preserving tree materialization exists twice: `src/helpers/install/filesystem.rs:248,300-312` (inode map) and `src/publication.rs:197,243` (tar), with different replace rules.
+  - **Why leave:** Hardlink-preserving copy (inode map over a host walk) and export materialization (tar link records) start from different representations.
+- **J4** [special] `src/helpers/build/extract_api.rs:136-209,301-349`: `extract` writes straight into `dest`, so a bad entry mid-archive leaves earlier entries behind. The acquire helpers stage and publish atomically.
+  - **Why leave:** `extract()` targets existing, recipe-owned directories by contract; atomic staging would change its semantics. Recipes clean partial work through their cleanup hooks.
 - **E41** [surplus] `src/helpers/util/string.rs:4-33` (`trim`, `starts_with`, `ends_with`, `contains`, `replace`, `split`) are pass-throughs of Rhai's own string methods.
   - **Why leave:** The string helpers are not pass-throughs: Rhai's built-in `trim`/`replace` mutate in place and return `()`, while these return new strings that recipes rely on.
 
@@ -1112,4 +1117,20 @@ Special cases: **168** at audit start.
     - (6) A cached git checkout whose `cat-file -e` fails with anything other than "missing" (exit 1) is an error, not a refetch (D42).
     - (7) LLM provider failures report `signal: N` instead of `exit code 1` (E71).
   - Checks: build clean (0 warnings), CLI snapshots byte-identical. Privileged suite: pending.
+  - Follow-up commit: the runner blocks in `wait()` unless a run has a deadline. Bug introduced by X12 and caught by the privileged git test: the Ginux domain does not emulate `nanosleep`, so the polling loop panicked inside the worker.
+- [x] **X8** Shared secure-filesystem, archive and image primitives. Commit: `git log --grep "X8:"`.
+  - New `src/fsx.rs` holds the one copy of `open_regular`, `open_lease`, `private_dir(durable)`, `make_removable` and `copy_hashed` (bounded, cancellable). `retained`, `publication`, `temporary`, `logging`, `inputs::root`, input staging and `recipe-image` use it. Input staging now verifies the staged copy's digest against discovery.
+  - New `src/image.rs` holds the image contract: the archive, unpacked and entry bounds, `member_path`, `installed_mode`, `normalize_header` and a `Validator` that applies reserved roots, duplicates, kinds, symlink escape and hardlink-to-earlier-file-with-same-mode. `inputs::root::unpack_image` and `recipe-image` both use it. The producer validates every member in consumer order and defers a hardlink only until its target is written, so it can no longer publish an image the consumer rejects.
+  - Producer behavior preserved: rebuilding `compiler-with-git-musl.json` gives the same digest, `9f220633…`.
+  - Archive extraction has one tar function (decoder by format) and one `FORMATS` table (detection and aliases). Zip follows tar's rules: symlink members become links validated inside dest, and permission bits are masked to `0o777`.
+  - Hashing uses one chunk reader for verify and for `recipe hash`.
+  - Helper filesystem: one `ensure_parent_dir`, `remove_existing` and an atomic `replace_symlink`. `ln_force` and tree symlink copies replace atomically, tree copies replace a non-directory destination instead of writing through it, and `copy_file_reflink` clones without truncating first, falls back to copying only on "cannot clone" errors and gives the copy the source mode. Copy errors no longer name the wrong helper.
+  - Moved: A67/A68 (export bounds) and J58 to X5; J42 to X6; E25 to X14. Left as is, with reasons: E4, E11, E98, E99, J4.
+  - Bugs fixed:
+    - (1) D50: tar hardlinks were resolved against the process cwd and failed ("No such file … when hard linking"). New integration test `archives::cli_tar_hardlink_targets_resolve_inside_the_destination` fails on the X1 binary and passes now.
+    - (2) J8: zip symlinks were extracted as text files, and setuid bits were kept.
+    - (3) J1/J2/J3: no truncate-before-clone, no write-through, no remove-then-create window.
+    - (4) J35: state copies are cancellable.
+  - Checks: build clean, CLI snapshots byte-identical, archive suite passes privileged (5/5). Full privileged suite: pending.
+- X1 privileged result: **133/134**. `git_acquisition::managed_pinned_git_selects_exact_commits_and_preserves_invalid_checkouts` failed once with `protocol frame oversize: declared 1195463749 bytes`: stray bytes on the worker's protocol stdout, interleaved during git output. The same test passed alone on the X12 build, and nothing in X1 touches stdout. Re-running it with the exact X1 binaries to decide between an X1 regression and a pre-existing race (see the X3 note on H2, two stdout writers).
 

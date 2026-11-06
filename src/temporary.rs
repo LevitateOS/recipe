@@ -2,9 +2,9 @@
 //! A later invocation removes only abandoned directories in this private pool.
 use anyhow::{Context, Result, bail};
 use fs2::FileExt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::os::fd::{AsRawFd, RawFd};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::Path;
 
 #[derive(Debug)]
@@ -29,7 +29,7 @@ impl TemporaryDirectory {
         if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o777 != 0o700 {
             bail!("recipe scratch pool must be a private directory owned by the coordinator");
         }
-        let guard = lease_file(&pool.join("pool.lock"), true)?;
+        let guard = crate::fsx::open_lease(&pool.join("pool.lock"), true)?;
         guard
             .lock_exclusive()
             .context("cannot lock recipe scratch pool")?;
@@ -44,7 +44,7 @@ impl TemporaryDirectory {
                 continue;
             }
             let path = entry.path();
-            let lease = match lease_file(&path.join("lease"), false) {
+            let lease = match crate::fsx::open_lease(&path.join("lease"), false) {
                 Ok(file) => Some(file),
                 // Only creation holds the pool lock. A lease-less directory
                 // encountered here was interrupted before its lease was made.
@@ -64,7 +64,7 @@ impl TemporaryDirectory {
                     Err(error) => return Err(error).context("cannot inspect recipe scratch lease"),
                 }
             }
-            make_removable(&path);
+            crate::fsx::make_removable(&path);
             match fs::remove_dir_all(&path) {
                 Ok(()) => {}
                 // Normal Drop may finish removing an entry after read_dir.
@@ -77,7 +77,7 @@ impl TemporaryDirectory {
         let directory = tempfile::Builder::new()
             .prefix("invocation-")
             .tempdir_in(&pool)?;
-        let lease = lease_file(&directory.path().join("lease"), true)?;
+        let lease = crate::fsx::open_lease(&directory.path().join("lease"), true)?;
         lease.lock_exclusive()?;
         let data = directory.path().join("data");
         fs::create_dir(&data)?;
@@ -100,34 +100,8 @@ impl TemporaryDirectory {
 
 impl Drop for TemporaryDirectory {
     fn drop(&mut self) {
-        make_removable(self.directory.path());
+        crate::fsx::make_removable(self.directory.path());
     }
 }
 
-fn lease_file(path: &Path, create: bool) -> Result<File> {
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(create)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)?;
-    if !file.metadata()?.is_file() {
-        bail!("recipe scratch lease is not a regular file");
-    }
-    Ok(file)
-}
 
-fn make_removable(path: &Path) {
-    // chmod before descending so private/read-only image directories can be
-    // removed; never follow image or source links during cleanup.
-    for entry in walkdir::WalkDir::new(path)
-        .follow_links(false)
-        .into_iter()
-        .flatten()
-    {
-        if entry.file_type().is_dir() {
-            let _ = fs::set_permissions(entry.path(), fs::Permissions::from_mode(0o700));
-        }
-    }
-}

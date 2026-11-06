@@ -14,24 +14,19 @@ impl InvocationLog {
         };
         std::fs::create_dir_all(&root)?;
         let logs = root.join("logs");
-        match std::fs::DirBuilder::new().mode(0o700).create(&logs) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e.into()),
-        }
-        let metadata = std::fs::symlink_metadata(&logs)?;
+        crate::fsx::private_dir(&logs, false)?;
         anyhow::ensure!(
-            metadata.is_dir() && metadata.permissions().mode() & 0o077 == 0,
+            std::fs::symlink_metadata(&logs)?.permissions().mode() & 0o077 == 0,
             "diagnostics directory must be a private real directory"
         );
         use fs2::FileExt;
-        let pool = log_lease(&logs.join("prune.lock"))?;
+        let pool = crate::fsx::open_lease(&logs.join("prune.lock"), true)?;
         pool.lock_exclusive()?;
         prune_logs(&logs)?;
         let directory = logs.join(invocation);
         std::fs::DirBuilder::new().mode(0o700).create(&directory)?;
         std::fs::File::open(&logs)?.sync_all()?;
-        let lease = log_lease(&directory.join("lease"))?;
+        let lease = crate::fsx::open_lease(&directory.join("lease"), true)?;
         lease.lock_exclusive()?;
         let log = Self { directory, lease };
         log.record(&serde_json::json!({"invocation": invocation, "status":"running"}))?;
@@ -54,22 +49,6 @@ impl InvocationLog {
     }
 }
 
-fn log_lease(path: &std::path::Path) -> anyhow::Result<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)?;
-    anyhow::ensure!(
-        file.metadata()?.is_file(),
-        "diagnostic lease is not regular"
-    );
-    Ok(file)
-}
 fn prune_logs(root: &std::path::Path) -> anyhow::Result<()> {
     use fs2::FileExt;
     use std::io::Read;
@@ -100,7 +79,7 @@ fn prune_logs(root: &std::path::Path) -> anyhow::Result<()> {
         if !files.iter().any(|file| file.file_name() == "lease") {
             continue;
         }
-        let lease = log_lease(&path.join("lease"))?;
+        let lease = crate::fsx::open_lease(&path.join("lease"), true)?;
         match lease.try_lock_exclusive() {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,

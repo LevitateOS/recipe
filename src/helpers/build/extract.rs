@@ -64,6 +64,11 @@ fn normalize_lexical(path: &Path) -> PathBuf {
     out
 }
 
+/// Reject `path` if it or any existing ancestor is a symlink.
+fn ensure_no_symlink_ancestors(path: &Path) -> Result<(), Box<EvalAltResult>> {
+    ensure_no_symlink_components(path, path)
+}
+
 fn ensure_no_symlink_components(dest: &Path, full_path: &Path) -> Result<(), Box<EvalAltResult>> {
     full_path.strip_prefix(dest).map_err(|_| {
         format!(
@@ -101,7 +106,7 @@ fn ensure_no_symlink_components(dest: &Path, full_path: &Path) -> Result<(), Box
 
 fn ensure_link_target_within_dest(
     dest: &Path,
-    link_parent: &Path,
+    base: &Path,
     link_name: &Path,
 ) -> Result<(), Box<EvalAltResult>> {
     if link_name.is_absolute()
@@ -116,13 +121,13 @@ fn ensure_link_target_within_dest(
         .into());
     }
 
-    // Resolve relative to the link's parent, then ensure it stays within dest.
-    let candidate = normalize_lexical(&link_parent.join(link_name));
+    // Resolve relative to `base`, then ensure it stays within dest.
+    let candidate = normalize_lexical(&base.join(link_name));
     let norm_dest = normalize_lexical(dest);
     if candidate.strip_prefix(&norm_dest).is_err() {
         return Err(format!(
             "tar contains unsafe link target (escapes dest): {} -> {}",
-            link_parent.display(),
+            base.display(),
             link_name.display()
         )
         .into());
@@ -176,8 +181,17 @@ fn extract_tar<R: Read>(reader: R, dest: &Path) -> Result<(), Box<EvalAltResult>
                 .link_name()
                 .map_err(|e| format!("tar link_name error: {}", e))?;
             if let Some(link_name) = link_name {
-                let link_parent = full_path.parent().unwrap_or(dest);
-                ensure_link_target_within_dest(dest, link_parent, &link_name)?;
+                // Symlink targets resolve from the link's directory; hardlink
+                // targets name another archive member, relative to the root.
+                let base = if entry_type == tar::EntryType::Link {
+                    dest
+                } else {
+                    full_path.parent().unwrap_or(dest)
+                };
+                ensure_link_target_within_dest(dest, base, &link_name)?;
+                if entry_type == tar::EntryType::Link {
+                    ensure_no_symlink_components(dest, &dest.join(&link_name))?;
+                }
             } else {
                 return Err(format!(
                     "tar contains {} without link target: {}",
@@ -201,58 +215,56 @@ fn extract_tar<R: Read>(reader: R, dest: &Path) -> Result<(), Box<EvalAltResult>
                 .map_err(|e| format!("cannot create directory {}: {}", parent.display(), e))?;
         }
 
-        // Unpack the entry
-        entry
-            .unpack(&full_path)
-            .map_err(|e| format!("unpack error for {}: {}", path.display(), e))?;
+        // Hardlinks must be created relative to the destination root, which
+        // only `unpack_in` does; `unpack` would resolve them from the cwd.
+        if entry_type == tar::EntryType::Link {
+            let unpacked = entry
+                .unpack_in(dest)
+                .map_err(|e| format!("unpack error for {}: {}", path.display(), e))?;
+            if !unpacked {
+                return Err(format!("tar contains unsafe path: {}", path.display()).into());
+            }
+        } else {
+            entry
+                .unpack(&full_path)
+                .map_err(|e| format!("unpack error for {}: {}", path.display(), e))?;
+        }
     }
 
     Ok(())
 }
 
-/// Extract a tar.gz archive
-fn extract_tar_gz(archive_path: &Path, dest: &Path) -> Result<(), Box<EvalAltResult>> {
-    let file = File::open(archive_path)
-        .map_err(|e| format!("cannot open {}: {}", archive_path.display(), e))?;
-    let reader = BufReader::new(file);
-    let decoder = flate2::read::GzDecoder::new(reader);
-    extract_tar(decoder, dest)
-}
+/// Supported archive formats: canonical name, accepted aliases and suffixes.
+const FORMATS: [(&str, &[&str], &[&str]); 7] = [
+    ("tar.gz", &["tgz"], &[".tar.gz", ".tgz"]),
+    ("tar.xz", &["txz"], &[".tar.xz", ".txz"]),
+    ("tar.bz2", &["tbz2"], &[".tar.bz2", ".tbz2"]),
+    ("tar.zst", &["tzst"], &[".tar.zst", ".tzst"]),
+    ("zip", &[], &[".zip"]),
+    ("tar", &[], &[".tar"]),
+    ("apk", &[], &[".apk"]),
+];
 
-/// Extract a tar.xz archive
-fn extract_tar_xz(archive_path: &Path, dest: &Path) -> Result<(), Box<EvalAltResult>> {
+/// Extract a tar archive, decompressed as `format` names.
+fn extract_tar_file(
+    archive_path: &Path,
+    dest: &Path,
+    format: &str,
+) -> Result<(), Box<EvalAltResult>> {
     let file = File::open(archive_path)
         .map_err(|e| format!("cannot open {}: {}", archive_path.display(), e))?;
     let reader = BufReader::new(file);
-    let decoder = xz2::read::XzDecoder::new(reader);
-    extract_tar(decoder, dest)
-}
-
-/// Extract a tar.bz2 archive
-fn extract_tar_bz2(archive_path: &Path, dest: &Path) -> Result<(), Box<EvalAltResult>> {
-    let file = File::open(archive_path)
-        .map_err(|e| format!("cannot open {}: {}", archive_path.display(), e))?;
-    let reader = BufReader::new(file);
-    let decoder = bzip2::read::BzDecoder::new(reader);
-    extract_tar(decoder, dest)
-}
-
-/// Extract a tar.zst archive
-fn extract_tar_zst(archive_path: &Path, dest: &Path) -> Result<(), Box<EvalAltResult>> {
-    let file = File::open(archive_path)
-        .map_err(|e| format!("cannot open {}: {}", archive_path.display(), e))?;
-    let reader = BufReader::new(file);
-    let decoder =
-        zstd::stream::read::Decoder::new(reader).map_err(|e| format!("zstd init error: {}", e))?;
-    extract_tar(decoder, dest)
-}
-
-/// Extract a plain tar archive (no compression)
-fn extract_tar_plain(archive_path: &Path, dest: &Path) -> Result<(), Box<EvalAltResult>> {
-    let file = File::open(archive_path)
-        .map_err(|e| format!("cannot open {}: {}", archive_path.display(), e))?;
-    let reader = BufReader::new(file);
-    extract_tar(reader, dest)
+    match format {
+        "tar.gz" => extract_tar(flate2::read::GzDecoder::new(reader), dest),
+        "tar.xz" => extract_tar(xz2::read::XzDecoder::new(reader), dest),
+        "tar.bz2" => extract_tar(bzip2::read::BzDecoder::new(reader), dest),
+        "tar.zst" => extract_tar(
+            zstd::stream::read::Decoder::new(reader)
+                .map_err(|e| format!("zstd init error: {}", e))?,
+            dest,
+        ),
+        _ => extract_tar(reader, dest),
+    }
 }
 
 /// Extract an Alpine APK package.
@@ -317,9 +329,24 @@ fn extract_zip(archive_path: &Path, dest: &Path) -> Result<(), Box<EvalAltResult
         let outpath = dest.join(path);
         ensure_no_symlink_components(dest, &outpath)?;
 
+        // Zip stores a symlink as a member whose mode says so and whose data
+        // is the target; extract it as a link, like tar, not as a text file.
+        let is_symlink = file.unix_mode().is_some_and(|mode| mode & 0o170000 == 0o120000);
         if file.is_dir() {
             std::fs::create_dir_all(&outpath)
                 .map_err(|e| format!("cannot create directory {}: {}", outpath.display(), e))?;
+        } else if is_symlink {
+            let mut target = String::new();
+            file.read_to_string(&mut target)
+                .map_err(|e| format!("zip symlink target error for {}: {}", outpath.display(), e))?;
+            let target = PathBuf::from(target);
+            ensure_link_target_within_dest(dest, outpath.parent().unwrap_or(dest), &target)?;
+            if let Some(parent) = outpath.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("cannot create directory {}: {}", parent.display(), e))?;
+            }
+            std::os::unix::fs::symlink(&target, &outpath)
+                .map_err(|e| format!("cannot create symlink {}: {}", outpath.display(), e))?;
         } else {
             // Create parent directories
             if let Some(parent) = outpath.parent() {
@@ -335,8 +362,9 @@ fn extract_zip(archive_path: &Path, dest: &Path) -> Result<(), Box<EvalAltResult
 
             {
                 use std::os::unix::fs::PermissionsExt;
+                // Same rule as tar extraction: permission bits only, no setuid/setgid/sticky.
                 if let Some(mode) = file.unix_mode() {
-                    std::fs::set_permissions(&outpath, std::fs::Permissions::from_mode(mode))
+                    std::fs::set_permissions(&outpath, std::fs::Permissions::from_mode(mode & 0o777))
                         .map_err(|e| {
                             format!("cannot set permissions for {}: {}", outpath.display(), e)
                         })?;
@@ -355,29 +383,16 @@ fn extract_zip(archive_path: &Path, dest: &Path) -> Result<(), Box<EvalAltResult
 /// Detect archive format from filename extension
 fn detect_format(archive: &str) -> Option<&'static str> {
     let path = archive.to_lowercase();
-    if path.ends_with(".tar.gz") || path.ends_with(".tgz") {
-        Some("tar.gz")
-    } else if path.ends_with(".tar.xz") || path.ends_with(".txz") {
-        Some("tar.xz")
-    } else if path.ends_with(".tar.bz2") || path.ends_with(".tbz2") {
-        Some("tar.bz2")
-    } else if path.ends_with(".tar.zst") || path.ends_with(".tzst") {
-        Some("tar.zst")
-    } else if path.ends_with(".zip") {
-        Some("zip")
-    } else if path.ends_with(".tar") {
-        Some("tar")
-    } else if path.ends_with(".apk") {
-        Some("apk")
-    } else {
-        None
-    }
+    FORMATS
+        .iter()
+        .find(|(_, _, suffixes)| suffixes.iter().any(|suffix| path.ends_with(suffix)))
+        .map(|(name, _, _)| *name)
 }
 
 /// Extract an archive to a specific destination.
 ///
 /// Auto-detects format from filename extension.
-/// Supports: tar.gz, tar.xz, tar.bz2, tar.zst, zip, tar, apk.
+/// Supports every format in [`FORMATS`].
 ///
 /// Uses native Rust libraries - no external tools required.
 ///
@@ -408,7 +423,7 @@ pub fn extract_with_format(
     let archive_path = Path::new(archive);
     let dest_path = Path::new(dest);
 
-    ensure_no_symlink_components(dest_path, dest_path)?;
+    ensure_no_symlink_ancestors(dest_path)?;
     // Create destination directory if needed, after validating existing ancestors.
     std::fs::create_dir_all(dest_path)
         .map_err(|e| format!("cannot create destination directory: {}", e))?;
@@ -420,15 +435,16 @@ pub fn extract_with_format(
 
     let progress = crate::helpers::internal::progress::Spinner::new(&format!("extracting {filename}"));
 
-    let result = match format.to_lowercase().as_str() {
-        "tar.gz" | "tgz" => extract_tar_gz(archive_path, dest_path),
-        "tar.xz" | "txz" => extract_tar_xz(archive_path, dest_path),
-        "tar.bz2" | "tbz2" => extract_tar_bz2(archive_path, dest_path),
-        "tar.zst" | "tzst" => extract_tar_zst(archive_path, dest_path),
-        "tar" => extract_tar_plain(archive_path, dest_path),
+    let requested = format.to_lowercase();
+    let canonical = FORMATS
+        .iter()
+        .find(|(name, aliases, _)| *name == requested || aliases.contains(&requested.as_str()))
+        .map(|(name, _, _)| *name)
+        .ok_or_else(|| format!("unknown archive format: {}", format))?;
+    let result = match canonical {
         "zip" => extract_zip(archive_path, dest_path),
         "apk" => extract_apk(archive_path, dest_path),
-        _ => return Err(format!("unknown archive format: {}", format).into()),
+        tar => extract_tar_file(archive_path, dest_path, tar),
     };
 
     drop(progress);

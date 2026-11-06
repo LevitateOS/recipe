@@ -46,32 +46,16 @@ pub fn glob_exists(pattern: &str) -> Result<bool, Box<EvalAltResult>> {
     Ok(entries.any(|entry| entry.is_ok()))
 }
 
-fn ensure_parent_dir(path: &Path) -> Result<(), Box<EvalAltResult>> {
-    let Some(parent) = path.parent() else {
-        return Ok(());
-    };
-    if parent.as_os_str().is_empty() {
-        return Ok(());
-    }
-    std::fs::create_dir_all(parent).map_err(|e| {
-        format!(
-            "failed to create parent directory for {}: {}",
-            path.display(),
-            e
-        )
-        .into()
-    })
-}
 
 fn copy_file_impl(src: &Path, dest: &Path) -> Result<(), Box<EvalAltResult>> {
     if !src.is_file() {
-        return Err(format!("copy_file source is not a file: {}", src.display()).into());
+        return Err(format!("copy source is not a file: {}", src.display()).into());
     }
-    ensure_parent_dir(dest)?;
+    crate::helpers::internal::fs_utils::ensure_parent_dir(dest)?;
     output::detail(&format!("cp {} {}", src.display(), dest.display()));
     std::fs::copy(src, dest).map(|_| ()).map_err(|e| {
         format!(
-            "copy_file failed: {} -> {}: {}",
+            "copy failed: {} -> {}: {}",
             src.display(),
             dest.display(),
             e
@@ -87,18 +71,16 @@ fn clone_file_reflink(src: &Path, dest: &Path) -> std::io::Result<()> {
     const FICLONE: libc::c_ulong = 0x4004_9409;
 
     let src_file = OpenOptions::new().read(true).open(src)?;
-    let dest_file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(dest)?;
+    // FICLONE replaces the whole destination, so it needs no truncation first;
+    // a failed clone leaves existing bytes in place.
+    let dest_file = OpenOptions::new().create(true).write(true).truncate(false).open(dest)?;
 
     let request = FICLONE as libc::Ioctl;
     let rc = unsafe { libc::ioctl(dest_file.as_raw_fd(), request, src_file.as_raw_fd()) };
     if rc == -1 {
         return Err(std::io::Error::last_os_error());
     }
-    Ok(())
+    dest_file.set_permissions(src_file.metadata()?.permissions())
 }
 
 
@@ -150,7 +132,7 @@ pub fn copy_file_reflink(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>
     if !src.is_file() {
         return Err(format!("copy_file_reflink source is not a file: {}", src.display()).into());
     }
-    ensure_parent_dir(dest)?;
+    crate::helpers::internal::fs_utils::ensure_parent_dir(dest)?;
     output::detail(&format!(
         "cp --reflink=auto {} {}",
         src.display(),
@@ -158,7 +140,22 @@ pub fn copy_file_reflink(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>
     ));
     match clone_file_reflink(src, dest) {
         Ok(()) => Ok(()),
-        Err(_) => copy_file_impl(src, dest),
+        // Only "this filesystem cannot clone" falls back to copying.
+        Err(e)
+            if matches!(
+                e.raw_os_error(),
+                Some(libc::EOPNOTSUPP | libc::EXDEV | libc::EINVAL | libc::ENOTTY | libc::ENOSYS)
+            ) =>
+        {
+            copy_file_impl(src, dest)
+        }
+        Err(e) => Err(format!(
+            "copy_file_reflink failed: {} -> {}: {}",
+            src.display(),
+            dest.display(),
+            e
+        )
+        .into()),
     }
 }
 
@@ -170,21 +167,9 @@ fn copy_symlink(link_path: &Path, dest_path: &Path) -> Result<(), Box<EvalAltRes
         target.display(),
         dest_path.display()
     ));
-    match std::fs::remove_file(dest_path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => {
-            return Err(format!(
-                "failed to replace existing symlink {}: {}",
-                dest_path.display(),
-                e
-            )
-            .into());
-        }
-    }
-    std::os::unix::fs::symlink(&target, dest_path).map_err(|e| {
+    crate::helpers::internal::fs_utils::replace_symlink(&target, dest_path).map_err(|e| {
         format!(
-            "copy_tree_contents symlink failed: {} -> {}: {}",
+            "symlink copy failed: {} -> {}: {}",
             target.display(),
             dest_path.display(),
             e
@@ -278,7 +263,7 @@ pub fn copy_tree_contents(src_dir: &str, dst_dir: &str) -> Result<(), Box<EvalAl
             continue;
         }
 
-        ensure_parent_dir(&dest_path)?;
+        crate::helpers::internal::fs_utils::ensure_parent_dir(&dest_path)?;
         if metadata.file_type().is_symlink() {
             copy_symlink(path, &dest_path)?;
             continue;
@@ -286,14 +271,14 @@ pub fn copy_tree_contents(src_dir: &str, dst_dir: &str) -> Result<(), Box<EvalAl
 
         let identity = (metadata.dev(), metadata.ino());
         if let Some(first) = inodes.get(&identity) {
-            match std::fs::remove_file(&dest_path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(format!("cannot replace hardlink destination: {e}").into()),
-            }
+            crate::helpers::internal::fs_utils::remove_existing(&dest_path)
+                .map_err(|e| format!("cannot replace hardlink destination: {e}"))?;
             std::fs::hard_link(first, &dest_path)
                 .map_err(|e| format!("copy_tree_contents hardlink failed: {e}"))?;
         } else {
+            // Replace rather than write through an existing link or shared inode.
+            crate::helpers::internal::fs_utils::remove_existing(&dest_path)
+                .map_err(|e| format!("cannot replace copy destination: {e}"))?;
             copy_file_impl(path, &dest_path)?;
             inodes.insert(identity, dest_path.clone());
         }
@@ -358,18 +343,11 @@ pub fn symlink_force(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>> {
     let dest_path = Path::new(dest);
     output::detail(&format!("ln -sfn {} {}", src, dest));
 
-    match std::fs::remove_file(dest_path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) if e.kind() == std::io::ErrorKind::IsADirectory => {
-            return Err(format!("ln_force destination is an existing directory: {}", dest).into());
-        }
-        Err(e) => {
-            return Err(format!("failed to remove existing link target {}: {}", dest, e).into());
-        }
+    if std::fs::symlink_metadata(dest_path).is_ok_and(|meta| meta.is_dir()) {
+        return Err(format!("ln_force destination is an existing directory: {}", dest).into());
     }
-
-    std::os::unix::fs::symlink(src, dest).map_err(|e| format!("symlink failed: {}", e).into())
+    crate::helpers::internal::fs_utils::replace_symlink(Path::new(src), dest_path)
+        .map_err(|e| format!("symlink failed: {}", e).into())
 }
 
 

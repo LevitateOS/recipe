@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -102,7 +102,7 @@ impl Retained {
             scope.update(bytes);
         }
         let scope = root.join(hex::encode(scope.finalize()));
-        private_directory(&scope)?;
+        crate::fsx::private_dir(&scope, true)?;
         let mut defines = options.defines.clone();
         defines.sort();
         // Reserve room for options, the longest cleanup reason and framing on
@@ -137,14 +137,14 @@ impl Retained {
             options.execution.storage_max_bytes,
         ))?));
         let directory = scope.join(&identity);
-        private_directory(&directory)?;
+        crate::fsx::private_dir(&directory, true)?;
         let allowed = prepared
             .inputs
             .iter()
             .map(|input| crate::domain::input_path(&input.name))
             .collect::<HashSet<_>>();
         let record_path = directory.join("current.json");
-        let current = match regular(&record_path) {
+        let current = match crate::fsx::open_regular(&record_path) {
             Ok(mut file) => {
                 if file.metadata()?.len() > MAX_STATE.min(state_budget as u64) {
                     bail!("saved state exceeds byte bound");
@@ -220,13 +220,13 @@ impl Retained {
         if self.current.generation == 0 {
             return Ok(false);
         }
-        let mut source = regular(&self.directory.join(&self.current.archive))?;
+        let mut source = crate::fsx::open_regular(&self.directory.join(&self.current.archive))?;
         let mut output = OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
             .open(path)?;
-        let (bytes, digest) = copy_hash(&mut source, &mut output, self.archive_bound)?;
+        let (bytes, digest) = crate::fsx::copy_hashed(&mut source, &mut output, self.archive_bound)?;
         if bytes != self.current.bytes || digest != self.current.sha256 {
             bail!("saved filesystem snapshot digest mismatch");
         }
@@ -260,8 +260,8 @@ impl Retained {
         let mut states = self.current.states.clone();
         states.insert(recipe.to_owned(), state);
         validate_states(&states, &self.allowed)?;
-        let mut archive = regular(&pending.path)?;
-        let (bytes, sha256) = copy_hash(&mut archive, &mut std::io::sink(), self.archive_bound)?;
+        let mut archive = crate::fsx::open_regular(&pending.path)?;
+        let (bytes, sha256) = crate::fsx::copy_hashed(&mut archive, &mut std::io::sink(), self.archive_bound)?;
         let folder = pending
             .directory
             .path()
@@ -305,13 +305,13 @@ impl Retained {
 
     pub fn finish(&mut self, export: &Path, state: Value) -> Result<u64> {
         let pending = self.begin()?;
-        let mut input = regular(export)?;
+        let mut input = crate::fsx::open_regular(export)?;
         let mut output = OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
             .open(&pending.path)?;
-        copy_hash(&mut input, &mut output, self.archive_bound)?;
+        crate::fsx::copy_hashed(&mut input, &mut output, self.archive_bound)?;
         output.sync_all()?;
         drop(output);
         self.commit(pending, crate::domain::MAIN_RECIPE, state)
@@ -328,16 +328,6 @@ fn validate_states(states: &BTreeMap<String, Value>, allowed: &HashSet<String>) 
     }
     Ok(())
 }
-fn regular(path: &Path) -> Result<File> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
-    if !file.metadata()?.is_file() {
-        bail!("state input is not a regular file");
-    }
-    Ok(file)
-}
 fn durable_directory(path: &Path) -> Result<()> {
     let path = if path.is_absolute() {
         path.to_owned()
@@ -349,44 +339,7 @@ fn durable_directory(path: &Path) -> Result<()> {
     }
     let parent = path.parent().context("state directory has no parent")?;
     durable_directory(parent)?;
-    private_directory(&path)
-}
-fn private_directory(path: &Path) -> Result<()> {
-    match fs::DirBuilder::new().mode(0o700).create(path) {
-        Ok(()) => {
-            File::open(path.parent().context("missing state parent")?)?.sync_all()?;
-            Ok(())
-        }
-        Err(error)
-            if error.kind() == std::io::ErrorKind::AlreadyExists
-                && fs::symlink_metadata(path)?.file_type().is_dir() =>
-        {
-            Ok(())
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-fn copy_hash(
-    input: &mut impl Read,
-    output: &mut impl Write,
-    maximum: u64,
-) -> Result<(u64, String)> {
-    let mut bytes = [0u8; 65536];
-    let mut count = 0u64;
-    let mut hash = Sha256::new();
-    loop {
-        let read = input.read(&mut bytes)?;
-        if read == 0 {
-            break;
-        }
-        count = count
-            .checked_add(read as u64)
-            .filter(|n| *n <= maximum)
-            .context("snapshot byte bound exceeded")?;
-        hash.update(&bytes[..read]);
-        output.write_all(&bytes[..read])?;
-    }
-    Ok((count, hex::encode(hash.finalize())))
+    crate::fsx::private_dir(&path, true)
 }
 
 // Per destination/recipe scope: retain the current and three recent input
@@ -396,7 +349,7 @@ const RETAIN_IDENTITIES: usize = 4;
 const RETAIN_GENERATIONS: usize = 2;
 
 fn owned_record(path: &Path, identity: &str) -> Option<Record> {
-    let mut file = regular(path).ok()?;
+    let mut file = crate::fsx::open_regular(path).ok()?;
     if file.metadata().ok()?.len() > MAX_STATE {
         return None;
     }

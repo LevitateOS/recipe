@@ -4,7 +4,7 @@ use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -13,15 +13,7 @@ use serde_json::Value;
 struct Staging(tempfile::TempDir);
 impl Drop for Staging {
     fn drop(&mut self) {
-        for entry in walkdir::WalkDir::new(self.0.path())
-            .follow_links(false)
-            .into_iter()
-            .flatten()
-        {
-            if entry.file_type().is_dir() {
-                let _ = fs::set_permissions(entry.path(), fs::Permissions::from_mode(0o700));
-            }
-        }
+        crate::fsx::make_removable(self.0.path());
     }
 }
 
@@ -62,19 +54,15 @@ pub(crate) fn publish(
         validate_path(relative)?;
         selected.insert(name.clone(), relative.to_owned());
     }
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(archive)
-        .context("cannot open completed Ginux export")?;
+    let file = crate::fsx::open_regular(archive).context("cannot open completed Ginux export")?;
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.len() > options.archive_bound() {
         bail!("invalid or oversized Ginux export");
     }
     let base = std::env::current_dir()?.join(".artifacts");
-    private_directory(&base)?;
+    crate::fsx::private_dir(&base, false)?;
     let base = base.join("ginux-export");
-    private_directory(&base)?;
+    crate::fsx::private_dir(&base, false)?;
     let base = base.canonicalize()?;
     let staging = Staging(
         tempfile::Builder::new()
@@ -353,22 +341,3 @@ fn validate_path(path: &str) -> Result<()> {
     Ok(())
 }
 
-fn private_directory(path: &PathBuf) -> Result<()> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_dir() => Ok(()),
-        Ok(_) => bail!(
-            "artifact directory is not a real directory: {}",
-            path.display()
-        ),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            match fs::DirBuilder::new().mode(0o700).create(path) {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    private_directory(path)
-                }
-                Err(error) => Err(error.into()),
-            }
-        }
-        Err(error) => Err(error.into()),
-    }
-}

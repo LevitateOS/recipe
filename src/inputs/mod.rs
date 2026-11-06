@@ -120,21 +120,16 @@ pub fn prepare_invocation(
             continue;
         }
         let dest = staging.path().join(format!("input-{index}"));
-        use std::io::Read;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut source = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&input.host_path)?;
-        if !source.metadata()?.is_file() {
-            bail!("input changed kind: {}", input.name);
-        }
+        let mut source = crate::fsx::open_regular(&input.host_path)
+            .with_context(|| format!("input changed kind: {}", input.name))?;
         let mut target = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&dest)?;
-        if std::io::copy(&mut source.by_ref().take(input.size + 1), &mut target)? != input.size {
-            bail!("input changed size: {}", input.name);
+        let (size, digest) = crate::fsx::copy_hashed(&mut source, &mut target, input.size)
+            .with_context(|| format!("input changed size: {}", input.name))?;
+        if size != input.size || digest != hex::encode(input.sha256) {
+            bail!("input changed after discovery: {}", input.name);
         }
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(input.mode))?;

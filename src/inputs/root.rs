@@ -2,20 +2,16 @@
 //! An assembled image tar is selected by the coordinator and verified against
 //! the content digest in domain.root. No recipe code runs during preparation.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::{Component, Path, PathBuf};
+use std::io::{Read, Seek, SeekFrom};
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use sha2::{Digest, Sha256};
 
 use super::PreparedInvocation;
 
-const MAX_ARCHIVE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
-const MAX_IMAGE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
-const MAX_IMAGE_ENTRIES: usize = 500_000;
 const MAX_WORKER_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Owns the isolated root until the launcher and worker have been reaped.
@@ -48,7 +44,7 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
     };
     // Copy and hash the same bytes into an unlinked snapshot. Extraction must
     // not reread a mutable source pathname after verifying a different read.
-    let mut archive = regular_file(&archive_path).with_context(|| {
+    let mut archive = crate::fsx::open_regular(&archive_path).with_context(|| {
         format!(
             "cannot open Ginux rootfs image {}; set GINUX_ROOTFS to the assembled tar matching {}",
             archive_path.display(),
@@ -56,7 +52,7 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
         )
     })?;
     let mut snapshot = tempfile::tempfile().context("cannot snapshot the rootfs image")?;
-    let (_, actual) = copy_hashed(&mut archive, &mut snapshot, MAX_ARCHIVE_BYTES)?;
+    let (_, actual) = crate::fsx::copy_hashed(&mut archive, &mut snapshot, crate::image::MAX_ARCHIVE_BYTES)?;
     if actual != digest {
         bail!("Ginux rootfs digest mismatch: expected {digest}, got {actual}");
     }
@@ -88,12 +84,12 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
             super::InputKind::Symlink(_) => continue, // Install links after all ordinary paths.
             super::InputKind::File => {}
         }
-        let mut source = regular_file(&invocation.staging_dir().join(format!("input-{index}")))?;
+        let mut source = crate::fsx::open_regular(&invocation.staging_dir().join(format!("input-{index}")))?;
         let mut destination = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(inputs.join(&input.name))?;
-        let (size, digest) = copy_hashed(&mut source, &mut destination, input.size)?;
+        let (size, digest) = crate::fsx::copy_hashed(&mut source, &mut destination, input.size)?;
         if size != input.size || digest != hex::encode(input.sha256) {
             bail!(
                 "staged input changed after discovery: /inputs/{}",
@@ -122,7 +118,7 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
         }
     }
     let worker_path = worker_binary()?;
-    let mut worker = regular_file(&worker_path)
+    let mut worker = crate::fsx::open_regular(&worker_path)
         .with_context(|| format!("cannot open worker {}", worker_path.display()))?;
     let mut header = [0u8; 20];
     worker
@@ -136,7 +132,7 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
         .write(true)
         .create_new(true)
         .open(inputs.join(crate::domain::WORKER_NAME))?;
-    root.worker_digest = copy_hashed(&mut worker, &mut destination, MAX_WORKER_BYTES)?.1;
+    root.worker_digest = crate::fsx::copy_hashed(&mut worker, &mut destination, MAX_WORKER_BYTES)?.1;
     destination.set_permissions(std::fs::Permissions::from_mode(0o555))?;
 
     // No shared cached tree or mutable hardlinks are handed to the domain.
@@ -214,53 +210,8 @@ fn worker_binary() -> Result<PathBuf> {
     bail!("cannot locate the Recipe worker; install recipe on PATH or set RECIPE_WORKER_BIN")
 }
 
-fn regular_file(path: &Path) -> Result<File> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)?;
-    if !file.metadata()?.is_file() {
-        bail!("not a regular file: {}", path.display());
-    }
-    Ok(file)
-}
 
-fn copy_hashed(source: &mut File, destination: &mut File, maximum: u64) -> Result<(u64, String)> {
-    let mut hash = Sha256::new();
-    let mut size = 0u64;
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        crate::cancellation::check()?;
-        let count = source.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        size = size
-            .checked_add(count as u64)
-            .context("image size overflow")?;
-        if size > maximum {
-            bail!("input exceeds preparation size limit of {maximum} bytes");
-        }
-        hash.update(&buffer[..count]);
-        destination.write_all(&buffer[..count])?;
-    }
-    Ok((size, hex::encode(hash.finalize())))
-}
 
-fn relative_path(path: &Path) -> Result<PathBuf> {
-    let mut relative = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::Normal(name) => relative.push(name),
-            _ => bail!("unsafe rootfs image path: {}", path.display()),
-        }
-    }
-    if relative.as_os_str().len() > 4096 {
-        bail!("rootfs image path exceeds 4096 bytes");
-    }
-    Ok(relative)
-}
 
 fn ensure_parents(root: &Path, relative: &Path) -> Result<()> {
     let mut directory = root.to_path_buf();
@@ -283,16 +234,12 @@ fn ensure_parents(root: &Path, relative: &Path) -> Result<()> {
 
 fn unpack_image(snapshot: File, root: &Path) -> Result<()> {
     let mut archive = tar::Archive::new(snapshot);
-    let mut paths = HashSet::new();
+    let mut validator = crate::image::Validator::default();
     let mut directories = HashMap::new();
-    let mut total = 0u64;
-    for (index, entry) in archive.entries()?.enumerate() {
+    for entry in archive.entries()? {
         crate::cancellation::check()?;
-        if index >= MAX_IMAGE_ENTRIES {
-            bail!("rootfs image entry limit exceeded");
-        }
         let mut entry = entry?;
-        let relative = relative_path(&entry.path()?)?;
+        let relative = crate::image::member_path(&entry.path()?)?;
         let kind = entry.header().entry_type();
         if relative.as_os_str().is_empty() && kind.is_dir() {
             continue;
@@ -300,18 +247,15 @@ fn unpack_image(snapshot: File, root: &Path) -> Result<()> {
         if relative.as_os_str().is_empty() {
             bail!("empty rootfs image entry");
         }
-        if crate::domain::RESERVED_ROOTS
-            .iter()
-            .any(|name| relative.starts_with(name))
-        {
-            bail!(
-                "rootfs image uses reserved invocation path: {}",
-                relative.display()
-            );
-        }
-        if !paths.insert(relative.clone()) {
-            bail!("duplicate rootfs image path: {}", relative.display());
-        }
+        let link = entry.link_name()?.map(|link| link.into_owned());
+        validator.check(
+            &relative,
+            kind,
+            entry.size(),
+            entry.header().mode()?,
+            link.as_deref(),
+        )?;
+        let mode = crate::image::installed_mode(entry.header().mode()?);
         ensure_parents(root, &relative)?;
         let destination = root.join(&relative);
         if kind.is_dir() {
@@ -326,14 +270,8 @@ fn unpack_image(snapshot: File, root: &Path) -> Result<()> {
                 }
                 Err(error) => return Err(error.into()),
             }
-            directories.insert(destination, entry.header().mode()? & 0o555);
+            directories.insert(destination, mode);
         } else if kind.is_file() {
-            total = total
-                .checked_add(entry.size())
-                .context("rootfs image size overflow")?;
-            if total > MAX_IMAGE_BYTES {
-                bail!("rootfs unpacked size limit exceeded");
-            }
             let mut file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -342,42 +280,17 @@ fn unpack_image(snapshot: File, root: &Path) -> Result<()> {
             if count != entry.size() {
                 bail!("truncated rootfs image entry: {}", relative.display());
             }
-            file.set_permissions(std::fs::Permissions::from_mode(
-                entry.header().mode()? & 0o555,
-            ))?;
+            file.set_permissions(std::fs::Permissions::from_mode(mode))?;
         } else if kind.is_symlink() {
-            let target = entry.link_name()?.context("rootfs symlink has no target")?;
             // Absolute symlinks are meaningful inside chroot (e.g. /proc/mounts).
             // They are never traversed while constructing or cleaning the root.
-            if target.as_os_str().is_empty() || target.as_os_str().len() > 4096 {
-                bail!("invalid rootfs symlink target");
-            }
-            std::os::unix::fs::symlink(target, destination)?;
-        } else if kind.is_hard_link() {
-            // Alias only an earlier verified regular file in this private image
-            // snapshot. Host source files and shared image caches stay separate.
-            let target = relative_path(
-                &entry
-                    .link_name()?
-                    .context("rootfs hardlink has no target")?,
-            )?;
-            if !paths.contains(&target) || target == relative {
-                bail!("rootfs hardlink target must be a prior file");
-            }
-            ensure_parents(root, &target)?;
-            let source = root.join(target);
-            let metadata = std::fs::symlink_metadata(&source)?;
-            if !metadata.is_file()
-                || metadata.permissions().mode() & 0o555 != entry.header().mode()? & 0o555
-            {
-                bail!("rootfs hardlink target kind or mode disagrees");
-            }
-            std::fs::hard_link(source, destination)?;
+            std::os::unix::fs::symlink(link.expect("validated symlink target"), destination)?;
         } else {
-            bail!(
-                "unsupported rootfs image entry type at {}",
-                relative.display()
-            );
+            // A hardlink aliases an earlier verified regular file in this
+            // private snapshot; host sources and shared caches stay separate.
+            let target = crate::image::member_path(&link.expect("validated hardlink target"))?;
+            ensure_parents(root, &target)?;
+            std::fs::hard_link(root.join(target), destination)?;
         }
     }
     // Include implicitly-created parent directories too.
@@ -450,7 +363,7 @@ pub(crate) fn seed_target(
                 archive.append_link(&mut header, name, link)?;
             }
             InputKind::File | InputKind::Hardlink(_) => {
-                let mut file = regular_file(&root.join("inputs").join(&input.name))?;
+                let mut file = crate::fsx::open_regular(&root.join("inputs").join(&input.name))?;
                 if file.metadata()?.len() != input.size {
                     bail!("target snapshot size changed: {}", input.name);
                 }

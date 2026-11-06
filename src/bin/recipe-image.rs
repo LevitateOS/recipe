@@ -2,17 +2,18 @@
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const MAX_BYTES: u64 = 16 * 1024 * 1024 * 1024;
-const MAX_TOTAL: u64 = 32 * 1024 * 1024 * 1024;
-const MAX_ENTRIES: usize = 500_000;
+use levitate_recipe::{fsx, image};
+
+/// Largest single pinned input or input-archive member.
+const MAX_INPUT_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+/// Largest sum of pinned inputs.
+const MAX_INPUTS_TOTAL: u64 = 32 * 1024 * 1024 * 1024;
 
 #[derive(Parser)]
 #[command(about = "Compose a prepared Ginux compiler image from pinned local artifacts")]
@@ -50,7 +51,7 @@ struct Addition {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let mut manifest_file = regular(&cli.manifest)?;
+    let mut manifest_file = fsx::open_regular(&cli.manifest)?;
     if manifest_file.metadata()?.len() > 65536 {
         bail!("manifest exceeds 64 KiB");
     }
@@ -101,10 +102,10 @@ fn main() -> Result<()> {
             .stderr(Stdio::inherit())
             .spawn()
             .context("rpm2archive is required for the explicit image producer")?;
-        let copied = copy_bounded(
+        let copied = fsx::copy_hashed(
             &mut child.stdout.take().context("missing rpm archive stream")?,
             &mut archive,
-            MAX_BYTES,
+            MAX_INPUT_BYTES,
         );
         if copied.is_err() {
             let _ = child.kill();
@@ -163,56 +164,83 @@ fn main() -> Result<()> {
         .create_new(true)
         .open(&image_path)?;
     let mut writer = tar::Builder::new(image);
+    // Every emitted member passes the consumer's rules in consumer order.
+    let mut validator = image::Validator::default();
     let mut seen = HashSet::new();
-    let mut emitted = 0usize;
+    let mut emitted = HashSet::new();
     for entry in tar::Archive::new(base.reopen()?).entries()? {
         let mut entry = entry?;
         let path = safe_name(&entry.path()?)?;
         if path.is_empty() {
             continue;
         }
-        validate_entry(&entry, &path)?;
-        if !seen.insert(path.clone()) || seen.len() > MAX_ENTRIES {
-            bail!("duplicate or excessive base image entries");
+        if !seen.insert(path.clone()) {
+            bail!("duplicate base image entry: {path}");
         }
-        expanded = expanded
-            .checked_add(entry.size())
-            .filter(|size| *size <= MAX_TOTAL)
-            .context("expanded image exceeds byte bound")?;
         if additions.contains_key(&path) {
             continue;
         }
-        emitted += 1;
-        if emitted > MAX_ENTRIES {
-            bail!("combined image exceeds entry bound");
-        }
         let mut header = entry.header().clone();
-        normalize(&mut header);
-        if let Some(link) = entry.link_name()? {
-            writer.append_link(&mut header, &path, link.as_ref())?;
+        let link = entry.link_name()?.map(|link| link.into_owned());
+        validator.check(
+            Path::new(&path),
+            header.entry_type(),
+            header.size()?,
+            header.mode()?,
+            link.as_deref(),
+        )?;
+        image::normalize_header(&mut header);
+        if let Some(link) = link {
+            writer.append_link(&mut header, &path, link)?;
         } else {
             writer.append_data(&mut header, &path, &mut entry)?;
         }
+        emitted.insert(path);
     }
-    for (path, mut entry) in additions {
-        emitted += 1;
-        if emitted > MAX_ENTRIES {
-            bail!("combined image exceeds entry bound");
+    // Additions go in path order, except that a hardlink waits for a later
+    // pass until its target has been written.
+    let mut pending = additions.into_iter().collect::<Vec<_>>();
+    while !pending.is_empty() {
+        let mut deferred = Vec::new();
+        let mut progressed = false;
+        for (path, mut entry) in pending {
+            let waits = entry.header.entry_type().is_hard_link()
+                && entry
+                    .link
+                    .as_deref()
+                    .is_some_and(|target| !emitted.contains(&*target.to_string_lossy()));
+            if waits {
+                deferred.push((path, entry));
+                continue;
+            }
+            validator.check(
+                Path::new(&path),
+                entry.header.entry_type(),
+                entry.header.size()?,
+                entry.header.mode()?,
+                entry.link.as_deref(),
+            )?;
+            image::normalize_header(&mut entry.header);
+            if let Some(link) = entry.link {
+                writer.append_link(&mut entry.header, &path, link)?;
+            } else if let Some(pathname) = entry.data {
+                let mut file = File::open(&pathname)?;
+                writer.append_data(&mut entry.header, &path, &mut file)?;
+            } else {
+                writer.append_data(&mut entry.header, &path, std::io::empty())?;
+            }
+            emitted.insert(path);
+            progressed = true;
         }
-        normalize(&mut entry.header);
-        if let Some(link) = entry.link {
-            writer.append_link(&mut entry.header, &path, link)?;
-        } else if let Some(pathname) = entry.data {
-            let mut file = File::open(&pathname)?;
-            writer.append_data(&mut entry.header, &path, &mut file)?;
-        } else {
-            writer.append_data(&mut entry.header, &path, std::io::empty())?;
+        if !progressed {
+            bail!("image hardlink target is never written: {}", deferred[0].0);
         }
+        pending = deferred;
     }
     writer.finish()?;
     writer.into_inner()?.sync_all()?;
     let mut image = File::open(&image_path)?;
-    let (size, digest) = hash_copy(&mut image, &mut std::io::sink(), MAX_TOTAL)?;
+    let (size, digest) = fsx::copy_hashed(&mut image, &mut std::io::sink(), image::MAX_ARCHIVE_BYTES)?;
     let record = serde_json::json!({"version":1,"image":"rootfs.tar","sha256":digest,"bytes":size,"inputs":manifest});
     let mut provenance = OpenOptions::new()
         .write(true)
@@ -229,16 +257,6 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn regular(path: &Path) -> Result<File> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
-    if !file.metadata()?.is_file() {
-        bail!("input is not a regular file: {}", path.display());
-    }
-    Ok(file)
-}
 fn snapshot(
     root: &Path,
     input: &Input,
@@ -256,12 +274,12 @@ fn snapshot(
     if !path.canonicalize()?.starts_with(root) {
         bail!("input escapes selected root");
     }
-    let mut source = regular(&path)?;
+    let mut source = fsx::open_regular(&path)?;
     let mut copy = tempfile::NamedTempFile::new_in(scratch)?;
-    let (bytes, digest) = hash_copy(&mut source, &mut copy, MAX_BYTES)?;
+    let (bytes, digest) = fsx::copy_hashed(&mut source, &mut copy, MAX_INPUT_BYTES)?;
     *total = total
         .checked_add(bytes)
-        .filter(|size| *size <= MAX_TOTAL)
+        .filter(|size| *size <= MAX_INPUTS_TOTAL)
         .context("input total exceeds byte bound")?;
     if digest != input.sha256 {
         bail!("input digest mismatch: {}", input.path);
@@ -270,47 +288,10 @@ fn snapshot(
     Ok(copy)
 }
 fn safe_name(path: &Path) -> Result<String> {
-    let mut parts = Vec::new();
-    for part in path.components() {
-        match part {
-            Component::Normal(name) => parts.push(name.to_str().context("non-UTF-8 archive path")?),
-            Component::CurDir => {}
-            _ => bail!("unsafe archive path: {}", path.display()),
-        }
-    }
-    let value = parts.join("/");
-    if value.len() > 4096 {
-        bail!("archive path exceeds bound");
-    }
-    Ok(value)
-}
-fn validate_entry<R: Read>(entry: &tar::Entry<'_, R>, path: &str) -> Result<()> {
-    let kind = entry.header().entry_type();
-    if !kind.is_file() && !kind.is_dir() && !kind.is_symlink() && !kind.is_hard_link() {
-        bail!("unsupported image entry: {path}");
-    }
-    if entry.size() > MAX_BYTES {
-        bail!("image member exceeds byte bound");
-    }
-    if kind.is_symlink() || kind.is_hard_link() {
-        let target = entry.link_name()?.context("link has no target")?;
-        let mut depth = if kind.is_hard_link() || target.is_absolute() {
-            0
-        } else {
-            path.split('/').count() - 1
-        };
-        for part in target.components() {
-            match part {
-                Component::Normal(_) => depth += 1,
-                Component::ParentDir if depth > 0 => depth -= 1,
-                Component::ParentDir | Component::Prefix(_) => {
-                    bail!("image link escapes root: {path}")
-                }
-                _ => {}
-            }
-        }
-    }
-    Ok(())
+    Ok(image::member_path(path)?
+        .to_str()
+        .context("non-UTF-8 archive path")?
+        .to_owned())
 }
 fn collect<R: Read>(
     mut archive: tar::Archive<R>,
@@ -325,16 +306,18 @@ fn collect<R: Read>(
     for entry in archive.entries()? {
         let mut entry = entry?;
         let original = safe_name(&entry.path()?)?;
-        if !seen.insert(original.clone()) || seen.len() > MAX_ENTRIES {
+        if !seen.insert(original.clone()) || seen.len() > image::MAX_ENTRIES {
             bail!("duplicate or excessive input archive entries");
         }
         let Some(path) = select(&original)? else {
             continue;
         };
-        validate_entry(&entry, &path)?;
+        if entry.size() > MAX_INPUT_BYTES {
+            bail!("image member exceeds byte bound: {path}");
+        }
         *total = total
             .checked_add(entry.size())
-            .filter(|size| *size <= MAX_TOTAL)
+            .filter(|size| *size <= image::MAX_UNPACKED_BYTES)
             .context("expanded additions exceed byte bound")?;
         let mut header = entry.header().clone();
         selected.insert(path.clone());
@@ -355,7 +338,7 @@ fn collect<R: Read>(
         }
         let data = if header.entry_type().is_file() {
             let mut file = tempfile::NamedTempFile::new_in(scratch)?;
-            let size = copy_bounded(&mut entry, &mut file, MAX_BYTES)?;
+            let size = fsx::copy_hashed(&mut entry, &mut file, MAX_INPUT_BYTES)?.0;
             if size != header.size()? {
                 bail!("truncated image addition: {path}");
             }
@@ -365,7 +348,7 @@ fn collect<R: Read>(
             None
         };
         output.insert(path, Addition { header, data, link });
-        if output.len() > MAX_ENTRIES {
+        if output.len() > image::MAX_ENTRIES {
             bail!("too many image additions");
         }
     }
@@ -379,33 +362,6 @@ fn collect<R: Read>(
         }
     }
     Ok(())
-}
-fn normalize(header: &mut tar::Header) {
-    header.set_uid(0);
-    header.set_gid(0);
-    header.set_mtime(0);
-    header.set_cksum();
-}
-fn copy_bounded(input: &mut impl Read, output: &mut impl Write, max: u64) -> Result<u64> {
-    Ok(hash_copy(input, output, max)?.0)
-}
-fn hash_copy(input: &mut impl Read, output: &mut impl Write, max: u64) -> Result<(u64, String)> {
-    let mut hash = Sha256::new();
-    let mut count = 0u64;
-    let mut buffer = [0u8; 65536];
-    loop {
-        let n = input.read(&mut buffer)?;
-        if n == 0 {
-            break;
-        }
-        count = count
-            .checked_add(n as u64)
-            .filter(|size| *size <= max)
-            .context("archive byte bound exceeded")?;
-        hash.update(&buffer[..n]);
-        output.write_all(&buffer[..n])?;
-    }
-    Ok((count, hex::encode(hash.finalize())))
 }
 fn publish_directory(source: &Path, destination: &Path) -> Result<()> {
     use std::os::unix::ffi::OsStrExt;

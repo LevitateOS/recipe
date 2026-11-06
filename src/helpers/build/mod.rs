@@ -5,7 +5,7 @@
 //!
 //! ## Functions
 //!
-//! - **extract**: Extract archives (tar.gz, tar.xz, tar.bz2, tar.zst, zip)
+//! - **extract**: Extract archives (formats: `FORMATS` in `extract.rs`)
 //! - **extract_with_format**: Extract with explicit format specification
 
 pub mod extract;
