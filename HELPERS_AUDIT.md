@@ -50,7 +50,7 @@ check unless the recipe explicitly handles them. Phase hooks return context.
 | `extract_with_format` | `helpers/build/extract.rs` | `extract_with_format(archive, dest, format) -> ()` | Explicit format; same checked extraction boundary. |
 | `fetch_sha256` | ``helpers/acquire/verify.rs`` | `fetch_sha256(url, filename) -> String` | parse checksum file |
 | `git_checkout` | `helpers/acquire/git.rs` | `git_checkout(url, exact_dest, full_commit) -> String` | Exact destination and full 40/64-hex commit; validates origin and checkout. |
-| `github_download_release` | `helpers/acquire/http/api.rs` | `github_download_release(repo, pattern, dest, sha256) -> String` | Selects matching release asset; required digest and staged verified download. |
+| `github_download_release` | `helpers/acquire/http/api.rs` | `github_download_release(repo, pattern, dest_dir, sha256) -> String` | Selects matching release asset into dest_dir/asset_name; required digest and staged verified download. |
 | `github_latest_release` | ``helpers/acquire/http.rs`` | `github_latest_release(repo) -> String` | strips common prefixes |
 | `github_latest_tag` | ``helpers/acquire/http.rs`` | `github_latest_tag(repo) -> String` | strips common prefixes |
 | `glob_exists` | ``helpers/install/filesystem.rs`` | `glob_exists(pattern) -> bool` | true if any match |

@@ -116,8 +116,8 @@ parse checksum file
 \fBgit_checkout(url, exact_dest, full_commit) -> String\fR
 Exact destination and full 40/64-hex commit; validates origin and checkout.
 .TP
-\fBgithub_download_release(repo, pattern, dest, sha256) -> String\fR
-Selects matching release asset; required digest and staged verified download.
+\fBgithub_download_release(repo, pattern, dest_dir, sha256) -> String\fR
+Selects matching release asset into dest_dir/asset_name; required digest and staged verified download.
 .TP
 \fBgithub_latest_release(repo) -> String\fR
 strips common prefixes
