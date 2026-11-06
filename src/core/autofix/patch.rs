@@ -267,10 +267,10 @@ pub(crate) fn run_and_apply(
 
     let mut comment_prompt = child_prompt;
 
-    let extends = prompt::parse_extends(&child_source);
+    let extends = crate::recipes::parse_extends(&child_source);
     let base_path = extends
         .as_deref()
-        .and_then(|base_rel| prompt::resolve_base_path(base_rel, recipe_path, search_path));
+        .and_then(|base_rel| crate::recipes::find_related(base_rel, recipe_path, search_path));
     let base_source = match &base_path {
         Some(p) => Some(prompt::read_file(p)?),
         None => None,

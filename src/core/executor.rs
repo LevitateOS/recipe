@@ -17,56 +17,27 @@ pub(crate) use private::{
     install_with_context, remove_with_context, run_check_with_context,
 };
 
-/// Parse `//! extends: <path>` from leading comments.
-///
-/// Only looks at comment lines at the top of the file. Stops at the first
-/// non-comment, non-empty line.
-pub(crate) fn parse_extends(source: &str) -> Option<String> {
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("//! extends:") {
-            return Some(rest.trim().to_string());
-        }
-        if !trimmed.starts_with("//") {
-            break;
-        }
-    }
-    None
-}
+pub(crate) use crate::recipes::parse_extends;
 
-/// Resolve a base recipe path.
-///
-/// Tries relative to the child recipe's directory first, then the search path.
+/// Package facts `declared_metadata` reports.
+const METADATA_FIELDS: [&str; 3] = ["name", "version", "description"];
+
+/// Resolve a base recipe: beside the child first, then the search path.
 fn resolve_base_path(
     base_rel: &str,
     child_path: &Path,
     search_path: Option<&Path>,
 ) -> Result<PathBuf> {
-    // Try relative to child
-    if let Some(child_dir) = child_path.parent() {
-        let candidate = child_dir.join(base_rel);
-        if candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-
-    // Try search path
-    if let Some(sp) = search_path {
-        let candidate = sp.join(base_rel);
-        if candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-
-    anyhow::bail!(
-        "Base recipe '{}' not found (child: {}, search_path: {:?})",
-        base_rel,
-        child_path.display(),
-        search_path
-    )
+    crate::recipes::check_related_target(base_rel)
+        .map_err(|problem| anyhow::anyhow!("Base recipe '{base_rel}' {problem}"))?;
+    crate::recipes::find_related(base_rel, child_path, search_path).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Base recipe '{}' not found (child: {}, search_path: {:?})",
+            base_rel,
+            child_path.display(),
+            search_path
+        )
+    })
 }
 
 #[derive(Debug)]
@@ -181,7 +152,7 @@ pub fn declared_metadata(recipe: &Path, search_path: Option<&Path>) -> Result<De
                     _ => {
                         metadata
                             .dynamic_fields
-                            .extend(["name", "version", "description"].map(str::to_owned));
+                            .extend(METADATA_FIELDS.map(str::to_owned));
                     }
                 }
             }
@@ -210,7 +181,7 @@ pub fn declared_metadata(recipe: &Path, search_path: Option<&Path>) -> Result<De
 
 impl DeclaredMetadata {
     fn set(&mut self, name: &str, value: &rhai::Expr) -> Result<()> {
-        if !["name", "version", "description"].contains(&name) {
+        if !METADATA_FIELDS.contains(&name) {
             return Ok(());
         }
         self.fields.remove(name);

@@ -8,7 +8,7 @@ use super::output;
 use anyhow::{Context, Result, bail};
 use rhai::Engine;
 use sha2::{Digest, Sha256};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 /// Resolves dependency recipes into an invocation's shared tools destination.
 pub struct BuildDepsResolver<'a> {
@@ -86,17 +86,7 @@ impl<'a> BuildDepsResolver<'a> {
     }
 
     fn find_recipe(&self, name: &str, parent_recipe: Option<&Path>) -> Result<PathBuf> {
-        let name_path = Path::new(name);
-        if name_path.as_os_str().is_empty()
-            || name_path
-                .components()
-                .any(|part| !matches!(part, Component::Normal(_)))
-        {
-            bail!(
-                "Dependency name '{name}' must be a nonempty relative recipe name without parent traversal"
-            );
-        }
-        let filename = format!("{name}.rhai");
+        let filename = crate::recipes::dependency_file(name).map_err(anyhow::Error::msg)?;
         for directory in parent_recipe
             .and_then(Path::parent)
             .into_iter()

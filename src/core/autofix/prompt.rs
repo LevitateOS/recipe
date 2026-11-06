@@ -90,42 +90,6 @@ pub(super) fn normalize_allow_paths(cwd: &Path, cfg: &crate::AutoFixConfig) -> V
         .collect()
 }
 
-pub(super) fn parse_extends(source: &str) -> Option<String> {
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("//! extends:") {
-            return Some(rest.trim().to_string());
-        }
-        if !trimmed.starts_with("//") {
-            break;
-        }
-    }
-    None
-}
-
-pub(super) fn resolve_base_path(
-    base_rel: &str,
-    child_path: &Path,
-    search_path: Option<&Path>,
-) -> Option<PathBuf> {
-    if let Some(child_dir) = child_path.parent() {
-        let candidate = child_dir.join(base_rel);
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    if let Some(sp) = search_path {
-        let candidate = sp.join(base_rel);
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
 pub(super) fn read_file(p: &Path) -> Result<String> {
     std::fs::read_to_string(p).with_context(|| format!("Reading {}", p.display()))
 }

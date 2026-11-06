@@ -43,6 +43,7 @@ mod llm;
 mod options;
 mod process;
 mod publication;
+mod recipes;
 mod retained;
 mod temporary;
 mod worker;

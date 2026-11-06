@@ -1248,4 +1248,9 @@ Special cases: **168** at audit start.
     - The ginux-domain limit copies (B11, B12, B14, B15, B17).
     - Single-held network policy (B31), its field access (B33), the leak re-parse (B37/B38), getent polling (B39), and the exporter contract (J58, A67, A68).
 - X8 privileged result: **e2e 133/135** (135 = 134 baseline tests + the new hardlink test). The 2 failures were the image error-text regression fixed in the X8 follow-up commit. library_backend 1/1. image_producer failed on the same message regression and is fixed (verified unprivileged after the fix). The intermittent git test passed in this run.
+- [~] **X9** One recipe resolver (first part). Commit: `git log --grep "X9:"`.
+  - New leaf `src/recipes.rs` owns how recipes name each other: `parse_extends`, `check_related_target` (relative, no `..`), `find_related` (beside the referrer, then the search path; files only) and `dependency_file` (`<name>.rhai` for plain names). The executor's base lookup, input discovery, autofix's base lookup and dependency lookup all use it. The autofix copies of `parse_extends`/`resolve_base_path` are gone (C5), and discovery no longer imports the engine for `parse_extends` (C3).
+  - What discovery stages and what the worker resolves now follow the same validation (C7, I1): `deps = ["./x"]` is rejected up front with the same message on both sides. The executor no longer accepts absolute or `..` bases, which discovery never staged anyway.
+  - The metadata field list is defined once (C15).
+  - Still open in X9: worker module resolution from a staged manifest (B6/B8/I2/I15), recursive-extends mismatch (B9), one static AST walker and engine (B10/C58/I4/H22), input kinds as declared properties (B45), the `.git`/`target` exclusion copies (B47), named limits (B48, I16, C59), B52, B53, B74, B75, B78, C4, C6, E76, G43 (comment done in X15), I21, I27.
 

@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 
-use crate::core::executor::parse_extends;
+use crate::recipes::parse_extends;
 
 use crate::domain::{MAIN_RECIPE_NAME as MAIN_NAME, MAX_INPUT_NAME};
 /// Explicit assets include installation DVDs; stream bounded copies.
@@ -394,49 +394,21 @@ impl<'a> Collector<'a> {
     /// absolute host paths outright.
     fn resolve_related(&self, target: &str, referrer: &Path, kind: &str) -> Result<PathBuf> {
         let target = target.trim();
-        if target.is_empty() {
+        if let Err(problem) = crate::recipes::check_related_target(target) {
             bail!(
-                "input preparation failure: empty {kind} target in {} \
-                 (declare the base/module path explicitly)",
+                "input preparation failure: {kind} target {target:?} in {} {problem} \
+                 (use a path relative to the recipe or the recipes search path)",
                 referrer.display()
             );
         }
-        if target.starts_with('/') {
-            bail!(
-                "input preparation failure: {kind} target {target:?} in {} is an absolute host path \
-                 (host checkout paths never enter the domain; use a path relative to the recipe \
-                 or the recipes search path)",
-                referrer.display()
-            );
-        }
-        if Path::new(target)
-            .components()
-            .any(|component| component == std::path::Component::ParentDir)
-        {
-            bail!(
-                "input preparation failure: {kind} target {target:?} in {} escapes with `..` \
-                 (keep base/module paths inside the recipe tree)",
-                referrer.display()
-            );
-        }
-        if let Some(parent) = referrer.parent() {
-            let candidate = parent.join(target);
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
-        }
-        if let Some(search) = self.search_path {
-            let candidate = search.join(target);
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
-        }
-        bail!(
-            "input preparation failure: {kind} target {target:?} from {} not found \
-             (tried the recipe directory and {:?}; only declared files are staged)",
-            referrer.display(),
-            self.search_path,
-        )
+        crate::recipes::find_related(target, referrer, self.search_path).with_context(|| {
+            format!(
+                "input preparation failure: {kind} target {target:?} from {} not found \
+                 (tried the recipe directory and {:?}; only declared files are staged)",
+                referrer.display(),
+                self.search_path,
+            )
+        })
     }
 
     fn finish(self, recipe_stem: String) -> Result<Discovered> {
@@ -611,12 +583,12 @@ fn static_references(source: &str) -> Result<Vec<(String, bool)>> {
         .compile(source)
         .context("input preparation failure: invalid Rhai source")?;
     let mut references = Vec::new();
-    let mut invalid = None;
+    let mut invalid: Option<String> = None;
     ast.walk(&mut |nodes| {
         if let Some(ASTNode::Stmt(Stmt::Import(import, _))) = nodes.last() {
             match &import.0 {
                 Expr::StringConstant(path, _) => references.push((path.to_string(), true)),
-                _ => invalid = Some("dynamic import cannot be prepared; use a literal module path"),
+                _ => invalid = Some("dynamic import cannot be prepared; use a literal module path".into()),
             }
         }
         true
@@ -629,11 +601,15 @@ fn static_references(source: &str) -> Result<Vec<(String, bool)>> {
                         for item in items {
                             match item {
                                 Expr::StringConstant(name, _) => {
-                                    references.push((format!("{name}.rhai"), false))
+                                    match crate::recipes::dependency_file(name) {
+                                        Ok(file) => references.push((file, false)),
+                                        Err(problem) => invalid = Some(problem),
+                                    }
                                 }
                                 _ => {
                                     invalid = Some(
-                                        "dependency names must be literal strings for input preparation",
+                                        "dependency names must be literal strings for input preparation"
+                                            .into(),
                                     )
                                 }
                             }
@@ -641,7 +617,8 @@ fn static_references(source: &str) -> Result<Vec<(String, bool)>> {
                     }
                     _ => {
                         invalid = Some(
-                            "dependency declarations must be literal arrays for input preparation",
+                            "dependency declarations must be literal arrays for input preparation"
+                                .into(),
                         )
                     }
                 }
