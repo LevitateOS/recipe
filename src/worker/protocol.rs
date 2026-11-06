@@ -238,17 +238,21 @@ impl Reason {
 
 /// Largest saved state the next request can carry for these options: the
 /// frame bound minus a request with the same options and the longest id and
-/// cleanup reason the protocol allows.
+/// cleanup reason the protocol allows. The worst case is measured, not sent,
+/// so it is not validated (no real request has both force options and a
+/// cleanup reason).
 pub fn restored_state_budget(options: &InvocationOptions) -> Result<usize, ProtocolError> {
-    let request = FramePayload::Request(RequestPayload {
+    let request = RequestPayload {
         invocation_id: "x".repeat(MAX_INVOCATION_ID),
         operation: Operation::Install,
         persist_state: true,
         cleanup_reason: Some("x".repeat(MAX_CLEANUP_REASON)),
         options: options.clone(),
         restored_states: Default::default(),
-    });
-    Ok(MAX_FRAME_LEN.saturating_sub(encode_message(u32::MAX, &request)?.len()))
+    };
+    let payload = serde_json::to_vec(&request)
+        .map_err(|e| ProtocolError::PayloadInvalid(format!("measure request: {e}")))?;
+    Ok(MAX_FRAME_LEN.saturating_sub(HEADER_LEN + payload.len()))
 }
 
 /// Longest cleanup reason a request may carry.
