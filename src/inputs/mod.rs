@@ -1,4 +1,4 @@
-//! Invocation input preparation (R05): stage everything a Ginux domain needs.
+//! Invocation input preparation: stage everything a Ginux domain needs.
 //!
 //! Given a recipe path and an operation, [`prepare_invocation`] assembles the
 //! supported invocation input set the worker resolves inside the domain:
@@ -9,15 +9,14 @@
 //!   directory first and the executor search path second,
 //! - caller-supplied extra inputs (assets, declared source closure, caches),
 //!
-//! and renders the domain-facing artifacts R06 consumes: an invocation id,
+//! and renders the domain-facing artifacts launch consumes: an invocation id,
 //! the allowlisted environment (interfaces §5), and the domain config text
 //! (interfaces §2). Nothing staged embeds an absolute host checkout path or
 //! a secret: host files are selected explicitly, copied under relative
 //! `/inputs/NAME` domain paths, and referenced only by content hash.
 //!
-//! What this does NOT do (owned by later tasks): domain launch and channel
-//! transport (R06), retained storage backing and generations (G11/G12a),
-//! export of results (G13/R08). Literal dependency and module closures preserve
+//! Launch, channel transport, retained storage and result export live in
+//! `launch`, `retained` and `publication`. Literal dependency and module closures preserve
 //! their relative directory layout. Unsupported input discovery fails with an explicit error
 //! instead of silently staging the wrong bytes.
 //!
@@ -36,11 +35,9 @@ mod root;
 
 pub(crate) use root::{prepare_root, seed_target};
 
-pub use config::{DomainConfig, config_text};
-pub use discover::{
-    ExtraInput, InputKind, MAIN_NAME_DOMAIN, StagedInput, discover_inputs, hash_file,
-};
-pub use env::{allowlisted_env, invocation_id, validate_invocation_id};
+pub(crate) use config::DomainConfig;
+pub(crate) use discover::{ExtraInput, InputKind, MAIN_NAME_DOMAIN, StagedInput, discover_inputs};
+pub(crate) use env::{allowlisted_env, invocation_id, validate_invocation_id};
 
 use std::path::{Path, PathBuf};
 
@@ -59,13 +56,11 @@ const SUPPORTED_OPERATIONS: &[&str] = &[
     "is_acquired",
 ];
 
-/// Staged invocation inputs; R06 verifies and materializes the selected image
+/// Staged invocation inputs; launch verifies and materializes the selected image
 /// and worker into a fresh root before launching Ginux.
 ///
 /// The staging directory is a fresh per-invocation temp dir holding one file
-/// per regular input under an internal indexed name, plus `manifest.txt` (G10-format
-/// `INPUT:` lines: domain path, sha256, size, mode), `sources.txt`
-/// (domain NAME `<-` referenced-as map), `config.toml`, and `env.txt`.
+/// per regular input under an internal indexed name plus `config.toml`.
 /// The temp dir lives as long as this value does.
 #[derive(Debug)]
 pub struct PreparedInvocation {
@@ -77,10 +72,6 @@ pub struct PreparedInvocation {
     pub recipe_digest: String,
     /// Staged inputs sorted by domain name (recipe, base, imports, extras).
     pub inputs: Vec<StagedInput>,
-    /// Allowlisted domain environment (§5), `NAME=value` pairs.
-    pub env: Vec<(String, String)>,
-    /// Domain config text the `ginux-domain` parser accepts (≤ 4096 B).
-    pub config_text: String,
     pub(crate) root_reference: String,
     pub(crate) network: network::NetworkPolicy,
     staging: crate::temporary::TemporaryDirectory,
@@ -90,15 +81,9 @@ impl PreparedInvocation {
     pub(crate) fn lease_fd(&self) -> std::os::fd::RawFd {
         self.staging.lease_fd()
     }
-    /// Fresh per-invocation staging directory holding the input files,
-    /// `manifest.txt`, `config.toml`, and `env.txt`.
+    /// Fresh per-invocation staging directory holding the input files and `config.toml`.
     pub fn staging_dir(&self) -> &Path {
         self.staging.path()
-    }
-
-    /// Domain path of the main recipe inside `/inputs`.
-    pub fn recipe_domain_path(&self) -> &'static str {
-        MAIN_NAME_DOMAIN
     }
 }
 
@@ -106,8 +91,7 @@ impl PreparedInvocation {
 ///
 /// `search_path` mirrors the executor's module search path (recipe directory
 /// is always tried first). `extra_inputs` are caller-declared assets, source
-/// closure, and caches as `NAME=host-path` selections; `extra_env` are
-/// caller-declared toolchain variables filtered against the allowlist.
+/// closure, and caches as `NAME=host-path` selections.
 /// Preparation fails explicitly on unsupported discovery (absolute host
 /// paths in `extends:`/`import`, missing/unreadable inputs, secret-bearing
 /// or non-regular files) and on any §2 limit overflow.
@@ -116,7 +100,6 @@ pub fn prepare_invocation(
     operation: &str,
     search_path: Option<&Path>,
     extra_inputs: &[ExtraInput],
-    extra_env: &[(String, String)],
     options: &crate::ExecutionOptions,
 ) -> Result<PreparedInvocation> {
     options.validate()?;
@@ -124,7 +107,7 @@ pub fn prepare_invocation(
     let discovered = discover_inputs(recipe, search_path, extra_inputs)?;
 
     let invocation_id = invocation_id(&discovered.recipe_stem)?;
-    let env = allowlisted_env(&invocation_id, extra_env)?;
+    let env = allowlisted_env(&invocation_id)?;
 
     let network = network::NetworkPolicy::resolve(options)?;
     let config = DomainConfig::for_invocation(&invocation_id, MAIN_NAME_DOMAIN, &env, options)?
@@ -155,27 +138,10 @@ pub fn prepare_invocation(
         if std::io::copy(&mut source.by_ref().take(input.size + 1), &mut target)? != input.size {
             bail!("input changed size: {}", input.name);
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(input.mode))?;
-        }
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(input.mode))?;
     }
-    let manifest = render_manifest(&discovered.inputs);
-    std::fs::write(staging.path().join("manifest.txt"), &manifest)?;
-    let mut sources =
-        String::from("# domain NAME <- referenced-as (R06/I02 layout reconstruction)\n");
-    for input in &discovered.inputs {
-        sources.push_str(&format!("{} <- {}\n", input.name, input.referenced_as));
-    }
-    std::fs::write(staging.path().join("sources.txt"), &sources)?;
     std::fs::write(staging.path().join("config.toml"), &config_text)?;
-    std::fs::write(
-        staging.path().join("env.txt"),
-        env.iter()
-            .map(|(name, value)| format!("{name}={value}\n"))
-            .collect::<String>(),
-    )?;
 
     reject_host_leak(&config_text, &env, staging.path(), &discovered.host_dirs)?;
 
@@ -184,8 +150,6 @@ pub fn prepare_invocation(
         operation: operation.to_string(),
         recipe_digest: discovered.recipe_digest,
         inputs: discovered.inputs,
-        env,
-        config_text,
         root_reference: config.root_reference().to_owned(),
         network,
         staging,
@@ -196,11 +160,10 @@ pub fn prepare_invocation(
 fn normalize_operation(operation: &str) -> Result<&'static str> {
     match operation {
         "install" | "remove" | "cleanup" | "is_installed" | "is_built" | "is_acquired" => {
-            Ok(SUPPORTED_OPERATIONS
+            Ok(SUPPORTED_OPERATIONS[SUPPORTED_OPERATIONS
                 .iter()
-                .find(|op| **op == operation)
-                .copied()
-                .unwrap_or("install"))
+                .position(|op| *op == operation)
+                .expect("matched arm lists supported operations")])
         }
         "isinstalled" => Ok("is_installed"),
         "isbuilt" => Ok("is_built"),
@@ -212,27 +175,6 @@ fn normalize_operation(operation: &str) -> Result<&'static str> {
     }
 }
 
-/// G10-format manifest: domain paths plus content hashes, no host paths.
-fn render_manifest(inputs: &[StagedInput]) -> String {
-    let mut out = String::new();
-    let mut total = 0u64;
-    for input in inputs {
-        total += input.size;
-        out.push_str(&format!(
-            "INPUT: path=/inputs/{} sha256={} size={} mode={:04o} kind={:?}\n",
-            input.name,
-            hex::encode(input.sha256),
-            input.size,
-            input.mode,
-            input.kind,
-        ));
-    }
-    out.push_str(&format!(
-        "INPUTS: packaged={} total={total}\n",
-        inputs.len()
-    ));
-    out
-}
 
 /// Last-line defense over actual path values, after the field owners validate
 /// domain roots and allowlisted environment. Component prefixes distinguish

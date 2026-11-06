@@ -50,7 +50,6 @@ pub(crate) fn install_once(
         &compiled.recipe_path,
         compiled.base_dir.as_deref(),
         Some(build_dir),
-        Some(&exec.tools_prefix().map_err(InstallAttemptError::Fatal)?),
         defines,
         &exec.options(),
     );
@@ -178,7 +177,6 @@ pub(crate) fn install_once(
         Some(
             resolve_deps(
                 engine,
-                build_dir,
                 search_path,
                 defines,
                 &deps,
@@ -277,7 +275,6 @@ pub(crate) fn install_once(
             Some(
                 resolve_deps(
                     engine,
-                    build_dir,
                     search_path,
                     defines,
                     &build_deps,

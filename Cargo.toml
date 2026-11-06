@@ -20,21 +20,18 @@ path = "src/bin/recipe.rs"
 # Pinned: extends mechanism relies on AST += merge semantics (child shadows base let bindings)
 rhai = { version = "=1.19.0", features = ["sync", "serde", "internals"] }
 anyhow = "1"
-clap = { version = "4", features = ["derive", "env"] }
+clap = { version = "4", features = ["derive"] }
 sha2 = "0.10"
-sha3 = "0.10"
 blake3 = "1.5"
 toml = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 hex = "0.4"
 tempfile = "3"
-num_cpus = "1.16"
 glob = "0.3"
 dirs = "5"
-ureq = { version = "2", features = ["json", "native-certs"] }
+ureq = { version = "2", features = ["native-certs"] }
 serde_json = "1"
 fs2 = "0.4"
-semver = "1"
 walkdir = "2"
 owo-colors = "4"
 indicatif = "0.17"

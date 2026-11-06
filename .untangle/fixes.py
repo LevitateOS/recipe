@@ -168,3 +168,26 @@ J_ASSIGN = {
 for _f in FIXES:
     if _f["key"] in J_ASSIGN:
         _f["ids"] += " " + J_ASSIGN[_f["key"]]
+
+# Reassignments made while applying fixes (the log must match what was done).
+MOVES = {
+    # X1 → later fixes that rewrite the same code anyway.
+    "A43": "X3", "A79": "X7", "A83": "X4", "B68": "X4", "C69": "X10", "I19": "X10", "I20": "X10",
+    "I21": "X9", "E38": "X11", "E66": "X12", "E60": "X14", "E74": "X11", "E94": "X14", "E95": "X14", "E96": "X14",
+}
+NEW_LEAVE = [
+    ("A81", "`RecipeEngine::launcher()`'s `GINUX_BIN` fallback is the library default; `tests/library_backend.rs` exercises it (the audit only checked the CLI)."),
+    ("E41", "The string helpers are not pass-throughs: Rhai's built-in `trim`/`replace` mutate in place and return `()`, while these return new strings that recipes rely on."),
+]
+_moved = {}
+for _f in FIXES:
+    _keep = []
+    for _i in ids(_f["ids"]):
+        if _i in MOVES or _i in dict(NEW_LEAVE):
+            _moved[_i] = MOVES.get(_i)
+        else:
+            _keep.append(_i)
+    _f["ids"] = " ".join(_keep)
+for _i, _k in MOVES.items():
+    next(f for f in FIXES if f["key"] == _k)["ids"] += " " + _i
+LEAVE += NEW_LEAVE

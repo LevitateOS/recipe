@@ -20,7 +20,7 @@
 //! - The private entry invokes the shared executor directly; it never selects
 //!   a public backend. Worker environment values do not authorize host execution.
 //!
-//! Failure mapping (R03): the engine's [`InstallAttemptError`] shape is
+//! Failure mapping: the engine's [`InstallAttemptError`] shape is
 //! preserved through [`install_with_context`], so an unrecoverable engine
 //! failure reports `fatal: true` while a named phase failure reports
 //! `fatal: false` with its phase and reason (`auto.<phase>.failure`). Other
@@ -110,15 +110,13 @@ fn install_diagnostics(channel: &SharedChannel) -> Result<()> {
 /// Bounded wait for one checkpoint acknowledgement (§4: 300 s default).
 const ACK_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Recipe inputs the worker resolves locally (R05 owns prepared domain inputs;
-/// until then the harness passes these the same way a domain config would).
+/// Recipe location and build directory inside the prepared domain.
 struct LocalConfig {
     /// Recipe file after the private command marker (argv[2]).
     recipe: PathBuf,
     /// Coordinator-prepared writable build directory.
     build_dir: PathBuf,
-    /// Module/extends search path (`$RECIPE_WORKER_RECIPES` or the recipe's
-    /// own directory).
+    /// Module/extends search path: the prepared inputs root holding the recipe.
     search_path: PathBuf,
 }
 
@@ -138,13 +136,10 @@ impl LocalConfig {
                 build_dir.display()
             );
         }
-        let search_path = match std::env::var_os("RECIPE_WORKER_RECIPES") {
-            Some(p) => PathBuf::from(p),
-            None => recipe
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| PathBuf::from(".")),
-        };
+        let search_path = recipe
+            .parent()
+            .context("worker recipe has no parent directory")?
+            .to_path_buf();
         Ok(Self {
             recipe,
             build_dir,
@@ -253,7 +248,7 @@ pub fn run_worker() -> Result<()> {
         terminal: false,
     }));
     install_diagnostics(&channel)?;
-    crate::logging::set_machine_events(request.options.execution.machine_events);
+    crate::core::output::set_machine_events(request.options.execution.machine_events);
     crate::logging::diagnostic_line("recipe: managed worker started");
     let outcome = run_operation(&local, &request, &mut rx, &mut input, &channel, &mut output);
     let mut channel = channel
@@ -320,7 +315,7 @@ fn recv_request(rx: &mut FrameReceiver, input: &mut impl Read) -> Result<Request
     }
 }
 
-/// Run the requested operation through the existing engine under the F04
+/// Run the requested operation through the existing engine under the
 /// worker seam, reporting every checkpoint and waiting for each ack.
 ///
 /// Returns the final-ctx summary for the result frame. Engine, request, and
@@ -447,10 +442,6 @@ fn run_operation(
     ctx_json(&final_ctx).map_err(|err| EngineFailure::workload(operation, err))
 }
 
-/// Build the engine exactly like the host CLI does (same limits and helpers),
-/// plus module resolution against the worker search path. No autofix/LLM: the
-/// host coordinator owns retry policy (R11), and no credentials cross into
-/// the worker.
 /// Resolve relative to the importing module, then the prepared recipe root.
 /// Pass an absolute path to Rhai so nested modules retain their source directory.
 struct PreparedModules {
@@ -596,7 +587,6 @@ fn wait_ack(rx: &mut FrameReceiver, input: &mut impl Read, checkpoint_no: u64) -
 /// Bounded readability wait on stdin (fd 0), the host→worker stream.
 /// Retries on `EINTR`; anything else that is not data is an explicit error —
 /// a worker that blocks forever on a dead host is a hang, not a result.
-#[cfg(unix)]
 fn wait_readable(timeout: Duration) -> Result<()> {
     let mut pfd = libc::pollfd {
         fd: 0,
@@ -624,13 +614,6 @@ fn wait_readable(timeout: Duration) -> Result<()> {
         // Closed/Truncated explicitly.
         return Ok(());
     }
-}
-
-/// Non-Unix fallback: block in `recv`, which still reports EOF/truncation
-/// explicitly but has no timeout bound.
-#[cfg(not(unix))]
-fn wait_readable(_timeout: Duration) -> Result<()> {
-    Ok(())
 }
 
 /// Best-effort stream termination when the request itself is unusable:

@@ -20,11 +20,9 @@ pub(crate) fn scope(
     recipe: &Path,
     base_dir: Option<&Path>,
     build_dir: Option<&Path>,
-    tools_prefix: Option<&Path>,
     defines: &[(String, String)],
     options: &crate::ExecutionOptions,
 ) -> PreparedScope {
-    let scope = Scope::new();
     let paths: Map = [
         (
             "recipe_dir".into(),
@@ -51,11 +49,7 @@ pub(crate) fn scope(
         ),
         (
             "tools".into(),
-            tools_prefix
-                .unwrap_or(Path::new(crate::inputs::TOOLS_DOMAIN_PATH))
-                .to_string_lossy()
-                .to_string()
-                .into(),
+            crate::inputs::TOOLS_DOMAIN_PATH.into(),
         ),
         ("inputs".into(), "/inputs".into()),
         ("output".into(), "/out".into()),
@@ -93,7 +87,6 @@ pub(crate) fn scope(
     ]
     .into();
     PreparedScope {
-        bindings: scope,
         runtime,
         defines: defines.to_vec(),
     }
@@ -101,7 +94,6 @@ pub(crate) fn scope(
 
 /// Canonical invocation inputs are independent of recipe-specific defines.
 pub(crate) struct PreparedScope {
-    bindings: Scope<'static>,
     runtime: Map,
     defines: Vec<(String, String)>,
 }
@@ -127,10 +119,10 @@ impl<'a> Runtime<'a> {
     ) -> Result<Self> {
         validate_api(ast)?;
         let PreparedScope {
-            bindings: mut scope,
             mut runtime,
             defines,
         } = prepared;
+        let mut scope = Scope::new();
         for (key, value) in defines {
             if key == "RUNTIME" {
                 bail!("RUNTIME is an engine-owned invocation input");
@@ -138,9 +130,6 @@ impl<'a> Runtime<'a> {
             scope.push_constant(key, value);
         }
         let expected_runtime = {
-            if std::env::consts::OS != "linux" {
-                bail!("Recipe currently supports Linux execution only");
-            }
             let paths = runtime["paths"].clone().cast::<Map>();
             if paths["build"]
                 .clone()

@@ -9,7 +9,7 @@ use std::process::Command;
 /// Check if there's enough disk space for a download.
 ///
 /// # Arguments
-/// * `path` - Directory to check (creates if doesn't exist)
+/// * `path` - Directory to check (falls back to its parent when missing)
 /// * `required_bytes` - Required space in bytes
 ///
 /// # Returns
@@ -44,7 +44,7 @@ pub fn check_disk_space(path: &Path, required_bytes: u64) -> Result<()> {
 }
 
 /// Get available disk space in bytes. Returns None if check fails.
-pub fn get_available_space(path: &Path) -> Option<u64> {
+fn get_available_space(path: &Path) -> Option<u64> {
     // Ensure the path exists for df to work
     let check_path = if path.exists() {
         path.to_path_buf()
@@ -82,24 +82,4 @@ pub fn get_available_space(path: &Path) -> Option<u64> {
     }
 
     None
-}
-
-/// Format bytes as human-readable string (e.g., "8.6 GB")
-pub fn format_bytes(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
-    const TB: u64 = GB * 1024;
-
-    if bytes >= TB {
-        format!("{:.1} TB", bytes as f64 / TB as f64)
-    } else if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.1} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{} bytes", bytes)
-    }
 }

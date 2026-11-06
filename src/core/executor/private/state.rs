@@ -23,7 +23,6 @@ pub(crate) fn check_phase_with_reason(
 /// Returns a guard for invocation-owned child environment settings.
 pub(crate) fn resolve_deps(
     engine: &Engine,
-    build_dir: &Path,
     search_path: Option<&Path>,
     defines: &[(String, String)],
     dep_names: &[String],
@@ -31,8 +30,9 @@ pub(crate) fn resolve_deps(
     exec: &mut ExecutionContext<'_>,
 ) -> Result<crate::helpers::internal::cmd::EnvironmentGuard> {
     let original_path = crate::helpers::internal::cmd::environment("PATH").unwrap_or_default();
-    let resolver = build_deps::BuildDepsResolver::new(engine, build_dir, search_path, defines);
-    let tools_prefix = resolver.resolve_with_context(dep_names, persist_enabled, exec)?;
+    let resolver = build_deps::BuildDepsResolver::new(engine, search_path, defines);
+    resolver.resolve_with_context(dep_names, persist_enabled, exec)?;
+    let tools_prefix = Path::new(crate::inputs::TOOLS_DOMAIN_PATH);
     let mut paths = vec![
         tools_prefix.join("usr/bin"),
         tools_prefix.join("usr/sbin"),

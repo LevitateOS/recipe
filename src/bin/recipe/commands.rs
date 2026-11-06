@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use levitate_recipe::{AutoFixConfig, GinuxLauncher, RecipeEngine, helpers, output};
+use levitate_recipe::{AutoFixConfig, GinuxLauncher, RecipeEngine, bin_support};
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -26,7 +26,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
         force_install: cli.force_install,
     };
     let recipes_path = cli.recipes_path;
-    output::set_machine_events(cli.machine_events);
+    bin_support::set_machine_events(cli.machine_events);
 
     if !recipes_path.exists() {
         std::fs::create_dir_all(&recipes_path).with_context(|| {
@@ -178,9 +178,9 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 anyhow::bail!("File not found: {}", file.display());
             }
 
-            output::info(&format!("Computing hashes for {}...", file.display()));
+            bin_support::info(&format!("Computing hashes for {}...", file.display()));
 
-            let hashes = helpers::acquire::compute_hashes(&file)
+            let hashes = bin_support::compute_all_hashes(&file)
                 .with_context(|| format!("Failed to compute hashes for {}", file.display()))?;
 
             println!();
@@ -319,7 +319,7 @@ fn list_recipes(recipes_path: &Path) -> Result<()> {
     use owo_colors::OwoColorize;
 
     if !recipes_path.exists() {
-        output::info(&format!("No recipes found in {}", recipes_path.display()));
+        bin_support::info(&format!("No recipes found in {}", recipes_path.display()));
         return Ok(());
     }
 
@@ -335,7 +335,7 @@ fn list_recipes(recipes_path: &Path) -> Result<()> {
     }
 
     if !found {
-        output::info(&format!("No recipes found in {}", recipes_path.display()));
+        bin_support::info(&format!("No recipes found in {}", recipes_path.display()));
     }
 
     Ok(())

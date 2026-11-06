@@ -1,20 +1,12 @@
 //! Human-readable output rendering for recipe operations.
 
-use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use owo_colors::OwoColorize;
-use std::time::Duration;
 
 use crate::core::events::RecipeHookEvent;
 
 /// Print an action header (blue, bold)
 /// Example: "==> Installing ripgrep"
 pub fn action(message: &str) {
-    crate::logging::diag!("{}", message.bold());
-}
-
-/// Print an action with package counter (blue, bold)
-/// Example: "(1/5) Installing ripgrep"
-pub fn action_numbered(_current: usize, _total: usize, message: &str) {
     crate::logging::diag!("{}", message.bold());
 }
 
@@ -131,8 +123,7 @@ fn sentence_for_event(hook: &str, status: &str, details: &str) -> String {
         ),
     };
 
-    let enforced_base = enforce_verb_in_sentence(&base, verb);
-    let styled_base = colorize_event_sentence(status, &enforced_base, verb);
+    let styled_base = colorize_event_sentence(status, &base, verb);
 
     match passthrough_detail(details) {
         Some(extra) => format!("{styled_base} {}", extra.dimmed()),
@@ -143,21 +134,6 @@ fn sentence_for_event(hook: &str, status: &str, details: &str) -> String {
 fn passthrough_detail(details: &str) -> Option<&str> {
     let d = details.trim();
     if d.is_empty() { None } else { Some(d) }
-}
-
-fn enforce_verb_in_sentence(sentence: &str, verb: &str) -> String {
-    if contains_word(sentence, verb) {
-        sentence.to_string()
-    } else {
-        format!("For this step, we {verb}. {sentence}")
-    }
-}
-
-fn contains_word(sentence: &str, word: &str) -> bool {
-    sentence
-        .split(|c: char| !c.is_ascii_alphabetic())
-        .filter(|token| !token.is_empty())
-        .any(|token| token.eq_ignore_ascii_case(word))
 }
 
 fn colorize_event_sentence(status: &str, sentence: &str, verb: &str) -> String {
@@ -223,72 +199,4 @@ fn find_word_span(sentence: &str, word: &str) -> Option<(usize, usize)> {
     }
 
     None
-}
-
-/// Print package status in list output.
-pub fn list_item(name: &str, status: &str, is_installed: bool) {
-    if is_installed {
-        crate::logging::diag!("  {} {}", name.green(), status.dimmed());
-    } else {
-        crate::logging::diag!("  {} {}", name, status.dimmed());
-    }
-}
-
-/// Create a download progress bar
-pub fn download_progress(total_size: u64) -> ProgressBar {
-    let pb = ProgressBar::new(total_size);
-    pb.set_draw_target(ProgressDrawTarget::stderr());
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("     {spinner:.cyan} [{bar:30.cyan/dim}] {bytes}/{total_bytes} ({eta})")
-            .unwrap()
-            .progress_chars("━╸━"),
-    );
-    pb.enable_steady_tick(Duration::from_millis(100));
-    pb
-}
-
-/// Create an indeterminate progress bar (spinner) for build phase
-pub fn build_spinner(message: &str) -> ProgressBar {
-    let pb = ProgressBar::new_spinner();
-    pb.set_draw_target(ProgressDrawTarget::stderr());
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .template("  {spinner:.cyan} {msg}")
-            .unwrap()
-            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-    );
-    pb.set_message(message.to_string());
-    pb.enable_steady_tick(Duration::from_millis(80));
-    pb
-}
-
-/// Create a simple spinner for operations
-pub fn spinner(message: &str) -> ProgressBar {
-    let pb = ProgressBar::new_spinner();
-    pb.set_draw_target(ProgressDrawTarget::stderr());
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .template("     {spinner:.cyan} {msg}")
-            .unwrap()
-            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-    );
-    pb.set_message(message.to_string());
-    pb.enable_steady_tick(Duration::from_millis(80));
-    pb
-}
-
-/// Finish a progress bar with a success message
-pub fn progress_success(pb: ProgressBar, message: &str) {
-    pb.finish_with_message(format!("{}", message.green()));
-}
-
-/// Finish a progress bar with a failure message
-pub fn progress_fail(pb: ProgressBar, message: &str) {
-    pb.finish_with_message(format!("{}", message.red()));
-}
-
-/// Finish a progress bar and clear it
-pub fn progress_done(pb: ProgressBar) {
-    pb.finish_and_clear();
 }

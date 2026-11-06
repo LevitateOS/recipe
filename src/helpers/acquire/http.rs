@@ -17,7 +17,7 @@ const DEFAULT_HTTP_TIMEOUT_SECS: u64 = 30;
 
 /// Get HTTP timeout from environment variable or use default.
 /// Cached for performance (only reads env var once).
-pub(crate) fn get_http_timeout() -> Duration {
+fn get_http_timeout() -> Duration {
     static TIMEOUT: OnceLock<Duration> = OnceLock::new();
     *TIMEOUT.get_or_init(|| {
         let secs = std::env::var("RECIPE_HTTP_TIMEOUT")
@@ -40,7 +40,7 @@ fn get_github_token() -> Option<String> {
 
 /// Create a GitHub API request builder with proper headers and optional auth.
 fn github_request(url: &str) -> Result<ureq::Request, Box<EvalAltResult>> {
-    let mut request = super::super::http_request(url, get_http_timeout())?
+    let mut request = super::http_request(url, get_http_timeout())?
         .set("Accept", "application/vnd.github.v3+json")
         .set("User-Agent", "recipe-package-manager");
 
@@ -72,7 +72,7 @@ fn response_json(response: ureq::Response) -> Result<serde_json::Value, Box<Eval
 
 /// Fetch content from a URL (GET request)
 pub fn http_get(url: &str) -> Result<String, Box<EvalAltResult>> {
-    let response = super::super::http_request(url, get_http_timeout())?
+    let response = super::http_request(url, get_http_timeout())?
         .call()
         .map_err(|error| format!("HTTP GET failed: {error}"))?;
     response_text(response)
@@ -86,15 +86,7 @@ pub fn http_get(url: &str) -> Result<String, Box<EvalAltResult>> {
 /// # Returns
 /// The latest release tag name (often a version like "14.1.0" or "v14.1.0")
 pub fn github_latest_release(repo: &str) -> Result<String, Box<EvalAltResult>> {
-    github_latest_release_with_base(repo, GITHUB_API_BASE)
-}
-
-/// Internal: Get latest release with configurable base URL (for testing)
-pub(crate) fn github_latest_release_with_base(
-    repo: &str,
-    base_url: &str,
-) -> Result<String, Box<EvalAltResult>> {
-    let url = format!("{}/repos/{}/releases/latest", base_url, repo);
+    let url = format!("{}/repos/{}/releases/latest", GITHUB_API_BASE, repo);
 
     let response = github_request(&url)?.call().map_err(|e| {
         // Handle rate limiting specifically
@@ -123,15 +115,7 @@ pub(crate) fn github_latest_release_with_base(
 /// # Returns
 /// The latest tag name
 pub fn github_latest_tag(repo: &str) -> Result<String, Box<EvalAltResult>> {
-    github_latest_tag_with_base(repo, GITHUB_API_BASE)
-}
-
-/// Internal: Get latest tag with configurable base URL (for testing)
-pub(crate) fn github_latest_tag_with_base(
-    repo: &str,
-    base_url: &str,
-) -> Result<String, Box<EvalAltResult>> {
-    let url = format!("{}/repos/{}/tags", base_url, repo);
+    let url = format!("{}/repos/{}/tags", GITHUB_API_BASE, repo);
 
     let response = github_request(&url)?.call().map_err(|e| {
         // Handle rate limiting specifically
@@ -185,20 +169,9 @@ pub fn github_download_release(
     dest_dir: &str,
     sha256: &str,
 ) -> Result<String, Box<EvalAltResult>> {
-    super::super::download::validate_sha256(sha256)?;
-    github_download_release_impl(repo, asset_pattern, dest_dir, GITHUB_API_BASE, sha256)
-}
-
-/// Internal implementation with configurable base URL (for testing)
-fn github_download_release_impl(
-    repo: &str,
-    asset_pattern: &str,
-    dest_dir: &str,
-    base_url: &str,
-    sha256: &str,
-) -> Result<String, Box<EvalAltResult>> {
+    super::download::validate_sha256(sha256)?;
     // Get latest release info
-    let url = format!("{}/repos/{}/releases/latest", base_url, repo);
+    let url = format!("{}/repos/{}/releases/latest", GITHUB_API_BASE, repo);
     let response = github_request(&url)?.call().map_err(|e| {
         if let ureq::Error::Status(403, _) = e {
             return "GitHub API rate limit exceeded. Try again later.".into();
@@ -255,43 +228,8 @@ fn github_download_release_impl(
     // Download the asset
     let dest_path = Path::new(dest_dir).join(asset_name);
 
-    super::super::download::download(download_url, &dest_path.to_string_lossy(), sha256, false)?;
+    super::download::download(download_url, &dest_path.to_string_lossy(), sha256, false)?;
 
     output::detail(&format!("downloaded {}", asset_name));
     Ok(dest_path.to_string_lossy().to_string())
-}
-
-/// Get release assets metadata for a GitHub repository
-///
-/// Returns a list of asset names and download URLs for the latest release.
-/// Useful for scripting when you need to inspect available assets.
-pub fn github_release_assets(repo: &str) -> Result<Vec<(String, String)>, Box<EvalAltResult>> {
-    let url = format!("{}/repos/{}/releases/latest", GITHUB_API_BASE, repo);
-    let response = github_request(&url)?.call().map_err(|e| {
-        if let ureq::Error::Status(403, _) = e {
-            return "GitHub API rate limit exceeded. Try again later.".into();
-        }
-        if let ureq::Error::Status(404, _) = e {
-            return format!("Repository '{}' not found", repo);
-        }
-        format!("GitHub API request failed: {}", e)
-    })?;
-
-    let json = response_json(response)?;
-
-    let assets = json
-        .get("assets")
-        .and_then(|a| a.as_array())
-        .ok_or("No assets found in release")?;
-
-    let result: Vec<(String, String)> = assets
-        .iter()
-        .filter_map(|a| {
-            let name = a.get("name")?.as_str()?.to_string();
-            let url = a.get("browser_download_url")?.as_str()?.to_string();
-            Some((name, url))
-        })
-        .collect();
-
-    Ok(result)
 }

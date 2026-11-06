@@ -6,11 +6,5 @@
 mod logging;
 mod narration;
 
-pub use logging::{
-    RecipeHookSink, hook_event, hook_event_struct, set_event_sink, set_event_sink_handler,
-    set_machine_events,
-};
-pub use narration::{
-    action, action_numbered, build_spinner, detail, download_progress, error, info, list_item,
-    progress_done, progress_fail, progress_success, skip, spinner, sub_action, success, warning,
-};
+pub use logging::{hook_event, set_machine_events};
+pub use narration::{action, detail, error, info, skip, sub_action, success, warning};

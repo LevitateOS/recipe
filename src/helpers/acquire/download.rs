@@ -66,8 +66,9 @@ fn download_impl(url: &str, dest: &str, sha256: &str) -> Result<String, Box<Eval
 
     let filename = dest_path
         .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "download".to_string());
+        .expect("download() rejects destinations without a file name")
+        .to_string_lossy()
+        .to_string();
 
     let response = request(url)?
         .call()

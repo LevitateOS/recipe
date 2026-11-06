@@ -13,12 +13,6 @@ use anyhow::{Result, bail};
 /// Longest recipe-stem prefix kept in the invocation id.
 const MAX_ID: usize = 64;
 
-/// Toolchain variables R05 records as allowlisted (§5 "plus toolchain
-/// variables recorded by I01/R05"). Extra values must be slash-free
-/// literals (`gcc`) or absolute *domain* paths (`/work/...`); host paths
-/// are rejected because the domain cannot resolve them.
-const TOOLCHAIN_ENV_ALLOW: &[&str] = &["CARGO_HOME", "RUSTUP_HOME", "CC", "CXX", "MAKEFLAGS"];
-
 /// `<recipe-name>-<unix-millis>-<pid>`, `[A-Za-z0-9_-]{1,64}` (§5).
 pub fn invocation_id(recipe_stem: &str) -> Result<String> {
     let mut stem: String = recipe_stem
@@ -75,18 +69,11 @@ pub fn validate_invocation_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Build the allowlisted domain environment for `invocation_id` (§5).
-///
-/// The seven fixed entries use only domain paths and literals; `extra_env`
-/// supplies caller-declared toolchain variables filtered against
-/// [`TOOLCHAIN_ENV_ALLOW`]. Total entries ≤ 8 and each `NAME=value` ≤ 256 B
-/// (§2); anything else fails explicitly.
-pub fn allowlisted_env(
-    invocation_id: &str,
-    extra_env: &[(String, String)],
-) -> Result<Vec<(String, String)>> {
+/// Build the fixed domain environment for `invocation_id` (§5): domain paths
+/// and literals only.
+pub fn allowlisted_env(invocation_id: &str) -> Result<Vec<(String, String)>> {
     validate_invocation_id(invocation_id)?;
-    let mut env = vec![
+    Ok(vec![
         (
             "PATH".to_string(),
             format!(
@@ -97,71 +84,5 @@ pub fn allowlisted_env(
         ("RECIPE_WORKER".to_string(), "1".to_string()),
         ("RECIPE_INVOCATION".to_string(), invocation_id.to_string()),
         ("TMPDIR".to_string(), "/work/tmp".to_string()),
-    ];
-    for (name, value) in extra_env {
-        if !TOOLCHAIN_ENV_ALLOW.contains(&name.as_str()) {
-            bail!(
-                "input preparation failure: env {name:?} is not allowlisted \
-                 (want one of {TOOLCHAIN_ENV_ALLOW:?}; §5 keeps HOME, host paths, \
-                 and secrets out of the worker environment)"
-            );
-        }
-        validate_domain_value(name, value)?;
-        if env.iter().any(|(existing, _)| existing == name) {
-            bail!("input preparation failure: duplicate env entry {name:?}");
-        }
-        env.push((name.clone(), value.clone()));
-    }
-    if env.len() > 8 {
-        bail!(
-            "input preparation failure: {} env entries exceed the §2 limit of 8 × 256 B \
-             (keep the worker environment to the §5 allowlist)",
-            env.len(),
-        );
-    }
-    for (name, value) in &env {
-        let entry = format!("{name}={value}");
-        if entry.len() > 256 {
-            bail!(
-                "input preparation failure: env entry {name:?} is {} B, exceeding the §2 256 B bound \
-                 (shorten the value; entries are never truncated)",
-                entry.len(),
-            );
-        }
-    }
-    Ok(env)
-}
-
-/// Extra env values are domain literals, never host paths.
-fn validate_domain_value(name: &str, value: &str) -> Result<()> {
-    if value.is_empty() {
-        bail!("input preparation failure: env {name:?} has an empty value");
-    }
-    if value.bytes().any(|byte| byte == 0 || byte == b'\n') {
-        bail!("input preparation failure: env {name:?} contains NUL or newline");
-    }
-    if value.contains("..") {
-        bail!(
-            "input preparation failure: env {name:?} value {value:?} escapes with `..` \
-             (extra env values must be plain literals or absolute domain paths)"
-        );
-    }
-    if !value.starts_with('/') && value.contains('/') {
-        bail!(
-            "input preparation failure: env {name:?} must be a plain literal or absolute domain path"
-        );
-    }
-    if value.starts_with('/') {
-        let rooted = ["/work/", "/inputs/", "/out/", "/usr/", "/bin/"]
-            .iter()
-            .any(|prefix| value == prefix.trim_end_matches('/') || value.starts_with(prefix));
-        if !rooted {
-            bail!(
-                "input preparation failure: env {name:?} value {value:?} is an absolute path \
-                 outside /work, /inputs, /out, /usr, /bin \
-                 (host checkout paths never enter the worker environment)"
-            );
-        }
-    }
-    Ok(())
+    ])
 }

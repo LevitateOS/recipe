@@ -798,7 +798,7 @@ fn install(ctx) {
 
 #[test]
 fn managed_diagnostic_limit_drains_child_and_preserves_result() {
-    use levitate_recipe::worker::protocol::MAX_DIAGNOSTIC_BYTES;
+    use levitate_recipe::bin_support::MAX_DIAGNOSTIC_BYTES;
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
@@ -833,7 +833,7 @@ fn install(ctx) { ctx }
 
 #[test]
 fn managed_diagnostic_frame_limit_preserves_lifecycle_result() {
-    use levitate_recipe::worker::protocol::MAX_DIAGNOSTIC_FRAMES;
+    use levitate_recipe::bin_support::MAX_DIAGNOSTIC_FRAMES;
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;

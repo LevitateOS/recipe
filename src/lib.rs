@@ -25,35 +25,38 @@
 //! See README.md, WRITING_RECIPES.md and HELPERS_AUDIT.md for the current CLI,
 //! helper signatures, input/output contracts, resource limits and recovery.
 
-pub mod backend;
-#[doc(hidden)]
-pub mod cancellation;
+mod backend;
+mod cancellation;
 mod core;
+mod helpers;
+mod inputs;
+mod launch;
+mod llm;
+mod logging;
 mod options;
-pub use options::ExecutionOptions;
-pub mod helpers;
-pub mod inputs;
-pub mod launch;
 mod publication;
 mod retained;
 mod temporary;
+mod worker;
+
+pub use backend::GinuxLauncher;
+pub use core::executor::{DeclaredMetadata, declared_metadata};
+pub use options::ExecutionOptions;
 
 /// Default coordinator-owned runtime state directory.
 pub fn default_state_directory() -> anyhow::Result<std::path::PathBuf> {
     retained::default_directory()
 }
-mod llm;
-pub mod logging;
-pub mod worker;
 
-pub use backend::GinuxLauncher;
-pub use core::executor::{DeclaredMetadata, declared_metadata};
-
-pub use core::output;
-pub use logging::{
-    RECIPE_HOOK_EVENT, RecipeHookEvent, RecipeHookSink, emit_hook_event, emit_hook_event_struct,
-    make_machine_hook_event, set_event_sink, set_event_sink_handler, set_machine_events,
-};
+/// Entry points used only by this crate's own binaries and integration tests.
+#[doc(hidden)]
+pub mod bin_support {
+    pub use crate::cancellation::{install_cli_handlers, signal};
+    pub use crate::core::output::{info, set_machine_events};
+    pub use crate::helpers::internal::hash::{FileHashes, compute_all_hashes};
+    pub use crate::worker::protocol::{MAX_DIAGNOSTIC_BYTES, MAX_DIAGNOSTIC_FRAMES};
+    pub use crate::worker::{WORKER_ENTRY_ARG, run_worker};
+}
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -161,12 +164,6 @@ impl RecipeEngine {
         self
     }
 
-    /// Grant explicit outbound TCP hosts; the coordinator resolves and pins them before launch.
-    pub fn with_network_hosts(mut self, hosts: Vec<String>) -> Self {
-        self.execution.network_hosts = hosts;
-        self
-    }
-
     /// Select coordinator-owned runtime state storage.
     pub fn with_state_dir(mut self, path: Option<PathBuf>) -> Self {
         self.state_dir = path;
@@ -214,7 +211,7 @@ impl RecipeEngine {
                 recipe_path,
                 self.recipes_path.as_deref(),
                 self.persist_state,
-                self.invocation_options("manual")?,
+                self.invocation_options("manual"),
                 &self.inputs,
                 &self.build_dir,
                 self.state_dir.as_deref(),
@@ -242,7 +239,7 @@ impl RecipeEngine {
                         .autofix
                         .as_ref()
                         .expect("attempts require explicit autofix");
-                    output::warning(&format!(
+                    core::output::warning(&format!(
                         "autofix: repairing {} failure (attempt {}/{attempts})",
                         failure.phase,
                         attempt + 1
@@ -274,18 +271,11 @@ impl RecipeEngine {
             recipe_path,
             self.recipes_path.as_deref(),
             self.persist_state,
-            self.invocation_options("manual")?,
+            self.invocation_options("manual"),
             &self.inputs,
             &self.build_dir,
             self.state_dir.as_deref(),
         )
-    }
-
-    /// Clean up build artifacts
-    ///
-    /// Returns the final ctx map after cleanup.
-    pub fn cleanup(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        self.cleanup_with_reason(recipe_path, "manual")
     }
 
     /// Clean up build artifacts with an explicit reason.
@@ -297,7 +287,7 @@ impl RecipeEngine {
             recipe_path,
             self.recipes_path.as_deref(),
             self.persist_state,
-            self.invocation_options(reason)?,
+            self.invocation_options(reason),
             &self.inputs,
             &self.build_dir,
             self.state_dir.as_deref(),
@@ -311,7 +301,7 @@ impl RecipeEngine {
             recipe_path,
             self.recipes_path.as_deref(),
             self.persist_state,
-            self.invocation_options("manual")?,
+            self.invocation_options("manual"),
             &self.inputs,
             &self.build_dir,
             self.state_dir.as_deref(),
@@ -325,7 +315,7 @@ impl RecipeEngine {
             recipe_path,
             self.recipes_path.as_deref(),
             self.persist_state,
-            self.invocation_options("manual")?,
+            self.invocation_options("manual"),
             &self.inputs,
             &self.build_dir,
             self.state_dir.as_deref(),
@@ -339,26 +329,18 @@ impl RecipeEngine {
             recipe_path,
             self.recipes_path.as_deref(),
             self.persist_state,
-            self.invocation_options("manual")?,
+            self.invocation_options("manual"),
             &self.inputs,
             &self.build_dir,
             self.state_dir.as_deref(),
         )
     }
 
-    fn invocation_options(
-        &self,
-        cleanup_reason: &str,
-    ) -> Result<worker::protocol::InvocationOptions> {
-        Ok(worker::protocol::InvocationOptions {
+    fn invocation_options(&self, cleanup_reason: &str) -> worker::protocol::InvocationOptions {
+        worker::protocol::InvocationOptions {
             defines: self.defines.clone(),
             cleanup_reason: cleanup_reason.to_owned(),
             execution: self.execution.clone(),
-        })
-    }
-
-    /// Get the recipes path
-    pub fn recipes_path(&self) -> Option<&Path> {
-        self.recipes_path.as_deref()
+        }
     }
 }

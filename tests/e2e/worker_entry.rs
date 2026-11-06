@@ -55,7 +55,7 @@ fn private_worker_rejects_missing_bootstrap_before_recipe_setup() {
     let output = recipe_command(&recipes)
         .env_remove("RECIPE_WORKER")
         .env_remove("RECIPE_INVOCATION")
-        .arg(levitate_recipe::worker::WORKER_ENTRY_ARG)
+        .arg(levitate_recipe::bin_support::WORKER_ENTRY_ARG)
         .arg(recipes.join("check.rhai"))
         .output()
         .unwrap();

@@ -175,7 +175,7 @@ X1 removes about 80 items with little risk and makes rustc report the remaining 
 
 Make every module except the deliberate library API (`RecipeEngine`, options, errors) private or `pub(crate)`, so rustc reports dead code. Then delete it: unused functions and re-exports, dead fields, unreachable branches, non-unix fallbacks for a linux-only crate, transitional ticket scaffolding and stale doc references, and unused Cargo deps and features.
 
-- **Solves:** 79 problems (5 hidden, 4 needless, 62 surplus, 8 special)
+- **Solves:** 62 problems (5 hidden, 4 needless, 45 surplus, 8 special)
 - **Done when:** `cargo build --all-targets` passes with no `dead_code`/`unused` allows added. None of the listed items exist. `lib.rs` exports only the intended API. `sha3`, `num_cpus` and `semver` and the clap `env`/ureq `json` features are gone or used.
 - **Depends on:** none
 
@@ -184,22 +184,17 @@ Make every module except the deliberate library API (`RecipeEngine`, options, er
 - **A17** [surplus] `src/inputs/mod.rs:82-84,99`: `PreparedInvocation::config_text`/`env` are kept in memory and also written to disk. Launch reads only the file. The fields are used only by `examples/prepare_inputs_demo.rs:25`, and `recipe_domain_path()` by nothing.
 - **A41** [surplus] `src/worker/run.rs:629-634` and `src/backend.rs:224-228` are non-unix fallbacks in a crate that cannot build off unix (`libc::prctl`, `renameat2` used unconditionally).
 - **A42** [special] `src/worker/run.rs:450-455`: a misattached doc ("Build the engine exactly like the host CLI does") claims host/worker parity that nothing enforces.
-- **A43** [surplus] `src/launch.rs:539-544` is an unreachable `Request`/`Ack` arm, already rejected by `check_direction` at `:447-454`.
 - **A44** [surplus] `src/launch.rs:103-115,355`: `LaunchReport::{result_signal,result_generation,log_tail}` are never read. `read_log_tail` re-reads a log whose tail the drain thread already computed (`:935-939`).
 - **A45** [surplus] `src/launch.rs:86,124`: `pub run_domain`/`pub LaunchReport` in a `pub mod`, with `backend.rs:63` as the only caller.
 - **A78** [surplus] `src/logging.rs:18-30`, `src/lib.rs:53-56`: `emit_hook_event`, `emit_hook_event_struct`, `set_machine_events`, `RECIPE_HOOK_EVENT`, `RecipeHookEvent` and `make_machine_hook_event` are pass-throughs/aliases of `core::output`/`core::events`, re-exported twice. Most have no users. The bin calls `output::set_machine_events` (`commands.rs:29`) while the worker calls `logging::set_machine_events` (`run.rs:256`).
-- **A79** [surplus] `src/lib.rs:41-44` `default_state_directory` only forwards to `retained::default_directory` (one caller, `src/bin/recipe/commands.rs:250`).
 - **A80** [surplus] `src/lib.rs:164-168` `with_network_hosts`, `:287-289` `cleanup` (no reason) and `:360-363` `recipes_path()` have no callers anywhere.
-- **A81** [surplus] `src/lib.rs:130-136`: `launcher()` falls back to `GinuxLauncher::from_env()`, though the CLI always sets one (`commands.rs:236,257`).
 - **A82** [surplus] `src/backend.rs:40-41,106`: a redundant `{ … }` block and `let launcher = &self.path;` alias left over from a removed backend switch.
-- **A83** [surplus] `src/options.rs:269-270,312-322`: `target_os`/`target_arch` are CLI knobs (`src/bin/recipe/cli.rs:29-34`) that accept only native linux/x86_64. `src/core/invocation.rs:67-70` uses `std::env::consts` anyway.
 - **A88** [needless] `src/lib.rs:29-30,47`: `cancellation` and `worker` are `pub` only so the bin can reach `install_cli_handlers`, `signal`, `run_worker` and `WORKER_ENTRY_ARG`, which makes the whole wire protocol public API.
 - **A91** [hidden] `src/worker/mod.rs:1-6`, `src/worker/protocol.rs:36,79-80`, `src/worker/run.rs:23,113-114,450-453` and `src/launch.rs:3-7,94,106` carry ticket labels (R01…G10) and "transport v2" (the actual version is v6). The docs record a lineage the code no longer has.
 - **C53** [special] `src/core/invocation.rs:140-142` bails off-linux, duplicating `src/options.rs:51-61` (already run via `src/worker/protocol.rs:446`).
 - **C62** [surplus] `src/core/executor/private/context.rs:56-62`: `tools_prefix_override()` and `tools_prefix()` always return `TOOLS_DOMAIN_PATH`, and `src/core/invocation.rs:53-58` defaults `None` to the same constant. These are three indirections, and `flow.rs:53` and `actions.rs:30,103,175` use them inconsistently.
 - **C63** [surplus] `src/core/invocation.rs:103-107,126`: `PreparedScope.bindings` is always `Scope::new()`.
 - **C68** [surplus] `src/core/build_deps.rs:42,45`: both `prepare_work_root` calls are no-ops (`context.rs:92`).
-- **C69** [surplus] `src/core/executor/private/flow.rs:352`: `if needs_install {` is always true (it already returned at `:145-152`).
 - **C70** [surplus] `src/core/mod.rs:6-11`, `runner.rs:8,13`: `pub` items inside the private `mod core` (`src/lib.rs:31`).
 - **C71** [surplus] `src/core/output/narration.rs:17-19`: `action_numbered` ignores its counters and is unused.
 - **C72** [surplus] `src/core/output/narration.rs:229-294`: `list_item`, `download_progress`, `build_spinner`, `spinner`, `progress_success`, `progress_fail` and `progress_done` are dead (only re-exported at `output/mod.rs:13-16`).
@@ -232,30 +227,18 @@ Make every module except the deliberate library API (`RecipeEngine`, options, er
 - **B59** [surplus] `src/inputs/mod.rs:164-178` writes `manifest.txt`, `sources.txt` and `env.txt`, which nothing reads. `render_manifest` (`:216-235`) and `StagedInput.referenced_as` (`discover.rs:64`) exist only to feed them.
 - **B60** [surplus] `src/inputs/config.rs:166-175` `config_text` (pub, re-exported) has no callers and repeats `prepare_invocation`'s sequence.
 - **B61** [surplus] The pub re-exports `DomainConfig`, `discover_inputs`, `hash_file`, `allowlisted_env`, `invocation_id`, `MAIN_NAME_DOMAIN` and `StagedInput` (`src/inputs/mod.rs:39-43`) have no users outside the module.
-- **B68** [surplus] `src/bin/recipe/commands.rs:228,264`: `recipes_path: Option` is always `Some`, so the `None` branch is dead.
 - **E12** [surplus] `#[cfg(not(unix))]` stubs at `src/helpers/install/filesystem.rs:105,205,390,395,409` and `src/helpers/internal/fs_utils.rs:68` cannot build (the crate is unix-only).
 - **E21** [surplus] `src/helpers/install/disk.rs:88` `format_bytes` is dead, and `:23-24,35` hand-write the GB conversion twice beside it.
 - **E22** [surplus] `src/helpers/install/disk.rs:47` `get_available_space` is `pub` but used only in-file.
 - **E24** [surplus] `src/helpers/internal/fs_utils.rs:123-133`: a private `Pipe` trait used once (`:41`).
-- **E38** [surplus] `src/helpers/util/process.rs:175-177` `apk_repositories_file` returns a constant. `:412-414` `apk_install` forwards. `:499-514` `dnf_download`/`dnf_download_with_resolve` both forward to `_impl`.
-- **E41** [surplus] `src/helpers/util/string.rs:4-33` (`trim`, `starts_with`, `ends_with`, `contains`, `replace`, `split`) are pass-throughs of Rhai's own string methods.
 - **E55** [surplus] `src/llm/providers/claude.rs:47-48`, `codex.rs:87-88`: an empty map extended with a clone is just a clone.
 - **E56** [surplus] `src/llm/provider.rs:21-27` `LlmProviderId::as_str` is dead.
-- **E60** [surplus] `src/llm/config.rs:12,50-52`: `version` is parsed and merged but never read.
-- **E66** [surplus] `src/llm/runner.rs:47-63` `TeeTarget` has a single variant.
 - **E68** [surplus] `src/llm/runner.rs:99-101,121-127` check `max_input_bytes` twice, and the second check can never fire.
-- **E74** [surplus] `src/helpers/llm.rs:22-28` `current_working_dir`/`to_eval_err` are one-line wrappers.
-- **E94** [surplus] `src/core/autofix/prompt.rs:128-130,160-167` are near-duplicate `read_to_string` wrappers.
-- **E95** [surplus] `src/core/autofix/parser.rs:159-163`: `(name, label)` pairs where every label equals its name.
-- **E96** [surplus] `src/core/autofix/parser.rs:193-206` returns a new-file start that its only caller discards (`patch.rs:49`).
 - **F54** [surplus] `examples/prepare_inputs_demo.rs:1-37` is unrun "reference only" code that must track `prepare_invocation`'s six-arg signature.
 - **G44** [surplus] Unused crates: `sha3` (`Cargo.toml:25`), `num_cpus` (`:31`), `semver` (`:37`).
 - **G45** [surplus] Unused features: clap `env` (`Cargo.toml:23`) and ureq `json` (`:34`).
 - **H18** [surplus] `src/lib.rs:349-358`: `invocation_options` returns a `Result` that cannot fail, so six callers carry a needless `?`.
 - **H19** [surplus] `src/lib.rs:165-168`: besides being unused, `with_network_hosts` is order-sensitive, because a later `with_execution_options` (`:159-162`) discards the hosts.
-- **I19** [surplus] `src/core/executor/private/flow.rs:71-73` and `actions.rs:44-47,117-120,184-187`: the "Recipe missing ctx" branches are unreachable (`src/core/invocation.rs:212,215` already bail).
-- **I20** [surplus] `src/core/runner.rs:78` `run_cleanup` re-checks `cleanup_available`, which `flow.rs:46` and `actions.rs:97` already computed.
-- **I21** [surplus] `src/core/executor.rs:78-79`: `CompiledRecipe.base_dir` is just `base_path.parent()`, stored separately.
 - **I28** [special] `src/core/build_deps.rs:3-4` documents cycle detection "before locking", but no locking exists in the worker.
 - **J26** [hidden] `src/helpers/install/disk.rs:12` documents "creates if doesn't exist", but `:47-60` never creates.
 
@@ -294,7 +277,7 @@ Add a small, dependency-free `domain` module that owns every in-domain fact: the
 
 Define a `DiagnosticSink` trait in a leaf module that depends on nothing. The worker installs a protocol-backed sink; the coordinator CLI installs a stderr sink that decides colour/TTY. All human output goes through it: narration, progress bars, hash progress, helper warnings, the backend summary and the LLM tee. `helpers::internal::cmd` becomes the only way to spawn a child. It owns env application order, bounded capture, routing, command lookup and a typed `ExitStatus` (exited code / signalled / spawn failed). `df`, autofix `git`, the LLM runner (dropping tokio) and every helper use it.
 
-- **Solves:** 37 problems (22 hidden, 4 needless, 0 surplus, 11 special)
+- **Solves:** 38 problems (22 hidden, 4 needless, 1 surplus, 11 special)
 - **Done when:** `logging`, `core::output` and `cmd` no longer import `worker::protocol`. No `eprint!`/`eprintln!`/`ProgressDrawTarget::stderr` outside the sink implementations. No `Command::new` outside the runner. `-1` exit-code sentinels are gone. tokio is dropped or confined.
 - **Depends on:** X1
 
@@ -335,6 +318,7 @@ Define a `DiagnosticSink` trait in a leaf module that depends on nothing. The wo
 - **J16** [special] `src/llm/runner.rs:167-170`: an early provider exit with a large prompt returns EPIPE "Failed to write to subprocess stdin" and drops the provider's real stderr.
 - **J20** [hidden] `src/helpers/internal/progress.rs:22-33` (used by `download.rs:203`, `git.rs:244`, `extract_api.rs:425-433`): indicatif hides itself when stderr is not a TTY, so in the worker these bars never render, while the raw `eprint!` hash progress (`hash.rs:100,139`) does reach `supervisor-stderr.log`.
 - **J56** [hidden] `src/retained.rs:45` and `src/logging.rs:101` use raw `eprintln!`, and coordinator-side lines never reach the durable log dir.
+- **E66** [surplus] `src/llm/runner.rs:47-63` `TeeTarget` has a single variant.
 
 ### 4. X8: Shared secure-filesystem, archive and image primitives
 
@@ -401,7 +385,7 @@ Make `worker::protocol` the single owner of what crosses the process boundary, w
 - One state channel: every recipe's state goes via checkpoints, and the final result carries outputs only.
 Autofix eligibility becomes a method on `FailureReason`. The worker's exit-code convention is replaced by the typed result.
 
-- **Solves:** 43 problems (25 hidden, 4 needless, 4 surplus, 10 special)
+- **Solves:** 44 problems (25 hidden, 4 needless, 5 surplus, 10 special)
 - **Done when:** No operation, reason or category string literals outside `protocol`'s `Display`/`FromStr`. `validate()` runs once. The force-only-install rule exists once. `enrich_stream_error` matches on types. Worker aliases are gone.
 - **Depends on:** X2
 
@@ -448,12 +432,13 @@ Autofix eligibility becomes a method on `FailureReason`. The worker's exit-code 
 - **J52** [hidden] `persist_state` is expressed three ways: the request field (`src/launch.rs:410`), `Retained` being `Some` (`:188`) and the presence of `--control-fd` (`:211-215,256`).
 - **J59** [hidden] Invocation-id uniqueness is assumed separately: `src/logging.rs:95` fails before the run, while `src/publication.rs:307-318` fails with `RENAME_NOREPLACE` after it. `src/inputs/env.rs:37-41` (millis may be 0, plus pid) is the only source of uniqueness.
 - **J60** [hidden] `src/inputs/network.rs:21`: `NetworkPolicy::resolve` calls `options.validate()`, a seventh validation site.
+- **A43** [surplus] `src/launch.rs:539-544` is an unreachable `Request`/`Ack` arm, already rejected by `check_direction` at `:447-454`.
 
 ### 6. X7: Stores that own their layout: state, logs, scratch, destination scope
 
 `retained` owns its record schema with a single validator, generation layout names and an `Identity` struct hashed whole. The struct includes `protocol::VERSION`, a typed identity subset of options (from X4's split) and the network policy. The destination lock and default-destination become an explicit `Scope` concept (per-recipe default, no leaked tempdirs) instead of a fake `build_dir`. The invocation log store moves out of `logging` into its own module with a named retention constant, a `result.json` status enum and file names it owns. `temporary` and the log store share one leased-directory-pool implementation. One function resolves the state, cache and recipes roots.
 
-- **Solves:** 33 problems (20 hidden, 3 needless, 1 surplus, 9 special)
+- **Solves:** 34 problems (20 hidden, 3 needless, 2 surplus, 9 special)
 - **Done when:** One `Record` validator. No generation layout literals outside retained. Adding an option forces an identity decision at the type level. One pool implementation. Default destinations no longer collide.
 - **Depends on:** X8, X3
 
@@ -490,6 +475,7 @@ Autofix eligibility becomes a method on `FailureReason`. The worker's exit-code 
 - **J54** [hidden] `src/retained.rs:141-145,257`: the "known recipe" set for checkpoints is every staged input name (data files, dirs), not just recipes.
 - **J55** [surplus] `src/retained.rs:263-264,314`: `finish` hashes the export while copying, discards the digest, and then `commit` re-hashes the file.
 - **J57** [needless] `src/temporary.rs:20-76` ties the pool sweep to the constructor, so it runs three times per invocation (`src/inputs/mod.rs:134`, `src/launch.rs:171`, `src/inputs/root.rs:66`).
+- **A79** [surplus] `src/lib.rs:41-44` `default_state_directory` only forwards to `retained::default_directory` (one caller, `src/bin/recipe/commands.rs:250`).
 
 ### 7. X5: One Ginux adapter
 
@@ -542,7 +528,7 @@ Collect everything about talking to Ginux into one `ginux` module:
 
 Replace the 8-argument `launcher.run` (×6 in lib.rs), the 9-argument `create_engine` (×6 in the CLI) and the per-op worker dispatch with a single `Invocation { recipe, operation, options, defines, inputs }` and `RecipeEngine::run(Operation)` (thin convenience methods optional). Split `ExecutionOptions` by reason to change: identity-relevant settings, resource bounds, presentation (`machine_events`) and install-only force flags (which move into `Operation::Install`). Derive the clap flags from the options struct (`#[command(flatten)]`/`default_value_t = Default`) so defaults and ranges live once, and drop the fixed `--target-*` knobs. `GinuxLauncher` becomes the coordinator entry and stops being a path wrapper. The public result is JSON (`serde_json::Value`), not a `rhai::Map`, which removes the hand-written JSON↔Rhai round trip.
 
-- **Solves:** 26 problems (17 hidden, 6 needless, 0 surplus, 3 special)
+- **Solves:** 28 problems (17 hidden, 6 needless, 2 surplus, 3 special)
 - **Done when:** Adding an option means editing one struct. No JSON→Rhai converter in backend. `lib.rs` and `commands.rs` have no six-way repeated calls. Global flags apply only to the subcommands that use them.
 - **Depends on:** X3
 
@@ -572,6 +558,8 @@ Replace the 8-argument `launcher.run` (×6 in lib.rs), the 9-argument `create_en
 - **H16** [needless] `src/options.rs:7-29`: `ExecutionOptions` mixes logging (`machine_events`), main-recipe-only force flags, domain resource bounds and network policy. Identity picks fields one by one (`src/retained.rs:132-137`), and `deny_unknown_fields` turns every new knob into a protocol schema change.
 - **H31** [special] `src/lib.rs:210-264`: the retry loop uses `unreachable!` and `.expect("attempts require explicit autofix")`, relying on `attempts > 0 ⇒ autofix.is_some()`.
 - **J47** [hidden] `src/options.rs:81-90` vs `src/inputs/config.rs:138-140`: `storage_max_bytes: None` means "memory_mib bytes" for the recipe's own bounds but "omit `max_bytes`" (the launcher default) for Ginux.
+- **A83** [surplus] `src/options.rs:269-270,312-322`: `target_os`/`target_arch` are CLI knobs (`src/bin/recipe/cli.rs:29-34`) that accept only native linux/x86_64. `src/core/invocation.rs:67-70` uses `std::env::consts` anyway.
+- **B68** [surplus] `src/bin/recipe/commands.rs:228,264`: `recipes_path: Option` is always `Some`, so the `None` branch is dead.
 
 ### 9. X6: Explicit coordinator run pipeline
 
@@ -620,7 +608,7 @@ Restructure `launch::run_domain` as an ordered pipeline with typed step results:
 
 A single `recipes` module resolves `//! extends:`, imports and `deps`/`build_deps` (naming, validation, recursion and depth policy). It produces a manifest of recipe-name → domain-path that discovery stages and that the worker's module resolver and dependency lookup read directly, so the worker never re-derives paths. The CLI name lookup, `--input` name rules, autofix's base lookup and metadata listing use the same module. All static AST walking (static references, `declared_metadata`, the API marker) and all Rhai-internals use live in one place next to the `rhai` pin rationale. Input kinds (`rootfs`, `target`) are declared properties, not name checks.
 
-- **Solves:** 29 problems (16 hidden, 3 needless, 0 surplus, 10 special)
+- **Solves:** 30 problems (16 hidden, 3 needless, 1 surplus, 10 special)
 - **Done when:** One `parse_extends`, one resolver, one AST walker. Anything discovery stages is exactly what the worker resolves. The `rhai =1.19.0` comment lists every internals dependency.
 - **Depends on:** X2
 
@@ -653,12 +641,13 @@ A single `recipes` module resolves `//! extends:`, imports and `deps`/`build_dep
 - **I15** [hidden] `src/inputs/discover.rs:112` renames the main recipe to `main.rhai`, so the file-stem name fallback (`flow.rs:79-85`) is always `"main"` in the domain, and it collides with a dependency that is really named `main`.
 - **I16** [hidden] `src/inputs/discover.rs:35` `MAX_IMPORT_DEPTH = 16` also bounds dependency nesting (`:373-376`), so the executor's 64 (`context.rs:89`, `src/core/invocation.rs:13`) is unreachable on the managed path.
 - **I27** [special] `src/inputs/discover.rs:113-115` inserts the main recipe into `visited` before `collect_related`, which does the same for every other file (`:411`).
+- **I21** [surplus] `src/core/executor.rs:78-79`: `CompiledRecipe.base_dir` is just `base_path.parent()`, stored separately.
 
 ### 11. X10: Lifecycle as data with explicit recipe roles
 
 Describe phases with one table (`Phase` → check name, optionality, missing-hook rule, force implication, success/failure reasons, env scope). One phase-block function replaces the three copies, and one recipe-preparation function replaces the four preambles. `Readiness` is kept as an enum end to end, forced runs carry a reason, and the double `is_installed` verify is unified. An explicit `RecipeRole { Main, Dependency }` decides force, failure eligibility, work dirs (dependency dirs outside the main build dir), the output policy (dependencies may not write `/out`) and env guards. It replaces stack depth. Dependencies get a visited set, and a defined policy covers dependencies for remove/cleanup. Dependency tool env vars come from the dependency recipe's declared exports, not hard-coded bison/m4. `ExecutionContext` is built complete, with no call-order setup. The checkpoint payload holds only what the host reads. `has_fn` moves to break the invocation↔runner cycle.
 
-- **Solves:** 58 problems (26 hidden, 6 needless, 8 surplus, 18 special)
+- **Solves:** 61 problems (26 hidden, 6 needless, 11 surplus, 18 special)
 - **Done when:** One phase block and one preamble. No `active_recipes.len() > 1`. No BISON/M4 literals in the engine. The checkpoint sink takes `(recipe_path, state)`. No module cycle in `deps.txt`.
 - **Depends on:** X3, X9
 
@@ -720,6 +709,9 @@ Describe phases with one table (`Phase` → check name, optionality, missing-hoo
 - **I24** [special] `src/core/invocation.rs:275`: `global.num_operations = 0` before every call makes the operation limit per call, not per invocation.
 - **I25** [special] `src/core/executor/private/flow.rs:261-270`: the post-acquire `is_built` recheck reports only through `friendly_reason` (no `hook_event`/`report_check_result`), and prints "check function is missing" noise when `is_built` is absent.
 - **I26** [special] `src/core/executor/private/flow.rs:416-443`: post-install verification failure runs failure cleanup on the post-install ctx (`:429`), whereas every other failure uses `ctx_before`.
+- **C69** [surplus] `src/core/executor/private/flow.rs:352`: `if needs_install {` is always true (it already returned at `:145-152`).
+- **I19** [surplus] `src/core/executor/private/flow.rs:71-73` and `actions.rs:44-47,117-120,184-187`: the "Recipe missing ctx" branches are unreachable (`src/core/invocation.rs:212,215` already bail).
+- **I20** [surplus] `src/core/runner.rs:78` `run_cleanup` re-checks `cleanup_available`, which `flow.rs:46` and `actions.rs:97` already computed.
 
 ### 12. X13: Typed events and narration; split logging
 
@@ -744,7 +736,7 @@ Hook events become an enum (`Hook` × `Status`) emitted by the lifecycle and ren
 
 Each helper family module declares its own registrations through one macro that takes the Rhai name once and uses it for `register_fn`, tracing and error labels. `register_all` only calls family registrars, and the `pub use` relay blocks go away. The readiness constructors (`ready`/`needs_work`) live with `core::invocation`, which decodes them. Helper configuration (trace flag, HTTP timeout, GitHub token) travels in the invocation instead of process env that never reaches the worker. Helpers that cannot work in the worker (`llm_*`) are removed from it. Shared helper policies are written once: glob semantics, digest validation, the network, proxy and redirect policy for HTTP and git, privilege escalation, not-available vs failure, cwd/env options and package-manager file listing. `HELPERS_AUDIT.md` and `recipe-helpers.7` are generated from the registry (a `recipe helpers --list` mode or an xtask), so they cannot drift.
 
-- **Solves:** 61 problems (36 hidden, 2 needless, 3 surplus, 20 special)
+- **Solves:** 63 problems (36 hidden, 2 needless, 5 surplus, 20 special)
 - **Done when:** Each helper name appears once in code. The docs are generated, with a check that fails on drift. No `std::env::var` in helpers. One glob function. One network policy function used by HTTP and git.
 - **Depends on:** X12, X10
 
@@ -809,12 +801,14 @@ Each helper family module declares its own registrations through one macro that 
 - **J19** [special] `src/helpers/acquire/verify.rs:36-48`: the `ALGO (file) = hash` checksum branch never checks that ALGO is SHA256.
 - **J21** [hidden] `src/helpers/util/process.rs:38-49,73-116`: `command_exists`/`require_dnf` find tools via `COMMAND_ENV` PATH, but `sudo -n dnf` resets env (`secure_path`), so the binary checked and the binary run can differ.
 - **J22** [hidden] `src/helpers/acquire/mod.rs:37` (`redirects(5)`) ↔ `src/inputs/network.rs:20-67`: redirects work only if every redirect host is also a pinned `--network-host` grant. `github_download_release` (`http/api.rs:248-258`) needs three unnamed grants.
+- **E38** [surplus] `src/helpers/util/process.rs:175-177` `apk_repositories_file` returns a constant. `:412-414` `apk_install` forwards. `:499-514` `dnf_download`/`dnf_download_with_resolve` both forward to `_impl`.
+- **E74** [surplus] `src/helpers/llm.rs:22-28` `current_working_dir`/`to_eval_err` are one-line wrappers.
 
 ### 14. X14: One LLM interface; autofix built on shared parts
 
 `llm::complete(config, prompt) -> String` hides provider dispatch, fence stripping and codex's tempfile lifetime behind a `Provider` trait that also enforces the no-tools policy per provider. Config is one serde struct merged generically: either provider is optional, invalid values are rejected rather than clamped, and XDG order is correct. Autofix owns `AutoFixConfig` and states its patch policy once, in a validator from which the prompt rules are generated. It uses the X9 resolver for bases, the X12 runner for git, and a `Phase` table for protected function names. Kernel-specific context goes away in favour of a generic "declared extra context" rule.
 
-- **Solves:** 40 problems (21 hidden, 5 needless, 2 surplus, 12 special)
+- **Solves:** 44 problems (21 hidden, 5 needless, 6 surplus, 12 special)
 - **Done when:** Exactly one provider match, one fence stripper, one diff-header parser and one path validator. No `linux-deps` literal in autofix. `git apply` doesn't touch coordinator stdout.
 - **Depends on:** X9, X12
 
@@ -858,6 +852,10 @@ Each helper family module declares its own registrations through one macro that 
 - **J23** [hidden] `src/llm/providers/codex.rs:5-7` reads `~/.codex/config.toml`, but Codex honours `CODEX_HOME` (which `[providers.codex].env` can set, `src/llm/runner.rs:94`).
 - **J24** [hidden] `src/core/autofix/parser.rs:136-140,168-171,187`: the brace scanner is a partial copy of Rhai's lexer (no backtick strings or `${}`, LF-only offsets), so protected ranges can be wrong silently.
 - **J25** [hidden] `src/llm/config.rs:147-173`: within one merge, `args`/`config` are replaced wholesale while `env` is merged per key, and this is undocumented.
+- **E60** [surplus] `src/llm/config.rs:12,50-52`: `version` is parsed and merged but never read.
+- **E94** [surplus] `src/core/autofix/prompt.rs:128-130,160-167` are near-duplicate `read_to_string` wrappers.
+- **E95** [surplus] `src/core/autofix/parser.rs:159-163`: `(name, label)` pairs where every label equals its name.
+- **E96** [surplus] `src/core/autofix/parser.rs:193-206` returns a new-file start that its only caller discards (`patch.rs:49`).
 
 ### 15. X16: Test harness on the contract, not the internals
 
@@ -1077,5 +1075,20 @@ Delete the obsolete design docs (`RECIPE_DEPENDENCY_MANAGEMENT.md`, `SYSTEM_VS_U
   - **Why leave:** The base digest is produced by Ginux's own OCI scripts. The cross-repo producer is owned upstream.
 - **H10** [hidden] `src/lib.rs:210-263`: autofix retry depends on the state identity hashing every input (`src/retained.rs:110-138`), so each patched attempt redoes acquire and build. Only a comment at `src/lib.rs:260-261` notes this.
   - **Why leave:** Redoing acquire and build after an autofix patch is correct: a patched recipe is a new identity.
+- **A81** [surplus] `src/lib.rs:130-136`: `launcher()` falls back to `GinuxLauncher::from_env()`, though the CLI always sets one (`commands.rs:236,257`).
+  - **Why leave:** `RecipeEngine::launcher()`'s `GINUX_BIN` fallback is the library default; `tests/library_backend.rs` exercises it (the audit only checked the CLI).
+- **E41** [surplus] `src/helpers/util/string.rs:4-33` (`trim`, `starts_with`, `ends_with`, `contains`, `replace`, `split`) are pass-throughs of Rhai's own string methods.
+  - **Why leave:** The string helpers are not pass-throughs: Rhai's built-in `trim`/`replace` mutate in place and return `()`, while these return new strings that recipes rely on.
 
 ## Progress
+
+Commits land on `ginux-recipe/r06-launch` (per project rule: no new branches). Each fix is checked with `cargo build --all-targets` (no new warnings), the CLI snapshots (`bash .untangle/cli-snapshots.sh <bin> <dir>` vs `.untangle/out/baseline-cli/`) and the privileged suite (`bash .untangle/priv-test.sh <dir>`, ~30 min; baseline 134/134 e2e + 1/1 library + 1/1 image).
+
+Special cases: **168** at audit start.
+
+- [x] **X1** Shrink the public surface and delete dead code. Commit: see `git log --grep "X1:"`.
+  - The library API is now `RecipeEngine`, `AutoFixConfig`, `ExecutionOptions`, `GinuxLauncher`, `declared_metadata`/`DeclaredMetadata`, `default_state_directory` and a `#[doc(hidden)] bin_support` facade for the crate's own binaries and tests. Every other module is private, so rustc reports dead code; after the deletions the build has 0 warnings.
+  - Deleted: `url_utils.rs`, most of `fs_utils`/`progress`, dead narration/progress/sink/event APIs, the `logging` hook wrappers, unused `inputs` re-exports, `config_text`, unread staging files (`manifest.txt`, `sources.txt`, `env.txt`) and `referenced_as`, unused `PreparedInvocation` fields, the extra-env allowlist machinery, unused `LaunchReport` fields and `read_log_tail`, `github_release_assets` and the test-only `*_with_base` seams, the `http/` and `extract` pass-through layers, non-unix stubs, `RECIPE_WORKER_RECIPES`, the off-linux runtime check, the empty `PreparedScope.bindings`, the constant tools-prefix indirections and no-op `prepare_work_root` calls, unused `with_network_hosts`/`cleanup`/`recipes_path`, `examples/prepare_inputs_demo.rs`, ticket-lineage labels in docs, the `sha3`/`num_cpus`/`semver` deps and the clap `env`/ureq `json` features.
+  - Moved to later fixes because those fixes rewrite the same code: A43→X3, A79→X7, A83/B68→X4, C69/I19/I20→X10, I21→X9, E38/E74→X11, E66→X12, E60/E94–E96→X14. Moved to leave-as-is with reasons: A81, E41.
+  - Checks: build clean, CLI snapshots byte-identical. Privileged suite: pending (started with the commit).
+  - Bugs fixed: none.

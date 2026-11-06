@@ -26,5 +26,3 @@ pub use io::{
     write_file,
 };
 
-// Re-export disk utilities
-pub use disk::check_disk_space;

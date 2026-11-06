@@ -33,7 +33,7 @@
 //! The coordinator owns all authoritative host destinations. Final contexts
 //! are JSON objects, with named outputs validated separately before publication.
 //!
-//! ## Use (the exact API R02 should call)
+//! ## Use
 //!
 //! - Sending side: keep one [`FrameSender`] per direction. It assigns seq
 //!   numbers starting at 1. Call [`FrameSender::send`] with a
@@ -77,7 +77,7 @@ const TRANSPORT_IO_CHUNK: usize = 4096;
 // ---------------------------------------------------------------------------
 
 /// Frame operation codes: 1=request, 2=checkpoint, 3=ack, 4=failure,
-/// 5=result, 6=diagnostic (transport v2).
+/// 5=result, 6=diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum Op {
@@ -651,7 +651,7 @@ fn check_total(total: u32) -> Result<usize, ProtocolError> {
 }
 
 // ---------------------------------------------------------------------------
-// Streaming sender / receiver (what R02 drives over the protocol pipes)
+// Streaming sender / receiver over the protocol pipes
 // ---------------------------------------------------------------------------
 
 /// Sending side of one direction. Assigns seq numbers starting at 1;
@@ -674,11 +674,6 @@ impl FrameSender {
         Self {
             next_seq: FIRST_SEQ,
         }
-    }
-
-    /// Next sequence number that will be assigned.
-    pub fn next_seq(&self) -> u32 {
-        self.next_seq
     }
 
     /// Encode `payload` with the next seq number and write the whole frame.
@@ -714,11 +709,6 @@ impl FrameReceiver {
         Self {
             next_seq: FIRST_SEQ,
         }
-    }
-
-    /// Next sequence number expected from the peer.
-    pub fn next_seq(&self) -> u32 {
-        self.next_seq
     }
 
     /// Read exactly one frame: length prefix, then the declared body.

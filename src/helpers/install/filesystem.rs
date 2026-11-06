@@ -80,7 +80,6 @@ fn copy_file_impl(src: &Path, dest: &Path) -> Result<(), Box<EvalAltResult>> {
     })
 }
 
-#[cfg(target_os = "linux")]
 fn clone_file_reflink(src: &Path, dest: &Path) -> std::io::Result<()> {
     use std::fs::OpenOptions;
     use std::os::fd::AsRawFd;
@@ -102,13 +101,6 @@ fn clone_file_reflink(src: &Path, dest: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
-fn clone_file_reflink(_src: &Path, _dest: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "reflink not supported on this platform",
-    ))
-}
 
 fn copy_path_to_dir(src: &Path, dest_dir: &Path) -> Result<(), Box<EvalAltResult>> {
     let Some(name) = src.file_name() else {
@@ -170,7 +162,6 @@ pub fn copy_file_reflink(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>
     }
 }
 
-#[cfg(unix)]
 fn copy_symlink(link_path: &Path, dest_path: &Path) -> Result<(), Box<EvalAltResult>> {
     let target = std::fs::read_link(link_path)
         .map_err(|e| format!("read_link failed for {}: {}", link_path.display(), e))?;
@@ -202,10 +193,6 @@ fn copy_symlink(link_path: &Path, dest_path: &Path) -> Result<(), Box<EvalAltRes
     })
 }
 
-#[cfg(not(unix))]
-fn copy_symlink(_link_path: &Path, _dest_path: &Path) -> Result<(), Box<EvalAltResult>> {
-    Err("copy_tree_contents symlink support requires unix".into())
-}
 
 /// Recursively copy the contents of src_dir into dst_dir
 pub fn copy_tree_contents(src_dir: &str, dst_dir: &str) -> Result<(), Box<EvalAltResult>> {
@@ -361,14 +348,12 @@ pub fn move_file(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>> {
 }
 
 /// Create a symbolic link
-#[cfg(unix)]
 pub fn symlink(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>> {
     output::detail(&format!("ln -s {} {}", src, dest));
     std::os::unix::fs::symlink(src, dest).map_err(|e| format!("symlink failed: {}", e).into())
 }
 
 /// Create or replace a symbolic link
-#[cfg(unix)]
 pub fn symlink_force(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>> {
     let dest_path = Path::new(dest);
     output::detail(&format!("ln -sfn {} {}", src, dest));
@@ -387,18 +372,9 @@ pub fn symlink_force(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>> {
     std::os::unix::fs::symlink(src, dest).map_err(|e| format!("symlink failed: {}", e).into())
 }
 
-#[cfg(not(unix))]
-pub fn symlink(_src: &str, _dest: &str) -> Result<(), Box<EvalAltResult>> {
-    Err("symlinks not supported on this platform".into())
-}
 
-#[cfg(not(unix))]
-pub fn symlink_force(_src: &str, _dest: &str) -> Result<(), Box<EvalAltResult>> {
-    Err("symlinks not supported on this platform".into())
-}
 
 /// Change file permissions
-#[cfg(unix)]
 pub fn chmod_file(path: &str, mode: i64) -> Result<(), Box<EvalAltResult>> {
     use std::os::unix::fs::PermissionsExt;
     output::detail(&format!("chmod {:o} {}", mode, path));
@@ -406,8 +382,3 @@ pub fn chmod_file(path: &str, mode: i64) -> Result<(), Box<EvalAltResult>> {
         .map_err(|e| format!("chmod failed: {}", e).into())
 }
 
-#[cfg(not(unix))]
-pub fn chmod_file(_path: &str, _mode: i64) -> Result<(), Box<EvalAltResult>> {
-    // No-op on non-Unix
-    Ok(())
-}

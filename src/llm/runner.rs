@@ -118,13 +118,6 @@ async fn run_inner(
 
     let group = ProcessGroup(child.id().ok_or("provider has no PID")?);
     let stdin_bytes = call.stdin;
-    if stdin_bytes.len() > call.max_input_bytes {
-        return Err(format!(
-            "LLM input too large (bytes={}, max_input_bytes={})",
-            stdin_bytes.len(),
-            call.max_input_bytes
-        ));
-    }
 
     let mut stdin = child
         .stdin

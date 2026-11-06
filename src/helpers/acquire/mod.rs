@@ -11,7 +11,7 @@ pub use http::{
     github_download_release, github_latest_release, github_latest_tag, http_get, parse_version,
 };
 pub use verify::{
-    FileHashes, compute_hashes, fetch_sha256, verify_blake3, verify_sha256, verify_sha512,
+    fetch_sha256, verify_blake3, verify_sha256, verify_sha512,
 };
 
 use rhai::EvalAltResult;

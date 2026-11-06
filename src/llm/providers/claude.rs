@@ -1,5 +1,4 @@
 use crate::llm::provider::{LlmProviderId, ProviderResult, ResolvedCall, ResolvedLlmConfig};
-use std::collections::BTreeMap;
 use std::path::Path;
 
 fn has_flag(args: &[String], flag: &str) -> bool {
@@ -44,8 +43,7 @@ pub(crate) fn build(
         cmd.args(["--effort", effort]);
     }
 
-    let mut env = BTreeMap::new();
-    env.extend(cfg.claude.env.clone());
+    let env = cfg.claude.env.clone();
 
     Ok(ClaudeInvocation {
         cmd,

@@ -11,7 +11,7 @@
 //! ## Example
 //!
 //! ```rhai
-//! let archive = download(url, ctx.runtime.paths.build + "/foo.tar.gz", ctx.sha256);
+//! verify_sha256(archive, ctx.sha256);
 //! ```
 
 use crate::core::output;
@@ -115,11 +115,3 @@ pub fn fetch_sha256(url: &str, filename: &str) -> Result<String, Box<EvalAltResu
         .into()
     })
 }
-
-/// Compute all hashes for a file (used by `recipe hash` command)
-pub fn compute_hashes(file: &Path) -> Result<hash::FileHashes, std::io::Error> {
-    hash::compute_all_hashes(file)
-}
-
-/// Hash results returned by the public hashing operation.
-pub use super::super::internal::hash::FileHashes;

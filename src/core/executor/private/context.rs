@@ -53,14 +53,6 @@ impl<'a> ExecutionContext<'a> {
         }
     }
 
-    pub(crate) fn tools_prefix_override(&self) -> Option<&Path> {
-        Some(Path::new(crate::inputs::TOOLS_DOMAIN_PATH))
-    }
-
-    pub(crate) fn tools_prefix(&self) -> Result<PathBuf> {
-        Ok(PathBuf::from(crate::inputs::TOOLS_DOMAIN_PATH))
-    }
-
     pub(crate) fn work_root(&self) -> Result<&Path> {
         self.work_root
             .as_deref()

@@ -1,8 +1,8 @@
 //! Ginux subprocess launch, checkpoints, cancellation and diagnostics.
 //!
 //! [`run_domain`] is the R-host subprocess adapter: it spawns the configured
-//! launcher (`GINUX_BIN` or backend config), hands it the R05 domain config
-//! plus a fresh `--result-file` path, pumps the R01 worker protocol over the
+//! launcher (`GINUX_BIN`), hands it the prepared domain config
+//! plus a fresh `--result-file` path, pumps the worker protocol over the
 //! launcher's stdio, and maps outcomes to the interface §1 categories with
 //! the result file authoritative (§2).
 //!
@@ -83,7 +83,7 @@ const UNGROUNDED_GENERATION: u64 = 0;
 
 /// Outcome of one supervised domain run.
 #[derive(Debug)]
-pub struct LaunchReport {
+pub(crate) struct LaunchReport {
     /// The exactly-once worker result frame.
     pub result: ResultPayload,
     /// The worker `failure` frame when the worker sent one before `result`.
@@ -91,7 +91,7 @@ pub struct LaunchReport {
     /// Checkpoints acked during the run.
     pub checkpoints_acked: u64,
     /// Invocation-local `{checkpoint seq → acked generation}` association
-    /// (§4; R07 persists this with the state record).
+    /// (§4).
     pub generations: Vec<(u64, u64)>,
     /// Launcher exit code when it exited normally (`None` when killed or
     /// signaled).
@@ -101,18 +101,12 @@ pub struct LaunchReport {
     pub result_outcome: String,
     /// Authoritative result-file exit code (workload exit when `exited`).
     pub result_code: Option<i64>,
-    /// Authoritative result-file signal number (when `signaled`).
-    pub result_signal: Option<u64>,
-    /// Authoritative result-file storage generation (R07 consumes it).
-    pub result_generation: Option<u64>,
     /// Total launcher/worker stderr bytes observed (retained portion is
     /// capped at [`LOG_CAP_BYTES`]).
     pub log_total_bytes: u64,
     /// Launcher/worker stderr bytes retained beyond the cap (drained and
     /// discarded).
     pub log_discarded_bytes: u64,
-    /// Tail of the retained stderr log for human diagnostics (never parsed).
-    pub log_tail: String,
 }
 
 /// Run the prepared invocation through the launcher and pump the worker
@@ -121,7 +115,7 @@ pub struct LaunchReport {
 /// Restore matching state/files and acknowledge new checkpoints only after both
 /// are durable. Disabled persistence uses [`UNGROUNDED_GENERATION`]. No path
 /// here evaluates recipe code on the host.
-pub fn run_domain(
+pub(crate) fn run_domain(
     prepared: &PreparedInvocation,
     launcher: &Path,
     persist_state: bool,
@@ -352,7 +346,6 @@ fn run_domain_inner(
         .context("backend storage failure: cannot publish completed domain outputs")?;
     }
 
-    let log_tail = read_log_tail(&log_path);
     Ok(LaunchReport {
         result: stream.result,
         failure: stream.failure,
@@ -361,11 +354,8 @@ fn run_domain_inner(
         launcher_code: exit,
         result_outcome: record.outcome,
         result_code: record.code,
-        result_signal: record.signal,
-        result_generation: record.generation,
         log_total_bytes: drained.total_bytes,
         log_discarded_bytes: drained.discarded_bytes,
-        log_tail,
     })
 }
 
@@ -952,13 +942,6 @@ fn join_drain(handle: Drain) -> DrainedLog {
     })
 }
 
-/// Read the tail of the retained stderr log for diagnostics (never parsed).
-fn read_log_tail(log_path: &Path) -> String {
-    let bytes = std::fs::read(log_path).unwrap_or_default();
-    let start = bytes.len().saturating_sub(LOG_TAIL_BYTES);
-    String::from_utf8_lossy(&bytes[start..]).into_owned()
-}
-
 // ---------------------------------------------------------------------------
 // Result file (authoritative per §2)
 // ---------------------------------------------------------------------------
@@ -968,7 +951,6 @@ struct ResultRecord {
     outcome: String,
     code: Option<i64>,
     signal: Option<u64>,
-    generation: Option<u64>,
 }
 
 /// JSON value kind for diagnostics.
@@ -1038,11 +1020,12 @@ fn read_result_record(result_path: &Path, invocation: &str) -> Result<ResultReco
             json_value_kind(other),
         ),
     };
+    // `generation` belongs to Ginux's numbering; it is validated, not consumed.
+    field("generation")?;
     Ok(ResultRecord {
         outcome: outcome.to_string(),
         code: field("code")?,
         signal: field("signal")?.map(|n| n as u64),
-        generation: field("generation")?.map(|n| n as u64),
     })
 }
 

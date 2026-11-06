@@ -12,13 +12,6 @@ const SPINNER_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 const TICK_INTERVAL_MS: u64 = 80;
 
 /// Create a spinner progress bar with standard styling.
-///
-/// # Example
-/// ```ignore
-/// let pb = create_spinner("downloading foo.tar.gz");
-/// // ... do work ...
-/// pb.finish_and_clear();
-/// ```
 pub fn create_spinner(message: &str) -> ProgressBar {
     let pb = ProgressBar::new_spinner();
     pb.set_style(
@@ -30,41 +23,6 @@ pub fn create_spinner(message: &str) -> ProgressBar {
     pb.set_message(message.to_string());
     pb.enable_steady_tick(Duration::from_millis(TICK_INTERVAL_MS));
     pb
-}
-
-/// Create a progress bar with byte tracking (for downloads).
-///
-/// # Example
-/// ```ignore
-/// let pb = create_byte_progress(1024 * 1024); // 1MB total
-/// pb.set_position(512 * 1024); // 512KB done
-/// pb.finish_and_clear();
-/// ```
-pub fn create_byte_progress(total_bytes: u64) -> ProgressBar {
-    let pb = ProgressBar::new(total_bytes);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("     {spinner:.cyan} [{bar:30.cyan/dim}] {bytes}/{total_bytes} ({eta})")
-            .unwrap()
-            .progress_chars("━╸━"),
-    );
-    pb.enable_steady_tick(Duration::from_millis(TICK_INTERVAL_MS));
-    pb
-}
-
-/// Create a spinner that can optionally upgrade to a byte progress bar.
-///
-/// Returns a spinner initially. Call `upgrade_to_bytes()` if content length is known.
-///
-/// # Example
-/// ```ignore
-/// let pb = create_download_progress("downloading foo.tar.gz");
-/// if let Some(len) = content_length {
-///     upgrade_to_bytes(&pb, len);
-/// }
-/// ```
-pub fn create_download_progress(message: &str) -> ProgressBar {
-    create_spinner(message)
 }
 
 /// Upgrade a spinner to a byte progress bar when content length becomes known.
@@ -81,13 +39,6 @@ pub fn upgrade_to_bytes(pb: &ProgressBar, total_bytes: u64) {
 /// RAII guard that clears a progress bar when dropped.
 ///
 /// Useful for ensuring progress bars are cleaned up even on errors.
-///
-/// # Example
-/// ```ignore
-/// let pb = create_spinner("working...");
-/// let _guard = ProgressGuard::new(&pb);
-/// do_fallible_work()?; // pb cleared even if this fails
-/// ```
 pub struct ProgressGuard<'a>(&'a ProgressBar);
 
 impl<'a> ProgressGuard<'a> {
@@ -100,20 +51,4 @@ impl Drop for ProgressGuard<'_> {
     fn drop(&mut self) {
         self.0.finish_and_clear();
     }
-}
-
-/// Run a closure with a spinner, clearing it when done.
-///
-/// # Example
-/// ```ignore
-/// let result = with_spinner("extracting...", || {
-///     extract_archive()?;
-///     Ok(())
-/// })?;
-/// ```
-pub fn with_spinner<T, E>(message: &str, f: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
-    let pb = create_spinner(message);
-    let result = f();
-    pb.finish_and_clear();
-    result
 }

@@ -59,9 +59,6 @@ pub struct StagedInput {
     pub sha256: [u8; 32],
     /// Unix permission bits (`& 0o777`).
     pub mode: u32,
-    /// How the referring file named this input (`extends:`/`import` target,
-    /// file name, or explicit extra NAME); R06/I02 layout reconstruction.
-    pub referenced_as: String,
 }
 
 /// Caller-declared asset, source-closure, or cache file/tree: `NAME=host-path`.
@@ -109,7 +106,7 @@ pub fn discover_inputs(
 
     let recipe_canonical = canonical_host(recipe)?;
     collector.note_host_dir(&recipe_canonical);
-    collector.stage_named(MAIN_NAME, recipe, MAIN_NAME)?;
+    collector.stage_kind(MAIN_NAME, recipe, InputKind::File)?;
     collector
         .visited
         .insert((recipe_canonical.clone(), MAIN_NAME.to_owned()));
@@ -154,13 +151,13 @@ pub fn discover_inputs(
                 } else {
                     InputKind::File
                 };
-                collector.stage_kind(&name, entry.path(), &name, kind)?;
+                collector.stage_kind(&name, entry.path(), kind)?;
             }
             for relative in links.keys() {
                 validate_tree_link(relative, &links, filesystem_tree)?;
             }
         } else {
-            collector.stage_named(&extra.name, &extra.path, &extra.name)?;
+            collector.stage_kind(&extra.name, &extra.path, InputKind::File)?;
         }
         if let Ok(canonical) = extra.path.canonicalize() {
             collector.note_host_dir(&canonical);
@@ -300,17 +297,7 @@ impl<'a> Collector<'a> {
     /// Restaging the same domain name with the same host bytes is a no-op
     /// (shared imports); the same name with different bytes is an explicit
     /// duplicate-name failure.
-    fn stage_named(&mut self, name: &str, host: &Path, referenced_as: &str) -> Result<()> {
-        self.stage_kind(name, host, referenced_as, InputKind::File)
-    }
-
-    fn stage_kind(
-        &mut self,
-        name: &str,
-        host: &Path,
-        referenced_as: &str,
-        kind: InputKind,
-    ) -> Result<()> {
+    fn stage_kind(&mut self, name: &str, host: &Path, kind: InputKind) -> Result<()> {
         validate_input_name(name)?;
         if let Some(first) = self.by_name.get(name) {
             if same_file(first, host) {
@@ -326,7 +313,7 @@ impl<'a> Collector<'a> {
         if self.staged.len() >= 100_000 {
             bail!("input preparation failure: too many input files");
         }
-        let mut staged = if kind == InputKind::File {
+        let staged = if kind == InputKind::File {
             validate_and_hash(name, host)?
         } else {
             reject_secret_bearing_host(host, name)?;
@@ -342,11 +329,9 @@ impl<'a> Collector<'a> {
                 size: bytes.len() as u64,
                 sha256: Sha256::digest(bytes).into(),
                 mode: meta.permissions().mode() & 0o777,
-                referenced_as: String::new(),
                 kind,
             }
         };
-        staged.referenced_as = referenced_as.to_string();
         self.total = self.total.checked_add(staged.size).with_context(|| {
             format!("input preparation failure: input byte total overflowed at {name:?}")
         })?;
@@ -407,7 +392,7 @@ impl<'a> Collector<'a> {
             let source = read_recipe_file(&host)?;
             let canonical = canonical_host(&host)?;
             self.note_host_dir(&canonical);
-            self.stage_named(name, &host, &target)?;
+            self.stage_kind(name, &host, InputKind::File)?;
             if self.visited.insert((canonical.clone(), name.to_owned())) {
                 self.collect_related(&canonical, name, &source, depth + 1)?;
             }
@@ -493,7 +478,7 @@ impl<'a> Collector<'a> {
     }
 }
 
-/// Best-effort producer guard mirrored from G10: well-known secret-bearing
+/// Best-effort producer guard: well-known secret-bearing
 /// locations and key material are never silently packaged. Explicit selection
 /// plus regular-file-only staging is the mechanism; this is not a boundary.
 fn reject_secret_bearing_host(host: &Path, name: &str) -> Result<()> {
@@ -576,13 +561,10 @@ fn validate_and_hash(name: &str, host: &Path) -> Result<StagedInput> {
              (declare a smaller source closure)"
         );
     }
-    #[cfg(unix)]
     let mode = {
         use std::os::unix::fs::PermissionsExt;
         meta.permissions().mode() & 0o777
     };
-    #[cfg(not(unix))]
-    let mode = 0o644;
     let sha256 = hash_file(host, size)?;
     Ok(StagedInput {
         kind: InputKind::File,
@@ -591,7 +573,6 @@ fn validate_and_hash(name: &str, host: &Path) -> Result<StagedInput> {
         size,
         sha256,
         mode,
-        referenced_as: String::new(),
     })
 }
 

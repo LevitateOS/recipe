@@ -1,5 +1,4 @@
 use crate::llm::provider::{LlmProviderId, ProviderResult, ResolvedCall, ResolvedLlmConfig};
-use std::collections::BTreeMap;
 use std::path::Path;
 
 fn codex_config_path() -> Option<std::path::PathBuf> {
@@ -84,8 +83,7 @@ pub(crate) fn build(
     // Read prompt from stdin
     cmd.arg("-");
 
-    let mut env = BTreeMap::new();
-    env.extend(cfg.codex.env.clone());
+    let env = cfg.codex.env.clone();
 
     Ok(CodexInvocation {
         cmd,

@@ -1,8 +1,8 @@
-//! Worker endpoint root (R01 owns framing; R02 owns the worker engine hookup).
+//! In-domain worker endpoint.
 //!
 //! The worker protocol v6 framing lives in [`protocol`]. The worker entry
 //! point lives in [`run`]: it drives the existing engine through one request
-//! frame, relays bounded human diagnostics, and runs under the F04 [`ExecutionContext::worker`] seam and terminates
+//! frame, relays bounded human diagnostics, runs under the worker execution context and terminates
 //! the stream with exactly one result frame.
 
 pub mod protocol;

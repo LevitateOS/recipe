@@ -18,13 +18,6 @@ impl LlmProviderId {
         }
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn as_str(&self) -> &'static str {
-        match self {
-            Self::Codex => "codex",
-            Self::Claude => "claude",
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

@@ -31,17 +31,17 @@ fn run() -> Result<()> {
     // Private worker command: same binary, protocol-driven; environment
     // variables alone never change public CLI dispatch. The worker reads one
     // request frame from stdin, runs the existing engine in-process under the
-    // F04 worker seam, and terminates stdout with exactly one result frame.
+    // worker execution context, and terminates stdout with exactly one result frame.
     // Private dispatch precedes public CLI parsing; the recipe path follows
     // the coordinator-supplied marker.
     if std::env::args_os().nth(1).as_deref()
         == Some(std::ffi::OsStr::new(
-            levitate_recipe::worker::WORKER_ENTRY_ARG,
+            levitate_recipe::bin_support::WORKER_ENTRY_ARG,
         ))
     {
-        return levitate_recipe::worker::run_worker();
+        return levitate_recipe::bin_support::run_worker();
     }
-    levitate_recipe::cancellation::install_cli_handlers()?;
+    levitate_recipe::bin_support::install_cli_handlers()?;
     let matches = cli::Cli::command()
         .after_help(default_help_footer())
         .get_matches();
@@ -54,7 +54,7 @@ fn main() -> std::process::ExitCode {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("Error: {error:#}");
-            let signal = levitate_recipe::cancellation::signal();
+            let signal = levitate_recipe::bin_support::signal();
             std::process::ExitCode::from(if signal != 0 { (128 + signal) as u8 } else { 1 })
         }
     }

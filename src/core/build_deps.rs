@@ -1,7 +1,7 @@
 //! Recipe dependencies use the same lifecycle executor as their parent.
 //!
 //! One invocation shares a tools prefix, disambiguates dependency work paths,
-//! and detects cycles by canonical recipe path before locking or evaluation.
+//! and detects cycles by canonical recipe path before evaluation.
 
 use super::executor::{ExecutionContext, InstallAttemptError, install_with_context};
 use super::output;
@@ -13,7 +13,6 @@ use std::path::{Component, Path, PathBuf};
 /// Resolves dependency recipes into an invocation's shared tools destination.
 pub struct BuildDepsResolver<'a> {
     engine: &'a Engine,
-    build_dir: &'a Path,
     recipes_path: Option<&'a Path>,
     defines: &'a [(String, String)],
 }
@@ -21,13 +20,11 @@ pub struct BuildDepsResolver<'a> {
 impl<'a> BuildDepsResolver<'a> {
     pub fn new(
         engine: &'a Engine,
-        build_dir: &'a Path,
         recipes_path: Option<&'a Path>,
         defines: &'a [(String, String)],
     ) -> Self {
         Self {
             engine,
-            build_dir,
             recipes_path,
             defines,
         }
@@ -38,14 +35,10 @@ impl<'a> BuildDepsResolver<'a> {
         deps: &[String],
         persist_enabled: bool,
         exec: &mut ExecutionContext<'_>,
-    ) -> Result<PathBuf> {
-        exec.prepare_work_root(self.build_dir);
-        let tools_prefix = exec.tools_prefix()?;
+    ) -> Result<()> {
         for name in deps {
-            exec.prepare_work_root(self.build_dir);
             let recipe_path = self.find_recipe(name, exec.current_recipe())?;
             // Path hashing separates equal recipe names in different directories.
-            // It is local work disambiguation, not the durable S3 input identity.
             let digest = format!(
                 "{:x}",
                 Sha256::digest(recipe_path.as_os_str().as_encoded_bytes())
@@ -89,7 +82,7 @@ impl<'a> BuildDepsResolver<'a> {
                 }
             }
         }
-        Ok(tools_prefix)
+        Ok(())
     }
 
     fn find_recipe(&self, name: &str, parent_recipe: Option<&Path>) -> Result<PathBuf> {

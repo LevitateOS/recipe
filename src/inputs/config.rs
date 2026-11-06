@@ -20,14 +20,13 @@ const MAX_ENV: usize = 8;
 const MAX_ENV_ENTRY: usize = 256;
 const MAX_CONFIG: usize = 4096;
 
-/// Default immutable image reference: the I01-pinned Rocky rootfs content,
+/// Default immutable image reference: the pinned Rocky rootfs content,
 /// named by digest rather than by host path (host `.artifacts` paths never
 /// enter domain config). Override with `GINUX_ROOT`; the override must pass
-/// the same reference validation. How the launcher resolves this reference
-/// to retained image storage is owned by G-launch/G11.
+/// the same reference validation. The launcher resolves the reference.
 const DEFAULT_ROOT_REF: &str = "oci:rocky-10.2.20260525.0-amd64-rootfs@sha256:1026f8d3b36eaea1bcab8e609045991f08c70eb7645cb37f58f48faa8b40be9c";
 
-/// Domain init: the worker binary shipped inside `/inputs` (I01/R02).
+/// Domain init: the worker binary shipped inside `/inputs`.
 const WORKER_INIT: &str = "/inputs/recipe-worker";
 
 /// Domain config for one invocation; [`DomainConfig::render`] produces the
@@ -52,8 +51,7 @@ impl DomainConfig {
     /// (`/inputs/main.rhai`); `env` is the §5 allowlisted environment.
     ///
     /// `args` carries argv *after* argv[0]: the launcher supplies argv[0]
-    /// from `init` (standard execve convention); R06/G-launch confirm the
-    /// split when wiring launch.
+    /// from `init` (standard execve convention).
     pub fn for_invocation(
         invocation_id: &str,
         main_domain_path: &str,
@@ -63,7 +61,6 @@ impl DomainConfig {
         options.validate()?;
         validate_id(invocation_id)?;
         let root = root_reference()?;
-        validate_init(WORKER_INIT)?;
         validate_domain_path_value("args[0]", main_domain_path)?;
         if env.len() > MAX_ENV {
             bail!(
@@ -162,19 +159,7 @@ impl DomainConfig {
     }
 }
 
-/// Render the config text for `invocation_id` + `env` in one step.
-pub fn config_text(
-    invocation_id: &str,
-    main_domain_path: &str,
-    env: &[(String, String)],
-    options: &crate::ExecutionOptions,
-) -> Result<String> {
-    DomainConfig::for_invocation(invocation_id, main_domain_path, env, options)?
-        .with_network(super::network::NetworkPolicy::resolve(options)?)
-        .render()
-}
-
-/// Image reference: I01 pin by default, `GINUX_ROOT` override when set.
+/// Image reference: the pin by default, `GINUX_ROOT` override when set.
 /// Mirrors the domain parser's reference rule (no leading `/`, no `..`,
 /// charset `[A-Za-z0-9_.:/@-]`), plus the §2 ≤ 128 B bound.
 fn root_reference() -> Result<String> {
@@ -199,17 +184,6 @@ fn validate_id(id: &str) -> Result<()> {
     env::validate_invocation_id(id)
 }
 
-/// Domain init must be a domain path (§2 ≤ 128 B; parser: starts with `/`,
-/// no `..`, no NUL).
-fn validate_init(init: &str) -> Result<()> {
-    if init.len() < 2 || init.len() > MAX_PATH {
-        bail!(
-            "input preparation failure: domain init {init:?} has {} B, want 2..={MAX_PATH} B (§2)",
-            init.len(),
-        );
-    }
-    validate_domain_path_value("init", init)
-}
 
 fn validate_domain_path_value(field: &str, value: &str) -> Result<()> {
     if value.len() > MAX_ARG {
