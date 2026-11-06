@@ -53,13 +53,7 @@ fn git(dir: Option<&Path>, args: &[&str]) -> Command {
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null");
     // Inherited repository locators must not redirect this command's writes.
-    for name in [
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_COMMON_DIR",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    for name in crate::process::GIT_REPOSITORY_LOCATORS.into_iter().chain([
         "GIT_CONFIG_PARAMETERS",
         "GIT_CONFIG_COUNT",
         "GIT_TEMPLATE_DIR",
@@ -79,7 +73,7 @@ fn git(dir: Option<&Path>, args: &[&str]) -> Command {
         "http_proxy",
         "https_proxy",
         "all_proxy",
-    ] {
+    ]) {
         command.env_remove(name);
     }
     if let Some(dir) = dir {
@@ -188,8 +182,19 @@ fn select_commit(dest: &Path, commit: &str) -> Result<(), Box<EvalAltResult>> {
     }
     let object = format!("{commit}^{{commit}}");
     let present = cmd::capture(git(Some(dest), &["cat-file", "-e", &object]))?;
-    if !present.status.success() {
-        cmd::run_checked(git(Some(dest), &["fetch", "--no-tags", "origin", commit]))?;
+    // `cat-file -e` exits 1 for a missing object; anything else is a broken repository.
+    match present.exit {
+        crate::process::Exit::Code(0) => {}
+        crate::process::Exit::Code(1) => {
+            cmd::run_checked(git(Some(dest), &["fetch", "--no-tags", "origin", commit]))?;
+        }
+        other => {
+            return Err(format!(
+                "cannot inspect cached Git checkout ({other}): {}",
+                String::from_utf8_lossy(&present.stderr).trim()
+            )
+            .into());
+        }
     }
     let resolved = query(
         dest,
@@ -241,8 +246,7 @@ fn acquire(url: &str, dest: &Path, commit: &str) -> Result<String, Box<EvalAltRe
     let staged = staging.path().join("checkout");
     let mut command = git(None, &["clone", "--no-local", "--progress", "--template="]);
     command.arg("--").arg(url).arg(&staged);
-    let pb = progress::create_spinner("cloning Git source");
-    let _guard = progress::ProgressGuard::new(&pb);
+    let _progress = progress::Spinner::new("cloning Git source");
     cmd::run_checked(command)?;
     validate_checkout(&staged, url)?;
     select_commit(&staged, commit)?;

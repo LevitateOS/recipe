@@ -28,6 +28,7 @@
 mod backend;
 mod cancellation;
 mod core;
+mod diagnostics;
 mod domain;
 mod helpers;
 mod inputs;
@@ -35,6 +36,7 @@ mod launch;
 mod llm;
 mod logging;
 mod options;
+mod process;
 mod publication;
 mod retained;
 mod temporary;

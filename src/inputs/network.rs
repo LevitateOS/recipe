@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -83,43 +83,26 @@ fn validate_endpoint(endpoint: SocketAddr) -> Result<()> {
 /// coordinator startup indefinitely. Output goes to a private bounded-size
 /// result, avoiding pipe capacity deadlocks while the parent waits.
 fn resolve_host(host: &str) -> Result<BTreeSet<IpAddr>> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut output = tempfile::tempfile()?;
-    let mut child = Command::new("/usr/bin/getent")
-        .args(["ahosts", host])
-        .env_clear()
-        .env("LC_ALL", "C")
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .stdout(output.try_clone()?)
-        .spawn()
-        .context("cannot start bounded hostname resolver")?;
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let status = loop {
-        if crate::cancellation::signal() != 0 {
-            let _ = child.kill();
-            let _ = child.wait();
-            crate::cancellation::check()?;
+    let mut command = Command::new("/usr/bin/getent");
+    command.args(["ahosts", host]).env_clear().env("LC_ALL", "C");
+    let finished = crate::process::Run::new(command)
+        .keep(crate::process::Keep::Limit(64 * 1024))
+        .deadline(Duration::from_secs(10))
+        .run();
+    crate::cancellation::check()?;
+    let finished = match finished {
+        Ok(finished) => finished,
+        Err(crate::process::Error::Spawn(error)) => {
+            bail!("cannot start bounded hostname resolver: {error}")
         }
-        if let Some(status) = child.try_wait()? {
-            break status;
+        Err(crate::process::Error::Failed(_)) => {
+            bail!("network hostname resolution exceeded its time or output bound: {host}")
         }
-        if Instant::now() >= deadline || output.metadata()?.len() > 64 * 1024 {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("network hostname resolution exceeded its time or output bound: {host}");
-        }
-        std::thread::sleep(Duration::from_millis(10));
     };
-    if !status.success() {
+    if !finished.exit.success() {
         bail!("cannot resolve network host {host}");
     }
-    output.seek(SeekFrom::Start(0))?;
-    let mut text = String::new();
-    output.take(64 * 1024 + 1).read_to_string(&mut text)?;
-    if text.len() > 64 * 1024 {
-        bail!("hostname resolver output exceeds limit");
-    }
+    let text = String::from_utf8(finished.stdout).context("hostname resolver output is not UTF-8")?;
     let addresses = text
         .lines()
         .map(|line| {

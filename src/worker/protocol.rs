@@ -255,6 +255,16 @@ pub enum DiagnosticStream {
     Recipe,
 }
 
+impl From<crate::diagnostics::Stream> for DiagnosticStream {
+    fn from(stream: crate::diagnostics::Stream) -> Self {
+        match stream {
+            crate::diagnostics::Stream::Recipe => Self::Recipe,
+            crate::diagnostics::Stream::Stdout => Self::Stdout,
+            crate::diagnostics::Stream::Stderr => Self::Stderr,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DiagnosticPayload {

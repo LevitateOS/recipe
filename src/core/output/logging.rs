@@ -31,8 +31,8 @@ pub fn hook_event_struct(event: &RecipeHookEvent) {
     let human = narration::format_hook_line(event);
 
     if machine_events() {
-        crate::logging::diag!("{}", event.as_json());
+        crate::diagnostics::diag!("{}", event.as_json());
     }
 
-    crate::logging::diag!("{}", human);
+    crate::diagnostics::diag!("{}", human);
 }

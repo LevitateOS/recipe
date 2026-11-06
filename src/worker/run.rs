@@ -59,7 +59,7 @@ type SharedChannel = Arc<Mutex<WorkerChannel>>;
 
 fn install_diagnostics(channel: &SharedChannel) -> Result<()> {
     let channel = Arc::clone(channel);
-    crate::logging::install_diagnostic_sink(Box::new(move |stream, mut bytes| {
+    crate::diagnostics::install(Box::new(move |stream, mut bytes| {
         use crate::worker::protocol::{
             DiagnosticPayload, MAX_DIAGNOSTIC_BYTES, MAX_DIAGNOSTIC_CHUNK, MAX_DIAGNOSTIC_FRAMES,
         };
@@ -75,7 +75,7 @@ fn install_diagnostics(channel: &SharedChannel) -> Result<()> {
             let payload = if room == 0 || state.diagnostic_frames == MAX_DIAGNOSTIC_FRAMES {
                 state.truncated = true;
                 DiagnosticPayload {
-                    stream,
+                    stream: stream.into(),
                     data: Vec::new(),
                     truncated: true,
                 }
@@ -86,7 +86,7 @@ fn install_diagnostics(channel: &SharedChannel) -> Result<()> {
                 state.diagnostic_bytes += take;
                 state.diagnostic_frames += 1;
                 DiagnosticPayload {
-                    stream,
+                    stream: stream.into(),
                     data,
                     truncated: false,
                 }
@@ -225,13 +225,13 @@ pub fn run_worker() -> Result<()> {
             "request invocation id does not match worker bootstrap",
         );
     }
-    eprintln!(
+    crate::diagnostics::trace(&format!(
         "worker: invocation={} operation={} persist_state={} recipe={}",
         request.invocation_id,
         request.operation,
         request.persist_state,
         local.recipe.display()
-    );
+    ));
 
     let channel = Arc::new(Mutex::new(WorkerChannel {
         sender: tx,
@@ -243,7 +243,7 @@ pub fn run_worker() -> Result<()> {
     }));
     install_diagnostics(&channel)?;
     crate::core::output::set_machine_events(request.options.execution.machine_events);
-    crate::logging::diagnostic_line("recipe: managed worker started");
+    crate::diagnostics::line("recipe: managed worker started");
     let outcome = run_operation(&local, &request, &mut rx, &mut input, &channel, &mut output);
     let mut channel = channel
         .lock()
@@ -550,7 +550,9 @@ fn report_checkpoint(
     })?;
     drop(channel);
     let generation = wait_ack(rx, input, seq)?;
-    eprintln!("worker: checkpoint #{seq} acked (generation {generation})");
+    crate::diagnostics::trace(&format!(
+        "worker: checkpoint #{seq} acked (generation {generation})"
+    ));
     Ok(generation)
 }
 

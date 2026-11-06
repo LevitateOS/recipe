@@ -97,15 +97,16 @@ fn hash_with_progress<D: sha2::Digest>(
         if show_progress && file_size > 0 {
             let percent = ((total_read * 100) / file_size) as u8;
             if percent >= last_percent + 10 {
-                eprint!("\r     checksum: {}%...", percent);
-                std::io::Write::flush(&mut std::io::stderr()).ok();
+                crate::diagnostics::out_of_band(
+                    format!("\r     checksum: {percent}%...").as_bytes(),
+                );
                 last_percent = percent;
             }
         }
     }
 
     if show_progress {
-        eprintln!();
+        crate::diagnostics::out_of_band(b"\n");
     }
 
     Ok(hex::encode(hasher.finalize()))
@@ -136,15 +137,16 @@ fn hash_blake3_with_progress(
         if show_progress && file_size > 0 {
             let percent = ((total_read * 100) / file_size) as u8;
             if percent >= last_percent + 10 {
-                eprint!("\r     checksum: {}%...", percent);
-                std::io::Write::flush(&mut std::io::stderr()).ok();
+                crate::diagnostics::out_of_band(
+                    format!("\r     checksum: {percent}%...").as_bytes(),
+                );
                 last_percent = percent;
             }
         }
     }
 
     if show_progress {
-        eprintln!();
+        crate::diagnostics::out_of_band(b"\n");
     }
 
     Ok(hasher.finalize().to_hex().to_string())

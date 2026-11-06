@@ -460,8 +460,9 @@ fn pump_protocol(
                         );
                     }
                     diagnostic_truncated = true;
-                    let _ = std::io::stderr()
-                        .write_all(b"recipe: diagnostic limit reached; remaining output drained\n");
+                    crate::diagnostics::line(
+                        "recipe: diagnostic limit reached; remaining output drained",
+                    );
                 } else {
                     diagnostic_bytes += payload.data.len();
                     diagnostic_frames += 1;
@@ -475,7 +476,10 @@ fn pump_protocol(
                     // All human bytes go to CLI stderr, never to its JSON stream.
                     // Supervisor stderr is collected independently and never parsed.
                     worker_diagnostics.write_all(&payload.data)?;
-                    let _ = std::io::stderr().write_all(&payload.data);
+                    let _ = crate::diagnostics::write(
+                        crate::diagnostics::Stream::Recipe,
+                        &payload.data,
+                    );
                 }
             }
             FramePayload::Checkpoint(point) => {

@@ -28,8 +28,8 @@ pub(crate) fn resolve_deps(
     dep_names: &[String],
     persist_enabled: bool,
     exec: &mut ExecutionContext<'_>,
-) -> Result<crate::helpers::internal::cmd::EnvironmentGuard> {
-    let original_path = crate::helpers::internal::cmd::environment("PATH").unwrap_or_default();
+) -> Result<crate::process::EnvironmentGuard> {
+    let original_path = crate::process::environment("PATH").unwrap_or_default();
     let resolver = build_deps::BuildDepsResolver::new(engine, search_path, defines);
     resolver.resolve_with_context(dep_names, persist_enabled, exec)?;
     let tools_prefix = Path::new(crate::domain::TOOLS);
@@ -51,5 +51,5 @@ pub(crate) fn resolve_deps(
             values.push((key.into(), value.into_os_string()));
         }
     }
-    Ok(crate::helpers::internal::cmd::push_environment(values))
+    Ok(crate::process::push_environment(values))
 }

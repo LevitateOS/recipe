@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use super::super::internal::fs_utils;
 use super::super::internal::hash::{self, HashAlgorithm};
-use super::super::internal::progress::{self, upgrade_to_bytes};
+use super::super::internal::progress::Spinner;
 
 /// Acquire a complete payload at an explicit path, checking SHA256 before
 /// atomically replacing any existing file. Resume preserves the old prefix on
@@ -201,11 +201,9 @@ fn save_response_with_prefix(
     expected_total: Option<u64>,
     sha256: &str,
 ) -> Result<u64, Box<EvalAltResult>> {
-    let pb = progress::create_spinner(&format!("downloading {}", filename));
-
-    // Get content length if available and upgrade progress bar
+    let pb = Spinner::new(&format!("downloading {}", filename));
     if let Some(len) = expected_total {
-        upgrade_to_bytes(&pb, len);
+        pb.bytes(len);
     }
 
     let result = (|| {
@@ -264,7 +262,6 @@ fn save_response_with_prefix(
             .map_err(|e| format!("cannot publish download to {}: {}", dest.display(), e.error))?;
         Ok(total_bytes)
     })();
-
-    pb.finish_and_clear();
+    drop(pb);
     result
 }

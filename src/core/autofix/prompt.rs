@@ -34,12 +34,13 @@ pub(super) fn strip_outer_code_fence(s: String) -> String {
 }
 
 pub(super) fn git_repo_root(from: &Path) -> Option<PathBuf> {
-    let out = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(from)
-        .output()
-        .ok()?;
-    if !out.status.success() {
+    let mut command = Command::new("git");
+    command.args(["rev-parse", "--show-toplevel"]).current_dir(from);
+    for name in crate::process::GIT_REPOSITORY_LOCATORS {
+        command.env_remove(name);
+    }
+    let out = crate::process::Run::new(command).run().ok()?;
+    if !out.exit.success() {
         return None;
     }
     let s = String::from_utf8_lossy(&out.stdout);

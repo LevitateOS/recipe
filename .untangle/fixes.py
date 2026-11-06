@@ -174,6 +174,8 @@ MOVES = {
     # X1 → later fixes that rewrite the same code anyway.
     "A43": "X3", "A79": "X7", "A83": "X4", "B68": "X4", "C69": "X10", "I19": "X10", "I20": "X10",
     "I21": "X9", "E38": "X11", "E66": "X12", "E60": "X14", "E74": "X11", "E94": "X14", "E95": "X14", "E96": "X14",
+    # X12 → X13 (narration rewrite decides styling).
+    "C38": "X13",
 }
 NEW_LEAVE = [
     ("A81", "`RecipeEngine::launcher()`'s `GINUX_BIN` fallback is the library default; `tests/library_backend.rs` exercises it (the audit only checked the CLI)."),

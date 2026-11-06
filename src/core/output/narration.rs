@@ -7,13 +7,13 @@ use crate::core::events::RecipeHookEvent;
 /// Print an action header (blue, bold)
 /// Example: "==> Installing ripgrep"
 pub fn action(message: &str) {
-    crate::logging::diag!("{}", message.bold());
+    crate::diagnostics::diag!("{}", message.bold());
 }
 
 /// Print a sub-action (cyan arrow)
 /// Example: "  -> acquire"
 pub fn sub_action(phase: &str) {
-    crate::logging::diag!(
+    crate::diagnostics::diag!(
         "{}",
         format!("Now working through the {phase} step.").cyan()
     );
@@ -22,34 +22,34 @@ pub fn sub_action(phase: &str) {
 /// Print a detail line (dimmed prefix)
 /// Example: "     downloading https://..."
 pub fn detail(message: &str) {
-    crate::logging::diag!("{}", message.dimmed());
+    crate::diagnostics::diag!("{}", message.dimmed());
 }
 
 /// Print a success message (green)
 /// Example: "==> ripgrep installed"
 pub fn success(message: &str) {
-    crate::logging::diag!("{}", message.green());
+    crate::diagnostics::diag!("{}", message.green());
 }
 
 /// Print an info message (cyan)
 pub fn info(message: &str) {
-    crate::logging::diag!("{message}");
+    crate::diagnostics::diag!("{message}");
 }
 
 /// Print a warning message (yellow)
 pub fn warning(message: &str) {
-    crate::logging::diag!("{}", message.yellow());
+    crate::diagnostics::diag!("{}", message.yellow());
 }
 
 /// Print an error message (red)
 pub fn error(message: &str) {
-    crate::logging::diag!("{}", message.red());
+    crate::diagnostics::diag!("{}", message.red());
 }
 
 /// Print a skip message (dimmed)
 /// Example: "==> ripgrep already installed, skipping"
 pub fn skip(message: &str) {
-    crate::logging::diag!("{}", message.dimmed());
+    crate::diagnostics::diag!("{}", message.dimmed());
 }
 
 pub(crate) fn format_hook_line(event: &RecipeHookEvent) -> String {

@@ -277,7 +277,7 @@ Add a small, dependency-free `domain` module that owns every in-domain fact: the
 
 Define a `DiagnosticSink` trait in a leaf module that depends on nothing. The worker installs a protocol-backed sink; the coordinator CLI installs a stderr sink that decides colour/TTY. All human output goes through it: narration, progress bars, hash progress, helper warnings, the backend summary and the LLM tee. `helpers::internal::cmd` becomes the only way to spawn a child. It owns env application order, bounded capture, routing, command lookup and a typed `ExitStatus` (exited code / signalled / spawn failed). `df`, autofix `git`, the LLM runner (dropping tokio) and every helper use it.
 
-- **Solves:** 38 problems (22 hidden, 4 needless, 1 surplus, 11 special)
+- **Solves:** 37 problems (21 hidden, 4 needless, 1 surplus, 11 special)
 - **Done when:** `logging`, `core::output` and `cmd` no longer import `worker::protocol`. No `eprint!`/`eprintln!`/`ProgressDrawTarget::stderr` outside the sink implementations. No `Command::new` outside the runner. `-1` exit-code sentinels are gone. tokio is dropped or confined.
 - **Depends on:** X1
 
@@ -286,7 +286,6 @@ Define a `DiagnosticSink` trait in a leaf module that depends on nothing. The wo
 - **A76** [special] `src/logging.rs:58` drops the sink error with `let _ =`, and the worker notices later via `channel.failed` (`src/worker/run.rs:263`).
 - **C2** [needless] `src/core/output/logging.rs:75,78` and `src/core/output/narration.rs:12-60` print through `crate::logging::diag!`, while `src/logging.rs:14-30` re-exports and wraps `core::output`. This is a second `core::output`↔`logging` cycle (missed by `deps.txt`), and it drags `worker::protocol` and `retained` into narration.
 - **C16** [hidden] `src/core/output/narration.rs:237-279` copies the templates and tick chars from `src/helpers/internal/progress.rs:22-77`.
-- **C38** [hidden] `src/core/output/narration.rs:11-60` always emits ANSI colour, even into `worker.log` via the protocol sink.
 - **C39** [hidden] `src/core/output/narration.rs:240,254,269` draw progress bars directly to stderr, bypassing the diagnostic sink.
 - **D41** [hidden] `src/helpers/acquire/git.rs:22-93` → `src/helpers/internal/cmd.rs:42-59`: git's env scrub is safe only because `apply_environment` re-applies removals after `COMMAND_ENV` ("explicit wins"), and git.rs never says so.
 - **D42** [special] `src/helpers/acquire/git.rs:190-192`: any nonzero `cat-file -e` (including corruption or a spawn error) is treated as "missing, fetch".
@@ -717,7 +716,7 @@ Describe phases with one table (`Phase` → check name, optionality, missing-hoo
 
 Hook events become an enum (`Hook` × `Status`) emitted by the lifecycle and rendered by narration with an exhaustive `match`. Machine events get their own channel (a protocol frame kind or a dedicated fd) instead of being mixed into human lines. The machine-events flag lives only in options. `logging.rs` is reduced to the sink plumbing from X12; the log store moves to X7. In-process event-sink setters are removed from the public API, since events happen in the worker.
 
-- **Solves:** 10 problems (7 hidden, 1 needless, 2 surplus, 0 special)
+- **Solves:** 11 problems (8 hidden, 1 needless, 2 surplus, 0 special)
 - **Done when:** No hook/status string literals outside the event enum's serialization. Narration has no unreachable arms. `logging.rs` is gone or holds only the sink.
 - **Depends on:** X12, X10
 
@@ -731,6 +730,7 @@ Hook events become an enum (`Hook` × `Status`) emitted by the lifecycle and ren
 - **H9** [hidden] `src/lib.rs:53-56` re-exports event-sink setters that act on in-process statics (`src/core/output/logging.rs:10-38`), but hook events are emitted in the worker process, so a library caller's sink never receives them.
 - **I14** [hidden] `src/core/build_deps.rs:63,78` name a dependency's hook events by the `deps` string, while its own events use `ctx.name` (`flow.rs:76-88`).
 - **J14** [hidden] `src/core/output/logging.rs:91,94` → `src/worker/run.rs:73-93`: hook events and machine JSON share the 16 MiB/32768-frame diagnostic budget with subprocess output, so a noisy build silently drops the final install event after truncation (`src/launch.rs:458-475`).
+- **C38** [hidden] `src/core/output/narration.rs:11-60` always emits ANSI colour, even into `worker.log` via the protocol sink.
 
 ### 13. X11: Colocated helper registry with generated docs
 
@@ -1097,4 +1097,19 @@ Special cases: **168** at audit start.
   - The worker now checks its whole argv against `domain::WORKER_ARGS` and takes the recipe and search path from `domain`, instead of trusting argv[2]. The modes-manifest bound is checked by both writer and reader.
   - Checks: build clean, CLI snapshots byte-identical. Privileged suite: pending.
   - Bugs fixed: none.
+- [x] **X12** One subprocess runner and one diagnostic sink, owned low in the stack. Commit: `git log --grep "X12:"`.
+  - New leaf `src/diagnostics.rs` (no crate imports) owns where output goes: the diagnostic stream (`write`/`line`/`diag!`, with the worker installing a protocol sink) and out-of-band stderr (`out_of_band`/`trace`/`progress_target`) for progress redraws and worker traces. `logging.rs` keeps only the invocation log store. `worker::protocol` maps `diagnostics::Stream` to its wire enum, so low-level code no longer imports the protocol.
+  - New `src/process.rs` is the single child runner (the Ginux launcher is the documented exception). A `Run` states its stdin, routes, keep policy (all/tail/limit), deadline and own process group, and returns a typed `Exit` (code/signal) or `Error` (spawn/failed). It also owns the thread env overlay (moved from `helpers::internal::cmd`), `find_program` (now checks the exec bit) and `GIT_REPOSITORY_LOCATORS`. `helpers::internal::cmd` is now only the recipe-facing policy: streamed tail, capture, checked capture, and the documented `-1` status contract.
+  - Moved onto `process`: helper commands, the LLM runner (tokio removed from the crate), autofix `git rev-parse`/`git apply` (which now strip repository locators, and `git apply` output goes to diagnostics instead of the CLI's JSON stdout), and `getent`. `check_disk_space` uses `statvfs` instead of spawning `df`.
+  - Coordinator `eprintln!`s now go through the sink. Hash progress and worker traces use the explicit out-of-band channel, as before. Progress bars are one `Spinner` type that clears on drop; extraction's private copy is gone.
+  - Not done here: C38 (always-ANSI narration) moves to X13 with the narration rewrite.
+  - Behavior changes (recorded as fixes):
+    - (1) `git apply` output no longer reaches stdout (it could corrupt `--json-output`-less JSON).
+    - (2) Autofix git calls ignore inherited `GIT_DIR`/`GIT_WORK_TREE`/… (J13).
+    - (3) `command_exists`/`require_*` reject non-executable files on PATH (E39).
+    - (4) `shell_status` reports drain/IO failures after a clean exit as errors, not `-1` (J15).
+    - (5) The disk-space "could not check" warning is visible in the diagnostic stream (it was lost in the supervisor log).
+    - (6) A cached git checkout whose `cat-file -e` fails with anything other than "missing" (exit 1) is an error, not a refetch (D42).
+    - (7) LLM provider failures report `signal: N` instead of `exit code 1` (E71).
+  - Checks: build clean (0 warnings), CLI snapshots byte-identical. Privileged suite: pending.
 

@@ -61,5 +61,5 @@ pub(crate) struct ResolvedCall {
 pub(crate) struct ProviderResult {
     pub(crate) stdout: Vec<u8>,
     pub(crate) stderr: Vec<u8>,
-    pub(crate) exit_code: i32,
+    pub(crate) exit: crate::process::Exit,
 }

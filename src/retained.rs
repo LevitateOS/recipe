@@ -42,7 +42,7 @@ pub(crate) fn lock_destination(destination: &Path, timeout: Duration) -> Result<
             Ok(()) => return Ok(file),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 if !reported_wait {
-                    eprintln!("recipe: waiting for shared destination");
+                    crate::diagnostics::line("recipe: waiting for shared destination");
                     reported_wait = true;
                 }
                 if Instant::now() >= deadline {

@@ -1,8 +1,7 @@
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use super::{parser, prompt};
 
@@ -229,21 +228,19 @@ fn apply_patch(cwd: &Path, patch: &str) -> Result<()> {
 
     let mut cmd = Command::new("git");
     cmd.current_dir(cwd)
-        .args(["apply", "--whitespace=nowarn", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-
-    let mut child = cmd.spawn().context("Spawning git apply")?;
-    {
-        let mut stdin = child.stdin.take().context("Opening git apply stdin")?;
-        stdin
-            .write_all(&patch_bytes)
-            .context("Writing patch to git apply")?;
+        .args(["apply", "--whitespace=nowarn", "-"]);
+    for name in crate::process::GIT_REPOSITORY_LOCATORS {
+        cmd.env_remove(name);
     }
-    let status = child.wait().context("Waiting for git apply")?;
-    if !status.success() {
-        bail!("git apply failed with status {status}");
+    // Coordinator stdout carries the final JSON, so git output is diagnostics.
+    let finished = crate::process::Run::new(cmd)
+        .stdin(patch_bytes)
+        .route(crate::process::Route::Diagnostics, crate::process::Route::Diagnostics)
+        .keep(crate::process::Keep::Tail(64 * 1024))
+        .run()
+        .context("running git apply")?;
+    if !finished.exit.success() {
+        bail!("git apply failed with {}", finished.exit);
     }
     Ok(())
 }

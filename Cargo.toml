@@ -35,7 +35,6 @@ fs2 = "0.4"
 walkdir = "2"
 owo-colors = "4"
 indicatif = "0.17"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "io-util", "io-std"] }
 libc = "0.2"
 
 # Native archive extraction (no external tools needed)

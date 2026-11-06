@@ -25,7 +25,7 @@ fn discover_mcp_server_names() -> Vec<String> {
 }
 
 pub(crate) struct CodexInvocation {
-    pub(crate) cmd: tokio::process::Command,
+    pub(crate) cmd: std::process::Command,
     pub(crate) call: ResolvedCall,
     pub(crate) last_message_file: tempfile::NamedTempFile,
 }
@@ -35,7 +35,7 @@ pub(crate) fn build(
     cwd: &Path,
     stdin_prompt: Vec<u8>,
 ) -> Result<CodexInvocation, String> {
-    let mut cmd = tokio::process::Command::new(&cfg.codex.bin);
+    let mut cmd = std::process::Command::new(&cfg.codex.bin);
 
     cmd.arg("exec");
     // Recipe LLM helpers should be pure text transforms of provided input. Disable the shell tool
@@ -104,13 +104,9 @@ pub(crate) fn build(
 }
 
 pub(crate) fn finalize(result: ProviderResult, last_message_path: &Path) -> Result<String, String> {
-    if result.exit_code != 0 {
+    if !result.exit.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
-        return Err(format!(
-            "codex exited with code {}: {}",
-            result.exit_code,
-            stderr.trim()
-        ));
+        return Err(format!("codex exited with {}: {}", result.exit, stderr.trim()));
     }
 
     let text = std::fs::read_to_string(last_message_path).map_err(|e| {

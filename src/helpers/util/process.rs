@@ -4,7 +4,6 @@
 
 use crate::helpers::internal::cmd;
 use rhai::EvalAltResult;
-use std::env;
 use std::process::Command;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -14,7 +13,7 @@ enum PrivilegeCommand {
     Doas,
 }
 
-fn run_command(cmd: &str, args: &[String]) -> Result<std::process::Output, Box<EvalAltResult>> {
+fn run_command(cmd: &str, args: &[String]) -> Result<crate::process::Finished, Box<EvalAltResult>> {
     let mut command = Command::new(cmd);
     command.args(args);
     cmd::capture(command)
@@ -50,20 +49,12 @@ fn run_with_privilege(
     }
 }
 
-fn trim_stdout(output: std::process::Output) -> String {
+fn trim_stdout(output: crate::process::Finished) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
 fn command_path(name: &str) -> Option<std::path::PathBuf> {
-    let path = cmd::environment("PATH")?;
-    env::split_paths(&path).find_map(|dir| {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            Some(candidate)
-        } else {
-            None
-        }
-    })
+    crate::process::find_program(name)
 }
 
 pub fn command_exists(name: &str) -> bool {
@@ -160,7 +151,7 @@ fn apk_policy(helper: &str, name: &str) -> Result<Option<ApkPolicyEntries>, Box<
     require_apk(helper)?;
     let args = strings(&["policy", name]);
     let output = run_command("apk", &args)?;
-    if !output.status.success() {
+    if !output.exit.success() {
         return Ok(None);
     }
     Ok(Some(parse_apk_policy(&String::from_utf8_lossy(
@@ -273,7 +264,7 @@ pub fn exec_output_with_options(
 pub fn rpm_installed(name: &str) -> Result<bool, Box<EvalAltResult>> {
     require_rpm("rpm_installed")?;
     let args = strings(&["-q", name]);
-    run_command("rpm", &args).map(|output| output.status.success())
+    run_command("rpm", &args).map(|output| output.exit.success())
 }
 
 /// Return the installed RPM version
@@ -281,7 +272,7 @@ pub fn rpm_version(name: &str) -> Result<String, Box<EvalAltResult>> {
     require_rpm("rpm_version")?;
     let args = strings(&["-q", "--qf", "%{VERSION}", name]);
     let output = run_command("rpm", &args)?;
-    if !output.status.success() {
+    if !output.exit.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("rpm_version failed for {}: {}", name, stderr.trim()).into());
     }
@@ -292,7 +283,7 @@ pub fn rpm_version(name: &str) -> Result<String, Box<EvalAltResult>> {
 pub fn dnf_package_available(name: &str) -> Result<bool, Box<EvalAltResult>> {
     require_dnf("dnf_package_available")?;
     let args = strings(&["-q", "info", name]);
-    run_command("dnf", &args).map(|output| output.status.success())
+    run_command("dnf", &args).map(|output| output.exit.success())
 }
 
 pub fn apk_installed(name: &str) -> Result<bool, Box<EvalAltResult>> {
@@ -327,7 +318,7 @@ pub fn apk_package_available(name: &str) -> Result<bool, Box<EvalAltResult>> {
     require_apk("apk_package_available")?;
     let args = strings(&["search", "-v", name]);
     let output = run_command("apk", &args)?;
-    if !output.status.success() {
+    if !output.exit.success() {
         return Ok(false);
     }
 

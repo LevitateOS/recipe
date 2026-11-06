@@ -17,12 +17,11 @@
 //! ```
 
 use crate::core::output;
-use indicatif::{ProgressBar, ProgressStyle};
+
 use rhai::EvalAltResult;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read};
 use std::path::{Component, Path, PathBuf};
-use std::time::Duration;
 
 // ============================================================================
 // Native archive extraction (no external tools needed)
@@ -419,16 +418,7 @@ pub fn extract_with_format(
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "archive".to_string());
 
-    // Create spinner for extraction
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .template("     {spinner:.cyan} {msg}")
-            .unwrap()
-            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-    );
-    pb.set_message(format!("extracting {}", filename));
-    pb.enable_steady_tick(Duration::from_millis(80));
+    let progress = crate::helpers::internal::progress::Spinner::new(&format!("extracting {filename}"));
 
     let result = match format.to_lowercase().as_str() {
         "tar.gz" | "tgz" => extract_tar_gz(archive_path, dest_path),
@@ -438,13 +428,10 @@ pub fn extract_with_format(
         "tar" => extract_tar_plain(archive_path, dest_path),
         "zip" => extract_zip(archive_path, dest_path),
         "apk" => extract_apk(archive_path, dest_path),
-        _ => {
-            pb.finish_and_clear();
-            return Err(format!("unknown archive format: {}", format).into());
-        }
+        _ => return Err(format!("unknown archive format: {}", format).into()),
     };
 
-    pb.finish_and_clear();
+    drop(progress);
 
     result?;
     output::detail(&format!("extracted {} to {}", filename, dest));

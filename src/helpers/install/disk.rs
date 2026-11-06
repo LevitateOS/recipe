@@ -4,7 +4,6 @@
 
 use anyhow::{Result, bail};
 use std::path::Path;
-use std::process::Command;
 
 /// Check if there's enough disk space for a download.
 ///
@@ -33,11 +32,11 @@ pub fn check_disk_space(path: &Path, required_bytes: u64) -> Result<()> {
         }
         None => {
             let required_gb = required_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-            eprintln!(
+            crate::core::output::warning(&format!(
                 "WARNING: Could not check disk space for {}. Ensure at least {:.1} GB is available.",
                 path.display(),
                 required_gb
-            );
+            ));
             Ok(())
         }
     }
@@ -45,7 +44,7 @@ pub fn check_disk_space(path: &Path, required_bytes: u64) -> Result<()> {
 
 /// Get available disk space in bytes. Returns None if check fails.
 fn get_available_space(path: &Path) -> Option<u64> {
-    // Ensure the path exists for df to work
+    // statvfs needs an existing path.
     let check_path = if path.exists() {
         path.to_path_buf()
     } else if let Some(parent) = path.parent() {
@@ -59,27 +58,12 @@ fn get_available_space(path: &Path) -> Option<u64> {
         std::env::current_dir().ok()?
     };
 
-    let output = Command::new("df")
-        .arg("-k")
-        .arg(&check_path)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
+    let path = std::ffi::CString::new(check_path.as_os_str().as_encoded_bytes()).ok()?;
+    let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // statvfs only writes the provided struct.
+    if unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
         return None;
     }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // Parse df output: second line, fourth column is available KB
-    let line = stdout.lines().nth(1)?;
-    let fields: Vec<&str> = line.split_whitespace().collect();
-
-    if fields.len() >= 4
-        && let Ok(kb) = fields[3].parse::<u64>()
-    {
-        return Some(kb * 1024);
-    }
-
-    None
+    let stats = unsafe { stats.assume_init() };
+    Some(stats.f_bavail.saturating_mul(stats.f_frsize))
 }

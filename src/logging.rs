@@ -1,38 +1,4 @@
-//! Diagnostic sink selection and the durable per-invocation diagnostics store.
-
-// Worker installation is explicit and never selected through environment flags.
-// The shared callback serializes diagnostics with lifecycle protocol frames.
-type DiagnosticSink =
-    dyn Fn(crate::worker::protocol::DiagnosticStream, &[u8]) -> std::io::Result<()> + Send + Sync;
-static DIAGNOSTIC_SINK: std::sync::OnceLock<Box<DiagnosticSink>> = std::sync::OnceLock::new();
-
-pub(crate) fn install_diagnostic_sink(sink: Box<DiagnosticSink>) -> anyhow::Result<()> {
-    DIAGNOSTIC_SINK
-        .set(sink)
-        .map_err(|_| anyhow::anyhow!("worker diagnostic sink already installed"))
-}
-
-pub(crate) fn diagnostic(
-    stream: crate::worker::protocol::DiagnosticStream,
-    bytes: &[u8],
-) -> std::io::Result<()> {
-    use std::io::Write;
-    match DIAGNOSTIC_SINK.get() {
-        Some(sink) => sink(stream, bytes),
-        None => std::io::stderr().write_all(bytes),
-    }
-}
-
-pub(crate) fn diagnostic_line(message: &str) {
-    let mut bytes = message.as_bytes().to_vec();
-    bytes.push(b'\n');
-    let _ = diagnostic(crate::worker::protocol::DiagnosticStream::Recipe, &bytes);
-}
-
-macro_rules! diag {
-    ($($args:tt)*) => { $crate::logging::diagnostic_line(&format!($($args)*)) };
-}
-pub(crate) use diag;
+//! The durable per-invocation diagnostics store.
 
 /// Durable bounded diagnostics live outside disposable invocation scratch.
 pub(crate) struct InvocationLog {
@@ -69,7 +35,7 @@ impl InvocationLog {
         lease.lock_exclusive()?;
         let log = Self { directory, lease };
         log.record(&serde_json::json!({"invocation": invocation, "status":"running"}))?;
-        eprintln!("recipe: diagnostics: {}", log.directory.display());
+        crate::diagnostics::diag!("recipe: diagnostics: {}", log.directory.display());
         Ok(log)
     }
     pub(crate) fn lease_fd(&self) -> std::os::fd::RawFd {

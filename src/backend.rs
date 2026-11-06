@@ -66,7 +66,7 @@ impl GinuxLauncher {
             state_dir,
             recipe,
         )?;
-        eprintln!(
+        crate::diagnostics::diag!(
             "recipe: invocation {} finished in the Ginux domain: ok={} ({} checkpoint{} \
                  acked; launcher exit {}; result {})",
             prepared.invocation_id,
