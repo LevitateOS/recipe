@@ -44,6 +44,15 @@ The current native launcher requires Linux x86_64 and privileges for its chroot
 bootstrap. Run the configured coordinator/launcher with those privileges; a
 plain `sudo` wrapper around only the launcher closes required inherited channels.
 Unavailable launch capabilities fail explicitly.
+The invocation examples below assume those privileges are available. When using
+sudo, pass the declared image/worker selections to the whole coordinator command:
+
+```sh
+sudo env GINUX_BIN="$GINUX_BIN" GINUX_ROOTFS="$GINUX_ROOTFS" \
+  GINUX_ROOT="$GINUX_ROOT" RECIPE_WORKER_BIN="$RECIPE_WORKER_BIN" \
+  "$RECIPE_WORKER_BIN" install ./hello.rhai --build-dir ./hello-work
+```
+
 
 Only install commands required by a recipe in its compiler image. For example,
 a Git recipe needs Git there. An explicit Rust musl target needs its matching
