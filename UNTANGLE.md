@@ -1262,3 +1262,17 @@ Special cases: **168** at audit start.
   - Still open in X10: the phase table and single phase block (C12, C13, C19, C20, C44–C48), explicit `RecipeRole` (C24, I6–I12), complete `ExecutionContext` construction (C25–C27), a minimal checkpoint payload (A38, C40, C60, C61, I17), the readiness enum end to end (C64), declared dependency exports instead of BISON/M4 (C43), and C14, C17, C21–C23, C28–C30, C33, C41, C42, C49–C52, C54–C57, C65–C67, C69, E77, I14, I18–I20, I22–I26.
   - X3a follow-up commit (regression caught by the privileged suite): bounding the worker's ack wait by the execution deadline made it `poll()` for up to 3600 s, which Ginux refuses with EPERM, so every checkpointing test failed. The wait is now a series of polls of at most 300 s until the deadline. Archive tests 5/5 pass after the fix.
 
+### Resume here
+
+- Every fix has had a first pass except **X6** (the run pipeline). The `[~]` entries above list exactly what is still open in each fix.
+- The next loop should take the biggest open clusters in this order:
+  1. **X10** phase table and recipe roles;
+  2. **X6** run pipeline (teardown errors, cancellation token, publish/commit order, deadlines);
+  3. **X11** per-family registration and generated catalogs;
+  4. **X4** CLI-visible flag cleanup;
+  5. **X5** `ginux` module;
+  6. **X16** test harness;
+  7. **X3** stdout/stdin coupling (also the suspect in the intermittent git test).
+- Verification commands: `bash .untangle/priv-test.sh <dir>` (privileged suite) and `bash .untangle/cli-snapshots.sh <bin> <dir>`, compared with `.untangle/out/baseline-cli/`.
+- Intended snapshot differences so far: only `hash-hello.txt` (the `verify_sha256(path, …)` hint).
+
