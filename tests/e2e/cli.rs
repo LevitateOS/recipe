@@ -1,5 +1,4 @@
 use super::*;
-use leviso_cheat_test::cheat_aware;
 // =============================================================================
 // CLI Help and Version Tests
 // =============================================================================
@@ -46,14 +45,6 @@ fn test_cli_version() {
 // Install Command Tests
 // =============================================================================
 
-#[cheat_aware(
-    protects = "Nonexistent package produces clear error, not silent success",
-    severity = "HIGH",
-    ease = "EASY",
-    cheats = ["Return success for missing packages", "Create empty package on the fly"],
-    consequence = "User thinks package installed but nothing happened, confusion when binary missing",
-    legitimate_change = "Missing recipes must always fail with clear error message"
-)]
 #[test]
 fn test_cli_install_nonexistent_package() {
     let (_dir, recipes) = create_test_env();

@@ -53,7 +53,6 @@ zstd = "0.13"
 zip = "2.2"
 
 [dev-dependencies]
-leviso-cheat-test = { path = "../../testing/cheat-test" }
 
 [package.metadata.generate-rpm]
 assets = [
