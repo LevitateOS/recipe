@@ -422,6 +422,130 @@ Taken against `1a6f0b4`. Entries are assigned to fixes in `## Progress` (loop 2)
 - **L105** [special] `src/inputs/root.rs:359-365`: `seed_target` keeps a hardlink only when its target is inside `target/`; any other hardlink falls through to the regular-file branch.
 - **L106** [special] `src/inputs/network.rs:85-90` hard-codes `/usr/bin/getent` with a 10 s deadline and a 64 KiB output limit for DNS.
 
+### M. Re-audit after refactor loop 2: engine side (fresh reviewer, log unseen, "worth fixing" only)
+
+Taken against `b42244f`. Assigned in `## Progress` (loop 3).
+
+- **M1** [hidden] `src/worker/run.rs:243-244` passes `req.operation.as_str()` straight in as the Rhai check-function name. That only works because `worker/protocol.rs:152-154` happens to spell `is_installed`/`is_built`/`is_acquired` the same as `lifecycle.rs:31-37` (`Phase::check`). Nothing ties the wire enum to the lifecycle vocabulary.
+- **M2** [hidden] `src/core/executor/private/dependencies.rs:47` strips `EngineError::Phase` down to a plain error so that `lib.rs:251-256` (autofix runs only for `Phase::Build|Install`) won't patch on a dependency's failure. The autofix eligibility rule is split across two files and expressed only by erasing the phase.
+- **M3** [hidden] `src/core/executor/private/dependencies.rs:57-58` resolves a dep beside `exec.current_recipe()`, which is the child recipe even when the base declared the dep. `inputs/discover.rs:353-372` resolves the base's deps (and imports) beside the base and stages them under the base's directory. A base in another directory with deps beside it gets staged where the engine never looks. This breaks the promise in `recipes.rs:1-4` ("what discovery stages is what the engine looks for").
+- **M4** [hidden] `src/worker/run.rs:260-265`: `PreparedModules::path` falls back to `root.join(reference)` when the Rhai `source` is None. `compile_recipe` (`core/executor.rs:87-110`) never sets a source, so imports in a merged base resolve from `/inputs`, while discovery stages them beside the base (`discover.rs:362-368`). Same mismatch as the previous item, but for modules. Inferred from the code, not reproduced.
+- **M5** [special] `src/core/executor/private/dependencies.rs:86-94` hard-codes `BISON_PKGDATADIR`, `M4`, `LIBRARY_PATH` (lib64 only), `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH` and `PKG_CONFIG_PATH` for whatever specific LevitateOS tool recipes put in `/work/tools`. The generic dependency mechanism carries knowledge of particular packages.
+- **M6** [hidden] `src/core/executor/private/dependencies.rs:69-72` puts dependency work dirs at `<main build>/.deps/...`, and `worker/run.rs:205,224` hands that same `/work/build` to the main recipe as `RUNTIME.paths.build`. A main recipe that empties its build dir (for example `rm(build + "/*")`; glob matches dotfiles by default) silently destroys its dependencies' work and state, and nothing in the recipe-facing contract says so.
+- **M7** [hidden] `src/process.rs:34-43`: `push_environment` restores a cloned snapshot when the guard drops, so guards must drop strictly LIFO. `flow.rs:47` and `flow.rs:54-61` rely on Rust scoping (`_deps_environment` outlives `_build_environment`) to get this right. Nothing enforces or documents the ordering.
+- **M8** [hidden] `src/helpers/install/filesystem.rs:213-259`: only `copy_tree_contents` reads the coordinator-written `/inputs/.recipe-input-modes.json` (written at `inputs/root.rs:149-160`) to restore logical modes. `copy_file`, `copy_into_dir`, `copy_first_existing` and `extract` on `/inputs` sources get the snapshot's read-grant modes instead. The helper depends on a file another module writes, and the rule covers only one helper.
+- **M9** [hidden] `src/core/executor/private/flow.rs:32,50,76` emits hook `"install"` (Skipped/Requested/Success) for the whole recipe. `run_phase` (`flow.rs:143`, `reporting.rs:18`) emits hook `"install"` Running/Success for the install phase. Machine consumers such as `tests/e2e/failures.rs:123` cannot tell "phase done" from "recipe done", and renaming either one changes both.
+- **M10** [hidden] `src/core/output/narration.rs:56-85` picks sentences by matching the literal hook strings `"prepare"`, `"acquire"`, `"build"`, `"install"`, `"cleanup"` and `"remove"`, which the executor chooses ad hoc (`flow.rs:23`, `actions.rs:21-26,50-56`). A renamed or new event silently falls back to the generic sentence.
+- **M11** [hidden] `src/lifecycle.rs:1-4` claims to be the single home of the hook names, yet `"remove"`, `"cleanup"` and `"prepare"` are literals in `actions.rs:20-32,50-61`, `invocation.rs:86-87,256`, `narration.rs:57-80` and `worker/protocol.rs:149-151`. `lifecycle.rs:41` (`CHECKS`) is a hand copy of `Phase::check` in the same file (`lifecycle.rs:31-37`).
+- **M12** [hidden] `src/helpers/mod.rs:61-75` (`ready`/`needs_work` build `{status, ctx, reason}`) and `src/core/invocation.rs:343-363` (`Runtime::check` parses exactly those keys and the `"ready"`/`"needs_work"` strings) define the readiness wire shape twice, in different modules.
+- **M13** [hidden] `src/core/invocation.rs:53-61` hand-copies `ExecutionOptions` fields (`jobs`, `force_*`) into `RUNTIME.options`. A new option in `options.rs` is invisible to recipes until someone remembers this map.
+- **M14** [hidden] `src/recipes.rs:13` `RESERVED_NAMES` repeats `DEPENDENCY_FIELDS` (`recipes.rs:10`) and the literals `"RUNTIME"`, `"RECIPE_API"` and `"ctx"`. The engine still spells those names inline: `invocation.rs:99,115,143,152,183,203,396`, `executor.rs:137,158`, `flow.rs:42-43,184` (`dependency_names("deps")`, `if field == "deps"`).
+- **M15** [hidden] Three separate static AST inspectors each carry their own copy of the binding names: `core/executor.rs:129-173` (`declared_metadata`, `ctx`), `core/invocation.rs:97-103,391-410` (`RUNTIME`, `RECIPE_API`) and `inputs/discover.rs:562-612` (`deps`/`build_deps`). Each also builds its own unoptimized `Engine` (`executor.rs:131-132`, `discover.rs:564-565`). Changing how recipes declare things means touching all three.
+- **M16** [needless] `src/core/autofix/` (coordinator-only, called from `lib.rs:265`, depends on `inputs`, `llm` and `process`) and `declared_metadata` (`core/executor.rs:119-195`, used only by `bin/recipe/metadata.rs:13`) live in `core/`, which CLAUDE.md calls the engine. The layout hides which code runs on the host and which runs in the domain.
+- **M17** [needless] `src/helpers/acquire/download.rs:16`, `git.rs:3`, `http.rs:8`, `verify.rs:17`, `build/extract.rs:19`, `install/filesystem.rs:3` and `install/disk.rs:35` import `crate::core::output`, while `core/invocation.rs:15` imports `helpers::register_all`. `core` sits both above and below `helpers`, so output narration changes ripple into the helper modules.
+- **M18** [special] `src/core/executor/private/flow.rs:66-74` re-verifies `is_installed` after install only when the recipe has a cleanup hook. The verification policy depends on whether an unrelated optional hook exists.
+- **M19** [special] `src/core/executor/private/flow.rs:101`: `build` is the one phase allowed to be missing. The rule is an `if` for that single value instead of something declared on `Phase`.
+- **M20** [special] `src/core/executor/private/flow.rs:54-56,110-125` runs a second, post-acquire `is_built` check only when acquire ran. It copies `plan`'s readiness/force/report logic (`flow.rs:90-96`) and invents the event name `check.is_built (post acquire)` (`flow.rs:119`).
+- **M21** [special] `src/core/executor/private/flow.rs:158-160`: a failing success-cleanup becomes `EngineError::Recipe` (no phase) and skips the failure cleanup. A failing phase hook gets `EngineError::Phase` plus the failure cleanup (`flow.rs:147-150`). The two cleanup paths have different error semantics.
+- **M22** [special] `src/core/executor/private/flow.rs:174-178` swallows a failure-cleanup error and a checkpoint error as warnings, so a failed checkpoint during failure cleanup is never surfaced to the coordinator.
+- **M23** [special] `src/core/invocation.rs:136-141` treats `Return` and `Exit` as success during setup, while `invocation.rs:303-306` accepts only `Exit` during hook calls. Two rules for the same control-flow signal.
+- **M24** [special] `src/core/executor.rs:79-85` rejects any base that itself extends (one level only), and `executor.rs:61-63,72-74` swallows `canonicalize` failures by falling back to the raw path. Recipe identity, which keys checkpoints (`loaded.rs:29`), can then differ for the same file.
+- **M25** [hidden] `src/core/executor/private/context.rs:51-57` decides "main recipe or dependency" (force flags on or off) from `active.len() > 1`. `options()` is only correct when called after `enter` inside `with_recipe` (`loaded.rs:54,65`; `flow.rs:29,116`), a call-order convention nothing states.
+- **M26** [hidden] `src/core/executor/private/actions.rs:79-98` duplicates the failure narration in `reporting.rs:5-15` (and the `check.{check}` event format at `reporting.rs:30`) with its own wording. Changing how failures are reported means editing both.
+- **M27** [special] `src/core/output/narration.rs:98-101` reports `HookStatus::Missing` as "this workflow does require that dependency", but Missing is emitted for missing `remove`/check functions (`actions.rs:21,81`). The sentence table is also tied to `colorize_event_sentence` (`narration.rs:126`): each sentence must contain its verb word, or the coloring silently degrades.
+- **M28** [hidden] `src/core/autofix/patch.rs:267-271` re-implements `compile_recipe`'s extends resolution (`core/executor.rs:22-38,68-71`) but silently drops an invalid or missing base instead of erroring. `patch.rs:286` swallows `static_references` errors with `unwrap_or_default`, relying on discovery having already rejected them in an earlier launch (an order nothing states).
+- **M29** [hidden] `src/core/autofix/prompt.rs:11-14` hand-copies the rules that `patch.rs:137-163` enforces: the `fn is_installed`/`is_built`/`is_acquired` names (instead of `lifecycle::CHECKS`) and the `|| true` ban. Changing one leaves the LLM told a different rule.
+- **M30** [hidden] `src/core/autofix/patch.rs:28-45` is a second unified-diff header parser with different rules from `parser.rs:3-33` (`extract_patch_paths`, which also reads `a/` and `--- a/` paths). `extract_patch_paths` is also run three times (`patch.rs:9,173,189`). `patch.rs:11` swallows unreadable files, skipping protection for them.
+- **M31** [special] `src/core/autofix/patch.rs:137-139` blocks any `+`/`-` line that contains `fn is_installed` (so also `fn is_installed_x`, or a comment). `parser.rs:169` protects only exact names. The two checks of one policy disagree.
+- **M32** [special] `src/core/autofix/prompt.rs:60-68`: `detect_cwd` prefers the git root of the process's current directory over the recipe's own repository. The patch root depends on where the user ran the CLI.
+- **M33** [needless] `src/llm/providers/codex.rs:41-43,63-75` hard-codes autofix's needs (`--disable shell_tool`, MCP servers disabled) into the general `llm::complete` path. `providers/claude.rs:13-61` applies no equivalent restriction, so the "LLM cannot touch the checkout" guarantee depends on which provider is configured.
+- **M34** [special] `src/llm/providers/codex.rs:8-25` reads `~/.codex/config.toml` and silently returns an empty list on every failure, so MCP servers are silently left enabled when parsing fails.
+- **M35** [hidden] `src/llm/config.rs:47-170`: `LlmToml::merge`, `apply_profile` and `ProfileToml::merge` are three field-by-field copies of the same merge. The provider names `"codex"`/`"claude"` are repeated across `provider.rs:13-14`, `config.rs:30-34,243-252,280-281`, `ResolvedLlmConfig` (`provider.rs:40-41`) and `llm/mod.rs:20-33`. A new key or provider touches all of them.
+- **M36** [surplus] `src/llm/runner.rs:8-30` and `ProviderResult` (`provider.rs:56-61`) only re-wrap `process::Run`/`Finished`. `ResolvedCall` is built identically in `claude.rs:48-59` and `codex.rs:88-99`; the only difference is the stream flags (`true` for codex, `false` for claude), which is an unexplained per-provider special case.
+- **M37** [special] `src/helpers/util/shell.rs:29,34`: `shell_status` uses `unwrap_or(-1)`, turning every run error into `-1`. `exec` (`util/process.rs:224`) propagates the same errors, and `internal/cmd.rs:43-55` already maps spawn/signal to `-1` as the "historical contract". That is three versions of one status convention.
+- **M38** [special] `src/helpers/install/io.rs:16` (`read_file_or_empty`) swallows every read error, and `append_line_if_missing` (`io.rs:45`) builds on it. A permission or encoding error reads as "file empty" and leads to appending a duplicate line.
+- **M39** [special] `src/helpers/install/disk.rs:16-41,54-58` is the only helper returning `anyhow`, so it needs bespoke registration (`helpers/mod.rs:200-206`). It downgrades a failed `statvfs` to a warning and falls back to the process cwd's filesystem.
+- **M40** [hidden] `src/helpers/util/process.rs:332-365` (`normalize_packages`/`normalize_strings`), `428-452` (`list_rpm_files`/`list_apk_files`), `480-487`/`521-527` (before/after diff) and `39-48` (identical sudo/doas branches) are copies. `"lib/apk/db/installed"` appears twice (`297`, `311`), and `apk_repositories_file()` (`166`) wraps a constant.
+- **M41** [hidden] `src/helpers/acquire/verify.rs:23` (`is_valid_sha256`) re-encodes the digest-length rule in `internal/hash.rs:32-51`. `git.rs:11-13` and `git.rs:51` (`GIT_ALLOW_PROTOCOL`) spell the allowed-scheme set twice, next to `acquire/mod.rs:22`'s HTTP set.
+- **M42** [hidden] `src/helpers/build/extract.rs:229-237` (`FORMATS`) must stay in step with the string matches at `extract.rs:248-258` and `433-437`. A new tar format added only to the table silently falls into `_ => extract_tar(reader)` (`extract.rs:257`) and is read as uncompressed.
+- **M43** [surplus] `src/worker/run.rs:239-241` re-checks "cleanup without a reason", which `protocol.rs:617-625` already rejects. `context.rs:34-36` likewise re-validates restored state maps already checked at `protocol.rs:631-636`. The `generation` returned by `report_checkpoint` (`run.rs:313,352`) is dropped by the sink (`run.rs:218`).
+- **M44** [special] `src/worker/run.rs:393-415` slices every ack wait into 300-second polls because Ginux returns EPERM for longer ones, and retries on EINTR. `run.rs:140` reuses the whole execution timeout as the ack timeout (a hidden link to the coordinator's deadline semantics).
+
+### N. Re-audit after refactor loop 2: coordinator side (fresh reviewer, log unseen, "worth fixing" only)
+
+Taken against `b42244f`. Assigned in `## Progress` (loop 3).
+
+- **N1** [hidden] `src/lib.rs:251-256` repairs only failures that arrive as `backend::WorkloadFailure`. `src/backend.rs:65-72` creates that type only when `run_domain` returns Ok with `!ok`. `src/launch.rs:974-990` turns a failed worker that was signaled or exited nonzero into a plain `Category::Workload` error, and the log status at `src/launch.rs:136-158` flips from `WorkloadFailed` to `Failed` the same way. So autofix and the log status both silently depend on the worker exiting 0 after a failed result (`src/worker/run.rs:103-105`, `src/worker/protocol.rs:330-331`). Nothing ties these four places together.
+- **N2** [special] `src/publication.rs:57-60` publishes outputs to `std::env::current_dir()/.artifacts/ginux-export/<invocation>`. That is a LevitateOS superproject convention built into the library. It depends on the process cwd rather than `state_root`/destination, nothing prunes it, and tests hard-code the path (`tests/e2e/managed_inputs.rs:1514,1619`, plus the negative asserts in api2/failures/archives/managed_cancellation/managed_autofix).
+- **N3** [special] The input names `"target"` and `"rootfs"` carry special behaviour.
+  - `src/inputs/discover.rs:108` keeps `.git`/`target` and absolute links only for these two names.
+  - `src/inputs/root.rs:322-364` seeds `/out` from `"target"`, but only when no saved state was restored (`src/launch.rs:212-217`).
+  - `src/lib.rs:14` documents it. The literal `"target"` appears 6 times in root.rs.
+- **N4** [hidden] `src/cancellation.rs:4,25` is a process-global latch that only `install_cli_handlers` (the CLI) ever sets. Library callers therefore never get cancellation at all (`src/cancellation.rs:1`). The latch is also read independently to classify outcomes at `src/launch.rs:149-150`, `src/launch.rs:691-692`, `src/launch.rs:776-802` and `src/bin/recipe.rs:57-58`, so each place re-decides what "cancelled" means.
+- **N5** [hidden] `src/launch.rs:749-754` (`enrich_stream_error`) gets the bare message back by stripping `category.prefix()` and `": "` from the formatted `{err:#}`. That depends on `Failure`'s Display format (`src/failure.rs:73-77`) and on the `Failure` being outermost in the chain, which contradicts `src/failure.rs:3-4` ("a category is a type, not a message prefix").
+- **N6** [hidden] The ctx field names `"state"`/`"outputs"` are spelled separately on the worker side (`src/core/invocation.rs:161,368`) and the coordinator side (`src/launch.rs:351`, `src/publication.rs:28,304`). The output rules (at most 64 entries, `valid_name`, path under `/work|/out`) exist only in `src/publication.rs:37-50`. A bad output name is therefore caught only after a successful run, and is reported as a Storage failure.
+- **N7** [hidden] `src/inputs/root.rs:67,366` spell `"inputs"` and `src/inputs/root.rs:340,362` spell `"out{suffix}"` instead of using `domain::INPUTS`/`OUT`. `src/domain.rs:52,59` hard-code `/work/build` and `/work/tmp` instead of deriving them from `WORK`, and `src/domain.rs:65,67` restate WORK/OUT/INPUTS without the slash. All of this contradicts `src/domain.rs:3-5` ("neither side spells a path itself").
+- **N8** [hidden] `src/domain.rs:60` says `/out` is "the only tree published outputs leave from". `src/publication.rs:332` accepts `WRITABLE_ROOTS = ["work","out"]`, and `docs/man/recipe-recipe.5:61` says "/out or /work". The module meant to be the contract's single home is stale.
+- **N9** [special] `src/inputs/root.rs:343-344` gives the seeded `/out` tar entries uid/gid 1000. That is an unstated assumption about the Ginux domain uid; the value appears nowhere else.
+- **N10** [hidden] `GINUX_ROOT` is validated by two different rules in two files. `src/inputs/config.rs:157-191` checks the charset, at most 128 bytes and no leading `/`. `src/inputs/root.rs:171-187` requires `oci:NAME@sha256:<64hex>`. A value that passes config fails later, in `prepare_root`, after the destination lock is already held.
+- **N11** [hidden] `src/inputs/config.rs:24` (`DEFAULT_ROOT_REF`) copies the digest in `bootstrap/ginux-build-image.json:5` and `bootstrap/ginux-acquisition-image.json:4`. `src/inputs/root.rs:40-43` looks for `$XDG_CACHE_HOME/recipe/images/<digest>.tar`, but `src/bin/recipe-image.rs:161` only ever writes `<output>/rootfs.tar`. Only README.md:42 connects the two.
+- **N12** [hidden] `src/launch.rs:179-217` depends on an unenforced call order:
+  1. `prepare_invocation` (already done in `src/backend.rs:35`, before the lock)
+  2. destination lock
+  3. run dir
+  4. `prepare_root`
+  5. `Retained::open` (needs `domain_root.worker_digest`)
+  6. `restore_input`, otherwise `seed_target` (which reads `root/inputs`, `src/inputs/root.rs:366`)
+
+  None of this is encoded in types.
+- **N13** [hidden] `src/launch.rs:230-235` hand-lists every lease fd the launcher must inherit (prepared, domain_root, run_dir, diagnostics). It relies on Ginux closing them before guest exec (`src/temporary.rs:14-15`). A new leased store must be added to this list by hand.
+- **N14** [hidden] There are two child-lifecycle implementations.
+  - `src/process.rs:236-251` and `src/launch.rs:228-254` both do `process_group(0)`, `PR_SET_PDEATHSIG`, a `getppid` check and `_exit(125)`.
+  - Both poll every 25 ms and kill the group with SIGKILL (`src/process.rs:328,404`, `src/launch.rs:779-798`). `src/retained.rs:70` uses the same 25 ms poll.
+  - `src/process.rs:1-2` says the launcher is excluded, yet copies the logic.
+- **N15** [special] `src/process.rs:294-330` chooses between blocking `wait()` and polling based on whether a deadline is set ("the Ginux domain does not emulate sleeping"). The deadline parameter doubles as an "on the coordinator" flag. Cancellation and `Keep::Limit` are only enforced in polled runs; without a deadline the limit is checked only after the child exits.
+- **N16** [special] `src/launch.rs:180-182` reuses the frame transport timeout (`RECIPE_FRAME_TIMEOUT_SECS`, default 300 s) as the destination-lock wait (`src/retained.rs:43-75`) and the snapshot-control timeout. Tests set it to 1 s (`tests/e2e/managed_cancellation.rs:44`), which also shrinks the lock wait.
+- **N17** [hidden] PATH is built in two places. `src/inputs/env.rs:65-66` builds it from `tool_bin_dirs`, `/work/tools`, `/usr/bin` and `/bin`. `src/core/executor/private/dependencies.rs:80-84` prepends `tool_bin_dirs` again, skipping entries already present. Because env.rs always sets them first, the worker step is a no-op, and changing one does not change the other.
+- **N18** [hidden] Lease-guarded directory pruning is copied with a different "is ours" rule each time: `src/temporary.rs:36-78`, `src/invocation_log.rs:119-178` and `src/retained.rs:459-545`. Each opens a lease, calls `try_lock_exclusive`, skips on WouldBlock, decides ownership by name pattern and removes.
+- **N19** [hidden] `src/fsx.rs:44-62` (`private_dir`) accepts any existing real directory without checking owner or mode. Callers patch this differently: `src/temporary.rs:28-31` (uid plus 0700), `src/invocation_log.rs:61-64` (mode & 077), `src/retained.rs:151,160,219` and `src/publication.rs:58-60` nothing at all.
+- **N20** [hidden] The "relative path, no empty/`.`/`..` component, bounded length" rule is copied with different bounds:
+  - `src/inputs/discover.rs:468-490` (`MAX_INPUT_NAME`)
+  - `src/publication.rs:320-327` (`MAX_PATH`)
+  - `src/worker/protocol.rs:648-655` (`valid_recipe_identity`)
+- **N21** [hidden] Adding an `ExecutionOptions` field means editing `src/options.rs:5-48` (struct, default, validate), `src/bin/recipe/cli.rs:34-72` (flag), `src/bin/recipe/commands.rs:13-27` (field-by-field copy) and `src/retained.rs:181-197` (identity classification). These files are in different folders; history shows `bin/recipe.rs` and `lib.rs` co-changed 15 times.
+- **N22** [surplus] `src/options.rs:5-6,51-54` exposes `target_os`/`target_arch` (with CLI flags at `src/bin/recipe/cli.rs:34-39`), but only native linux/x86_64 is accepted. The same rule is re-checked at `src/inputs/root.rs:33-35`. These are configuration points for something that never varies.
+- **N23** [special] `src/launch.rs:461-464` drops the result of `diagnostics::write` (`let _ =`). The justification is in `src/diagnostics.rs:49-51`, but it describes the worker sink. On the coordinator no sink is installed, so a failed stderr write is lost silently.
+- **N24** [surplus] `src/worker/protocol.rs:342-358,422` carries `DiagnosticStream` on the wire. The worker sets it (`src/worker/run.rs:61`), but the host writes everything as `Stream::Recipe` (`src/launch.rs:461-464`) and never reads the field.
+- **N25** [needless] `src/lib.rs:240-277` holds the autofix retry policy: which phases are repairable, the 1..=8 attempt bound and the loop. It reaches into `backend::WorkloadFailure` and `lifecycle::Phase`, while the repair mechanism lives in `core/autofix`. Policy and mechanism change in different files for the same reason.
+- **N26** [needless] `launch::Invocation` (`src/launch.rs:79-91`) is built in `src/lib.rs:316-329`. Half of it is consumed in `src/backend.rs:29-47` (recipe, search_path, inputs, `options.execution` for preparation) and the other half in `src/launch.rs:169-178` (which drops search_path and inputs via `..`). backend.rs and launch.rs are layered halves of one operation (history: backend↔lib co-changed 6 times, backend↔worker/run 5 times).
+- **N27** [hidden] `src/worker/protocol.rs:146-156` (`Operation::as_str`) is both the wire form and the check-hook name the worker passes to the engine (`src/worker/run.rs:247`). Renaming the wire value renames the Rhai hook lookup.
+- **N28** [hidden] `src/ginux.rs:111-121` (`peek_outcome`/`result_note`) re-parses the result file on its own, without the version check in `ResultRecord::read` (`src/ginux.rs:52-107`). `enrich_stream_error` can therefore classify a Supervisor failure from a record that `read` would reject.
+- **N29** [special] `src/ginux.rs:135` caps the snapshot path at 512 bytes, but the length comes from the retained layout `state_root/<64hex>/<64hex>/g-N-xxxx/files.tar` (`src/retained.rs:159,218,306-309`). A long `--state-dir` fails only at the first checkpoint (as Storage), not at `Retained::open`.
+- **N30** [special] `src/launch.rs:219-224` and `src/launch.rs:192-204` keep `control` and `retained` as two separate Options that must both be Some exactly when `persist_state` is set. `src/launch.rs:480-483` then reports a "missing snapshot control socket" Startup error for a state that cannot happen.
+- **N31** [special] `src/inputs/discover.rs:363-373` picks the staged domain name by checking again whether the file exists beside the referrer. That re-derives the first step of `recipes::find_related`'s search order (`src/inputs/discover.rs:401`); if that order changes, staged names diverge from what the worker resolves.
+- **N32** [special] `src/inputs/network.rs:86-91` resolves hostnames by spawning a hard-coded `/usr/bin/getent` with a 10 s deadline and a 64 KiB limit. It is the only use of the network grant path, and a missing getent surfaces as a resolver error.
+- **N33** [special] Teardown in launch.rs is governed by unrelated magic timings and a kill:
+  - The stderr drain polls every 250 ms and stops 1 s after the stop flag is set (`src/launch.rs:835,858-865`).
+  - `SHUTDOWN_GRACE` is 10 s (`src/launch.rs:72`).
+  - `reap_launcher` SIGKILLs the process group even after a normal exit ("a malformed launcher may leave a child", `src/launch.rs:786-789`).
+- **N34** [surplus] Dead or duplicated decoding in the protocol:
+  - `Frame.seq` and `Frame.op` (`src/worker/protocol.rs:464-468`) are never read outside the module; `op` is derivable from `payload.op()`.
+  - `decode_message` (`src/worker/protocol.rs:773-806`) re-checks length, truncation and trailing bytes that `recv` (`:887-902`) already guarantees by building the exact buffer. `TrailingBytes` is unreachable and `check_total` runs twice.
+  - The `seq == 0` guard in `encode_message` (`:748-753`) can never trigger.
+- **N35** [surplus] `GinuxLauncher::path` (`src/backend.rs:20`) is unused: there are no library consumers in the superproject. `from_env` is the only constructor, so `with_launcher(GinuxLauncher::from_env()?)` at `src/bin/recipe/commands.rs:239,250` repeats the fallback already in `src/lib.rs:165-170`.
+- **N36** [surplus] `src/bin/recipe/commands.rs:61-167` has six identical 10-argument `create_engine` calls. `create_engine` validates the options (`:238`), and `src/backend.rs:31-34` validates them again.
+- **N37** [surplus] `src/options.rs:87-95`: `archive_bound` repeats the `storage_byte_bound` expression. `MAX_STATE` is redundant at `src/retained.rs:228` (`MAX_STATE.min(state_budget)`) and `src/retained.rs:343`, because `state_budget` can never exceed `MAX_FRAME_LEN`.
+- **N38** [hidden] Values and helpers copied between the crate and the image producer:
+  - Input limits: `src/inputs/discover.rs:24-25` and `src/bin/recipe-image.rs:14-16` (16/32 GiB).
+  - Atomic no-replace publication via `renameat2 RENAME_NOREPLACE`: `src/publication.rs:291-302` and `src/bin/recipe-image.rs:367-384`.
+  - `recipe-image` spawns `rpm2archive` directly (`src/bin/recipe-image.rs:98-104`), outside `process.rs`.
+- **N39** [hidden] Hashing and executable checks are copied.
+  - `src/inputs/discover.rs:538-558` (`hash_file`) re-implements `fsx::copy_hashed` (`src/fsx.rs:80-102`). Every File input is hashed three times: discovery, staging copy (`src/inputs/mod.rs:116`) and root copy (`src/inputs/root.rs:92`).
+  - The `mode & 0o111` check is copied in `src/backend.rs:119-122`, `src/process.rs:79` and `src/inputs/root.rs:204`.
+  - `src/inputs/root.rs:202-209` re-does `process::find_program` but ignores the thread environment overlay.
+- **N40** [surplus] `src/inputs/env.rs:63-73` (`allowlisted_env`) builds fixed domain constants but returns `Result`, and its module doc promises "anything outside the allowlist is an explicit failure" when there is no input to reject. `src/inputs/mod.rs:142-202` (`reject_host_leak`) re-scans that fixed env and the validated config for host paths. The checks have no varying input to act on.
+- **N41** [special] `src/bin/recipe/commands.rs:246`: `--no-persist-state` without `--build-dir` silently switches to a throwaway temporary destination. The destination lock therefore never serialises concurrent no-persist runs of the same recipe, unlike every other mode.
+
 ## Fixes
 
 Generated from `.untangle/fixes.py` by `.untangle/apply_fixes.py`. Each fix appears in execution order, with every problem it removes listed under it by ID. `python3 -I .untangle/check_fixes.py UNTANGLE.md` confirms that every ID is in exactly one place.
@@ -1602,6 +1726,43 @@ Two fresh reviewers who had not seen this log re-audited the code at `1a6f0b4` a
   - K27, K40, K42, K49–K53, K55, K58, K60–K63, K65, K68–K84, K86–K89, K91–K95;
   - L12–L17, L20–L22, L24–L27, L30–L33, L35–L37, L39, L45–L48, L56–L59, L61–L67, L70, L78, L81, L85, L86, L89, L91–L102, L104–L106.
   The CLI-visible ones (L45, L78, L85, L86) are the X4 flag cleanup, which needs the CLI contract change in open question 5.
+
+### Loop 3 (after the M/N re-audit)
+
+Two fresh reviewers, told to report only problems worth fixing (at most 40 each), re-audited `b42244f` and returned M1–M44 and N1–N41. Most of what they found repeats items left open or left as is in loop 2; the new ones are below.
+
+- [x] `0003e25`:
+  - **M3** (bug): a dependency declared by a base recipe in another directory was staged beside the base by discovery but looked up only beside the child. The engine now also looks beside the base.
+  - **M38** (bug): `append_line_if_missing` treated an unreadable file as empty and appended a duplicate line.
+  - **M1/N27**: check operations map to their check through `lifecycle::Phase`, not through the wire spelling.
+  - **M11** (part): `CHECKS` is derived from `Phase::check`.
+  - **M29**: the autofix prompt states the protected checks from `CHECKS`.
+- [x] `ee045af`:
+  - **N28**: `peek_outcome` goes through `ResultRecord::read`, version check included.
+  - **N7/N9**: `domain::UID` and `domain::INPUTS` instead of literals.
+  - **N8**: stale domain doc.
+  - **N37**: `archive_bound` from `storage_byte_bound`; no redundant `MAX_STATE` bound.
+- [x] `b42244f` (before this re-audit): dependency installation moved into the executor. That removed the last area-level loop, `core::executor` ↔ `core::build_deps`. `deps.py` reports no module cycles.
+- Leave as is (loop 3):
+  - **M5** = K37 and **M23** = K18 (see loop 2).
+  - **M18**: post-install verification runs again only after a success cleanup, because the install hook's own verification already ran and only the cleanup can undo it.
+  - **M21**: a failing success cleanup fails the command after its phase succeeded, so there is no failed phase to clean up for.
+  - **M22**: requirement 1; the phase error stays the result.
+  - **M24**: one level of `extends` is the documented recipe contract.
+  - **M44**: the 300 s poll slice is the Ginux limit, stated where it is used.
+  - **N2** = L34. **N15**: the domain does not emulate sleeping; the comment at `Run::deadline` states this. **N18** = L28. **N19** = L29.
+- Still open after loop 3 (not changed; candidates for a next pass):
+  - **Hook and event vocabulary as data**: M9–M11, M26, M27. Narration and machine events are keyed by literal hook names.
+  - **One static recipe analyzer**: M12–M15, M28, N31. Bindings, readiness shape and staged names are re-derived in three places.
+  - **Coordinator-only code inside `core/`**: M16, M17, N25. Autofix and metadata live beside the in-domain engine, and helpers import narration.
+  - **Autofix patch validation**: M30, M31, M32. Two diff parsers; substring vs exact name protection.
+  - **LLM provider policy**: M33–M36. Per-provider tool restrictions; config merge copies.
+  - **Helper conventions**: M37, M39–M42 (`-1` status contract, `anyhow` helper, package-manager copies, format table).
+  - **Dependency layout**: M2, M6, M7, M25. Dependency work under the main build dir; LIFO env guards; role by depth.
+  - **Run pipeline**:
+    - N1, N4, N5, N12–N14, N16, N23, N26, N29, N30, N33 (implicit call order, two child-lifecycle implementations, global cancellation latch, timing constants);
+    - N6, N10, N11, N17, N20, N21, N24, N32, N34–N36, N38–N41.
+  - **CLI**: N22 and N36 belong to the X4 flag cleanup.
 
 ### Resume here
 
