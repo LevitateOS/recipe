@@ -4,8 +4,10 @@
 //! its own work directory under the main recipe's, and cycles are detected by
 //! canonical recipe path before evaluation.
 
-use super::executor::{EngineError, ExecutionContext, Load, install as install_recipe};
-use super::output;
+use super::context::ExecutionContext;
+use super::flow::install as install_recipe;
+use super::loaded::{EngineError, Load};
+use crate::core::output;
 use crate::core::events::HookStatus;
 use anyhow::{Context, Result, anyhow};
 use rhai::Engine;
