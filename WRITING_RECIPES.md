@@ -147,7 +147,10 @@ Choose a complete bundle once when that is the consumer contract; overlapping
 selections can account duplicate published bytes. A successful phase alone is
 not publication: the coordinator validates the complete archive, bounds, links
 and selected paths before publishing the final generation. The returned context
-contains absolute host publication paths; hooks keep using domain paths.
+contains absolute host publication paths; hooks keep using domain paths. Products
+retain coordinator ownership/private export-directory permissions. Privileged
+producers require matching consumer privileges or explicit product installation;
+a returned path or selection symlink grants no additional access.
 
 Consumers must validate required output names and kinds. Never guess a sibling
 build path, accept stale JSON from another invocation or search for an old

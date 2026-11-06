@@ -76,6 +76,12 @@ Pass the same recipe, inputs and destination for retained lifecycle operations.
 Use the returned `ctx.outputs` paths; they identify published host files or
 directories. Paths in recipe hooks refer to the domain filesystem instead.
 Logs and tool output go to stderr; stdout or `--json-output` contains final JSON.
+Published paths and retained state keep the coordinator's ownership and private
+export-directory permissions. A privileged producer needs an appropriately
+privileged consumer, or explicit installation of selected product files with
+the desired ownership. Selecting a publication with a symlink does not grant
+another user access. No automatic privilege bridge is provided.
+
 
 For the repository's actual offline live-tool producer:
 

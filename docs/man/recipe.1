@@ -128,7 +128,9 @@ an explicit new state directory to start fresh.
 .PP
 Per recipe/destination scope, retention keeps four recent input identities and
 two complete generations each, under the destination lock. Published products
-are not state-pruning candidates. Diagnostic files live in
+are not state-pruning candidates. Published paths retain coordinator ownership and
+private export permissions. Privileged producers need appropriately privileged
+consumers or explicit product installation; a selection symlink grants no access. Diagnostic files live in
 state-root/logs/invocation-id: worker.log, supervisor-stderr.log and result.json.
 Up to 32 recent completed diagnostic directories remain; active leases protect
 in-flight logs/scratch. Later invocations reclaim recognized abandoned scratch.
