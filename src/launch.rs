@@ -128,10 +128,9 @@ pub(crate) fn run_domain(
     launcher: &Path,
 ) -> Result<LaunchReport> {
     let state_dir = invocation.state_dir;
-    let diagnostics = crate::invocation_log::InvocationLog::new(
-        &crate::retained::state_root(state_dir)?,
-        &prepared.invocation_id,
-    )?;
+    let diagnostics = crate::retained::state_root(state_dir)
+        .and_then(|root| crate::invocation_log::InvocationLog::new(&root, &prepared.invocation_id))
+        .map_err(|error| crate::failure::Category::Storage.wrap(error, "cannot create the invocation log"))?;
     let outcome = run_domain_inner(prepared, invocation, launcher, &diagnostics);
     use crate::invocation_log::Status;
     let (status, details) = match &outcome {
@@ -178,8 +177,9 @@ fn run_domain_inner(
         ..
     } = *invocation;
     let invocation = prepared.invocation_id.clone();
-    let timeout = frame_timeout()?;
-    let _destination_lock = crate::retained::lock_destination(destination, timeout)?;
+    let timeout = frame_timeout().map_err(|error| crate::failure::Category::Startup.wrap(error, "invalid frame timeout"))?;
+    let _destination_lock = crate::retained::lock_destination(destination, timeout)
+        .map_err(|error| crate::failure::Category::Storage.wrap(error, "cannot lock the destination"))?;
     let run_dir = crate::temporary::TemporaryDirectory::new().context(crate::failure::Category::Startup.error("cannot create ginux run directory"))?;
     let result_path = run_dir.path().join("result.json");
     let export_path = run_dir.path().join("export.tar");
@@ -197,7 +197,8 @@ fn run_domain_inner(
             prepared,
             &domain_root.worker_digest,
             options,
-        )?)
+        )
+        .map_err(|error| crate::failure::Category::Storage.wrap(error, "cannot open saved state"))?)
     } else {
         None
     };
@@ -205,11 +206,14 @@ fn run_domain_inner(
     let mut restore = retained
         .as_ref()
         .map(|state| state.restore_input(&restore_path))
-        .transpose()?
+        .transpose()
+        .map_err(|error| crate::failure::Category::Storage.wrap(error, "cannot restore saved files"))?
         .unwrap_or(false);
     if !restore {
         restore = crate::inputs::seed_target(prepared, domain_root.path(), &restore_path)
-            .context("cannot seed the requested target view")?;
+            .map_err(|error| {
+                crate::failure::Category::Startup.wrap(error, "cannot seed the requested target view")
+            })?;
     }
     crate::cancellation::check()?;
     let (mut control, control_server) = if persist_state {
@@ -333,11 +337,13 @@ fn run_domain_inner(
                 .ctx_summary
                 .get("state")
                 .filter(|value| value.is_object())
-                .context("successful resumable recipe did not return ctx.state")?
+                .context(crate::failure::Category::Protocol.error(
+                    "successful resumable recipe did not return ctx.state",
+                ))?
                 .clone();
-            state
-                .finish(&export_path, runtime_state)
-                .context("cannot persist final state/files pair")?;
+            state.finish(&export_path, runtime_state).map_err(|error| {
+                crate::failure::Category::Storage.wrap(error, "cannot persist final state/files pair")
+            })?;
         }
         crate::publication::publish(
             &invocation,
@@ -468,17 +474,18 @@ fn pump_protocol(
                 }
                 let seq = point.seq;
                 if seq != checkpoints {
-                    bail!("checkpoint sequence mismatch");
+                    bail!(crate::failure::Category::Protocol.error(format!(
+                        "invocation {invocation} sent checkpoint {seq} where {checkpoints} was due"
+                    )));
                 }
                 let generation = if let Some(state) = retained.as_mut() {
-                    Some(capture_checkpoint(
-                        state,
-                        control
-                            .as_mut()
-                            .context("missing snapshot control socket")?,
-                        &point,
-                        timeout,
-                    )?)
+                    let control = control.as_mut().context(
+                        crate::failure::Category::Startup.error("missing snapshot control socket"),
+                    )?;
+                    Some(capture_checkpoint(state, control, &point, timeout).map_err(|error| {
+                        crate::failure::Category::Storage
+                            .wrap(error, format!("cannot keep checkpoint {seq}"))
+                    })?)
                 } else {
                     None
                 };

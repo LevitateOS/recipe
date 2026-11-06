@@ -44,6 +44,16 @@ impl Category {
         }
     }
 
+    /// Give an uncategorized `error` this category, with `message` as context;
+    /// an error that already has a category keeps it.
+    pub fn wrap(self, error: anyhow::Error, message: impl Into<String>) -> anyhow::Error {
+        if Self::of(&error).is_some() {
+            error
+        } else {
+            error.context(self.error(message))
+        }
+    }
+
     /// The category of the outermost categorized error in `error`'s chain.
     pub fn of(error: &anyhow::Error) -> Option<Self> {
         error
