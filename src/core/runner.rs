@@ -74,17 +74,12 @@ pub(crate) fn run_cleanup(
     scope: &mut Runtime<'_>,
     ctx: rhai::Map,
     reason: &str,
-    best_effort: bool,
 ) -> Result<rhai::Map> {
     if !cleanup_available(ast)? {
         return Ok(ctx);
     }
     match scope.call_map("cleanup", vec![ctx.clone().into(), reason.into()], false) {
         Ok(ctx) => Ok(ctx),
-        Err(error) if best_effort => {
-            super::output::warning(&format!("cleanup failed (reason={reason}): {error}"));
-            Ok(ctx)
-        }
         Err(error) => Err(anyhow!("cleanup failed (reason={reason}): {error}")),
     }
 }

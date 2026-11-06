@@ -253,6 +253,7 @@ pub fn run_worker() -> Result<()> {
         terminal: false,
     }));
     install_diagnostics(&channel)?;
+    crate::logging::set_machine_events(request.options.execution.machine_events);
     crate::logging::diagnostic_line("recipe: managed worker started");
     let outcome = run_operation(&local, &request, &mut rx, &mut input, &channel, &mut output);
     let mut channel = channel
@@ -531,7 +532,7 @@ fn report_checkpoint(
     let seq = *checkpoint_no;
     let state = match ctx_map.get("state") {
         Some(state) => state_json(state)?,
-        None => serde_json::json!({}), // Legacy non-resumable execution only.
+        None => bail!("checkpoint context is missing ctx.state"),
     };
     let mut channel = tx.lock().map_err(|_| anyhow!("worker channel poisoned"))?;
     if channel.failed {

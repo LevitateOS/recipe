@@ -7,10 +7,10 @@
 //!
 //! ```rhai
 //! fn build(ctx) {
-//!     extract(ctx.archive_path, BUILD_DIR);
-//!     let src_dir = BUILD_DIR + "/myapp-1.0";
+//!     extract(ctx.archive_path, RUNTIME.paths.build);
+//!     let src_dir = RUNTIME.paths.build + "/myapp-1.0";
 //!     shell_in(src_dir, "./configure");
-//!     shell_in(src_dir, "make -j" + NPROC);
+//!     shell_in(src_dir, "make -j" + RUNTIME.options.jobs);
 //!     ctx.src_dir = src_dir;
 //!     ctx
 //! }

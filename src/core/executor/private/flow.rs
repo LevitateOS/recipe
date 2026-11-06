@@ -217,14 +217,9 @@ pub(crate) fn install_once(
 
                 // Hygiene: allow recipes to clean up intermediate acquire artifacts.
                 if cleanup_auto_supported {
-                    ctx_map = runner::run_cleanup(
-                        &ast,
-                        &mut scope,
-                        ctx_map,
-                        "auto.acquire.success",
-                        /* best_effort */ false,
-                    )
-                    .map_err(InstallAttemptError::Fatal)?;
+                    ctx_map =
+                        runner::run_cleanup(&ast, &mut scope, ctx_map, "auto.acquire.success")
+                            .map_err(InstallAttemptError::Fatal)?;
                     exec.persist_checkpoint(
                         &mut compiled,
                         &ctx_map,
@@ -241,12 +236,14 @@ pub(crate) fn install_once(
                 report_phase_failure(&name, "acquire", &e);
                 // Best-effort failure hygiene: don't mask the original error.
                 if cleanup_auto_supported {
-                    let _ = runner::run_cleanup(
+                    checkpoint_failure_cleanup(
                         &ast,
                         &mut scope,
                         ctx_before,
                         "auto.acquire.failure",
-                        /* best_effort */ true,
+                        &mut compiled,
+                        exec,
+                        persist_state_enabled,
                     );
                 }
                 return Err(InstallAttemptError::Phase {
@@ -314,14 +311,9 @@ pub(crate) fn install_once(
                     .map_err(InstallAttemptError::Fatal)?;
 
                     if cleanup_auto_supported {
-                        ctx_map = runner::run_cleanup(
-                            &ast,
-                            &mut scope,
-                            ctx_map,
-                            "auto.build.success",
-                            /* best_effort */ false,
-                        )
-                        .map_err(InstallAttemptError::Fatal)?;
+                        ctx_map =
+                            runner::run_cleanup(&ast, &mut scope, ctx_map, "auto.build.success")
+                                .map_err(InstallAttemptError::Fatal)?;
                         exec.persist_checkpoint(
                             &mut compiled,
                             &ctx_map,
@@ -337,12 +329,14 @@ pub(crate) fn install_once(
                 Err(e) => {
                     report_phase_failure(&name, "build", &e);
                     if cleanup_auto_supported {
-                        let _ = runner::run_cleanup(
+                        checkpoint_failure_cleanup(
                             &ast,
                             &mut scope,
                             ctx_before,
                             "auto.build.failure",
-                            /* best_effort */ true,
+                            &mut compiled,
+                            exec,
+                            persist_state_enabled,
                         );
                     }
                     return Err(InstallAttemptError::Phase {
@@ -376,14 +370,9 @@ pub(crate) fn install_once(
                 .map_err(InstallAttemptError::Fatal)?;
 
                 if cleanup_auto_supported {
-                    ctx_map = runner::run_cleanup(
-                        &ast,
-                        &mut scope,
-                        ctx_map,
-                        "auto.install.success",
-                        /* best_effort */ false,
-                    )
-                    .map_err(InstallAttemptError::Fatal)?;
+                    ctx_map =
+                        runner::run_cleanup(&ast, &mut scope, ctx_map, "auto.install.success")
+                            .map_err(InstallAttemptError::Fatal)?;
                     exec.persist_checkpoint(
                         &mut compiled,
                         &ctx_map,
@@ -399,12 +388,14 @@ pub(crate) fn install_once(
             Err(e) => {
                 report_phase_failure(&name, "install", &e);
                 if cleanup_auto_supported {
-                    let _ = runner::run_cleanup(
+                    checkpoint_failure_cleanup(
                         &ast,
                         &mut scope,
                         ctx_before,
                         "auto.install.failure",
-                        /* best_effort */ true,
+                        &mut compiled,
+                        exec,
+                        persist_state_enabled,
                     );
                 }
                 return Err(InstallAttemptError::Phase {
@@ -416,8 +407,7 @@ pub(crate) fn install_once(
         }
     }
 
-    // API 2 verifies final installation after success cleanup as well. Autofix
-    // keeps this verification for legacy recipes too.
+    // Verify installation after success cleanup before reporting completion.
     let verified = if runner::has_fn_arity(&ast, "is_installed", 1) {
         runner::verify_phase(&mut scope, "is_installed", &ctx_map)
     } else {
@@ -433,12 +423,14 @@ pub(crate) fn install_once(
             );
             // Allow best-effort failure hygiene.
             if cleanup_auto_supported {
-                let _ = runner::run_cleanup(
+                checkpoint_failure_cleanup(
                     &ast,
                     &mut scope,
                     ctx_map.clone(),
                     "auto.install.failure",
-                    /* best_effort */ true,
+                    &mut compiled,
+                    exec,
+                    persist_state_enabled,
                 );
             }
 
@@ -452,4 +444,35 @@ pub(crate) fn install_once(
     output::success(&format!("{} installed", name));
     output::hook_event(&name, "install", "success", "recipe completed");
     Ok(ctx_map)
+}
+
+/// A completed failure-cleanup hook is a recovery point; the producer error
+/// remains authoritative and no failed output is published.
+fn checkpoint_failure_cleanup(
+    ast: &rhai::AST,
+    scope: &mut crate::core::invocation::Runtime<'_>,
+    ctx: rhai::Map,
+    reason: &'static str,
+    compiled: &mut crate::core::executor::CompiledRecipe,
+    exec: &mut ExecutionContext<'_>,
+    persist: bool,
+) {
+    match runner::run_cleanup(ast, scope, ctx, reason) {
+        Ok(cleaned) => {
+            if let Err(error) = exec.persist_checkpoint(
+                compiled,
+                &cleaned,
+                CheckpointPoint {
+                    phase: "cleanup",
+                    reason,
+                },
+                persist,
+            ) {
+                output::warning(&format!(
+                    "failure cleanup checkpoint failed ({reason}): {error:#}"
+                ));
+            }
+        }
+        Err(error) => output::warning(&format!("{error:#}")),
+    }
 }

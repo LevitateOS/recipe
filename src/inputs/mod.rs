@@ -234,15 +234,17 @@ fn render_manifest(inputs: &[StagedInput]) -> String {
     out
 }
 
-/// Last-line defense: the rendered config and env must never name a host
-/// staging directory or a host recipe directory. They only carry domain
-/// paths by construction; a match here is an explicit failure, not a scrub.
+/// Last-line defense over actual path values, after the field owners validate
+/// domain roots and allowlisted environment. Component prefixes distinguish
+/// a host /tmp path from the legal domain path /work/tmp.
 fn reject_host_leak(
     config_text: &str,
     env: &[(String, String)],
     staging: &Path,
     host_dirs: &[PathBuf],
 ) -> Result<()> {
+    let config: toml::Value =
+        toml::from_str(config_text).context("invalid rendered domain configuration")?;
     let staging = staging.to_string_lossy();
     let mut markers: Vec<String> = vec![staging.into_owned()];
     if let Ok(home) = std::env::var("HOME") {
@@ -257,14 +259,14 @@ fn reject_host_leak(
         if marker.len() < 2 {
             continue;
         }
-        if config_text.contains(&marker as &str) {
+        if config_has_host_path(&config, Path::new(&marker)) {
             bail!(
                 "input preparation failure: rendered config leaks host path {marker:?} \
                  (host paths must never enter domain config)"
             );
         }
         for (name, value) in env {
-            if value.contains(&marker as &str) {
+            if value_has_host_path(value, Path::new(&marker)) {
                 bail!(
                     "input preparation failure: env {name:?} leaks host path {marker:?} \
                      (only allowlisted domain values cross into the worker)"
@@ -273,4 +275,26 @@ fn reject_host_leak(
         }
     }
     Ok(())
+}
+
+fn value_has_host_path(value: &str, marker: &Path) -> bool {
+    let value = value
+        .split_once('=')
+        .map(|(_, value)| value)
+        .unwrap_or(value);
+    std::iter::once(value)
+        .chain(value.split(':'))
+        .any(|value| value.starts_with('/') && Path::new(value).starts_with(marker))
+}
+fn config_has_host_path(value: &toml::Value, marker: &Path) -> bool {
+    match value {
+        toml::Value::String(value) => value_has_host_path(value, marker),
+        toml::Value::Array(values) => values
+            .iter()
+            .any(|value| config_has_host_path(value, marker)),
+        toml::Value::Table(values) => values
+            .values()
+            .any(|value| config_has_host_path(value, marker)),
+        _ => false,
+    }
 }

@@ -10,9 +10,9 @@
 //!
 //! ```rhai
 //! // EXPLICIT: you can see where archive comes from and where it goes
-//! let archive = download(url, BUILD_DIR + "/foo.tar.gz");
+//! let archive = download(url, RUNTIME.paths.build + "/foo.tar.gz", ctx.sha256);
 //! verify_sha256(archive, "abc123...");
-//! extract(archive, BUILD_DIR);
+//! extract(archive, RUNTIME.paths.build);
 //! ```
 //!
 //! ## Module Organization (by lifecycle phase)
@@ -240,17 +240,9 @@ pub fn register_all(engine: &mut Engine) {
         trace_helper("exists");
         install::exists(path)
     });
-    engine.register_fn("file_exists", |path: &str| {
-        trace_helper("file_exists");
-        install::file_exists(path)
-    });
     engine.register_fn("is_file", |path: &str| {
         trace_helper("is_file");
         install::is_file(path)
-    });
-    engine.register_fn("dir_exists", |path: &str| {
-        trace_helper("dir_exists");
-        install::dir_exists(path)
     });
     engine.register_fn("is_dir", |path: &str| {
         trace_helper("is_dir");
@@ -523,7 +515,7 @@ pub fn register_all(engine: &mut Engine) {
 }
 
 // Keep native failures catchable in Rhai, but distinguish them from a recipe's
-// deliberate throw when interpreting legacy readiness checks.
+// explicit needs_work result from a readiness check.
 fn helper_result<T>(
     name: &str,
     result: Result<T, Box<rhai::EvalAltResult>>,

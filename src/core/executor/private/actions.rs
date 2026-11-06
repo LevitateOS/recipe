@@ -134,7 +134,7 @@ pub(crate) fn cleanup_with_context(
     output::sub_action("cleanup");
     output::hook_event(&name, "cleanup", "running", "executing recipe hook");
 
-    ctx_map = runner::run_cleanup(&ast, &mut scope, ctx_map, reason, false).inspect_err(|e| {
+    ctx_map = runner::run_cleanup(&ast, &mut scope, ctx_map, reason).inspect_err(|e| {
         report_phase_failure(&name, "cleanup", e);
     })?;
     report_phase_success(&name, "cleanup");

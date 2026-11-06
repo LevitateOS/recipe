@@ -192,7 +192,7 @@ fn install(ctx) { log("UNEXPECTED_GRAPH_INSTALL"); ctx }
 }
 
 #[test]
-fn cli_legacy_persistent_dependencies_fail_before_dependency_setup_effects() {
+fn cli_unversioned_dependency_is_rejected_before_setup_effects() {
     let (_dir, recipes) = create_test_env();
     write_graph_node(&recipes, "parent", "let deps = [\"tool\"];");
     write_recipe(
@@ -208,7 +208,7 @@ fn install(ctx) { ctx }
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("resumable execution requires RECIPE_API = 2"),
+        stderr.contains("Recipe must declare const RECIPE_API = 2"),
         "{stderr}"
     );
     assert!(!stderr.contains("UNEXPECTED_DEPENDENCY_SETUP"), "{stderr}");

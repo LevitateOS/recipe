@@ -14,6 +14,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
         target_os: cli.target_os,
         target_arch: cli.target_arch,
         jobs: cli.jobs,
+        machine_events: cli.machine_events,
         timeout_secs: cli.timeout_secs,
         memory_mib: cli.memory_mib,
         storage_max_objects: cli.storage_max_objects,
@@ -218,10 +219,8 @@ fn emit_json(ctx: &rhai::Map, path: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-/// Build the engine for one executable recipe operation, routing through the
-/// single R04 backend selection (`--backend` flag falling back to
-/// `RECIPE_BACKEND`, defaulting to Ginux). List/info/hash never reach this:
-/// they need no execution domain.
+/// Configure one executable operation through mandatory Ginux. Metadata and
+/// hashing commands do not evaluate recipe code and need no execution domain.
 fn create_engine(
     build_dir: Option<&Path>,
     state_dir: Option<&Path>,
@@ -289,23 +288,23 @@ fn create_engine(
 
 fn resolve_recipe_path(recipe: &Path, recipes_path: &Path) -> Result<PathBuf> {
     if recipe.is_absolute() {
-        if recipe.exists() {
+        if recipe.is_file() {
             return Ok(recipe.to_path_buf());
         }
         anyhow::bail!("Recipe file not found: {}", recipe.display());
     }
 
-    if recipe.exists() {
+    if recipe.is_file() {
         return Ok(recipe.to_path_buf());
     }
 
     let in_recipes = recipes_path.join(recipe);
-    if in_recipes.exists() {
+    if in_recipes.is_file() {
         return Ok(in_recipes);
     }
 
     let with_ext = recipes_path.join(format!("{}.rhai", recipe.display()));
-    if with_ext.exists() {
+    if with_ext.is_file() {
         return Ok(with_ext);
     }
 

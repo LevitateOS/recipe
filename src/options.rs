@@ -8,6 +8,8 @@ pub struct ExecutionOptions {
     pub target_os: String,
     pub target_arch: String,
     pub jobs: u16,
+    /// Emit lifecycle JSON events through the worker diagnostic channel.
+    pub machine_events: bool,
     /// Maximum supervised execution time, separate from frame transport stalls.
     pub timeout_secs: u64,
     /// Domain memory and writable filesystem bounds.
@@ -31,6 +33,7 @@ impl Default for ExecutionOptions {
             target_os: std::env::consts::OS.into(),
             target_arch: std::env::consts::ARCH.into(),
             jobs: 1,
+            machine_events: false,
             timeout_secs: 3600,
             memory_mib: 2048,
             storage_max_objects: 16384,

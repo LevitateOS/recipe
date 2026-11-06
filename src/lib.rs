@@ -1,95 +1,29 @@
-//! Rhai-based package recipe executor for LevitateOS
+//! Managed Rhai package recipes executed through the configured Ginux launcher.
 //!
-//! Recipes are Rhai scripts that use a `ctx` map for state. The engine provides
-//! helper functions and executes phase functions defined in each recipe.
+//! Every executable recipe declares `const RECIPE_API = 2;`. Setup reads
+//! immutable `RUNTIME`; hooks receive `ctx.runtime`, resumable `ctx.state` and
+//! named `ctx.outputs`. Package facts are initialized from current recipe bytes.
 //!
-//! # Recipe Pattern
+//! Checks return `ready(ctx)` or `needs_work(ctx, reason)`. Check errors fail
+//! execution. Acquire/build/install/remove hooks return the updated context.
+//! Custom readiness is rechecked after successful work; persisted booleans do
+//! not replace filesystem or product validation.
 //!
-//! ```rhai
-//! let ctx = #{
-//!     name: "mypackage",
-//!     version: "1.0",
-//!     installed: false,
-//! };
+//! Explicit `RecipeEngine::add_input` selections are imported read-only under
+//! `/inputs`. Owned build work uses `/work/build`, dependency tools `/work/tools`,
+//! and the installed-target/product tree `/out`. A named `target` input seeds
+//! `/out` on fresh state. Hooks never inspect coordinator host paths.
 //!
-//! fn is_acquired(ctx) { if ctx.source == "" { throw "not acquired"; } ctx }
-//! fn is_built(ctx) { if !is_file(ctx.artifact) { throw "not built"; } ctx }
-//! fn is_installed(ctx) { if !ctx.installed { throw "not installed"; } ctx }
+//! Only `ctx.state` and its matching filesystem snapshot are checkpointed.
+//! Publication validates selected files/directories before returning their host
+//! paths in `ctx.outputs`; failed execution cannot publish incomplete work.
 //!
-//! fn acquire(ctx) { ctx.source = download(...); ctx }
-//! fn build(ctx) { run(...); ctx }
-//! fn install(ctx) { ctx.installed = true; ctx }
+//! Acquisition uses `download(url, exact_dest, sha256[, resume])` or pinned
+//! `git_checkout(url, exact_dest, full_commit)`. Explicit invocation network
+//! grants are required. Commands and helpers execute inside the domain.
 //!
-//! # Cleanup Lifecycle
-//!
-//! Recipes may optionally define:
-//! - `fn cleanup(ctx, reason) { ...; ctx }`
-//!
-//! `reason` is an enum-like string:
-//! - `manual`
-//! - `auto.<phase>.<outcome>` (examples: `auto.acquire.success`, `auto.build.failure`)
-//!
-//! The intent is that cleanup is an engine-invoked hygiene hook (not an ad-hoc
-//! manual step), and `recipe cleanup` is just a manual trigger with `reason=manual`.
-//! ```
-//!
-//! # Phase Lifecycle
-//!
-//! 1. `is_installed()` - Check if already done (skip if doesn't throw)
-//! 2. `is_built()` - Check if build needed
-//! 3. `is_acquired()` - Check if acquire needed
-//! 4. Execute needed phases (acquire, build, install)
-//! 5. Persist ctx after each phase
-//!
-//! # Engine-Provided Functions
-//!
-//! ## Filesystem
-//! - `is_file(path)` - Check if path is a file
-//! - `is_dir(path)` - Check if path is a directory
-//! - `mkdir(path)` - Create directory recursively
-//! - `rm(path)` - Remove file or directory
-//! - `mv(src, dst)` - Move/rename
-//! - `chmod(path, mode)` - Change permissions
-//!
-//! ## Paths
-//! - `join_path(a, b)` - Join path components
-//! - `basename(path)` - Get filename
-//!
-//! ## Commands
-//! - `shell(cmd)` - Run shell command, throw on failure
-//! - `shell_status(cmd)` - Run command, return exit code
-//!
-//! ## Network
-//! - `download(url, dest)` - HTTP download
-//! - `download_with_resume(url, dest)` - HTTP download with Range resume (throws if resume can't be honored)
-//! - `http_get(url)` - Fetch URL content as string
-//! - `torrent(url, dest_dir)` - BitTorrent download into `dest_dir`
-//!
-//! ## Verification
-//! - `verify_sha256(path, hash)` - Verify checksum
-//! - `fetch_sha256(url, filename)` - Fetch a SHA256 from a remote checksum file
-//! - `check_disk_space(path, bytes)` - Verify free space
-//!
-//! ## Archive
-//! - `extract(archive, dest)` - Auto-detect format and extract
-//!
-//! ## File I/O
-//! - `read_file(path)` - Read file as string
-//! - `write_file(path, content)` - Write string to file
-//!
-//! ## String
-//! - `trim(str)` - Remove whitespace
-//!
-//! ## Logging
-//! - `log(msg)` - Print info message
-//!
-//! # Variables Available in Scripts
-//!
-//! - `RECIPE_DIR` - Directory containing the recipe file
-//! - `BUILD_DIR` - Temporary build directory
-//! - `ARCH` - Target architecture (x86_64, aarch64)
-//! - `NPROC` - Number of CPUs
-//! - `RPM_PATH` - Path to RPM repository (from environment)
+//! See README.md, WRITING_RECIPES.md and HELPERS_AUDIT.md for the current CLI,
+//! helper signatures, input/output contracts, resource limits and recovery.
 
 pub mod backend;
 #[doc(hidden)]
@@ -251,7 +185,8 @@ impl RecipeEngine {
     }
 
     /// Import an explicitly selected file or source tree read-only under /inputs.
-    /// Tree imports exclude root .git and target metadata; symlinks are rejected.
+    /// Source imports exclude root .git/target metadata; contained links are preserved.
+    /// Named rootfs/target trees preserve filesystem links and permissions.
     pub fn add_input(&mut self, name: String, path: PathBuf) {
         self.inputs.push(inputs::ExtraInput { name, path });
     }
@@ -259,11 +194,11 @@ impl RecipeEngine {
     /// Execute a recipe script (install a package)
     ///
     /// Follows the package lifecycle:
-    /// 1. is_installed() - Check if already done (skip if doesn't throw)
+    /// 1. is_installed() - Skip only on explicit ready(ctx).
     /// 2. is_built() - Check if build needed
     /// 3. is_acquired() - Check if acquire needed
     /// 4. Execute needed phases
-    /// 5. Persist ctx after each phase
+    /// 5. Checkpoint ctx.state together with matching owned files.
     ///
     /// Returns the final ctx map containing all recipe state.
     pub fn execute(&self, recipe_path: &Path) -> Result<rhai::Map> {

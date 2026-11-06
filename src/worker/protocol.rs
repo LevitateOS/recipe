@@ -8,7 +8,7 @@
 //! Every frame is:
 //!
 //! ```text
-//! [u32 BE total-length][u32 BE version=5][u32 BE seq][u16 BE op][payload]
+//! [u32 BE total-length][u32 BE version=6][u32 BE seq][u16 BE op][payload]
 //! ```
 //!
 //! - `total-length` is the full frame size **including** its own 4 bytes, so

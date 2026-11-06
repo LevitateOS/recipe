@@ -16,8 +16,8 @@ pub mod io;
 // Re-export commonly used items from filesystem
 pub use filesystem::{
     chmod_file, copy_file, copy_file_reflink, copy_first_existing, copy_into_dir,
-    copy_tree_contents, dir_exists, exists, file_exists, glob_exists, is_dir, is_file, mkdir,
-    move_file, rm_files, symlink, symlink_force,
+    copy_tree_contents, exists, glob_exists, is_dir, is_file, mkdir, move_file, rm_files, symlink,
+    symlink_force,
 };
 
 // Re-export commonly used items from io

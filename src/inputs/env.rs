@@ -146,6 +146,11 @@ fn validate_domain_value(name: &str, value: &str) -> Result<()> {
              (extra env values must be plain literals or absolute domain paths)"
         );
     }
+    if !value.starts_with('/') && value.contains('/') {
+        bail!(
+            "input preparation failure: env {name:?} must be a plain literal or absolute domain path"
+        );
+    }
     if value.starts_with('/') {
         let rooted = ["/work/", "/inputs/", "/out/", "/usr/", "/bin/"]
             .iter()
