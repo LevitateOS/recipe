@@ -311,10 +311,15 @@ fn run_domain_inner(
     let mut stream = match pump {
         Ok(stream) => stream,
         Err(err) => {
+            // The stream error stays the result; teardown problems are reported beside it.
             let exit = reap_launcher(&mut child, Instant::now() + SHUTDOWN_GRACE)
-                .ok()
-                .flatten();
-            let _ = worker_diagnostics.sync_all();
+                .unwrap_or_else(|error| {
+                    crate::diagnostics::diag!("recipe: warning: {error:#}");
+                    None
+                });
+            if let Err(error) = worker_diagnostics.sync_all() {
+                crate::diagnostics::diag!("recipe: warning: cannot sync the worker log: {error}");
+            }
             let drained = join_drain(drain);
             return Err(enrich_stream_error(
                 &invocation,
@@ -838,7 +843,13 @@ fn spawn_stderr_drain(stderr: std::process::ChildStderr, log_path: PathBuf) -> D
             }
         };
         let mut shutdown = None;
-        let mut file = std::fs::File::create(&log_path).ok();
+        let lost = |error: std::io::Error| {
+            crate::diagnostics::diag!(
+                "recipe: warning: supervisor log {} is incomplete: {error}",
+                log_path.display()
+            );
+        };
+        let mut file = std::fs::File::create(&log_path).map_err(lost).ok();
         let mut total: u64 = 0;
         let mut retained: u64 = 0;
         let mut tail: Vec<u8> = Vec::new();
@@ -861,7 +872,8 @@ fn spawn_stderr_drain(stderr: std::process::ChildStderr, log_path: PathBuf) -> D
                     {
                         let room = (LOG_CAP_BYTES - retained) as usize;
                         let take = room.min(n);
-                        if out.write_all(&buf[..take]).is_err() {
+                        if let Err(error) = out.write_all(&buf[..take]) {
+                            lost(error);
                             file = None;
                         }
                         retained += take as u64;
@@ -880,8 +892,10 @@ fn spawn_stderr_drain(stderr: std::process::ChildStderr, log_path: PathBuf) -> D
                 Err(_) => break,
             }
         }
-        if let Some(mut out) = file {
-            out.flush().ok();
+        if let Some(mut out) = file
+            && let Err(error) = out.flush()
+        {
+            lost(error);
         }
         let start = tail.len().saturating_sub(LOG_TAIL_BYTES);
         DrainedLog {
