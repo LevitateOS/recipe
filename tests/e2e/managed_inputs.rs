@@ -38,7 +38,7 @@ fn image_command(recipes: &Path, archive: &Path, digest: &str) -> Command {
 
 fn guarded_recipe(recipes: &Path, sentinel: &Path) -> String {
     let source = format!(
-        "write_file({:?}, \"host recipe code ran\");\nlet ctx = #{{name: \"image-check\"}};\nfn is_installed(ctx) {{ ctx }}\n",
+        "const RECIPE_API = 2;\nwrite_file({:?}, \"host recipe code ran\");\nlet ctx = #{{name: \"image-check\"}};\nfn is_installed(ctx) {{ ctx }}\n",
         sentinel.to_string_lossy()
     );
     write_recipe(recipes, "check", &source);
@@ -1361,16 +1361,23 @@ fn is_installed(ctx) {
     let stderr = child.stderr.take().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     let reader = std::thread::spawn(move || {
+        let mut tail = std::collections::VecDeque::new();
         for line in BufReader::new(stderr).lines().map_while(Result::ok) {
             if line.contains("managed-cancellation-ready") {
                 let _ = tx.send(());
             }
+            if tail.len() == 32 {
+                tail.pop_front();
+            }
+            tail.push_back(line);
         }
+        tail.into_iter().collect::<Vec<_>>().join("\n")
     });
-    if let Err(error) = rx.recv_timeout(std::time::Duration::from_secs(30)) {
+    if let Err(error) = rx.recv_timeout(std::time::Duration::from_secs(120)) {
         child.kill().ok();
         child.wait().ok();
-        panic!("worker did not reach cancellation point: {error}");
+        let diagnostics = reader.join().unwrap();
+        panic!("worker did not reach cancellation point: {error}\n{diagnostics}");
     }
     fn children(pid: u32) -> Vec<u32> {
         std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))

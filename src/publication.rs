@@ -10,9 +10,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
-const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-const MAX_ENTRIES: usize = 4096;
-
 struct Staging(tempfile::TempDir);
 impl Drop for Staging {
     fn drop(&mut self) {
@@ -28,7 +25,14 @@ impl Drop for Staging {
     }
 }
 
-pub(crate) fn publish(invocation: &str, archive: &Path, context: &mut Value) -> Result<()> {
+pub(crate) fn publish(
+    invocation: &str,
+    archive: &Path,
+    context: &mut Value,
+    options: &crate::ExecutionOptions,
+) -> Result<()> {
+    let max_bytes = options.storage_byte_bound();
+    let max_entries = options.storage_max_objects as usize;
     let Some(outputs) = context.get("outputs") else {
         return Ok(());
     };
@@ -64,7 +68,7 @@ pub(crate) fn publish(invocation: &str, archive: &Path, context: &mut Value) -> 
         .open(archive)
         .context("cannot open completed Ginux export")?;
     let metadata = file.metadata()?;
-    if !metadata.is_file() || metadata.len() > MAX_BYTES + 8 * 1024 * 1024 {
+    if !metadata.is_file() || metadata.len() > options.archive_bound() {
         bail!("invalid or oversized Ginux export");
     }
     let base = std::env::current_dir()?.join(".artifacts");
@@ -77,17 +81,22 @@ pub(crate) fn publish(invocation: &str, archive: &Path, context: &mut Value) -> 
             .prefix(".pending-")
             .tempdir_in(&base)?,
     );
-    let mut seen = HashSet::new();
+    let mut seen = BTreeMap::new();
     let mut found = HashSet::new();
     let mut directories = BTreeMap::new();
     let mut bytes = 0u64;
-    let mut published_bytes = 0u64;
     let mut archive = tar::Archive::new(file);
     let mut long_name = None;
     let mut long_link = None;
     let mut links = BTreeMap::new();
+    // Payloads are private snapshot inodes. Keeping all prior regular payloads
+    // permits a selected alias to reference an unselected earlier name without
+    // copying data or following arbitrary archive paths.
+    let payloads = staging.0.path().join(".payloads");
+    fs::create_dir(&payloads)?;
+    let mut regulars = BTreeMap::<String, (PathBuf, u32)>::new();
     for (raw_count, entry) in archive.entries()?.raw(true).enumerate() {
-        if raw_count >= MAX_ENTRIES * 3 {
+        if raw_count >= max_entries * 3 {
             bail!("excessive export headers");
         }
         let mut entry = entry?;
@@ -118,17 +127,36 @@ pub(crate) fn publish(invocation: &str, archive: &Path, context: &mut Value) -> 
         .context("export path is not UTF-8")?;
         let path = path.strip_suffix('/').unwrap_or(&path);
         validate_path(path)?;
-        if seen.len() >= MAX_ENTRIES || !seen.insert(path.to_owned()) {
-            bail!("duplicate or excessive export entries");
-        }
         let kind = entry.header().entry_type();
-        if !kind.is_file() && !kind.is_dir() && !kind.is_symlink() {
+        if !kind.is_file() && !kind.is_dir() && !kind.is_symlink() && !kind.is_hard_link() {
             bail!("unsupported export entry kind at {path}");
         }
-        if long_link.is_some() && !kind.is_symlink() {
-            bail!("link target on a non-link export entry");
+        if seen.len() >= max_entries || seen.contains_key(path) {
+            bail!("duplicate or excessive export entries");
         }
-        let target = if kind.is_symlink() {
+        // Reject both orders of a non-directory parent/child conflict, including
+        // unselected entries. Symlinks are never traversed during publication.
+        let mut parent = Path::new(path).parent();
+        while let Some(path) = parent {
+            if let Some(parent_kind) = seen.get(path.to_str().context("invalid export parent")?) {
+                if *parent_kind != tar::EntryType::Directory {
+                    bail!("export traverses a non-directory parent");
+                }
+            }
+            parent = path.parent();
+        }
+        if !kind.is_dir()
+            && seen
+                .keys()
+                .any(|name: &String| name.starts_with(&format!("{path}/")))
+        {
+            bail!("export replaces a parent directory");
+        }
+        seen.insert(path.to_owned(), kind);
+        if long_link.is_some() && !kind.is_symlink() && !kind.is_hard_link() {
+            bail!("link target on non-link entry");
+        }
+        let target = if kind.is_symlink() || kind.is_hard_link() {
             let bytes = long_link
                 .take()
                 .or_else(|| entry.link_name_bytes().map(|name| name.into_owned()))
@@ -142,11 +170,43 @@ pub(crate) fn publish(invocation: &str, archive: &Path, context: &mut Value) -> 
         };
         let size = entry.size();
         bytes = bytes.checked_add(size).context("export size overflow")?;
-        if bytes > MAX_BYTES || (!kind.is_file() && size != 0) {
+        if bytes > max_bytes || (!kind.is_file() && size != 0) {
             bail!("invalid export size");
         }
         let mode = entry.header().mode()? & 0o777;
-        let mut destinations = Vec::new();
+        let payload = if kind.is_file() {
+            let payload = payloads.join(regulars.len().to_string());
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&payload)?;
+            if std::io::copy(&mut entry, &mut file)? != size {
+                bail!("truncated export entry");
+            }
+            file.set_permissions(fs::Permissions::from_mode(mode))?;
+            file.sync_all()?;
+            regulars.insert(path.to_owned(), (payload.clone(), mode));
+            Some(payload)
+        } else if kind.is_hard_link() {
+            let target = target
+                .as_ref()
+                .unwrap()
+                .to_str()
+                .context("hardlink target must be UTF-8")?;
+            validate_path(target)?;
+            let (payload, prior_mode) = regulars
+                .get(target)
+                .context("hardlink target must be a prior regular file")?
+                .clone();
+            if mode != prior_mode {
+                bail!("hardlink modes disagree");
+            }
+            regulars.insert(path.to_owned(), (payload.clone(), mode));
+            Some(payload)
+        } else {
+            None
+        };
         for (name, root) in &selected {
             let suffix = if path == root {
                 if kind.is_symlink() {
@@ -158,62 +218,27 @@ pub(crate) fn publish(invocation: &str, archive: &Path, context: &mut Value) -> 
                 path.strip_prefix(root)
                     .and_then(|rest| rest.strip_prefix('/'))
             };
-            if let Some(suffix) = suffix {
-                let destination = staging.0.path().join(name);
-                destinations.push(if suffix.is_empty() {
-                    destination
-                } else {
-                    destination.join(suffix)
-                });
-            }
-        }
-        if destinations.is_empty() {
-            continue;
-        }
-        if let Some(target) = target {
-            for destination in destinations {
-                links.insert(destination, target.clone());
-            }
-        } else if kind.is_dir() {
-            for destination in destinations {
+            let Some(suffix) = suffix else {
+                continue;
+            };
+            let destination = staging.0.path().join(name);
+            let destination = if suffix.is_empty() {
+                destination
+            } else {
+                destination.join(suffix)
+            };
+            if kind.is_symlink() {
+                links.insert(destination, target.as_ref().unwrap().clone());
+            } else if kind.is_dir() {
                 fs::create_dir_all(&destination)?;
                 directories.insert(destination, mode);
-            }
-        } else {
-            published_bytes = published_bytes
-                .checked_add(
-                    size.checked_mul(destinations.len() as u64)
-                        .context("output size overflow")?,
-                )
-                .context("output size overflow")?;
-            if published_bytes > MAX_BYTES {
-                bail!("selected outputs exceed byte limit");
-            }
-            let first = &destinations[0];
-            fs::create_dir_all(first.parent().context("missing output parent")?)?;
-            let mut output = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(first)?;
-            if std::io::copy(&mut entry, &mut output)? != size {
-                bail!("truncated export entry");
-            }
-            for destination in &destinations[1..] {
+            } else {
                 fs::create_dir_all(destination.parent().context("missing output parent")?)?;
-                let mut copy = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .open(destination)?;
-                std::io::copy(&mut File::open(first)?, &mut copy)?;
-                copy.set_permissions(fs::Permissions::from_mode(mode))?;
-                copy.sync_all()?;
+                fs::hard_link(payload.as_ref().unwrap(), destination)?;
             }
-            output.set_permissions(fs::Permissions::from_mode(mode))?;
-            output.sync_all()?;
         }
     }
+    fs::remove_dir_all(&payloads)?;
     if long_name.is_some() || long_link.is_some() {
         bail!("long export name without an entry");
     }

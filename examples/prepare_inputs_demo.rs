@@ -18,7 +18,7 @@ use levitate_recipe::inputs::{ExtraInput, prepare_invocation};
 
 fn main() -> anyhow::Result<()> {
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let recipe = crate_dir.join("../../AcornOS/deps/recfstab.rhai");
+    let recipe = crate_dir.join("../../distro-builder/recipes/recfstab.rhai");
     println!("== R05 real run: {} ==", recipe.display());
 
     // 1. Real preparation over the actual recfstab recipe.

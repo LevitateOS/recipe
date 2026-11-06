@@ -240,7 +240,25 @@ pub fn copy_tree_contents(src_dir: &str, dst_dir: &str) -> Result<(), Box<EvalAl
         .into());
     }
 
-    for entry in WalkDir::new(src_root).min_depth(1) {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let input_modes: std::collections::BTreeMap<String, u32> = if src_root.starts_with("/inputs") {
+        use std::io::Read;
+        let file = std::fs::File::open("/inputs/.recipe-input-modes.json")
+            .map_err(|e| format!("cannot read immutable input modes: {e}"))?;
+        let mut bytes = Vec::new();
+        file.take(32 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("cannot read immutable input modes: {e}"))?;
+        if bytes.len() > 32 * 1024 * 1024 {
+            return Err("input mode metadata exceeds bound".into());
+        }
+        serde_json::from_slice(&bytes).map_err(|e| format!("invalid immutable input modes: {e}"))?
+    } else {
+        Default::default()
+    };
+    let mut inodes = std::collections::HashMap::new();
+    let mut directories = Vec::new();
+    for entry in WalkDir::new(src_root).follow_links(false).min_depth(1) {
         let entry = entry.map_err(|e| format!("copy_tree_contents walk failed: {}", e))?;
         let path = entry.path();
         let relative = path.strip_prefix(src_root).map_err(|e| {
@@ -259,6 +277,17 @@ pub fn copy_tree_contents(src_dir: &str, dst_dir: &str) -> Result<(), Box<EvalAl
             )
         })?;
 
+        let permissions = if let Ok(relative) = path.strip_prefix("/inputs") {
+            let name = relative
+                .to_str()
+                .ok_or("non-Unicode immutable input path")?;
+            let mode = *input_modes
+                .get(name)
+                .ok_or("immutable input mode is missing")?;
+            std::fs::Permissions::from_mode(mode & 0o777)
+        } else {
+            metadata.permissions()
+        };
         if metadata.is_dir() {
             output::detail(&format!("mkdir {}", dest_path.display()));
             std::fs::create_dir_all(&dest_path).map_err(|e| -> Box<EvalAltResult> {
@@ -269,6 +298,7 @@ pub fn copy_tree_contents(src_dir: &str, dst_dir: &str) -> Result<(), Box<EvalAl
                 )
                 .into()
             })?;
+            directories.push((dest_path, permissions));
             continue;
         }
 
@@ -278,19 +308,33 @@ pub fn copy_tree_contents(src_dir: &str, dst_dir: &str) -> Result<(), Box<EvalAl
             continue;
         }
 
-        copy_file_impl(path, &dest_path)?;
-        std::fs::set_permissions(&dest_path, metadata.permissions()).map_err(
-            |e| -> Box<EvalAltResult> {
-                format!(
-                    "copy_tree_contents set_permissions failed for {}: {}",
-                    dest_path.display(),
-                    e
-                )
-                .into()
-            },
-        )?;
+        let identity = (metadata.dev(), metadata.ino());
+        if let Some(first) = inodes.get(&identity) {
+            match std::fs::remove_file(&dest_path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("cannot replace hardlink destination: {e}").into()),
+            }
+            std::fs::hard_link(first, &dest_path)
+                .map_err(|e| format!("copy_tree_contents hardlink failed: {e}"))?;
+        } else {
+            copy_file_impl(path, &dest_path)?;
+            inodes.insert(identity, dest_path.clone());
+        }
+        std::fs::set_permissions(&dest_path, permissions).map_err(|e| -> Box<EvalAltResult> {
+            format!(
+                "copy_tree_contents set_permissions failed for {}: {}",
+                dest_path.display(),
+                e
+            )
+            .into()
+        })?;
     }
 
+    for (path, permissions) in directories.into_iter().rev() {
+        std::fs::set_permissions(&path, permissions)
+            .map_err(|e| format!("copy_tree_contents directory permissions failed: {e}"))?;
+    }
     Ok(())
 }
 

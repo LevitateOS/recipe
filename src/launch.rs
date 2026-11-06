@@ -133,6 +133,41 @@ pub fn run_domain(
     state_dir: Option<&Path>,
     recipe: &Path,
 ) -> Result<LaunchReport> {
+    let diagnostics = crate::logging::InvocationLog::new(state_dir, &prepared.invocation_id)?;
+    let outcome = run_domain_inner(
+        prepared,
+        launcher,
+        persist_state,
+        options,
+        destination,
+        state_dir,
+        recipe,
+        &diagnostics,
+    );
+    let record = match &outcome {
+        Ok(report) => serde_json::json!({"invocation": prepared.invocation_id,
+            "status": if report.result.ok { "succeeded" } else { "workload-failed" },
+            "worker": report.result, "checkpoints": report.generations,
+            "supervisor_outcome": report.result_outcome, "supervisor_code": report.result_code,
+            "log_bytes": report.log_total_bytes, "log_discarded_bytes": report.log_discarded_bytes}),
+        Err(error) => serde_json::json!({"invocation":prepared.invocation_id,
+            "status": if crate::cancellation::signal() != 0 { "cancelled" } else { "failed" },
+            "error":format!("{error:#}")}),
+    };
+    diagnostics.record(&record)?;
+    outcome
+}
+
+fn run_domain_inner(
+    prepared: &PreparedInvocation,
+    launcher: &Path,
+    persist_state: bool,
+    options: &crate::worker::protocol::InvocationOptions,
+    destination: &Path,
+    state_dir: Option<&Path>,
+    recipe: &Path,
+    diagnostics: &crate::logging::InvocationLog,
+) -> Result<LaunchReport> {
     let invocation = prepared.invocation_id.clone();
     let timeout = frame_timeout()?;
     let _destination_lock = crate::retained::lock_destination(destination, timeout)?;
@@ -166,11 +201,16 @@ pub fn run_domain(
         None
     };
     let restore_path = run_dir.path().join("restore.tar");
-    let restore = retained
+    let mut restore = retained
         .as_ref()
         .map(|state| state.restore_input(&restore_path))
         .transpose()?
         .unwrap_or(false);
+    if !restore {
+        restore = crate::inputs::seed_target(prepared, domain_root.path(), &restore_path)
+            .context("cannot seed the requested target view")?;
+    }
+    crate::cancellation::check()?;
     let (mut control, control_server) = if persist_state {
         let (client, server) = UnixStream::pair()?;
         (Some(DeadlinePipe::new(client, timeout)?), Some(server))
@@ -220,6 +260,7 @@ pub fn run_domain(
     if restore {
         command.arg("--restore-file").arg(&restore_path);
     }
+    let mut worker_diagnostics = std::fs::File::create(diagnostics.directory.join("worker.log"))?;
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -243,7 +284,7 @@ pub fn run_domain(
     let stderr = child.stderr.take().context(
         "backend startup failure: launcher stderr was not piped (refusing host fallback)",
     )?;
-    let log_path = run_dir.path().join("worker-stderr.log");
+    let log_path = diagnostics.directory.join("supervisor-stderr.log");
     let drain = spawn_stderr_drain(stderr, log_path.clone());
 
     let pump = pump_protocol(
@@ -256,11 +297,18 @@ pub fn run_domain(
         stdout,
         &mut retained,
         &mut control,
+        &mut worker_diagnostics,
     );
     let mut stream = match pump {
         Ok(stream) => stream,
         Err(err) => {
+            if crate::cancellation::signal() != 0 {
+                unsafe {
+                    libc::kill(-(child.id() as i32), crate::cancellation::signal());
+                }
+            }
             let exit = reap_launcher(&mut child);
+            let _ = worker_diagnostics.sync_all();
             let drained = join_drain(drain);
             let file_note = read_result_file_note(&result_path);
             return Err(enrich_stream_error(
@@ -276,6 +324,7 @@ pub fn run_domain(
     drop(stream.stdin);
     let exit = reap_launcher(&mut child);
     let drained = join_drain(drain);
+    worker_diagnostics.sync_all()?;
 
     let record = read_result_record(&result_path, &invocation)?;
     check_agreement(&invocation, &stream.result, &record)?;
@@ -293,8 +342,13 @@ pub fn run_domain(
                 .finish(&export_path, runtime_state)
                 .context("cannot persist final state/files pair")?;
         }
-        crate::publication::publish(&invocation, &export_path, &mut stream.result.ctx_summary)
-            .context("backend storage failure: cannot publish completed domain outputs")?;
+        crate::publication::publish(
+            &invocation,
+            &export_path,
+            &mut stream.result.ctx_summary,
+            &options.execution,
+        )
+        .context("backend storage failure: cannot publish completed domain outputs")?;
     }
 
     let log_tail = read_log_tail(&log_path);
@@ -337,6 +391,7 @@ fn pump_protocol(
     stdout: std::process::ChildStdout,
     retained: &mut Option<crate::retained::Retained>,
     control: &mut Option<DeadlinePipe<UnixStream>>,
+    worker_diagnostics: &mut std::fs::File,
 ) -> Result<WorkerStream> {
     let timeout = frame_timeout()?;
     let mut stdin = DeadlinePipe::new(stdin, timeout)?;
@@ -369,8 +424,21 @@ fn pump_protocol(
     let mut diagnostic_bytes = 0usize;
     let mut diagnostic_frames = 0usize;
     let mut diagnostic_truncated = false;
+    let execution_deadline = Instant::now() + Duration::from_secs(options.execution.timeout_secs);
+    let mut started = false;
     let result = loop {
-        stdout.reset(timeout);
+        if Instant::now() >= execution_deadline {
+            bail!("backend deadline failure: supervised execution deadline expired");
+        }
+        stdout.begin_frame(
+            if started {
+                execution_deadline.saturating_duration_since(Instant::now())
+            } else {
+                timeout
+            },
+            timeout,
+            execution_deadline,
+        );
         let frame = rx
             .recv(&mut stdout)
             .map_err(|err| classify_stream_error(invocation, "read worker frame", err, false))?;
@@ -382,6 +450,7 @@ fn pump_protocol(
                  violation: {err} (refusing host fallback)"
                 )
             })?;
+        started = true;
         match frame.payload {
             FramePayload::Diagnostic(payload) => {
                 use crate::worker::protocol::{MAX_DIAGNOSTIC_BYTES, MAX_DIAGNOSTIC_FRAMES};
@@ -413,6 +482,7 @@ fn pump_protocol(
                     }
                     // All human bytes go to CLI stderr, never to its JSON stream.
                     // Supervisor stderr is collected independently and never parsed.
+                    worker_diagnostics.write_all(&payload.data)?;
                     let _ = std::io::stderr().write_all(&payload.data);
                 }
             }
@@ -520,6 +590,8 @@ fn capture_checkpoint(
 struct DeadlinePipe<T> {
     inner: T,
     deadline: Instant,
+    frame_start: Option<(Duration, Instant)>,
+    execution_deadline: Option<Instant>,
 }
 
 fn frame_timeout() -> Result<Duration> {
@@ -548,18 +620,33 @@ impl<T: AsRawFd> DeadlinePipe<T> {
         Ok(Self {
             inner,
             deadline: Instant::now() + timeout,
+            frame_start: None,
+            execution_deadline: None,
         })
+    }
+    fn begin_frame(&mut self, idle: Duration, frame: Duration, execution_deadline: Instant) {
+        self.deadline = (Instant::now() + idle).min(execution_deadline);
+        self.frame_start = Some((frame, execution_deadline));
+        self.execution_deadline = Some(execution_deadline);
     }
     fn reset(&mut self, timeout: Duration) {
         self.deadline = Instant::now() + timeout;
     }
     fn wait(&self, events: i16) -> std::io::Result<()> {
         loop {
+            crate::cancellation::check_io()?;
             let left = self.deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::TimedOut,
-                    "complete worker frame deadline expired",
+                    if self
+                        .execution_deadline
+                        .is_some_and(|deadline| Instant::now() >= deadline)
+                    {
+                        "supervised execution deadline expired"
+                    } else {
+                        "complete worker frame deadline expired"
+                    },
                 ));
             }
             let mut poll = libc::pollfd {
@@ -567,7 +654,7 @@ impl<T: AsRawFd> DeadlinePipe<T> {
                 events,
                 revents: 0,
             };
-            let millis = left.as_millis().clamp(1, i32::MAX as u128) as i32;
+            let millis = left.as_millis().clamp(1, 100) as i32;
             let result = unsafe { libc::poll(&mut poll, 1, millis) };
             if result < 0 {
                 let error = std::io::Error::last_os_error();
@@ -601,7 +688,15 @@ impl<T: AsRawFd + Read> Read for DeadlinePipe<T> {
                 {
                     continue;
                 }
-                result => return result,
+                Ok(count) => {
+                    if count != 0 {
+                        if let Some((frame, execution)) = self.frame_start.take() {
+                            self.deadline = (Instant::now() + frame).min(execution);
+                        }
+                    }
+                    return Ok(count);
+                }
+                Err(error) => return Err(error),
             }
         }
     }
@@ -640,6 +735,12 @@ fn classify_stream_error(
     err: impl std::fmt::Display,
     before_request_delivered: bool,
 ) -> anyhow::Error {
+    if crate::cancellation::signal() != 0 {
+        return anyhow!(
+            "backend cancelled: interrupted by signal {}",
+            crate::cancellation::signal()
+        );
+    }
     if before_request_delivered {
         anyhow!(
             "backend startup failure: invocation {invocation}: cannot {what} through launcher \

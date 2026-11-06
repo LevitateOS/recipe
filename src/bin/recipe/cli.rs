@@ -45,6 +45,27 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub(crate) force_install: bool,
 
+    /// Maximum supervised execution time in seconds, including silent work.
+    #[arg(long, global = true, default_value_t = 3600)]
+    pub(crate) timeout_secs: u64,
+
+    /// Domain memory limit in MiB, including writable storage and metadata.
+    #[arg(long, global = true, default_value_t = 2048)]
+    pub(crate) memory_mib: u64,
+    /// Maximum writable filesystem objects.
+    #[arg(long, global = true, default_value_t = 16384)]
+    pub(crate) storage_max_objects: u64,
+    /// Explicit writable data byte cap (otherwise memory minus filesystem metadata).
+    #[arg(long, global = true)]
+    pub(crate) storage_max_bytes: Option<u64>,
+
+    /// Permit outbound TCP to this HOST:PORT (repeatable); networking is off by default.
+    #[arg(long = "network-host", global = true, value_name = "HOST:PORT")]
+    pub(crate) network_hosts: Vec<String>,
+    /// Bound cumulative sent and received network bytes for this invocation.
+    #[arg(long, global = true, default_value_t = 8 * 1024 * 1024 * 1024u64)]
+    pub(crate) network_max_bytes: u64,
+
     /// Define scope constants (KEY=VALUE), injected into Rhai scope before execution
     #[arg(short, long = "define", global = true, value_name = "KEY=VALUE")]
     pub(crate) defines: Vec<String>,

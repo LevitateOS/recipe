@@ -32,7 +32,6 @@ const WORKER_INIT: &str = "/inputs/recipe-worker";
 
 /// Placeholder resource bounds until L02 enforcement lands; valid per the
 /// domain parser (`vcpus` 1..=64, `memory_mib` 16..=1_048_576).
-const DEFAULT_MEMORY_MIB: u64 = 2048;
 
 /// Domain config for one invocation; [`DomainConfig::render`] produces the
 /// parser-accepted text.
@@ -45,6 +44,9 @@ pub struct DomainConfig {
     environment: Vec<String>,
     vcpus: u64,
     memory_mib: u64,
+    storage_max_objects: u64,
+    storage_max_bytes: Option<u64>,
+    network: super::network::NetworkPolicy,
 }
 
 impl DomainConfig {
@@ -97,8 +99,16 @@ impl DomainConfig {
             ],
             environment,
             vcpus,
-            memory_mib: DEFAULT_MEMORY_MIB,
+            memory_mib: options.memory_mib,
+            storage_max_objects: options.storage_max_objects,
+            storage_max_bytes: options.storage_max_bytes,
+            network: super::network::NetworkPolicy::default(),
         })
+    }
+
+    pub(crate) fn with_network(mut self, network: super::network::NetworkPolicy) -> Self {
+        self.network = network;
+        self
     }
 
     pub(crate) fn root_reference(&self) -> &str {
@@ -127,8 +137,21 @@ impl DomainConfig {
         // Only domain paths cross this interface. The launcher's memory backend
         // owns these bytes; no writable host directory is assigned.
         out.push_str("\n[storage]\nassignments = [\"memory:/work\", \"memory:/work/build\", \"memory:/work/tools\", \"memory:/work/tmp\", \"memory:/out\"]\n");
+        out.push_str(&format!("max_objects = {}\n", self.storage_max_objects));
+        if let Some(bytes) = self.storage_max_bytes {
+            out.push_str(&format!("max_bytes = {bytes}\n"));
+        }
         out.push_str("\n[devices]\nassignments = [\"null\"]\n");
-        out.push_str("\n[network]\nbackend = \"none\"\n");
+        if self.network.endpoints.is_empty() {
+            out.push_str("\n[network]\nbackend = \"none\"\n");
+        } else {
+            out.push_str("\n[network]\nbackend = \"mediated\"\n");
+            out.push_str(&format!(
+                "endpoints = {}\nmax_connections = 16\nmax_bytes = {}\n",
+                quote_list(&self.network.endpoints, 8, 64, "network endpoints")?,
+                self.network.max_bytes
+            ));
+        }
         out.push_str("\n[audit]\nmode = \"stderr\"\n");
         out.push_str("\n[failure]\npolicy = \"stop\"\n");
         if out.len() > MAX_CONFIG {
@@ -149,7 +172,9 @@ pub fn config_text(
     env: &[(String, String)],
     options: &crate::ExecutionOptions,
 ) -> Result<String> {
-    DomainConfig::for_invocation(invocation_id, main_domain_path, env, options)?.render()
+    DomainConfig::for_invocation(invocation_id, main_domain_path, env, options)?
+        .with_network(super::network::NetworkPolicy::resolve(options)?)
+        .render()
 }
 
 /// Image reference: I01 pin by default, `GINUX_ROOT` override when set.

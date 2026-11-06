@@ -67,6 +67,7 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
     };
     unpack_image(snapshot, root.path())?;
 
+    super::network::install_hosts(&invocation.network, root.path())?;
     let inputs = root.path().join("inputs");
     std::fs::create_dir(&inputs)?;
     for (index, input) in invocation.inputs.iter().enumerate() {
@@ -83,6 +84,7 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
                 }
                 continue;
             }
+            super::InputKind::Hardlink(_) => continue,
             super::InputKind::Symlink(_) => continue, // Install links after all ordinary paths.
             super::InputKind::File => {}
         }
@@ -100,9 +102,18 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
         }
         // Explicitly imported bytes must be readable after Ginux drops to its
         // domain uid, even when the coordinator read a host-private 0600 file.
-        destination.set_permissions(std::fs::Permissions::from_mode(
-            0o444 | (input.mode & 0o111),
-        ))?;
+        destination.set_permissions(std::fs::Permissions::from_mode(input.mode | 0o444))?;
+    }
+    for input in &invocation.inputs {
+        if let super::InputKind::Hardlink(target) = &input.kind {
+            super::discover::validate_input_name(target)?;
+            ensure_parents(&inputs, Path::new(&input.name))?;
+            let target = inputs.join(target);
+            if !std::fs::symlink_metadata(&target)?.is_file() {
+                bail!("input hardlink target is not regular");
+            }
+            std::fs::hard_link(target, inputs.join(&input.name))?;
+        }
     }
     for input in &invocation.inputs {
         if let super::InputKind::Symlink(target) = &input.kind {
@@ -142,6 +153,17 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
         std::fs::create_dir(&directory)?;
         std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o777))?;
     }
+    // Preserve logical input permissions independently from the readability
+    // required to consume immutable inputs. Tree copying uses this coordinator-
+    // authored metadata instead of publishing the snapshot's read grants.
+    let modes = invocation
+        .inputs
+        .iter()
+        .map(|input| (&input.name, input.mode))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let manifest = inputs.join(".recipe-input-modes.json");
+    std::fs::write(&manifest, serde_json::to_vec(&modes)?)?;
+    std::fs::set_permissions(manifest, std::fs::Permissions::from_mode(0o444))?;
     for entry in walkdir::WalkDir::new(&inputs).follow_links(false) {
         let entry = entry?;
         if entry.file_type().is_dir() {
@@ -210,6 +232,7 @@ fn copy_hashed(source: &mut File, destination: &mut File, maximum: u64) -> Resul
     let mut size = 0u64;
     let mut buffer = [0u8; 64 * 1024];
     loop {
+        crate::cancellation::check()?;
         let count = source.read(&mut buffer)?;
         if count == 0 {
             break;
@@ -266,6 +289,7 @@ fn unpack_image(snapshot: File, root: &Path) -> Result<()> {
     let mut directories = HashMap::new();
     let mut total = 0u64;
     for (index, entry) in archive.entries()?.enumerate() {
+        crate::cancellation::check()?;
         if index >= MAX_IMAGE_ENTRIES {
             bail!("rootfs image entry limit exceeded");
         }
@@ -332,27 +356,25 @@ fn unpack_image(snapshot: File, root: &Path) -> Result<()> {
             }
             std::os::unix::fs::symlink(target, destination)?;
         } else if kind.is_hard_link() {
-            // Copy regular content, never alias the immutable image to a
-            // mutable inode. Reject symlink ancestors and nonregular targets.
+            // Alias only an earlier verified regular file in this private image
+            // snapshot. Host source files and shared image caches stay separate.
             let target = relative_path(
                 &entry
                     .link_name()?
                     .context("rootfs hardlink has no target")?,
             )?;
-            ensure_parents(root, &target)?;
-            let mut source = regular_file(&root.join(target))?;
-            total = total
-                .checked_add(source.metadata()?.len())
-                .context("rootfs image size overflow")?;
-            if total > MAX_IMAGE_BYTES {
-                bail!("rootfs unpacked size limit exceeded");
+            if !paths.contains(&target) || target == relative {
+                bail!("rootfs hardlink target must be a prior file");
             }
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(destination)?;
-            copy_hashed(&mut source, &mut file, MAX_IMAGE_BYTES)?;
-            file.set_permissions(source.metadata()?.permissions())?;
+            ensure_parents(root, &target)?;
+            let source = root.join(target);
+            let metadata = std::fs::symlink_metadata(&source)?;
+            if !metadata.is_file()
+                || metadata.permissions().mode() & 0o555 != entry.header().mode()? & 0o555
+            {
+                bail!("rootfs hardlink target kind or mode disagrees");
+            }
+            std::fs::hard_link(source, destination)?;
         } else {
             bail!(
                 "unsupported rootfs image entry type at {}",
@@ -373,4 +395,76 @@ fn unpack_image(snapshot: File, root: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Seed the owned target from explicitly selected, already verified input bytes.
+/// Read only the invocation snapshot, never the original host input pathname.
+pub(crate) fn seed_target(
+    invocation: &PreparedInvocation,
+    root: &Path,
+    destination: &Path,
+) -> Result<bool> {
+    use super::InputKind;
+    let selected: Vec<_> = invocation
+        .inputs
+        .iter()
+        .filter(|input| input.name == "target" || input.name.starts_with("target/"))
+        .collect();
+    if selected.is_empty() {
+        return Ok(false);
+    }
+    if !selected
+        .iter()
+        .any(|input| input.name == "target" && input.kind == InputKind::Directory)
+    {
+        bail!("target input must be a directory tree");
+    }
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)?;
+    let mut archive = tar::Builder::new(file);
+    for input in selected {
+        let suffix = input.name.strip_prefix("target").unwrap();
+        let name = format!("out{suffix}");
+        let mut header = tar::Header::new_ustar();
+        header.set_mode(input.mode);
+        header.set_uid(1000);
+        header.set_gid(1000);
+        header.set_mtime(0);
+        match &input.kind {
+            InputKind::Directory => {
+                header.set_entry_type(tar::EntryType::Directory);
+                header.set_size(0);
+                header.set_cksum();
+                archive.append_data(&mut header, name, std::io::empty())?;
+            }
+            InputKind::Symlink(target) => {
+                header.set_entry_type(tar::EntryType::Symlink);
+                header.set_size(0);
+                header.set_cksum();
+                archive.append_link(&mut header, name, target)?;
+            }
+            InputKind::Hardlink(target) if target == "target" || target.starts_with("target/") => {
+                header.set_entry_type(tar::EntryType::Link);
+                header.set_size(0);
+                let link = format!("out{}", target.strip_prefix("target").unwrap());
+                archive.append_link(&mut header, name, link)?;
+            }
+            InputKind::File | InputKind::Hardlink(_) => {
+                let mut file = regular_file(&root.join("inputs").join(&input.name))?;
+                if file.metadata()?.len() != input.size {
+                    bail!("target snapshot size changed: {}", input.name);
+                }
+                header.set_entry_type(tar::EntryType::Regular);
+                header.set_size(input.size);
+                header.set_cksum();
+                archive.append_data(&mut header, name, &mut file)?;
+            }
+        }
+    }
+    archive.finish()?;
+    let file = archive.into_inner()?;
+    file.sync_all()?;
+    Ok(true)
 }

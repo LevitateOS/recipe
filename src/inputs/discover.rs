@@ -39,6 +39,8 @@ const MAX_IMPORT_DEPTH: usize = 16;
 pub enum InputKind {
     File,
     Directory,
+    /// Alias of a prior regular input, resolved only inside the private snapshot.
+    Hardlink(String),
     /// Relative target confined to the explicitly selected source tree.
     Symlink(String),
 }
@@ -117,13 +119,15 @@ pub fn discover_inputs(
         validate_input_name(&extra.name)?;
         let meta = std::fs::symlink_metadata(&extra.path)?;
         if meta.is_dir() {
+            let filesystem_tree = matches!(extra.name.as_str(), "rootfs" | "target");
             let mut links = HashMap::new();
             for entry in walkdir::WalkDir::new(&extra.path)
                 .follow_links(false)
                 .sort_by_file_name()
                 .into_iter()
                 .filter_entry(|entry| {
-                    entry.depth() != 1
+                    filesystem_tree
+                        || entry.depth() != 1
                         || !matches!(entry.file_name().to_str(), Some(".git" | "target"))
                 })
             {
@@ -153,7 +157,7 @@ pub fn discover_inputs(
                 collector.stage_kind(&name, entry.path(), &name, kind)?;
             }
             for relative in links.keys() {
-                validate_tree_link(relative, &links)?;
+                validate_tree_link(relative, &links, filesystem_tree)?;
             }
         } else {
             collector.stage_named(&extra.name, &extra.path, &extra.name)?;
@@ -169,7 +173,11 @@ pub fn discover_inputs(
 /// Resolve the discovered link graph without consulting the live host tree.
 /// Expand links before processing `..`: lexical containment alone is not enough
 /// when an intermediate link redirects to a shallower directory.
-fn validate_tree_link(relative: &str, links: &HashMap<String, String>) -> Result<()> {
+fn validate_tree_link(
+    relative: &str,
+    links: &HashMap<String, String>,
+    filesystem_tree: bool,
+) -> Result<()> {
     use std::collections::VecDeque;
     let mut pending = relative
         .split('/')
@@ -192,20 +200,25 @@ fn validate_tree_link(relative: &str, links: &HashMap<String, String>) -> Result
                     if followed > 40
                         || target.is_empty()
                         || target.len() > MAX_INPUT_NAME
-                        || target.starts_with('/')
+                        || (target.starts_with('/') && !filesystem_tree)
                     {
                         bail!(
                             "input preparation failure: invalid, absolute or cyclic symlink: {relative}"
                         );
                     }
-                    parts.pop();
+                    if target.starts_with('/') {
+                        parts.clear();
+                    } else {
+                        parts.pop();
+                    }
                     for component in target.split('/').rev() {
                         pending.push_front(component.to_owned());
                     }
                 }
             }
         }
-        if matches!(parts.first().map(String::as_str), Some(".git" | "target")) {
+        if !filesystem_tree && matches!(parts.first().map(String::as_str), Some(".git" | "target"))
+        {
             bail!(
                 "input preparation failure: symlink targets excluded source directory: {relative}"
             );
@@ -454,6 +467,23 @@ impl<'a> Collector<'a> {
     fn finish(self, recipe_digest: String, recipe_stem: String) -> Result<Discovered> {
         let mut inputs = self.staged;
         inputs.sort_by(|left, right| left.name.cmp(&right.name));
+        use std::os::unix::fs::MetadataExt;
+        let mut inodes = HashMap::<(u64, u64), (String, [u8; 32], u32)>::new();
+        for input in &mut inputs {
+            if input.kind != InputKind::File {
+                continue;
+            }
+            let metadata = std::fs::symlink_metadata(&input.host_path)?;
+            let inode = (metadata.dev(), metadata.ino());
+            if let Some((name, hash, mode)) = inodes.get(&inode) {
+                if *hash != input.sha256 || *mode != input.mode {
+                    bail!("hardlinked input changed during discovery");
+                }
+                input.kind = InputKind::Hardlink(name.clone());
+            } else {
+                inodes.insert(inode, (input.name.clone(), input.sha256, input.mode));
+            }
+        }
         Ok(Discovered {
             inputs,
             recipe_digest,
@@ -503,7 +533,10 @@ pub(super) fn validate_input_name(name: &str) -> Result<()> {
     if name
         .split('/')
         .any(|part| part.is_empty() || part == "." || part == "..")
-        || name.split('/').next() == Some("recipe-worker")
+        || matches!(
+            name.split('/').next(),
+            Some("recipe-worker" | ".recipe-input-modes.json")
+        )
     {
         bail!("input preparation failure: input name {name:?} is reserved");
     }

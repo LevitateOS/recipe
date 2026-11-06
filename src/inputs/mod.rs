@@ -31,9 +31,10 @@
 mod config;
 mod discover;
 mod env;
+mod network;
 mod root;
 
-pub(crate) use root::prepare_root;
+pub(crate) use root::{prepare_root, seed_target};
 
 pub use config::{DomainConfig, config_text};
 pub use discover::{
@@ -81,6 +82,7 @@ pub struct PreparedInvocation {
     /// Domain config text the `ginux-domain` parser accepts (≤ 4096 B).
     pub config_text: String,
     pub(crate) root_reference: String,
+    pub(crate) network: network::NetworkPolicy,
     staging: crate::temporary::TemporaryDirectory,
 }
 
@@ -124,7 +126,9 @@ pub fn prepare_invocation(
     let invocation_id = invocation_id(&discovered.recipe_stem)?;
     let env = allowlisted_env(&invocation_id, extra_env)?;
 
-    let config = DomainConfig::for_invocation(&invocation_id, MAIN_NAME_DOMAIN, &env, options)?;
+    let network = network::NetworkPolicy::resolve(options)?;
+    let config = DomainConfig::for_invocation(&invocation_id, MAIN_NAME_DOMAIN, &env, options)?
+        .with_network(network.clone());
     let config_text = config.render()?;
 
     let staging = crate::temporary::TemporaryDirectory::new()
@@ -183,6 +187,7 @@ pub fn prepare_invocation(
         env,
         config_text,
         root_reference: config.root_reference().to_owned(),
+        network,
         staging,
     })
 }

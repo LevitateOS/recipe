@@ -112,3 +112,13 @@ mod worker_entry;
 
 #[path = "e2e/managed_state.rs"]
 mod managed_state;
+
+#[cfg(target_os = "linux")]
+#[path = "e2e/managed_target.rs"]
+mod managed_target;
+
+#[path = "e2e/managed_storage.rs"]
+mod managed_storage;
+
+#[path = "e2e/managed_cancellation.rs"]
+mod managed_cancellation;

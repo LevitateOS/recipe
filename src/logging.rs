@@ -62,3 +62,46 @@ macro_rules! diag {
     ($($args:tt)*) => { $crate::logging::diagnostic_line(&format!($($args)*)) };
 }
 pub(crate) use diag;
+
+/// Durable bounded diagnostics live outside disposable invocation scratch.
+pub(crate) struct InvocationLog {
+    pub directory: std::path::PathBuf,
+}
+impl InvocationLog {
+    pub fn new(state: Option<&std::path::Path>, invocation: &str) -> anyhow::Result<Self> {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let root = match state {
+            Some(path) => path.to_owned(),
+            None => crate::retained::default_directory()?,
+        };
+        std::fs::create_dir_all(&root)?;
+        let logs = root.join("logs");
+        match std::fs::DirBuilder::new().mode(0o700).create(&logs) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e.into()),
+        }
+        let metadata = std::fs::symlink_metadata(&logs)?;
+        anyhow::ensure!(
+            metadata.is_dir() && metadata.permissions().mode() & 0o077 == 0,
+            "diagnostics directory must be a private real directory"
+        );
+        let directory = logs.join(invocation);
+        std::fs::DirBuilder::new().mode(0o700).create(&directory)?;
+        std::fs::File::open(&logs)?.sync_all()?;
+        let log = Self { directory };
+        log.record(&serde_json::json!({"invocation": invocation, "status":"running"}))?;
+        eprintln!("recipe: diagnostics: {}", log.directory.display());
+        Ok(log)
+    }
+    pub fn record(&self, value: &serde_json::Value) -> anyhow::Result<()> {
+        use std::io::Write;
+        let mut file = tempfile::NamedTempFile::new_in(&self.directory)?;
+        serde_json::to_writer(&mut file, value)?;
+        file.write_all(b"\n")?;
+        file.as_file().sync_all()?;
+        file.persist(self.directory.join("result.json"))?;
+        std::fs::File::open(&self.directory)?.sync_all()?;
+        Ok(())
+    }
+}

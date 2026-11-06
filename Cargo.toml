@@ -31,7 +31,7 @@ tempfile = "3"
 num_cpus = "1.16"
 glob = "0.3"
 dirs = "5"
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "2", features = ["json", "native-certs"] }
 serde_json = "1"
 fs2 = "0.4"
 semver = "1"

@@ -253,6 +253,7 @@ pub fn run_worker() -> Result<()> {
         terminal: false,
     }));
     install_diagnostics(&channel)?;
+    crate::logging::diagnostic_line("recipe: managed worker started");
     let outcome = run_operation(&local, &request, &mut rx, &mut input, &channel, &mut output);
     let mut channel = channel
         .lock()

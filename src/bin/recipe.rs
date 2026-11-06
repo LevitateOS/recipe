@@ -27,7 +27,7 @@ fn default_help_footer() -> String {
     )
 }
 
-fn main() -> Result<()> {
+fn run() -> Result<()> {
     // Private worker command: same binary, protocol-driven; environment
     // variables alone never change public CLI dispatch. The worker reads one
     // request frame from stdin, runs the existing engine in-process under the
@@ -41,9 +41,21 @@ fn main() -> Result<()> {
     {
         return levitate_recipe::worker::run_worker();
     }
+    levitate_recipe::cancellation::install_cli_handlers()?;
     let matches = cli::Cli::command()
         .after_help(default_help_footer())
         .get_matches();
     let cli = cli::Cli::from_arg_matches(&matches).expect("clap validated arguments");
     commands::execute(cli)
+}
+
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("Error: {error:#}");
+            let signal = levitate_recipe::cancellation::signal();
+            std::process::ExitCode::from(if signal != 0 { (128 + signal) as u8 } else { 1 })
+        }
+    }
 }

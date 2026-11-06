@@ -92,6 +92,8 @@
 //! - `RPM_PATH` - Path to RPM repository (from environment)
 
 pub mod backend;
+#[doc(hidden)]
+pub mod cancellation;
 mod core;
 mod options;
 pub use options::ExecutionOptions;
@@ -222,6 +224,12 @@ impl RecipeEngine {
     /// Select target, job count and main-recipe force policy.
     pub fn with_execution_options(mut self, options: ExecutionOptions) -> Self {
         self.execution = options;
+        self
+    }
+
+    /// Grant explicit outbound TCP hosts; the coordinator resolves and pins them before launch.
+    pub fn with_network_hosts(mut self, hosts: Vec<String>) -> Self {
+        self.execution.network_hosts = hosts;
         self
     }
 

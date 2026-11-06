@@ -13,7 +13,6 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const MAX_ARCHIVE: u64 = 2 * 1024 * 1024 * 1024 + 8 * 1024 * 1024;
 const MAX_STATE: u64 = 4 * 1024 * 1024;
 
 pub(crate) fn default_directory() -> Result<PathBuf> {
@@ -38,6 +37,7 @@ pub(crate) fn lock_destination(destination: &Path, timeout: Duration) -> Result<
     let deadline = Instant::now() + timeout;
     let mut reported_wait = false;
     loop {
+        crate::cancellation::check()?;
         match fs2::FileExt::try_lock_exclusive(&file) {
             Ok(()) => return Ok(file),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -72,6 +72,7 @@ pub(crate) struct Retained {
     current: Record,
     allowed: HashSet<String>,
     state_budget: usize,
+    archive_bound: u64,
 }
 pub(crate) struct Pending {
     directory: tempfile::TempDir,
@@ -122,7 +123,8 @@ impl Retained {
             })
             .collect::<Vec<_>>();
         let identity = hex::encode(Sha256::digest(serde_json::to_vec(&(
-            "recipe-state-v1-transport-v5",
+            "recipe-state-v1-transport-v6",
+            &prepared.network,
             &prepared.root_reference,
             worker_digest,
             inputs,
@@ -130,6 +132,9 @@ impl Retained {
             &options.execution.target_os,
             &options.execution.target_arch,
             options.execution.jobs,
+            options.execution.memory_mib,
+            options.execution.storage_max_objects,
+            options.execution.storage_max_bytes,
         ))?));
         let directory = scope.join(&identity);
         private_directory(&directory)?;
@@ -151,7 +156,7 @@ impl Retained {
                 if record.version != 1
                     || record.identity != identity
                     || record.generation == 0
-                    || record.bytes > MAX_ARCHIVE
+                    || record.bytes > options.execution.archive_bound()
                     || record.sha256.len() != 64
                     || !record.sha256.bytes().all(|b| b.is_ascii_hexdigit())
                 {
@@ -199,6 +204,7 @@ impl Retained {
             current,
             allowed,
             state_budget,
+            archive_bound: options.execution.archive_bound(),
         })
     }
 
@@ -218,7 +224,7 @@ impl Retained {
             .create_new(true)
             .mode(0o600)
             .open(path)?;
-        let (bytes, digest) = copy_hash(&mut source, &mut output)?;
+        let (bytes, digest) = copy_hash(&mut source, &mut output, self.archive_bound)?;
         if bytes != self.current.bytes || digest != self.current.sha256 {
             bail!("saved filesystem snapshot digest mismatch");
         }
@@ -253,7 +259,7 @@ impl Retained {
         states.insert(recipe.to_owned(), state);
         validate_states(&states, &self.allowed)?;
         let mut archive = regular(&pending.path)?;
-        let (bytes, sha256) = copy_hash(&mut archive, &mut std::io::sink())?;
+        let (bytes, sha256) = copy_hash(&mut archive, &mut std::io::sink(), self.archive_bound)?;
         let folder = pending
             .directory
             .path()
@@ -302,7 +308,7 @@ impl Retained {
             .create_new(true)
             .mode(0o600)
             .open(&pending.path)?;
-        copy_hash(&mut input, &mut output)?;
+        copy_hash(&mut input, &mut output, self.archive_bound)?;
         output.sync_all()?;
         drop(output);
         self.commit(pending, "/inputs/main.rhai", state)
@@ -357,7 +363,11 @@ fn private_directory(path: &Path) -> Result<()> {
         Err(error) => Err(error.into()),
     }
 }
-fn copy_hash(input: &mut impl Read, output: &mut impl Write) -> Result<(u64, String)> {
+fn copy_hash(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    maximum: u64,
+) -> Result<(u64, String)> {
     let mut bytes = [0u8; 65536];
     let mut count = 0u64;
     let mut hash = Sha256::new();
@@ -368,7 +378,7 @@ fn copy_hash(input: &mut impl Read, output: &mut impl Write) -> Result<(u64, Str
         }
         count = count
             .checked_add(read as u64)
-            .filter(|n| *n <= MAX_ARCHIVE)
+            .filter(|n| *n <= maximum)
             .context("snapshot byte bound exceeded")?;
         hash.update(&bytes[..read]);
         output.write_all(&bytes[..read])?;
