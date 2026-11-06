@@ -1,0 +1,9 @@
+Computing hashes for examples/hello.rhai...
+
+[1msha256:   [0m [36m9ff95f80b1b9fbffb4aad0b745162378c51eddc4a7d8112ee9179e7afd5ef725[39m
+[1msha512:   [0m [36mc86e7ee24a1b9f82b7765b9e2c0e76462bf1790d928771c13e4d25f640c8b6dbd5a0d7b10bd2c4ba4c23b2d83d85e19514844c622bd7eedb6e714ccba66b3f06[39m
+[1mblake3:   [0m [36m39feae28a6961097de7ae672ce9aebeafc95117e5698356389764e432f15eb57[39m
+
+[2mCopy one of these into your recipe's acquire() function:[0m
+  [32mverify_sha256("9ff95f80b1b9fbffb4aad0b745162378c51eddc4a7d8112ee9179e7afd5ef725");[39m
+exit=0
