@@ -144,9 +144,7 @@ pub fn register_all(engine: &mut Engine) {
     helper!(engine, "write_file", |path: &str, content: &str| install::write_file(path, content));
     helper!(engine, "append_file", |path: &str, content: &str| install::append_file(path, content));
     helper!(engine, "append_line_if_missing", |path: &str, line: &str| install::append_line_if_missing(path, line));
-    engine.register_fn("glob_list", |pattern: &str| {
-        install::glob_list(pattern)
-    });
+    helper!(engine, "glob_list", |pattern: &str| install::glob_list(pattern));
     helper!(engine, "glob_exists", |pattern: &str| install::glob_exists(pattern));
     helper!(engine, "copy_into_dir", |pattern: &str, dest_dir: &str| install::copy_into_dir(pattern, dest_dir));
     helper!(engine, "copy_file", |src: &str, dst: &str| install::copy_file(src, dst));

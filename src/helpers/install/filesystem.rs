@@ -4,6 +4,17 @@ use crate::core::output;
 use rhai::EvalAltResult;
 use std::path::{Path, PathBuf};
 
+/// The paths `pattern` matches, sorted. An invalid pattern or an unreadable
+/// directory on the way is an error; no match is an empty list.
+pub(crate) fn glob_matches(pattern: &str) -> Result<Vec<PathBuf>, Box<EvalAltResult>> {
+    let mut paths = glob::glob(pattern)
+        .map_err(|e| format!("invalid pattern: {e}"))?
+        .map(|path| path.map_err(|e| format!("glob error: {e}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    paths.sort();
+    Ok(paths)
+}
+
 /// Check if a path exists
 pub fn exists(path: &str) -> bool {
     // Use symlink_metadata to detect dangling symlinks too
@@ -27,8 +38,7 @@ pub fn mkdir(path: &str) -> Result<(), Box<EvalAltResult>> {
 
 /// Remove files matching a glob pattern
 pub fn rm_files(pattern: &str) -> Result<(), Box<EvalAltResult>> {
-    for path in glob::glob(pattern).map_err(|e| format!("invalid pattern: {}", e))? {
-        let path = path.map_err(|e| format!("glob error: {}", e))?;
+    for path in glob_matches(pattern)? {
         output::detail(&format!("rm {}", path.display()));
         if path.is_dir() {
             std::fs::remove_dir_all(&path)
@@ -42,8 +52,7 @@ pub fn rm_files(pattern: &str) -> Result<(), Box<EvalAltResult>> {
 
 /// Check if a glob pattern matches at least one path
 pub fn glob_exists(pattern: &str) -> Result<bool, Box<EvalAltResult>> {
-    let mut entries = glob::glob(pattern).map_err(|e| format!("invalid pattern: {}", e))?;
-    Ok(entries.any(|entry| entry.is_ok()))
+    Ok(!glob_matches(pattern)?.is_empty())
 }
 
 
@@ -104,8 +113,7 @@ pub fn copy_into_dir(pattern: &str, dest_dir: &str) -> Result<(), Box<EvalAltRes
     }
 
     let mut matched = false;
-    for path in glob::glob(pattern).map_err(|e| format!("invalid pattern: {}", e))? {
-        let path = path.map_err(|e| format!("glob error: {}", e))?;
+    for path in glob_matches(pattern)? {
         if !path.is_file() {
             continue;
         }
