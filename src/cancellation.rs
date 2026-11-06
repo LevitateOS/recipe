@@ -27,9 +27,14 @@ pub fn signal() -> i32 {
 }
 pub(crate) fn check() -> Result<()> {
     if signal() != 0 {
-        bail!("backend cancelled: interrupted by signal {}", signal());
+        bail!(cancelled());
     }
     Ok(())
+}
+
+/// The error for an invocation interrupted by the latched signal.
+pub(crate) fn cancelled() -> crate::failure::Failure {
+    crate::failure::Category::Cancelled.error(format!("interrupted by signal {}", signal()))
 }
 pub(crate) fn check_io() -> std::io::Result<()> {
     check().map_err(std::io::Error::other)

@@ -1,3 +1,4 @@
+use crate::worker::protocol::{Phase, Reason};
 use crate::core::executor::compile_recipe;
 use crate::core::output;
 use crate::core::runner;
@@ -216,14 +217,14 @@ pub(crate) fn install_once(
                 // Hygiene: allow recipes to clean up intermediate acquire artifacts.
                 if cleanup_auto_supported {
                     ctx_map =
-                        runner::run_cleanup(&ast, &mut scope, ctx_map, "auto.acquire.success")
+                        runner::run_cleanup(&ast, &mut scope, ctx_map, Reason::Succeeded(Phase::Acquire).as_str())
                             .map_err(InstallAttemptError::Fatal)?;
                     exec.persist_checkpoint(
                         &mut compiled,
                         &ctx_map,
                         CheckpointPoint {
                             phase: "cleanup",
-                            reason: "auto.acquire.success",
+                            reason: Reason::Succeeded(Phase::Acquire).as_str(),
                         },
                         persist_state_enabled,
                     )
@@ -238,14 +239,14 @@ pub(crate) fn install_once(
                         &ast,
                         &mut scope,
                         ctx_before,
-                        "auto.acquire.failure",
+                        Reason::Failed(Phase::Acquire).as_str(),
                         &mut compiled,
                         exec,
                         persist_state_enabled,
                     );
                 }
                 return Err(InstallAttemptError::Phase {
-                    reason: "auto.acquire.failure",
+                    reason: Reason::Failed(Phase::Acquire).as_str(),
                     phase: "acquire",
                     error: e,
                 });
@@ -309,14 +310,14 @@ pub(crate) fn install_once(
 
                     if cleanup_auto_supported {
                         ctx_map =
-                            runner::run_cleanup(&ast, &mut scope, ctx_map, "auto.build.success")
+                            runner::run_cleanup(&ast, &mut scope, ctx_map, Reason::Succeeded(Phase::Build).as_str())
                                 .map_err(InstallAttemptError::Fatal)?;
                         exec.persist_checkpoint(
                             &mut compiled,
                             &ctx_map,
                             CheckpointPoint {
                                 phase: "cleanup",
-                                reason: "auto.build.success",
+                                reason: Reason::Succeeded(Phase::Build).as_str(),
                             },
                             persist_state_enabled,
                         )
@@ -330,14 +331,14 @@ pub(crate) fn install_once(
                             &ast,
                             &mut scope,
                             ctx_before,
-                            "auto.build.failure",
+                            Reason::Failed(Phase::Build).as_str(),
                             &mut compiled,
                             exec,
                             persist_state_enabled,
                         );
                     }
                     return Err(InstallAttemptError::Phase {
-                        reason: "auto.build.failure",
+                        reason: Reason::Failed(Phase::Build).as_str(),
                         phase: "build",
                         error: e,
                     });
@@ -368,14 +369,14 @@ pub(crate) fn install_once(
 
                 if cleanup_auto_supported {
                     ctx_map =
-                        runner::run_cleanup(&ast, &mut scope, ctx_map, "auto.install.success")
+                        runner::run_cleanup(&ast, &mut scope, ctx_map, Reason::Succeeded(Phase::Install).as_str())
                             .map_err(InstallAttemptError::Fatal)?;
                     exec.persist_checkpoint(
                         &mut compiled,
                         &ctx_map,
                         CheckpointPoint {
                             phase: "cleanup",
-                            reason: "auto.install.success",
+                            reason: Reason::Succeeded(Phase::Install).as_str(),
                         },
                         persist_state_enabled,
                     )
@@ -389,14 +390,14 @@ pub(crate) fn install_once(
                         &ast,
                         &mut scope,
                         ctx_before,
-                        "auto.install.failure",
+                        Reason::Failed(Phase::Install).as_str(),
                         &mut compiled,
                         exec,
                         persist_state_enabled,
                     );
                 }
                 return Err(InstallAttemptError::Phase {
-                    reason: "auto.install.failure",
+                    reason: Reason::Failed(Phase::Install).as_str(),
                     phase: "install",
                     error: e,
                 });
@@ -424,7 +425,7 @@ pub(crate) fn install_once(
                     &ast,
                     &mut scope,
                     ctx_map.clone(),
-                    "auto.install.failure",
+                    Reason::Failed(Phase::Install).as_str(),
                     &mut compiled,
                     exec,
                     persist_state_enabled,
@@ -432,7 +433,7 @@ pub(crate) fn install_once(
             }
 
             return Err(InstallAttemptError::Phase {
-                reason: "auto.install.failure",
+                reason: Reason::Failed(Phase::Install).as_str(),
                 phase: "is_installed",
                 error: anyhow!("is_installed failed after install: {e}"),
             });

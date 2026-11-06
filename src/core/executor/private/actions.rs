@@ -141,7 +141,7 @@ pub(crate) fn cleanup_with_context(
         &ctx_map,
         CheckpointPoint {
             phase: "cleanup",
-            reason: "manual",
+            reason: crate::worker::protocol::Reason::Manual.as_str(),
         },
         persist_state_enabled,
     )?;
@@ -209,7 +209,7 @@ pub(crate) fn run_check_with_context(
     output::hook_event(
         &name,
         &format!("check.{check_name}"),
-        "manual",
+        crate::worker::protocol::Reason::Manual.as_str(),
         "manual check requested",
     );
 

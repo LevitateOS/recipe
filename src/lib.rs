@@ -30,6 +30,7 @@ mod cancellation;
 mod core;
 mod diagnostics;
 mod domain;
+mod failure;
 #[doc(hidden)]
 pub mod fsx;
 mod helpers;
@@ -215,11 +216,11 @@ impl RecipeEngine {
         for attempt in 0..=attempts {
             crate::cancellation::check()?;
             let result = launcher.run(
-                "install",
+                worker::protocol::Operation::Install,
                 recipe_path,
                 self.recipes_path.as_deref(),
                 self.persist_state,
-                self.invocation_options("manual"),
+                self.invocation_options(worker::protocol::Reason::Manual.as_str()),
                 &self.inputs,
                 &self.build_dir,
                 self.state_dir.as_deref(),
@@ -232,10 +233,8 @@ impl RecipeEngine {
                             .downcast_ref::<backend::WorkloadFailure>()
                             .filter(|failure| {
                                 !failure.fatal
-                                    && matches!(
-                                        failure.reason.as_str(),
-                                        "auto.build.failure" | "auto.install.failure"
-                                    )
+                                    && worker::protocol::Reason::parse(&failure.reason)
+                                        .is_some_and(worker::protocol::Reason::autofix_eligible)
                             });
                     let Some(failure) = eligible else {
                         return Err(error);
@@ -275,11 +274,11 @@ impl RecipeEngine {
     /// Returns the final ctx map after removal.
     pub fn remove(&self, recipe_path: &Path) -> Result<rhai::Map> {
         self.launcher()?.run(
-            "remove",
+            worker::protocol::Operation::Remove,
             recipe_path,
             self.recipes_path.as_deref(),
             self.persist_state,
-            self.invocation_options("manual"),
+            self.invocation_options(worker::protocol::Reason::Manual.as_str()),
             &self.inputs,
             &self.build_dir,
             self.state_dir.as_deref(),
@@ -291,7 +290,7 @@ impl RecipeEngine {
     /// Returns the final ctx map after cleanup.
     pub fn cleanup_with_reason(&self, recipe_path: &Path, reason: &str) -> Result<rhai::Map> {
         self.launcher()?.run(
-            "cleanup",
+            worker::protocol::Operation::Cleanup,
             recipe_path,
             self.recipes_path.as_deref(),
             self.persist_state,
@@ -305,11 +304,11 @@ impl RecipeEngine {
     /// Execute `is_installed(ctx)` manually.
     pub fn is_installed(&self, recipe_path: &Path) -> Result<rhai::Map> {
         self.launcher()?.run(
-            "is_installed",
+            worker::protocol::Operation::IsInstalled,
             recipe_path,
             self.recipes_path.as_deref(),
             self.persist_state,
-            self.invocation_options("manual"),
+            self.invocation_options(worker::protocol::Reason::Manual.as_str()),
             &self.inputs,
             &self.build_dir,
             self.state_dir.as_deref(),
@@ -319,11 +318,11 @@ impl RecipeEngine {
     /// Execute `is_built(ctx)` manually.
     pub fn is_built(&self, recipe_path: &Path) -> Result<rhai::Map> {
         self.launcher()?.run(
-            "is_built",
+            worker::protocol::Operation::IsBuilt,
             recipe_path,
             self.recipes_path.as_deref(),
             self.persist_state,
-            self.invocation_options("manual"),
+            self.invocation_options(worker::protocol::Reason::Manual.as_str()),
             &self.inputs,
             &self.build_dir,
             self.state_dir.as_deref(),
@@ -333,11 +332,11 @@ impl RecipeEngine {
     /// Execute `is_acquired(ctx)` manually.
     pub fn is_acquired(&self, recipe_path: &Path) -> Result<rhai::Map> {
         self.launcher()?.run(
-            "is_acquired",
+            worker::protocol::Operation::IsAcquired,
             recipe_path,
             self.recipes_path.as_deref(),
             self.persist_state,
-            self.invocation_options("manual"),
+            self.invocation_options(worker::protocol::Reason::Manual.as_str()),
             &self.inputs,
             &self.build_dir,
             self.state_dir.as_deref(),

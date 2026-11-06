@@ -37,22 +37,13 @@ pub(crate) use root::{prepare_root, seed_target};
 
 pub(crate) use config::DomainConfig;
 pub(crate) use discover::{ExtraInput, InputKind, StagedInput, discover_inputs};
-pub(crate) use env::{allowlisted_env, invocation_id, validate_invocation_id};
+pub(crate) use env::{allowlisted_env, invocation_id};
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
 
-/// Operations the worker entry point dispatches (interfaces §4, op 1).
-const SUPPORTED_OPERATIONS: &[&str] = &[
-    "install",
-    "remove",
-    "cleanup",
-    "is_installed",
-    "is_built",
-    "is_acquired",
-];
 
 /// Staged invocation inputs; launch verifies and materializes the selected image
 /// and worker into a fresh root before launching Ginux.
@@ -64,8 +55,6 @@ const SUPPORTED_OPERATIONS: &[&str] = &[
 pub struct PreparedInvocation {
     /// `<recipe-name>-<unix-millis>-<pid>`, `[A-Za-z0-9_-]{1,64}` (§5).
     pub invocation_id: String,
-    /// Canonical operation (`install`, `remove`, `cleanup`, `is_*`).
-    pub operation: String,
     /// sha256 hex of the main recipe source (protocol `recipe_digest`).
     pub recipe_digest: String,
     /// Staged inputs sorted by domain name (recipe, base, imports, extras).
@@ -85,7 +74,7 @@ impl PreparedInvocation {
     }
 }
 
-/// Assemble the invocation input set for `recipe` + `operation`.
+/// Assemble the invocation input set for `recipe`.
 ///
 /// `search_path` mirrors the executor's module search path (recipe directory
 /// is always tried first). `extra_inputs` are caller-declared assets, source
@@ -95,13 +84,10 @@ impl PreparedInvocation {
 /// or non-regular files) and on any §2 limit overflow.
 pub fn prepare_invocation(
     recipe: &Path,
-    operation: &str,
     search_path: Option<&Path>,
     extra_inputs: &[ExtraInput],
     options: &crate::ExecutionOptions,
 ) -> Result<PreparedInvocation> {
-    options.validate()?;
-    let operation = normalize_operation(operation)?;
     let discovered = discover_inputs(recipe, search_path, extra_inputs)?;
 
     let invocation_id = invocation_id(&discovered.recipe_stem)?;
@@ -140,7 +126,6 @@ pub fn prepare_invocation(
 
     Ok(PreparedInvocation {
         invocation_id,
-        operation: operation.to_string(),
         recipe_digest: discovered.recipe_digest,
         inputs: discovered.inputs,
         root_reference: config.root_reference().to_owned(),
@@ -149,24 +134,6 @@ pub fn prepare_invocation(
     })
 }
 
-/// Accept the worker's operation spellings, normalizing CLI aliases.
-fn normalize_operation(operation: &str) -> Result<&'static str> {
-    match operation {
-        "install" | "remove" | "cleanup" | "is_installed" | "is_built" | "is_acquired" => {
-            Ok(SUPPORTED_OPERATIONS[SUPPORTED_OPERATIONS
-                .iter()
-                .position(|op| *op == operation)
-                .expect("matched arm lists supported operations")])
-        }
-        "isinstalled" => Ok("is_installed"),
-        "isbuilt" => Ok("is_built"),
-        "isacquired" => Ok("is_acquired"),
-        other => bail!(
-            "input preparation failure: unknown operation {other:?}: \
-             want install|remove|cleanup|is_installed|is_built|is_acquired"
-        ),
-    }
-}
 
 
 /// Last-line defense over actual path values, after the field owners validate

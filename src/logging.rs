@@ -62,7 +62,7 @@ fn prune_logs(root: &std::path::Path) -> anyhow::Result<()> {
         let Some(name) = name.to_str() else {
             continue;
         };
-        if crate::inputs::validate_invocation_id(name).is_err() {
+        if !crate::worker::protocol::valid_invocation_id(name) {
             continue;
         }
         let path = entry.path();

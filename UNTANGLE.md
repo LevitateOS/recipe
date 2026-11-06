@@ -1133,4 +1133,18 @@ Special cases: **168** at audit start.
     - (4) J35: state copies are cancellable.
   - Checks: build clean, CLI snapshots byte-identical, archive suite passes privileged (5/5). Full privileged suite: pending.
 - X1 privileged result: **133/134**. `git_acquisition::managed_pinned_git_selects_exact_commits_and_preserves_invalid_checkouts` failed once with `protocol frame oversize: declared 1195463749 bytes`: stray bytes on the worker's protocol stdout, interleaved during git output. The same test passed alone on the X12 build, and nothing in X1 touches stdout. Re-running it with the exact X1 binaries to decide between an X1 regression and a pre-existing race (see the X3 note on H2, two stdout writers).
+- X1 git failure follow-up: the exact X1 binaries pass that test 3/3 in isolation, so this is an **intermittent failure under parallel load**, not a deterministic X1 regression. Recorded as an open item. Candidate cause: the worker's protocol stdout writers (H2/H3, X3b). Re-check at final verification.
+- [~] **X3 (part a: no wire change)** Typed coordinator/worker contract. Commit: `git log --grep "X3a:"`.
+  - New leaf `src/failure.rs`: a `Category` enum with a typed `Failure` error that displays the same `backend … failure:` text. All 42 coordinator sites (`backend`, `launch`, `cancellation`) build typed errors through it, and `enrich_stream_error` classifies with `Category::of` instead of substring matching. Cancellation has one constructor. The launch module doc points at the enum instead of listing three of the seven categories.
+  - The protocol now owns:
+    - `Operation`, which serializes to the same wire strings and is used by lib, backend, launch and worker dispatch. The CLI aliases and the coordinator-side `normalize_operation`/`SUPPORTED_OPERATIONS` are gone, and inputs no longer know the operation.
+    - `Phase`/`Reason`: one table of reason strings, with the autofix rule as `Reason::autofix_eligible`. The lifecycle, actions, worker and lib use it.
+    - `InvocationOptions::validate_for(op)`: the one force-only-install rule, called at the coordinator entry and on the wire. Downstream re-validation in inputs/config/network is removed. The CLI check stays because the CLI creates directories before the engine runs (X4/X7).
+    - `DiagnosticBudget`, used by the worker to chunk and by the host to verify.
+    - `valid_invocation_id`/`MAX_INVOCATION_ID`, which inputs, logging and the worker use.
+    - `restored_state_budget(options)`, computed from a real worst-case request, which replaces the hand-sized 8192 reserve.
+    - `Op::name()`.
+  - The worker's checkpoint-ack wait is bounded by the invocation's execution deadline, not a fixed 300 s.
+  - Left for **X3b** (wire change plus a protocol version bump): A33 `recipe_digest`, A34/A35/H1 duplicated failure frame and the exit-0 convention, A37 `cleanup_reason` on every request, I5/J50–J52 multi-channel state/ids/persist, H2/H3 worker stdout/stdin coupling, A43, C31/H27 generation sentinel, H28.
+  - Checks: build clean, CLI snapshots byte-identical. Privileged suite: pending.
 

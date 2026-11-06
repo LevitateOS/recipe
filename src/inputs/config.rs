@@ -52,7 +52,6 @@ impl DomainConfig {
         env: &[(String, String)],
         options: &crate::ExecutionOptions,
     ) -> Result<Self> {
-        options.validate()?;
         validate_id(invocation_id)?;
         let root = root_reference()?;
         if env.len() > MAX_ENV {

@@ -31,6 +31,7 @@
 //! The worker initializes current facts, restores only ctx.state, and reports
 //! per-recipe state at checkpoints. It never rewrites recipe sources.
 
+use crate::worker::protocol::Reason;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -49,9 +50,10 @@ use crate::worker::protocol::{
 
 struct WorkerChannel {
     sender: FrameSender,
-    diagnostic_bytes: usize,
-    diagnostic_frames: usize,
-    truncated: bool,
+    budget: crate::worker::protocol::DiagnosticBudget,
+    /// Checkpoint acks are bounded by the invocation's execution deadline:
+    /// the host never takes longer than that to answer or to stop the run.
+    ack_timeout: Duration,
     failed: bool,
     terminal: bool,
 }
@@ -60,9 +62,6 @@ type SharedChannel = Arc<Mutex<WorkerChannel>>;
 fn install_diagnostics(channel: &SharedChannel) -> Result<()> {
     let channel = Arc::clone(channel);
     crate::diagnostics::install(Box::new(move |stream, mut bytes| {
-        use crate::worker::protocol::{
-            DiagnosticPayload, MAX_DIAGNOSTIC_BYTES, MAX_DIAGNOSTIC_CHUNK, MAX_DIAGNOSTIC_FRAMES,
-        };
         let mut state = channel
             .lock()
             .map_err(|_| std::io::Error::other("worker channel poisoned"))?;
@@ -70,26 +69,9 @@ fn install_diagnostics(channel: &SharedChannel) -> Result<()> {
             return Err(std::io::Error::other("worker channel is closed"));
         }
         let mut output = std::io::stdout();
-        while !bytes.is_empty() && !state.truncated {
-            let room = MAX_DIAGNOSTIC_BYTES - state.diagnostic_bytes;
-            let payload = if room == 0 || state.diagnostic_frames == MAX_DIAGNOSTIC_FRAMES {
-                state.truncated = true;
-                DiagnosticPayload {
-                    stream: stream.into(),
-                    data: Vec::new(),
-                    truncated: true,
-                }
-            } else {
-                let take = room.min(MAX_DIAGNOSTIC_CHUNK).min(bytes.len());
-                let data = bytes[..take].to_vec();
-                bytes = &bytes[take..];
-                state.diagnostic_bytes += take;
-                state.diagnostic_frames += 1;
-                DiagnosticPayload {
-                    stream: stream.into(),
-                    data,
-                    truncated: false,
-                }
+        while !bytes.is_empty() {
+            let Some(payload) = state.budget.next(stream.into(), &mut bytes) else {
+                break;
             };
             if let Err(error) = state
                 .sender
@@ -107,8 +89,6 @@ fn install_diagnostics(channel: &SharedChannel) -> Result<()> {
     }))
 }
 
-/// Bounded wait for one checkpoint acknowledgement (§4: 300 s default).
-const ACK_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Recipe location and build directory inside the prepared domain.
 struct LocalConfig {
@@ -162,7 +142,7 @@ impl EngineFailure {
             InstallAttemptError::Fatal(err) => Self {
                 fatal: true,
                 phase: operation.to_string(),
-                reason: "fatal",
+                reason: Reason::Fatal.as_str(),
                 message: format!("{err:#}"),
             },
             InstallAttemptError::Phase {
@@ -185,7 +165,7 @@ impl EngineFailure {
         Self {
             fatal: true,
             phase: phase.to_string(),
-            reason: "workload",
+            reason: Reason::Workload.as_str(),
             message: format!("{err:#}"),
         }
     }
@@ -214,14 +194,14 @@ pub fn run_worker() -> Result<()> {
         Ok(req) => req,
         Err(err) => {
             let message = format!("bad request: {err:#}");
-            return abort(&mut tx, &mut output, "protocol", &message);
+            return abort(&mut tx, &mut output, Reason::Protocol.as_str(), &message);
         }
     };
     if request.invocation_id != invocation_id {
         return abort(
             &mut tx,
             &mut output,
-            "protocol",
+            Reason::Protocol.as_str(),
             "request invocation id does not match worker bootstrap",
         );
     }
@@ -235,9 +215,8 @@ pub fn run_worker() -> Result<()> {
 
     let channel = Arc::new(Mutex::new(WorkerChannel {
         sender: tx,
-        diagnostic_bytes: 0,
-        diagnostic_frames: 0,
-        truncated: false,
+        budget: Default::default(),
+        ack_timeout: Duration::from_secs(request.options.execution.timeout_secs),
         failed: false,
         terminal: false,
     }));
@@ -293,7 +272,9 @@ fn ensure_internal_entry() -> Result<String> {
     }
     let id = std::env::var(crate::domain::ENV_INVOCATION)
         .context("private worker entry requires RECIPE_INVOCATION; refusing host execution")?;
-    crate::inputs::validate_invocation_id(&id)?;
+    if !crate::worker::protocol::valid_invocation_id(&id) {
+        bail!("private worker entry has an invalid invocation id; refusing host execution");
+    }
     Ok(id)
 }
 
@@ -305,7 +286,7 @@ fn recv_request(rx: &mut FrameReceiver, input: &mut impl Read) -> Result<Request
         .map_err(|e| anyhow!("{e}"))?;
     match frame.payload {
         FramePayload::Request(req) => Ok(req),
-        other => bail!("expected a request frame, got {}", payload_name(&other)),
+        other => bail!("expected a request frame, got {}", other.op().name()),
     }
 }
 
@@ -355,11 +336,12 @@ fn run_operation(
     let mut exec = ExecutionContext::worker(&mut sink);
     exec.set_options(req.options.execution.clone());
     exec.restore_states(&req.restored_states, req.persist_state)
-        .map_err(|err| EngineFailure::workload("startup", err))?;
+        .map_err(|err| EngineFailure::workload(Reason::Startup.as_str(), err))?;
 
+    use crate::worker::protocol::Operation;
     let operation = req.operation.as_str();
-    let final_ctx = match operation {
-        "install" => install_with_context(
+    let final_ctx = match req.operation {
+        Operation::Install => install_with_context(
             &engine,
             &local.build_dir,
             &local.recipe,
@@ -369,7 +351,7 @@ fn run_operation(
             &mut exec,
         )
         .map_err(|err| EngineFailure::from_attempt(operation, err))?,
-        "remove" => remove_with_context(
+        Operation::Remove => remove_with_context(
             &engine,
             &local.build_dir,
             &local.recipe,
@@ -379,7 +361,7 @@ fn run_operation(
             &mut exec,
         )
         .map_err(|err| EngineFailure::workload(operation, err))?,
-        "cleanup" => cleanup_with_context(
+        Operation::Cleanup => cleanup_with_context(
             &engine,
             &local.build_dir,
             &local.recipe,
@@ -390,46 +372,17 @@ fn run_operation(
             &mut exec,
         )
         .map_err(|err| EngineFailure::workload(operation, err))?,
-        "is_installed" | "isinstalled" => run_check_with_context(
-            &engine,
-            &local.build_dir,
-            &local.recipe,
-            search_path,
-            &defines,
-            "is_installed",
-            &mut exec,
-        )
-        .map_err(|err| EngineFailure::workload("is_installed", err))?,
-        "is_built" | "isbuilt" => run_check_with_context(
-            &engine,
-            &local.build_dir,
-            &local.recipe,
-            search_path,
-            &defines,
-            "is_built",
-            &mut exec,
-        )
-        .map_err(|err| EngineFailure::workload("is_built", err))?,
-        "is_acquired" | "isacquired" => run_check_with_context(
-            &engine,
-            &local.build_dir,
-            &local.recipe,
-            search_path,
-            &defines,
-            "is_acquired",
-            &mut exec,
-        )
-        .map_err(|err| EngineFailure::workload("is_acquired", err))?,
-        other => {
-            return Err(EngineFailure {
-                fatal: true,
-                phase: other.to_string(),
-                reason: "startup",
-                message: format!(
-                    "unknown operation {other:?}: want install|remove|cleanup|\
-                     is_installed|is_built|is_acquired"
-                ),
-            });
+        Operation::IsInstalled | Operation::IsBuilt | Operation::IsAcquired => {
+            run_check_with_context(
+                &engine,
+                &local.build_dir,
+                &local.recipe,
+                search_path,
+                &defines,
+                operation,
+                &mut exec,
+            )
+            .map_err(|err| EngineFailure::workload(operation, err))?
         }
     };
 
@@ -548,8 +501,9 @@ fn report_checkpoint(
         channel.failed = true;
         anyhow!("flush checkpoint: {e}")
     })?;
+    let ack_timeout = channel.ack_timeout;
     drop(channel);
-    let generation = wait_ack(rx, input, seq)?;
+    let generation = wait_ack(rx, input, seq, ack_timeout)?;
     crate::diagnostics::trace(&format!(
         "worker: checkpoint #{seq} acked (generation {generation})"
     ));
@@ -558,8 +512,13 @@ fn report_checkpoint(
 
 /// Wait for the ack of checkpoint `seq` with a bounded wait (§4: 300 s), then
 /// validate it is a host→worker ack for exactly this checkpoint.
-fn wait_ack(rx: &mut FrameReceiver, input: &mut impl Read, checkpoint_no: u64) -> Result<u64> {
-    wait_readable(ACK_TIMEOUT)
+fn wait_ack(
+    rx: &mut FrameReceiver,
+    input: &mut impl Read,
+    checkpoint_no: u64,
+    timeout: Duration,
+) -> Result<u64> {
+    wait_readable(timeout)
         .with_context(|| format!("wait for ack of checkpoint #{checkpoint_no}"))?;
     let frame = rx
         .recv(input)
@@ -575,7 +534,7 @@ fn wait_ack(rx: &mut FrameReceiver, input: &mut impl Read, checkpoint_no: u64) -
         ),
         other => bail!(
             "expected ack for checkpoint #{checkpoint_no}, got {}",
-            payload_name(&other)
+            other.op().name()
         ),
     }
 }
@@ -733,13 +692,3 @@ fn state_json(state: &rhai::Dynamic) -> Result<serde_json::Value> {
     Ok(value)
 }
 
-fn payload_name(payload: &FramePayload) -> &'static str {
-    match payload {
-        FramePayload::Request(_) => "request",
-        FramePayload::Checkpoint(_) => "checkpoint",
-        FramePayload::Ack(_) => "ack",
-        FramePayload::Failure(_) => "failure",
-        FramePayload::Result(_) => "result",
-        FramePayload::Diagnostic(_) => "diagnostic",
-    }
-}

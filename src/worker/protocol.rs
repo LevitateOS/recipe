@@ -90,6 +90,17 @@ pub enum Op {
 }
 
 impl Op {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Request => "request",
+            Self::Checkpoint => "checkpoint",
+            Self::Ack => "ack",
+            Self::Failure => "failure",
+            Self::Result => "result",
+            Self::Diagnostic => "diagnostic",
+        }
+    }
+
     /// Decode an op code; unknown codes are a protocol failure.
     pub fn from_u16(v: u16) -> Result<Self, ProtocolError> {
         match v {
@@ -125,13 +136,137 @@ pub enum Direction {
 // Payloads (plain serializable types, §4 field-for-field)
 // ---------------------------------------------------------------------------
 
+/// The engine operation one invocation runs. Serializes as the check or
+/// lifecycle name (`install`, `is_built`, …), which is also its wire form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Operation {
+    Install,
+    Remove,
+    Cleanup,
+    IsInstalled,
+    IsBuilt,
+    IsAcquired,
+}
+
+impl Operation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Install => "install",
+            Self::Remove => "remove",
+            Self::Cleanup => "cleanup",
+            Self::IsInstalled => "is_installed",
+            Self::IsBuilt => "is_built",
+            Self::IsAcquired => "is_acquired",
+        }
+    }
+
+    /// Only install runs phases, so only install accepts force options.
+    pub fn accepts_force(self) -> bool {
+        self == Self::Install
+    }
+}
+
+impl std::fmt::Display for Operation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A lifecycle phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    Acquire,
+    Build,
+    Install,
+}
+
+/// Machine-readable reason carried by cleanup hooks, checkpoints and failures.
+///
+/// The phase variants are also the `reason` argument recipes receive in
+/// `cleanup(ctx, reason)`, so their text is part of the recipe API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reason {
+    Succeeded(Phase),
+    Failed(Phase),
+    /// A user-requested cleanup.
+    Manual,
+    Fatal,
+    Workload,
+    Startup,
+    Protocol,
+}
+
+impl Reason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Succeeded(Phase::Acquire) => "auto.acquire.success",
+            Self::Succeeded(Phase::Build) => "auto.build.success",
+            Self::Succeeded(Phase::Install) => "auto.install.success",
+            Self::Failed(Phase::Acquire) => "auto.acquire.failure",
+            Self::Failed(Phase::Build) => "auto.build.failure",
+            Self::Failed(Phase::Install) => "auto.install.failure",
+            Self::Manual => "manual",
+            Self::Fatal => "fatal",
+            Self::Workload => "workload",
+            Self::Startup => "startup",
+            Self::Protocol => "protocol",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        [
+            Self::Succeeded(Phase::Acquire),
+            Self::Succeeded(Phase::Build),
+            Self::Succeeded(Phase::Install),
+            Self::Failed(Phase::Acquire),
+            Self::Failed(Phase::Build),
+            Self::Failed(Phase::Install),
+            Self::Manual,
+            Self::Fatal,
+            Self::Workload,
+            Self::Startup,
+            Self::Protocol,
+        ]
+        .into_iter()
+        .find(|reason| reason.as_str() == text)
+    }
+
+    /// Autofix repairs failed build or install phases; acquisition failures
+    /// come from inputs a patch cannot fix.
+    pub fn autofix_eligible(self) -> bool {
+        matches!(self, Self::Failed(Phase::Build | Phase::Install))
+    }
+}
+
+/// Largest saved state the next request can carry for these options: the
+/// frame bound minus a request with the same options and the longest id and
+/// cleanup reason the protocol allows.
+pub fn restored_state_budget(options: &InvocationOptions) -> Result<usize, ProtocolError> {
+    let request = FramePayload::Request(RequestPayload {
+        invocation_id: "x".repeat(MAX_INVOCATION_ID),
+        operation: Operation::Install,
+        persist_state: true,
+        recipe_digest: "0".repeat(64),
+        options: InvocationOptions {
+            cleanup_reason: "x".repeat(MAX_CLEANUP_REASON),
+            ..options.clone()
+        },
+        restored_states: Default::default(),
+    });
+    Ok(MAX_FRAME_LEN.saturating_sub(encode_message(u32::MAX, &request)?.len()))
+}
+
+/// Longest cleanup reason a request may carry.
+pub const MAX_CLEANUP_REASON: usize = 4096;
+
 /// Op 1 (host→worker): start one invocation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestPayload {
     /// `[A-Za-z0-9_-]{1,64}`, e.g. `<recipe-name>-<unix-millis>-<pid>`.
     pub invocation_id: String,
-    /// Engine operation: `install`, `remove`, `cleanup`, or a check name.
-    pub operation: String,
+    /// Engine operation.
+    pub operation: Operation,
     /// Caller persist flag (`--no-persist-state` negated).
     pub persist_state: bool,
     /// Digest of the recipe inputs (opaque string, no path).
@@ -154,18 +289,29 @@ impl Default for InvocationOptions {
     fn default() -> Self {
         Self {
             defines: Vec::new(),
-            cleanup_reason: "manual".into(),
+            cleanup_reason: Reason::Manual.as_str().into(),
             execution: crate::ExecutionOptions::default(),
         }
     }
 }
 
 impl InvocationOptions {
+    /// [`Self::validate`], plus the rules that depend on the operation.
+    pub fn validate_for(&self, operation: Operation) -> Result<(), ProtocolError> {
+        self.validate()?;
+        if !operation.accepts_force() && self.execution.forced() {
+            return Err(ProtocolError::PayloadInvalid(
+                "force options apply only to install operations".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<(), ProtocolError> {
         self.execution
             .validate()
             .map_err(|error| ProtocolError::PayloadInvalid(error.to_string()))?;
-        if self.defines.len() > 64 || self.cleanup_reason.len() > 4096 {
+        if self.defines.len() > 64 || self.cleanup_reason.len() > MAX_CLEANUP_REASON {
             return Err(ProtocolError::PayloadInvalid(
                 "invocation options exceed their bounds".into(),
             ));
@@ -265,6 +411,65 @@ impl From<crate::diagnostics::Stream> for DiagnosticStream {
     }
 }
 
+/// The invocation's diagnostic budget. The worker uses it to chunk output and
+/// to emit the single truncation marker; the host uses the same rules to
+/// verify the stream.
+#[derive(Debug, Default)]
+pub struct DiagnosticBudget {
+    bytes: usize,
+    frames: usize,
+    truncated: bool,
+}
+
+impl DiagnosticBudget {
+    /// Worker: the next payload for `bytes` (consuming what it carries), or
+    /// the truncation marker once the budget is spent. `None` after truncation.
+    pub fn next(&mut self, stream: DiagnosticStream, bytes: &mut &[u8]) -> Option<DiagnosticPayload> {
+        if self.truncated {
+            return None;
+        }
+        let room = MAX_DIAGNOSTIC_BYTES - self.bytes;
+        if room == 0 || self.frames == MAX_DIAGNOSTIC_FRAMES {
+            self.truncated = true;
+            return Some(DiagnosticPayload {
+                stream,
+                data: Vec::new(),
+                truncated: true,
+            });
+        }
+        let take = room.min(MAX_DIAGNOSTIC_CHUNK).min(bytes.len());
+        let data = bytes[..take].to_vec();
+        *bytes = &bytes[take..];
+        self.bytes += take;
+        self.frames += 1;
+        Some(DiagnosticPayload {
+            stream,
+            data,
+            truncated: false,
+        })
+    }
+
+    /// Host: account for a received payload under the same rules.
+    pub fn accept(&mut self, payload: &DiagnosticPayload) -> Result<(), &'static str> {
+        if self.truncated {
+            return Err("diagnostic after truncation");
+        }
+        if payload.truncated {
+            if self.bytes != MAX_DIAGNOSTIC_BYTES && self.frames != MAX_DIAGNOSTIC_FRAMES {
+                return Err("premature diagnostic truncation");
+            }
+            self.truncated = true;
+            return Ok(());
+        }
+        self.bytes += payload.data.len();
+        self.frames += 1;
+        if self.bytes > MAX_DIAGNOSTIC_BYTES || self.frames > MAX_DIAGNOSTIC_FRAMES {
+            return Err("diagnostic budget exceeded");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DiagnosticPayload {
@@ -277,7 +482,9 @@ pub struct DiagnosticPayload {
 fn check_diagnostic(p: &DiagnosticPayload) -> Result<(), ProtocolError> {
     if p.data.len() > MAX_DIAGNOSTIC_CHUNK || p.data.is_empty() != p.truncated {
         return Err(ProtocolError::PayloadInvalid(
-            "diagnostic needs 1..=768 bytes, or one empty truncation marker".into(),
+            format!(
+                "diagnostic needs 1..={MAX_DIAGNOSTIC_CHUNK} bytes, or one empty truncation marker"
+            ),
         ));
     }
     Ok(())
@@ -444,21 +651,20 @@ impl From<std::io::Error> for ProtocolError {
 // Validation
 // ---------------------------------------------------------------------------
 
-fn valid_invocation_id(id: &str) -> bool {
+/// Longest invocation id. Ids travel in env, result records and host paths.
+pub const MAX_INVOCATION_ID: usize = 64;
+
+/// The one invocation-id rule: `[A-Za-z0-9_-]{1,64}`.
+pub fn valid_invocation_id(id: &str) -> bool {
     !id.is_empty()
-        && id.len() <= 64
+        && id.len() <= MAX_INVOCATION_ID
         && id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 fn check_request(p: &RequestPayload) -> Result<(), ProtocolError> {
-    p.options.validate()?;
-    if p.operation != "install" && p.options.execution.forced() {
-        return Err(ProtocolError::PayloadInvalid(
-            "force options apply only to install operations".into(),
-        ));
-    }
+    p.options.validate_for(p.operation)?;
     if p.restored_states.len() > 1024 || (!p.persist_state && !p.restored_states.is_empty()) {
         return Err(ProtocolError::PayloadInvalid(
             "invalid restored state set".into(),
@@ -476,11 +682,6 @@ fn check_request(p: &RequestPayload) -> Result<(), ProtocolError> {
             "request invocation_id {:?} must match [A-Za-z0-9_-]{{1,64}}",
             p.invocation_id
         )));
-    }
-    if p.operation.is_empty() {
-        return Err(ProtocolError::PayloadInvalid(
-            "request operation must not be empty".to_string(),
-        ));
     }
     Ok(())
 }

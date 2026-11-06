@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Result, bail};
 
 /// Longest recipe-stem prefix kept in the invocation id.
-const MAX_ID: usize = 64;
+const MAX_ID: usize = crate::worker::protocol::MAX_INVOCATION_ID;
 
 /// `<recipe-name>-<unix-millis>-<pid>`, `[A-Za-z0-9_-]{1,64}` (§5).
 pub fn invocation_id(recipe_stem: &str) -> Result<String> {
@@ -49,7 +49,8 @@ pub fn invocation_id(recipe_stem: &str) -> Result<String> {
     Ok(id)
 }
 
-/// Enforce the §5 invocation-id shape explicitly (never truncate silently).
+/// Enforce the invocation-id rule ([`crate::worker::protocol::valid_invocation_id`])
+/// with a useful message (never truncate silently).
 pub fn validate_invocation_id(id: &str) -> Result<()> {
     if id.is_empty() || id.len() > MAX_ID {
         bail!(
@@ -57,10 +58,7 @@ pub fn validate_invocation_id(id: &str) -> Result<()> {
             id.len(),
         );
     }
-    if !id
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
+    if !crate::worker::protocol::valid_invocation_id(id) {
         bail!(
             "input preparation failure: invocation id {id:?} is outside `[A-Za-z0-9_-]` \
              (ids travel in env, result records, and host staging paths)"

@@ -28,7 +28,7 @@ impl GinuxLauncher {
     /// retains separate state/files pairs; there is no host execution callback.
     pub fn run(
         &self,
-        operation: &str,
+        operation: crate::worker::protocol::Operation,
         recipe: &Path,
         search_path: Option<&Path>,
         persist_state: bool,
@@ -38,27 +38,23 @@ impl GinuxLauncher {
         state_dir: Option<&Path>,
     ) -> Result<rhai::Map> {
         options
-            .validate()
-            .context("backend startup failure: invalid invocation options")?;
-        if operation != "install" && options.execution.forced() {
-            bail!("force options apply only to install operations");
-        }
+            .validate_for(operation)
+            .context(crate::failure::Category::Startup.error("invalid invocation options"))?;
         let prepared = crate::inputs::prepare_invocation(
             recipe,
-            operation,
             search_path,
             inputs,
             &options.execution,
         )
         .map_err(|err| {
-            anyhow!(
-                "backend startup failure: ginux input preparation failed for \
+            anyhow::Error::new(crate::failure::Category::Startup.error(format!("ginux input preparation failed for \
                              `{operation}` ({}): {err:#}",
                 recipe.display(),
-            )
+            )))
         })?;
         let report = crate::launch::run_domain(
             &prepared,
+            operation,
             &self.path,
             persist_state,
             &options,
@@ -91,14 +87,13 @@ impl GinuxLauncher {
                 phase: first.map(|failure|failure.phase.clone()).unwrap_or_default(),
                 reason: first.map(|failure|failure.reason.clone()).unwrap_or_default(),
                 message: first.map(|failure|failure.message.clone()).unwrap_or_else(||"worker failed without detail".into()),
-            }).context(format!("backend workload failure: `{operation}` failed in the Ginux domain (invocation {})", prepared.invocation_id)));
+            }).context(crate::failure::Category::Workload.error(format!("`{operation}` failed in the Ginux domain (invocation {})", prepared.invocation_id))));
         }
         ctx_summary_to_map(&report.result.ctx_summary).map_err(|err| {
-            anyhow!(
-                "backend protocol failure: `{operation}` succeeded in the Ginux domain \
+            anyhow::Error::new(crate::failure::Category::Protocol.error(format!("`{operation}` succeeded in the Ginux domain \
                      (invocation {}) but its ctx summary is not a JSON object: {err:#}",
                 prepared.invocation_id,
-            )
+            )))
         })
     }
 }
@@ -175,37 +170,32 @@ fn json_kind(value: &serde_json::Value) -> &'static str {
 /// `startup` failure — never a silent fallback to host execution.
 fn resolve_launcher() -> Result<PathBuf> {
     let raw = std::env::var("GINUX_BIN").with_context(|| {
-        "backend startup failure: ginux backend selected but GINUX_BIN is not set \
-         (no launcher to start; refusing host fallback)"
+        crate::failure::Category::Startup.error("ginux backend selected but GINUX_BIN is not set \
+         (no launcher to start; refusing host fallback)")
     })?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        bail!(
-            "backend startup failure: ginux backend selected but GINUX_BIN is empty \
-             (no launcher to start; refusing host fallback)"
-        );
+        bail!(crate::failure::Category::Startup.error("ginux backend selected but GINUX_BIN is empty \
+             (no launcher to start; refusing host fallback)"));
     }
     let path = PathBuf::from(trimmed);
     let meta = std::fs::metadata(&path).with_context(|| {
-        format!(
-            "backend startup failure: ginux launcher {} is missing or inaccessible \
+        crate::failure::Category::Startup.error(format!("ginux launcher {} is missing or inaccessible \
              (refusing host fallback)",
             path.display()
-        )
+        ))
     })?;
     if !meta.is_file() {
-        bail!(
-            "backend startup failure: ginux launcher {} is not a file \
+        bail!(crate::failure::Category::Startup.error(format!("ginux launcher {} is not a file \
              (refusing host fallback)",
             path.display()
-        );
+        )));
     }
     if !is_executable(&path, &meta) {
-        bail!(
-            "backend startup failure: ginux launcher {} is not executable \
+        bail!(crate::failure::Category::Startup.error(format!("ginux launcher {} is not executable \
              (refusing host fallback)",
             path.display()
-        );
+        )));
     }
     Ok(path)
 }

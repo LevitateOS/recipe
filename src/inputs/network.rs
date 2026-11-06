@@ -18,7 +18,6 @@ pub(crate) struct NetworkPolicy {
 
 impl NetworkPolicy {
     pub fn resolve(options: &crate::ExecutionOptions) -> Result<Self> {
-        options.validate()?;
         if options.network_hosts.is_empty() {
             return Ok(Self::default());
         }

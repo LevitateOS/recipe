@@ -29,13 +29,9 @@
 //! inputs into `/inputs`. The root is private to this invocation and is kept
 //! alive until the launcher is reaped. No stub-launcher environment is supplied.
 //!
-//! Failure categories (§1): `startup` (bad config, spawn failure, launcher
-//! that cannot speak the transport, supervisor-error result),
-//! `workload` (worker-reported recipe failure, nonzero exit / terminating
-//! signal per the result file), `protocol` (framing violations, timeouts,
-//! missing/malformed result file, exit without `result`, contradictions
-//! between stream and result file). Storage joins retain the last complete pair;
-//! cancellation is forwarded and reaped before returning its distinct outcome.
+//! Every failure carries a [`crate::failure::Category`]. Storage joins retain
+//! the last complete pair; cancellation is forwarded and reaped before
+//! returning its distinct outcome.
 
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
@@ -117,6 +113,7 @@ pub(crate) struct LaunchReport {
 /// here evaluates recipe code on the host.
 pub(crate) fn run_domain(
     prepared: &PreparedInvocation,
+    operation: crate::worker::protocol::Operation,
     launcher: &Path,
     persist_state: bool,
     options: &crate::worker::protocol::InvocationOptions,
@@ -127,6 +124,7 @@ pub(crate) fn run_domain(
     let diagnostics = crate::logging::InvocationLog::new(state_dir, &prepared.invocation_id)?;
     let outcome = run_domain_inner(
         prepared,
+        operation,
         launcher,
         persist_state,
         options,
@@ -151,6 +149,7 @@ pub(crate) fn run_domain(
 
 fn run_domain_inner(
     prepared: &PreparedInvocation,
+    operation: crate::worker::protocol::Operation,
     launcher: &Path,
     persist_state: bool,
     options: &crate::worker::protocol::InvocationOptions,
@@ -162,21 +161,18 @@ fn run_domain_inner(
     let invocation = prepared.invocation_id.clone();
     let timeout = frame_timeout()?;
     let _destination_lock = crate::retained::lock_destination(destination, timeout)?;
-    let run_dir = crate::temporary::TemporaryDirectory::new().context(
-        "backend startup failure: cannot create ginux run directory (refusing host fallback)",
-    )?;
+    let run_dir = crate::temporary::TemporaryDirectory::new().context(crate::failure::Category::Startup.error("cannot create ginux run directory (refusing host fallback)"))?;
     let result_path = run_dir.path().join("result.json");
     let export_path = run_dir.path().join("export.tar");
     let config_path = prepared.staging_dir().join("config.toml");
     if !config_path.is_file() {
-        bail!(
-            "backend startup failure: invocation {invocation} has no staged config.toml \
+        bail!(crate::failure::Category::Startup.error(format!("invocation {invocation} has no staged config.toml \
              (refusing host fallback)"
-        );
+        )));
     }
 
     let domain_root = crate::inputs::prepare_root(prepared).map_err(|error| {
-        anyhow!("backend startup failure: cannot prepare Ginux root for invocation {invocation}: {error:#} (refusing host fallback)")
+        anyhow::Error::new(crate::failure::Category::Startup.error(format!("cannot prepare Ginux root for invocation {invocation}: {error:#} (refusing host fallback)")))
     })?;
 
     let mut retained = if persist_state {
@@ -259,30 +255,23 @@ fn run_domain_inner(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|err| {
-            anyhow!(
-                "backend startup failure: cannot spawn ginux launcher {} for invocation \
+            anyhow::Error::new(crate::failure::Category::Startup.error(format!("cannot spawn ginux launcher {} for invocation \
                  {invocation}: {err:#} (refusing host fallback)",
                 launcher.display(),
-            )
+            )))
         })?;
 
     drop(control_server);
-    let stdin = child.stdin.take().context(
-        "backend startup failure: launcher stdin was not piped (refusing host fallback)",
-    )?;
-    let stdout = child.stdout.take().context(
-        "backend startup failure: launcher stdout was not piped (refusing host fallback)",
-    )?;
-    let stderr = child.stderr.take().context(
-        "backend startup failure: launcher stderr was not piped (refusing host fallback)",
-    )?;
+    let stdin = child.stdin.take().context(crate::failure::Category::Startup.error("launcher stdin was not piped (refusing host fallback)"))?;
+    let stdout = child.stdout.take().context(crate::failure::Category::Startup.error("launcher stdout was not piped (refusing host fallback)"))?;
+    let stderr = child.stderr.take().context(crate::failure::Category::Startup.error("launcher stderr was not piped (refusing host fallback)"))?;
     let log_path = diagnostics.directory.join("supervisor-stderr.log");
     let drain = spawn_stderr_drain(stderr, log_path.clone());
 
     let mut worker_started = false;
     let pump = pump_protocol(
         &invocation,
-        &prepared.operation,
+        operation,
         &prepared.recipe_digest,
         persist_state,
         options,
@@ -343,7 +332,7 @@ fn run_domain_inner(
             &mut stream.result.ctx_summary,
             &options.execution,
         )
-        .context("backend storage failure: cannot publish completed domain outputs")?;
+        .context(crate::failure::Category::Storage.error("cannot publish completed domain outputs"))?;
     }
 
     Ok(LaunchReport {
@@ -375,7 +364,7 @@ struct WorkerStream {
 /// caller enriches them with launcher/result-file state.
 fn pump_protocol(
     invocation: &str,
-    operation: &str,
+    operation: crate::worker::protocol::Operation,
     recipe_digest: &str,
     persist_state: bool,
     options: &crate::worker::protocol::InvocationOptions,
@@ -396,7 +385,7 @@ fn pump_protocol(
         &mut stdin,
         &FramePayload::Request(RequestPayload {
             invocation_id: invocation.to_string(),
-            operation: operation.to_string(),
+            operation,
             persist_state,
             recipe_digest: recipe_digest.to_string(),
             options: options.clone(),
@@ -414,13 +403,11 @@ fn pump_protocol(
     let mut checkpoints: u64 = 0;
     let mut generations = Vec::new();
     let mut failure = None;
-    let mut diagnostic_bytes = 0usize;
-    let mut diagnostic_frames = 0usize;
-    let mut diagnostic_truncated = false;
+    let mut diagnostic_budget = crate::worker::protocol::DiagnosticBudget::default();
     let execution_deadline = Instant::now() + Duration::from_secs(options.execution.timeout_secs);
     let result = loop {
         if Instant::now() >= execution_deadline {
-            bail!("backend deadline failure: supervised execution deadline expired");
+            bail!(crate::failure::Category::Deadline.error("supervised execution deadline expired"));
         }
         stdout.begin_frame(
             if *worker_started {
@@ -437,42 +424,22 @@ fn pump_protocol(
         frame
             .check_direction(Direction::WorkerToHost)
             .map_err(|err| {
-                anyhow!(
-                    "backend protocol failure: invocation {invocation}: worker stream direction \
+                anyhow::Error::new(crate::failure::Category::Protocol.error(format!("invocation {invocation}: worker stream direction \
                  violation: {err} (refusing host fallback)"
-                )
+                )))
             })?;
         *worker_started = true;
         match frame.payload {
             FramePayload::Diagnostic(payload) => {
-                use crate::worker::protocol::{MAX_DIAGNOSTIC_BYTES, MAX_DIAGNOSTIC_FRAMES};
-                if diagnostic_truncated {
-                    bail!(
-                        "backend protocol failure: diagnostic after truncation (refusing host fallback)"
-                    );
-                }
+                diagnostic_budget.accept(&payload).map_err(|violation| {
+                    crate::failure::Category::Protocol
+                        .error(format!("{violation} (refusing host fallback)"))
+                })?;
                 if payload.truncated {
-                    if diagnostic_bytes != MAX_DIAGNOSTIC_BYTES
-                        && diagnostic_frames != MAX_DIAGNOSTIC_FRAMES
-                    {
-                        bail!(
-                            "backend protocol failure: premature diagnostic truncation (refusing host fallback)"
-                        );
-                    }
-                    diagnostic_truncated = true;
                     crate::diagnostics::line(
                         "recipe: diagnostic limit reached; remaining output drained",
                     );
                 } else {
-                    diagnostic_bytes += payload.data.len();
-                    diagnostic_frames += 1;
-                    if diagnostic_bytes > MAX_DIAGNOSTIC_BYTES
-                        || diagnostic_frames > MAX_DIAGNOSTIC_FRAMES
-                    {
-                        bail!(
-                            "backend protocol failure: diagnostic budget exceeded (refusing host fallback)"
-                        );
-                    }
                     // All human bytes go to CLI stderr, never to its JSON stream.
                     // Supervisor stderr is collected independently and never parsed.
                     worker_diagnostics.write_all(&payload.data)?;
@@ -485,10 +452,9 @@ fn pump_protocol(
             FramePayload::Checkpoint(point) => {
                 checkpoints += 1;
                 if checkpoints > MAX_CHECKPOINTS {
-                    bail!(
-                        "backend protocol failure: invocation {invocation} sent more than \
+                    bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} sent more than \
                          {MAX_CHECKPOINTS} checkpoints (refusing host fallback)"
-                    );
+                    )));
                 }
                 let seq = point.seq;
                 if seq != checkpoints {
@@ -521,20 +487,18 @@ fn pump_protocol(
             }
             FramePayload::Failure(payload) => {
                 if failure.is_some() {
-                    bail!(
-                        "backend protocol failure: invocation {invocation} sent a second failure \
+                    bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} sent a second failure \
                          frame (at most one failure before the exactly-once result; refusing \
                          host fallback)"
-                    );
+                    )));
                 }
                 failure = Some(payload);
             }
             FramePayload::Result(payload) => break payload,
             FramePayload::Request(_) | FramePayload::Ack(_) => {
-                bail!(
-                    "backend protocol failure: invocation {invocation} received a host-direction \
+                bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} received a host-direction \
                      frame from the worker (refusing host fallback)"
-                );
+                )));
             }
         }
     };
@@ -733,21 +697,16 @@ fn classify_stream_error(
     before_request_delivered: bool,
 ) -> anyhow::Error {
     if crate::cancellation::signal() != 0 {
-        return anyhow!(
-            "backend cancelled: interrupted by signal {}",
-            crate::cancellation::signal()
-        );
+        return crate::cancellation::cancelled().into();
     }
     if before_request_delivered {
-        anyhow!(
-            "backend startup failure: invocation {invocation}: cannot {what} through launcher \
+        anyhow::Error::new(crate::failure::Category::Startup.error(format!("invocation {invocation}: cannot {what} through launcher \
              (launcher cannot serve the worker transport; refusing host fallback): {err}"
-        )
+        )))
     } else {
-        anyhow!(
-            "backend protocol failure: invocation {invocation}: cannot {what} (refusing host \
+        anyhow::Error::new(crate::failure::Category::Protocol.error(format!("invocation {invocation}: cannot {what} (refusing host \
              fallback): {err}"
-        )
+        )))
     }
 }
 
@@ -764,33 +723,47 @@ fn enrich_stream_error(
     worker_started: bool,
 ) -> anyhow::Error {
     let text = format!("{err:#}");
+    let category = crate::failure::Category::of(&err);
     if let Some(note) = file_note
         && note.contains("\"supervisor-error\"")
-        && text.starts_with("backend protocol failure")
+        && category == Some(crate::failure::Category::Protocol)
     {
-        let category = if worker_started {
-            "supervisor"
+        let (category, timing) = if worker_started {
+            (
+                crate::failure::Category::Supervisor,
+                "after worker execution started",
+            )
         } else {
-            "startup"
+            (
+                crate::failure::Category::Startup,
+                "before worker startup was confirmed",
+            )
         };
-        let timing = if worker_started {
-            "after worker execution started"
-        } else {
-            "before worker startup was confirmed"
-        };
-        return anyhow!(
-            "backend {category} failure: invocation {invocation}: supervisor aborted {timing}: {text}; launcher exit {}; log tail: {}",
-            exit_message(exit),
-            drained.tail
-        );
+        return category
+            .error(format!(
+                "invocation {invocation}: supervisor aborted {timing}: {text}; launcher exit {}; log tail: {}",
+                exit_message(exit),
+                drained.tail
+            ))
+            .into();
     }
-    anyhow!(
-        "{text}; invocation {invocation} launcher exit {}; {}; log tail: {} (refusing host \
-         fallback)",
+    let detail = format!(
+        "; invocation {invocation} launcher exit {}; {}; log tail: {} (refusing host fallback)",
         exit_message(exit),
         file_note.unwrap_or("no result file was produced"),
         drained.tail,
-    )
+    );
+    match category {
+        // Keep the category typed while extending its message.
+        Some(category) => {
+            let message = text
+                .strip_prefix(category.prefix())
+                .and_then(|rest| rest.strip_prefix(": "))
+                .unwrap_or(&text);
+            category.error(format!("{message}{detail}")).into()
+        }
+        None => anyhow!("{text}{detail}"),
+    }
 }
 
 fn exit_message(exit: Option<i32>) -> String {
@@ -839,9 +812,7 @@ fn reap_launcher(child: &mut Child, mut deadline: Instant) -> Result<Option<i32>
                 if let Err(error) = result {
                     return Err(error).context("cannot reap configured launcher");
                 }
-                bail!(
-                    "backend deadline failure: supervised execution deadline expired during finalization"
-                );
+                bail!(crate::failure::Category::Deadline.error("supervised execution deadline expired during finalization"));
             }
         }
     }
@@ -980,49 +951,43 @@ fn read_result_file_note(result_path: &Path) -> Option<String> {
 /// `protocol` failure, never success (§2).
 fn read_result_record(result_path: &Path, invocation: &str) -> Result<ResultRecord> {
     let text = std::fs::read_to_string(result_path).map_err(|err| {
-        anyhow!(
-            "backend protocol failure: invocation {invocation} produced no result file at {}: \
+        anyhow::Error::new(crate::failure::Category::Protocol.error(format!("invocation {invocation} produced no result file at {}: \
              {err:#} (missing result file is never success; refusing host fallback)",
             result_path.display(),
-        )
+        )))
     })?;
     let value: serde_json::Value = serde_json::from_str(&text).map_err(|err| {
-        anyhow!(
-            "backend protocol failure: invocation {invocation} result file is not valid JSON: \
+        anyhow::Error::new(crate::failure::Category::Protocol.error(format!("invocation {invocation} result file is not valid JSON: \
              {err:#} (malformed result file is never success; refusing host fallback)"
-        )
+        )))
     })?;
     let version = value.get("version").and_then(|v| v.as_u64());
     if version != Some(1) {
-        bail!(
-            "backend protocol failure: invocation {invocation} result file has unsupported \
+        bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} result file has unsupported \
              version {version:?} (want 1; refusing host fallback)"
-        );
+        )));
     }
     let outcome = value
         .get("outcome")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
     if !matches!(outcome, "exited" | "signaled" | "supervisor-error") {
-        bail!(
-            "backend protocol failure: invocation {invocation} result file has unknown outcome \
+        bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} result file has unknown outcome \
              {outcome:?} (want exited|signaled|supervisor-error; refusing host fallback)"
-        );
+        )));
     }
     let field = |name: &str| match value.get(name) {
         None => Ok(None),
         Some(serde_json::Value::Null) => Ok(None),
         Some(serde_json::Value::Number(n)) => n.as_i64().map(Some).ok_or_else(|| {
-            anyhow!(
-                "backend protocol failure: invocation {invocation} result file field {name:?} \
+            anyhow::Error::new(crate::failure::Category::Protocol.error(format!("invocation {invocation} result file field {name:?} \
                  is not an integer (refusing host fallback)"
-            )
+            )))
         }),
-        Some(other) => bail!(
-            "backend protocol failure: invocation {invocation} result file field {name:?} is {}, \
+        Some(other) => bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} result file field {name:?} is {}, \
              want an integer or null (refusing host fallback)",
             json_value_kind(other),
-        ),
+        ))),
     };
     // `generation` belongs to Ginux's numbering; it is validated, not consumed.
     field("generation")?;
@@ -1040,14 +1005,12 @@ fn read_result_record(result_path: &Path, invocation: &str) -> Result<ResultReco
 fn check_agreement(invocation: &str, result: &ResultPayload, record: &ResultRecord) -> Result<()> {
     if result.ok {
         if record.outcome == "supervisor-error" {
-            bail!(
-                "backend supervisor failure: invocation {invocation} worker reported success but the \
+            bail!(crate::failure::Category::Supervisor.error(format!("invocation {invocation} worker reported success but the \
                  supervisor failed during finalization (refusing publication)"
-            );
+            )));
         }
         if record.outcome != "exited" || record.code != Some(0) {
-            bail!(
-                "backend protocol failure: invocation {invocation} worker reported success but \
+            bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} worker reported success but \
                  the authoritative result is {}/{} (refusing host fallback)",
                 record.outcome,
                 record
@@ -1055,15 +1018,14 @@ fn check_agreement(invocation: &str, result: &ResultPayload, record: &ResultReco
                     .map(|c| c.to_string())
                     .or_else(|| record.signal.map(|s| format!("signal {s}")))
                     .unwrap_or_else(|| "no status".to_string()),
-            );
+            )));
         }
         return Ok(());
     }
     if record.outcome == "supervisor-error" {
-        bail!(
-            "backend supervisor failure: invocation {invocation} worker reported failure and the \
+        bail!(crate::failure::Category::Supervisor.error(format!("invocation {invocation} worker reported failure and the \
              supervisor also failed during finalization (refusing publication)"
-        );
+        )));
     }
     Ok(())
 }
@@ -1080,19 +1042,17 @@ fn check_launcher_exit(
 ) -> Result<()> {
     if result.ok {
         if exit != Some(0) {
-            bail!(
-                "backend protocol failure: invocation {invocation} worker reported success but launcher exited with {} (refusing publication)",
+            bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} worker reported success but launcher exited with {} (refusing publication)",
                 exit_message(exit),
-            );
+            )));
         }
         return Ok(());
     }
     if record.outcome == "signaled" {
-        bail!(
-            "backend workload failure: invocation {invocation} worker was terminated by signal {} \
+        bail!(crate::failure::Category::Workload.error(format!("invocation {invocation} worker was terminated by signal {} \
              (refusing host fallback)",
             record.signal.map(|s| s.to_string()).unwrap_or_default(),
-        );
+        )));
     }
     if record.outcome == "exited" && record.code != Some(0) {
         let detail = result
@@ -1105,12 +1065,11 @@ fn check_launcher_exit(
                 )
             })
             .unwrap_or_else(|| "worker reported failure without detail".to_string());
-        bail!(
-            "backend workload failure: invocation {invocation} worker exited with code {} \
+        bail!(crate::failure::Category::Workload.error(format!("invocation {invocation} worker exited with code {} \
              (launcher exit {}): {detail} (refusing host fallback)",
             record.code.unwrap_or(-1),
             exit_message(exit),
-        );
+        )));
     }
     Ok(())
 }

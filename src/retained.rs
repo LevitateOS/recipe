@@ -13,7 +13,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const MAX_STATE: u64 = 4 * 1024 * 1024;
+/// A saved state is bounded by the request frame that carries it back.
+const MAX_STATE: u64 = crate::worker::protocol::MAX_FRAME_LEN as u64;
 
 pub(crate) fn default_directory() -> Result<PathBuf> {
     Ok(dirs::state_dir()
@@ -105,10 +106,8 @@ impl Retained {
         crate::fsx::private_dir(&scope, true)?;
         let mut defines = options.defines.clone();
         defines.sort();
-        // Reserve room for options, the longest cleanup reason and framing on
-        // the next invocation, not just for the record being written now.
-        let state_budget = crate::worker::protocol::MAX_FRAME_LEN
-            .saturating_sub(serde_json::to_vec(&defines)?.len() + 8192);
+        // Saved state must fit the next invocation's request frame.
+        let state_budget = crate::worker::protocol::restored_state_budget(options)?;
         let inputs = prepared
             .inputs
             .iter()
