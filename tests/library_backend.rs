@@ -13,14 +13,10 @@ fn library_default_uses_ginux_even_with_spoofed_worker_environment() {
     let engine =
         RecipeEngine::new(directory.path().join("host-build")).with_state_persistence(false);
     let context = engine.is_installed(&recipe).unwrap();
-    let runtime = context["runtime"].clone().cast::<rhai::Map>();
-    let paths = runtime["paths"].clone().cast::<rhai::Map>();
-    assert_eq!(
-        paths["recipe_dir"].clone().into_string().unwrap(),
-        "/inputs"
-    );
-    assert_eq!(paths["build"].clone().into_string().unwrap(), "/work/build");
-    assert_eq!(paths["tools"].clone().into_string().unwrap(), "/work/tools");
+    let paths = &context["runtime"]["paths"];
+    assert_eq!(paths["recipe_dir"], "/inputs");
+    assert_eq!(paths["build"], "/work/build");
+    assert_eq!(paths["tools"], "/work/tools");
     assert_eq!(
         engine.launcher().unwrap().path(),
         std::path::Path::new(&std::env::var_os("GINUX_BIN").unwrap())

@@ -520,7 +520,7 @@ Collect everything about talking to Ginux into one `ginux` module:
 
 Replace the 8-argument `launcher.run` (×6 in lib.rs), the 9-argument `create_engine` (×6 in the CLI) and the per-op worker dispatch with a single `Invocation { recipe, operation, options, defines, inputs }` and `RecipeEngine::run(Operation)` (thin convenience methods optional). Split `ExecutionOptions` by reason to change: identity-relevant settings, resource bounds, presentation (`machine_events`) and install-only force flags (which move into `Operation::Install`). Derive the clap flags from the options struct (`#[command(flatten)]`/`default_value_t = Default`) so defaults and ranges live once, and drop the fixed `--target-*` knobs. `GinuxLauncher` becomes the coordinator entry and stops being a path wrapper. The public result is JSON (`serde_json::Value`), not a `rhai::Map`, which removes the hand-written JSON↔Rhai round trip.
 
-- **Solves:** 28 problems (17 hidden, 6 needless, 2 surplus, 3 special)
+- **Solves:** 27 problems (16 hidden, 6 needless, 2 surplus, 3 special)
 - **Done when:** Adding an option means editing one struct. No JSON→Rhai converter in backend. `lib.rs` and `commands.rs` have no six-way repeated calls. Global flags apply only to the subcommands that use them.
 - **Depends on:** X3
 
@@ -530,7 +530,6 @@ Replace the 8-argument `launcher.run` (×6 in lib.rs), the 9-argument `create_en
 - **A27** [hidden] `src/lib.rs:212-221,272-281,295-304,309-318,323-332,337-346` repeat the same 8-argument `launcher.run(...)` call six times. Any new invocation parameter means six edits plus `backend.rs:29-39` and `launch.rs:124-132,158-167`, which explains the `lib.rs`↔`backend.rs`/`bin/recipe.rs` co-change.
 - **A39** [needless] `src/worker/run.rs:339`: `defines` travels positionally while `options.execution` goes through `exec.set_options`, giving two routes for invocation options.
 - **A84** [hidden] `src/options.rs:291-309` (`Default`) and `src/bin/recipe/cli.rs:30-66` (clap `default_value`s) each hold a copy of every default, and `src/bin/recipe/commands.rs:13-27` maps each field by hand. A new option means three edits.
-- **A85** [hidden] `src/bin/recipe/cli.rs:58` says `storage_max_bytes` defaults to "memory minus filesystem metadata", but `src/options.rs:348-351` uses all of memory. They have drifted.
 - **A86** [hidden] `src/options.rs:337` (≤ 8 hosts) duplicates `src/inputs/config.rs:146` (`quote_list(…, 8, …)`), and `src/options.rs:326` duplicates `src/launch.rs:608` (`1..=86400`).
 - **A87** [hidden] `src/lib.rs:79-87` `AutoFixConfig` default `attempts: 2` duplicates `src/bin/recipe/cli.rs:109`, and the range `1..=8` (`lib.rs:206`) and CLI `.max(1)` (`commands.rs:54`) are separate partial validations.
 - **B16** [hidden] The cap of 8 hosts/endpoints appears in `src/options.rs:76`, `src/inputs/network.rs:351` and `src/inputs/config.rs:148`. The 64-byte endpoint length exists only at `config.rs:148`.
@@ -1068,6 +1067,8 @@ Delete the obsolete design docs (`RECIPE_DEPENDENCY_MANAGEMENT.md`, `SYSTEM_VS_U
   - **Why leave:** The base digest is produced by Ginux's own OCI scripts. The cross-repo producer is owned upstream.
 - **H10** [hidden] `src/lib.rs:210-263`: autofix retry depends on the state identity hashing every input (`src/retained.rs:110-138`), so each patched attempt redoes acquire and build. Only a comment at `src/lib.rs:260-261` notes this.
   - **Why leave:** Redoing acquire and build after an autofix patch is correct: a patched recipe is a new identity.
+- **A85** [hidden] `src/bin/recipe/cli.rs:58` says `storage_max_bytes` defaults to "memory minus filesystem metadata", but `src/options.rs:348-351` uses all of memory. They have drifted.
+  - **Why leave:** Not a drift: with no explicit cap the Ginux launcher applies its own default (memory minus filesystem metadata), which the help text describes. The recipe's own bound using all of memory is the separate J47 issue.
 - **C36** [hidden] `src/core/output/logging.rs:74-78` writes machine JSON and human lines to the same diagnostic stream, which the host copies to stderr (`src/launch.rs:486-487`), so consumers have to pick out the JSON lines.
   - **Why leave:** Machine JSON lines alongside human lines are the documented `--machine-events` contract that callers and tests parse; separating them is a CLI change, not an untangle.
 - **C38** [hidden] `src/core/output/narration.rs:11-60` always emits ANSI colour, even into `worker.log` via the protocol sink.
@@ -1178,4 +1179,13 @@ Special cases: **168** at audit start.
     - C38 (always-ANSI narration) is the current CLI output contract, captured byte-for-byte in the baseline snapshots.
     - I14 moves to X10.
   - Checks: build clean. Privileged suite: pending.
+- [~] **X4** One Invocation value (library part). Commit: `git log --grep "X4:"`.
+  - New `backend::Invocation` (operation, cleanup reason, recipe, search path, persist, options, inputs, destination, state dir) is the single argument of `GinuxLauncher::run` (now `pub(crate)`) and `launch::run_domain`. `RecipeEngine` builds it in one `invoke()`, so the six 8-argument call sites are gone (A27/H13/H14/A39).
+  - The public result is `serde_json::Value`: the hand-written JSON→Rhai converter, its `json_kind` copy and the CLI's Rhai→JSON round trip are removed (A24/A25/A26). The non-object check stays.
+  - The autofix retry is a plain loop with no `unreachable!`/`expect` (H31).
+  - CLI defaults come from `ExecutionOptions::default()`/`AutoFixConfig::default()` (A84/A87/B64); the help output is byte-identical.
+  - `tests/library_backend.rs` is updated to read the JSON context.
+  - A85 moved to leave-as-is: the help text was correct.
+  - Still open in X4 (CLI-visible): flatten the options into one clap `Args` (B65), remove the fixed `--target-*` flags (A83), make `--force-*` install-only (B28), scope `--llm-profile` (B69), stop global flags leaking into list/info/hash (B70), stop creating the recipes dir everywhere (B71), `RECIPE_PATH` via clap env (B79), split `ExecutionOptions` by concern (H16), plus B16, B34, B57, B66, B67, B68, J47.
+  - Checks: build clean, CLI snapshots byte-identical. Privileged suite: pending.
 

@@ -1,5 +1,5 @@
 //! The required Ginux launcher for executable recipe operations.
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
 /// Verified executable used to start the Ginux domain.
@@ -26,44 +26,25 @@ impl GinuxLauncher {
     /// Prepare immutable inputs, execute in Ginux, and return the final context
     /// only after successful completion and validated publication. Persistence
     /// retains separate state/files pairs; there is no host execution callback.
-    pub fn run(
-        &self,
-        operation: crate::worker::protocol::Operation,
-        cleanup_reason: Option<&str>,
-        recipe: &Path,
-        search_path: Option<&Path>,
-        persist_state: bool,
-        options: crate::worker::protocol::InvocationOptions,
-        inputs: &[crate::inputs::ExtraInput],
-        destination: &Path,
-        state_dir: Option<&Path>,
-    ) -> Result<rhai::Map> {
-        options
+    pub(crate) fn run(&self, invocation: &Invocation<'_>) -> Result<serde_json::Value> {
+        let operation = invocation.operation;
+        invocation
+            .options
             .validate_for(operation)
             .context(crate::failure::Category::Startup.error("invalid invocation options"))?;
         let prepared = crate::inputs::prepare_invocation(
-            recipe,
-            search_path,
-            inputs,
-            &options.execution,
+            invocation.recipe,
+            invocation.search_path,
+            invocation.inputs,
+            &invocation.options.execution,
         )
         .map_err(|err| {
-            anyhow::Error::new(crate::failure::Category::Startup.error(format!("ginux input preparation failed for \
-                             `{operation}` ({}): {err:#}",
-                recipe.display(),
+            anyhow::Error::new(crate::failure::Category::Startup.error(format!(
+                "ginux input preparation failed for `{operation}` ({}): {err:#}",
+                invocation.recipe.display(),
             )))
         })?;
-        let report = crate::launch::run_domain(
-            &prepared,
-            operation,
-            cleanup_reason,
-            &self.path,
-            persist_state,
-            &options,
-            destination,
-            state_dir,
-            recipe,
-        )?;
+        let report = crate::launch::run_domain(&prepared, invocation, &self.path)?;
         crate::diagnostics::diag!(
             "recipe: invocation {} finished in the Ginux domain: ok={} ({} checkpoint{} \
                  acked; launcher exit {}; result {})",
@@ -95,79 +76,30 @@ impl GinuxLauncher {
                 message: failure.message,
             }).context(crate::failure::Category::Workload.error(format!("`{operation}` failed in the Ginux domain (invocation {})", prepared.invocation_id))));
         }
-        ctx_summary_to_map(&report.result.ctx_summary).map_err(|err| {
-            anyhow::Error::new(crate::failure::Category::Protocol.error(format!("`{operation}` succeeded in the Ginux domain \
-                     (invocation {}) but its ctx summary is not a JSON object: {err:#}",
+        if !report.result.ctx_summary.is_object() {
+            bail!(crate::failure::Category::Protocol.error(format!(
+                "`{operation}` succeeded in the Ginux domain (invocation {}) but its ctx summary \
+                 is not a JSON object",
                 prepared.invocation_id,
-            )))
-        })
+            )));
+        }
+        Ok(report.result.ctx_summary)
     }
 }
 
-/// Convert a worker `ctx_summary` JSON object into the caller-facing context
-/// map. Scalars round-trip exactly; nested values become the matching Rhai
-/// types. A non-object summary is a protocol failure, never silent loss.
-fn ctx_summary_to_map(value: &serde_json::Value) -> Result<rhai::Map> {
-    match value {
-        serde_json::Value::Object(fields) => {
-            let mut map = rhai::Map::new();
-            for (name, item) in fields {
-                map.insert(name.clone().into(), json_to_dynamic(item)?);
-            }
-            Ok(map)
-        }
-        other => anyhow::bail!("ctx summary is {}, want a JSON object", json_kind(other)),
-    }
-}
-
-/// Convert one JSON value to the matching Rhai dynamic value.
-fn json_to_dynamic(value: &serde_json::Value) -> Result<rhai::Dynamic> {
-    match value {
-        serde_json::Value::Null => Ok(rhai::Dynamic::UNIT),
-        serde_json::Value::Bool(flag) => Ok(rhai::Dynamic::from_bool(*flag)),
-        serde_json::Value::Number(number) => {
-            if let Some(signed) = number.as_i64() {
-                Ok(rhai::Dynamic::from_int(signed))
-            } else if let Some(unsigned) = number.as_u64() {
-                i64::try_from(unsigned)
-                    .map(rhai::Dynamic::from_int)
-                    .map_err(|_| {
-                        anyhow!("ctx summary number {unsigned} exceeds i64 (not representable)")
-                    })
-            } else if let Some(float) = number.as_f64() {
-                Ok(rhai::Dynamic::from_float(float))
-            } else {
-                anyhow::bail!("ctx summary number {number} is not representable")
-            }
-        }
-        serde_json::Value::String(text) => Ok(rhai::Dynamic::from(text.clone())),
-        serde_json::Value::Array(items) => {
-            let mut array = rhai::Array::with_capacity(items.len());
-            for item in items {
-                array.push(json_to_dynamic(item)?);
-            }
-            Ok(rhai::Dynamic::from_array(array))
-        }
-        serde_json::Value::Object(fields) => {
-            let mut map = rhai::Map::new();
-            for (name, item) in fields {
-                map.insert(name.clone().into(), json_to_dynamic(item)?);
-            }
-            Ok(rhai::Dynamic::from_map(map))
-        }
-    }
-}
-
-/// JSON value kind for diagnostics.
-fn json_kind(value: &serde_json::Value) -> &'static str {
-    match value {
-        serde_json::Value::Null => "null",
-        serde_json::Value::Bool(_) => "a boolean",
-        serde_json::Value::Number(_) => "a number",
-        serde_json::Value::String(_) => "a string",
-        serde_json::Value::Array(_) => "an array",
-        serde_json::Value::Object(_) => "an object",
-    }
+/// One executable operation, as the coordinator runs it.
+pub(crate) struct Invocation<'a> {
+    pub operation: crate::worker::protocol::Operation,
+    /// Present exactly for cleanup.
+    pub cleanup_reason: Option<&'a str>,
+    pub recipe: &'a Path,
+    pub search_path: Option<&'a Path>,
+    pub persist_state: bool,
+    pub options: crate::worker::protocol::InvocationOptions,
+    pub inputs: &'a [crate::inputs::ExtraInput],
+    /// Lock and saved-state scope key.
+    pub destination: &'a Path,
+    pub state_dir: Option<&'a Path>,
 }
 
 /// Resolve the Ginux launcher from `GINUX_BIN` (interfaces §2).

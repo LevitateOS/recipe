@@ -180,6 +180,7 @@ MOVES = {
     "I14": "X10",
 }
 NEW_LEAVE = [
+    ("A85", "Not a drift: with no explicit cap the Ginux launcher applies its own default (memory minus filesystem metadata), which the help text describes. The recipe's own bound using all of memory is the separate J47 issue."),
     ("C36", "Machine JSON lines alongside human lines are the documented `--machine-events` contract that callers and tests parse; separating them is a CLI change, not an untangle."),
     ("C38", "Always-ANSI narration is the current CLI output contract (baseline snapshots capture it byte-for-byte); terminal detection would be a deliberate output change."),
     ("A81", "`RecipeEngine::launcher()`'s `GINUX_BIN` fallback is the library default; `tests/library_backend.rs` exercises it (the audit only checked the CLI)."),

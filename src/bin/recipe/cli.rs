@@ -1,6 +1,11 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+/// The library owns option defaults; flags only expose them.
+fn defaults() -> levitate_recipe::ExecutionOptions {
+    levitate_recipe::ExecutionOptions::default()
+}
+
 #[derive(Parser)]
 #[command(name = "recipe")]
 #[command(about = "Local-first package manager using Rhai recipes")]
@@ -27,13 +32,13 @@ pub(crate) struct Cli {
     pub(crate) state_dir: Option<PathBuf>,
 
     /// Execution target OS (only native Linux is currently supported).
-    #[arg(long, global = true, default_value = "linux")]
+    #[arg(long, global = true, default_value_t = defaults().target_os)]
     pub(crate) target_os: String,
     /// Execution target architecture (only native x86_64 is currently supported).
-    #[arg(long, global = true, default_value = "x86_64")]
+    #[arg(long, global = true, default_value_t = defaults().target_arch)]
     pub(crate) target_arch: String,
     /// Parallel jobs requested by recipes; Ginux task limits still apply.
-    #[arg(short = 'j', long, global = true, default_value_t = 1)]
+    #[arg(short = 'j', long, global = true, default_value_t = defaults().jobs)]
     pub(crate) jobs: u16,
     /// Rerun acquisition, build and installation for the main recipe.
     #[arg(long, global = true)]
@@ -46,14 +51,14 @@ pub(crate) struct Cli {
     pub(crate) force_install: bool,
 
     /// Maximum supervised execution time in seconds, including silent work.
-    #[arg(long, global = true, default_value_t = 3600)]
+    #[arg(long, global = true, default_value_t = defaults().timeout_secs)]
     pub(crate) timeout_secs: u64,
 
     /// Domain memory limit in MiB, including writable storage and metadata.
-    #[arg(long, global = true, default_value_t = 2048)]
+    #[arg(long, global = true, default_value_t = defaults().memory_mib)]
     pub(crate) memory_mib: u64,
     /// Maximum writable filesystem objects.
-    #[arg(long, global = true, default_value_t = 16384)]
+    #[arg(long, global = true, default_value_t = defaults().storage_max_objects)]
     pub(crate) storage_max_objects: u64,
     /// Explicit writable data byte cap (otherwise memory minus filesystem metadata).
     #[arg(long, global = true)]
@@ -63,7 +68,7 @@ pub(crate) struct Cli {
     #[arg(long = "network-host", global = true, value_name = "HOST:PORT")]
     pub(crate) network_hosts: Vec<String>,
     /// Bound cumulative sent and received network bytes for this invocation.
-    #[arg(long, global = true, default_value_t = 8 * 1024 * 1024 * 1024u64)]
+    #[arg(long, global = true, default_value_t = defaults().network_max_bytes)]
     pub(crate) network_max_bytes: u64,
 
     /// Define scope constants (KEY=VALUE), injected into Rhai scope before execution
@@ -106,7 +111,7 @@ pub(crate) enum Commands {
         autofix: bool,
 
         /// Maximum number of patch attempts per failing install step.
-        #[arg(long, default_value_t = 2)]
+        #[arg(long, default_value_t = levitate_recipe::AutoFixConfig::default().attempts)]
         autofix_attempts: u8,
 
         /// Working directory used for LLM invocation and patch application. Defaults to the current working directory.

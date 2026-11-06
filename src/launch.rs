@@ -109,31 +109,15 @@ pub(crate) struct LaunchReport {
 /// here evaluates recipe code on the host.
 pub(crate) fn run_domain(
     prepared: &PreparedInvocation,
-    operation: crate::worker::protocol::Operation,
-    cleanup_reason: Option<&str>,
+    invocation: &crate::backend::Invocation<'_>,
     launcher: &Path,
-    persist_state: bool,
-    options: &crate::worker::protocol::InvocationOptions,
-    destination: &Path,
-    state_dir: Option<&Path>,
-    recipe: &Path,
 ) -> Result<LaunchReport> {
+    let state_dir = invocation.state_dir;
     let diagnostics = crate::invocation_log::InvocationLog::new(
         &crate::retained::state_root(state_dir)?,
         &prepared.invocation_id,
     )?;
-    let outcome = run_domain_inner(
-        prepared,
-        operation,
-        cleanup_reason,
-        launcher,
-        persist_state,
-        options,
-        destination,
-        state_dir,
-        recipe,
-        &diagnostics,
-    );
+    let outcome = run_domain_inner(prepared, invocation, launcher, &diagnostics);
     use crate::invocation_log::Status;
     let (status, details) = match &outcome {
         Ok(report) => (
@@ -164,16 +148,20 @@ pub(crate) fn run_domain(
 
 fn run_domain_inner(
     prepared: &PreparedInvocation,
-    operation: crate::worker::protocol::Operation,
-    cleanup_reason: Option<&str>,
+    invocation: &crate::backend::Invocation<'_>,
     launcher: &Path,
-    persist_state: bool,
-    options: &crate::worker::protocol::InvocationOptions,
-    destination: &Path,
-    state_dir: Option<&Path>,
-    recipe: &Path,
     diagnostics: &crate::invocation_log::InvocationLog,
 ) -> Result<LaunchReport> {
+    let crate::backend::Invocation {
+        operation,
+        cleanup_reason,
+        recipe,
+        persist_state,
+        ref options,
+        destination,
+        state_dir,
+        ..
+    } = *invocation;
     let invocation = prepared.invocation_id.clone();
     let timeout = frame_timeout()?;
     let _destination_lock = crate::retained::lock_destination(destination, timeout)?;

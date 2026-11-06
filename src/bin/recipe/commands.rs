@@ -207,11 +207,8 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-fn emit_json(ctx: &rhai::Map, path: Option<&Path>) -> Result<()> {
-    let dynamic = rhai::Dynamic::from(ctx.clone());
-    let json: serde_json::Value = rhai::serde::from_dynamic(&dynamic)
-        .map_err(|e| anyhow::anyhow!("Failed to serialize ctx: {}", e))?;
-    let json_str = serde_json::to_string(&json)?;
+fn emit_json(ctx: &serde_json::Value, path: Option<&Path>) -> Result<()> {
+    let json_str = serde_json::to_string(ctx)?;
     match path {
         Some(p) => {
             std::fs::write(p, &json_str)

@@ -223,152 +223,103 @@ impl RecipeEngine {
     /// 5. Checkpoint ctx.state together with matching owned files.
     ///
     /// Returns the final ctx map containing all recipe state.
-    pub fn execute(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        let attempts = self.autofix.as_ref().map(|cfg| cfg.attempts).unwrap_or(0);
-        if self.autofix.is_some() && !(1..=8).contains(&attempts) {
+    pub fn execute(&self, recipe_path: &Path) -> Result<serde_json::Value> {
+        let launcher = self.launcher()?;
+        let install = || {
+            crate::cancellation::check()?;
+            self.invoke(&launcher, worker::protocol::Operation::Install, None, recipe_path)
+        };
+        let Some(cfg) = &self.autofix else {
+            return install();
+        };
+        if !(1..=8).contains(&cfg.attempts) {
             anyhow::bail!("autofix attempts must be between 1 and 8");
         }
-        let launcher = self.launcher()?;
-        for attempt in 0..=attempts {
-            crate::cancellation::check()?;
-            let result = launcher.run(
-                worker::protocol::Operation::Install,
-                None,
+        let mut repairs = 0;
+        loop {
+            let error = match install() {
+                Ok(ctx) => return Ok(ctx),
+                Err(error) => error,
+            };
+            let failure = error
+                .downcast_ref::<backend::WorkloadFailure>()
+                .filter(|failure| {
+                    !failure.fatal
+                        && worker::protocol::Reason::parse(&failure.reason)
+                            .is_some_and(worker::protocol::Reason::autofix_eligible)
+                });
+            let Some(failure) = failure.filter(|_| repairs < cfg.attempts) else {
+                return Err(error);
+            };
+            repairs += 1;
+            core::output::warning(&format!(
+                "autofix: repairing {} failure (attempt {repairs}/{})",
+                failure.phase, cfg.attempts
+            ));
+            core::autofix::run_and_apply(
+                cfg,
                 recipe_path,
                 self.recipes_path.as_deref(),
-                self.persist_state,
-                self.invocation_options(),
-                &self.inputs,
-                &self.build_dir,
-                self.state_dir.as_deref(),
-            );
-            match result {
-                Ok(ctx) => return Ok(ctx),
-                Err(error) => {
-                    let eligible =
-                        error
-                            .downcast_ref::<backend::WorkloadFailure>()
-                            .filter(|failure| {
-                                !failure.fatal
-                                    && worker::protocol::Reason::parse(&failure.reason)
-                                        .is_some_and(worker::protocol::Reason::autofix_eligible)
-                            });
-                    let Some(failure) = eligible else {
-                        return Err(error);
-                    };
-                    if attempt == attempts {
-                        return Err(error);
-                    }
-                    let cfg = self
-                        .autofix
-                        .as_ref()
-                        .expect("attempts require explicit autofix");
-                    core::output::warning(&format!(
-                        "autofix: repairing {} failure (attempt {}/{attempts})",
-                        failure.phase,
-                        attempt + 1
-                    ));
-                    core::autofix::run_and_apply(
-                        cfg,
-                        recipe_path,
-                        self.recipes_path.as_deref(),
-                        &self.defines,
-                        &failure.reason,
-                        &failure.message,
-                        self.llm_profile.as_deref(),
-                    )
-                    .context("coordinator autofix failed")?;
-                    // The next launch rediscovers and hashes all patched inputs;
-                    // saved state from the failed identity is never translated.
-                }
-            }
+                &self.defines,
+                &failure.reason,
+                &failure.message,
+                self.llm_profile.as_deref(),
+            )
+            .context("coordinator autofix failed")?;
+            // The next launch rediscovers and hashes all patched inputs;
+            // saved state from the failed identity is never translated.
         }
-        unreachable!("bounded retry returns on success or final failure")
     }
 
     /// Remove an installed package
     ///
     /// Returns the final ctx map after removal.
-    pub fn remove(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        self.launcher()?.run(
-            worker::protocol::Operation::Remove,
-            None,
-            recipe_path,
-            self.recipes_path.as_deref(),
-            self.persist_state,
-            self.invocation_options(),
-            &self.inputs,
-            &self.build_dir,
-            self.state_dir.as_deref(),
-        )
+    pub fn remove(&self, recipe_path: &Path) -> Result<serde_json::Value> {
+        self.invoke(&self.launcher()?, worker::protocol::Operation::Remove, None, recipe_path)
     }
 
     /// Clean up build artifacts with an explicit reason.
     ///
     /// Returns the final ctx map after cleanup.
-    pub fn cleanup_with_reason(&self, recipe_path: &Path, reason: &str) -> Result<rhai::Map> {
-        self.launcher()?.run(
-            worker::protocol::Operation::Cleanup,
-            Some(reason),
-            recipe_path,
-            self.recipes_path.as_deref(),
-            self.persist_state,
-            self.invocation_options(),
-            &self.inputs,
-            &self.build_dir,
-            self.state_dir.as_deref(),
-        )
+    pub fn cleanup_with_reason(&self, recipe_path: &Path, reason: &str) -> Result<serde_json::Value> {
+        self.invoke(&self.launcher()?, worker::protocol::Operation::Cleanup, Some(reason), recipe_path)
     }
 
     /// Execute `is_installed(ctx)` manually.
-    pub fn is_installed(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        self.launcher()?.run(
-            worker::protocol::Operation::IsInstalled,
-            None,
-            recipe_path,
-            self.recipes_path.as_deref(),
-            self.persist_state,
-            self.invocation_options(),
-            &self.inputs,
-            &self.build_dir,
-            self.state_dir.as_deref(),
-        )
+    pub fn is_installed(&self, recipe_path: &Path) -> Result<serde_json::Value> {
+        self.invoke(&self.launcher()?, worker::protocol::Operation::IsInstalled, None, recipe_path)
     }
 
     /// Execute `is_built(ctx)` manually.
-    pub fn is_built(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        self.launcher()?.run(
-            worker::protocol::Operation::IsBuilt,
-            None,
-            recipe_path,
-            self.recipes_path.as_deref(),
-            self.persist_state,
-            self.invocation_options(),
-            &self.inputs,
-            &self.build_dir,
-            self.state_dir.as_deref(),
-        )
+    pub fn is_built(&self, recipe_path: &Path) -> Result<serde_json::Value> {
+        self.invoke(&self.launcher()?, worker::protocol::Operation::IsBuilt, None, recipe_path)
     }
 
     /// Execute `is_acquired(ctx)` manually.
-    pub fn is_acquired(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        self.launcher()?.run(
-            worker::protocol::Operation::IsAcquired,
-            None,
-            recipe_path,
-            self.recipes_path.as_deref(),
-            self.persist_state,
-            self.invocation_options(),
-            &self.inputs,
-            &self.build_dir,
-            self.state_dir.as_deref(),
-        )
+    pub fn is_acquired(&self, recipe_path: &Path) -> Result<serde_json::Value> {
+        self.invoke(&self.launcher()?, worker::protocol::Operation::IsAcquired, None, recipe_path)
     }
 
-    fn invocation_options(&self) -> worker::protocol::InvocationOptions {
-        worker::protocol::InvocationOptions {
-            defines: self.defines.clone(),
-            execution: self.execution.clone(),
-        }
+    fn invoke(
+        &self,
+        launcher: &GinuxLauncher,
+        operation: worker::protocol::Operation,
+        cleanup_reason: Option<&str>,
+        recipe: &Path,
+    ) -> Result<serde_json::Value> {
+        launcher.run(&backend::Invocation {
+            operation,
+            cleanup_reason,
+            recipe,
+            search_path: self.recipes_path.as_deref(),
+            persist_state: self.persist_state,
+            options: worker::protocol::InvocationOptions {
+                defines: self.defines.clone(),
+                execution: self.execution.clone(),
+            },
+            inputs: &self.inputs,
+            destination: &self.build_dir,
+            state_dir: self.state_dir.as_deref(),
+        })
     }
 }
