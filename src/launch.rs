@@ -33,9 +33,9 @@
 //! the last complete pair; cancellation is forwarded and reaped before
 //! returning its distinct outcome.
 
+use crate::ginux::{Outcome, ResultRecord};
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -105,7 +105,7 @@ pub(crate) struct LaunchReport {
     pub launcher_code: Option<i32>,
     /// Authoritative result-file outcome (`exited`, `signaled`, or
     /// `supervisor-error`).
-    pub result_outcome: String,
+    pub result_outcome: crate::ginux::Outcome,
     /// Authoritative result-file exit code (workload exit when `exited`).
     pub result_code: Option<i64>,
     /// Total launcher/worker stderr bytes observed (retained portion is
@@ -143,7 +143,7 @@ pub(crate) fn run_domain(
             },
             serde_json::json!({
                 "worker": report.result, "checkpoints": report.generations,
-                "supervisor_outcome": report.result_outcome, "supervisor_code": report.result_code,
+                "supervisor_outcome": report.result_outcome.as_str(), "supervisor_code": report.result_code,
                 "log_bytes": report.log_total_bytes, "log_discarded_bytes": report.log_discarded_bytes}),
         ),
         Err(error) => (
@@ -304,13 +304,12 @@ fn run_domain_inner(
                 .flatten();
             let _ = worker_diagnostics.sync_all();
             let drained = join_drain(drain);
-            let file_note = read_result_file_note(&result_path);
             return Err(enrich_stream_error(
                 &invocation,
                 err,
                 exit,
                 &drained,
-                file_note.as_deref(),
+                &result_path,
                 worker_started,
             ));
         }
@@ -324,7 +323,7 @@ fn run_domain_inner(
     worker_diagnostics.sync_all()?;
     let exit = reaped?;
 
-    let record = read_result_record(&result_path, &invocation)?;
+    let record = crate::ginux::ResultRecord::read(&result_path, &invocation)?;
     check_agreement(&invocation, &stream.result, &record)?;
     check_launcher_exit(&invocation, &stream.result, &record, exit)?;
     if stream.result.ok {
@@ -521,26 +520,8 @@ fn capture_checkpoint(
     timeout: Duration,
 ) -> Result<u64> {
     let pending = retained.begin()?;
-    let path = pending.path.as_os_str().as_bytes();
-    let mut request = Vec::with_capacity(14 + path.len());
-    request.extend_from_slice(b"GXS1");
-    request.extend_from_slice(&pending.generation.to_le_bytes());
-    request.extend_from_slice(&(path.len() as u16).to_le_bytes());
-    request.extend_from_slice(path);
     control.reset(timeout);
-    control
-        .write_all(&request)
-        .context("cannot request filesystem snapshot")?;
-    let mut response = [0u8; 20];
-    control
-        .read_exact(&mut response)
-        .context("filesystem snapshot was not acknowledged")?;
-    if &response[..4] != b"GXA1"
-        || u64::from_le_bytes(response[4..12].try_into().unwrap()) != pending.generation
-        || response[12..].iter().any(|byte| *byte != 0)
-    {
-        bail!("invalid filesystem snapshot acknowledgement");
-    }
+    crate::ginux::request_snapshot(control, pending.generation, &pending.path)?;
     retained
         .commit(pending, &point.recipe, point.state.clone())
         .context("cannot persist checkpoint state/files pair")
@@ -723,13 +704,13 @@ fn enrich_stream_error(
     err: anyhow::Error,
     exit: Option<i32>,
     drained: &DrainedLog,
-    file_note: Option<&str>,
+    result_path: &Path,
     worker_started: bool,
 ) -> anyhow::Error {
     let text = format!("{err:#}");
     let category = crate::failure::Category::of(&err);
-    if let Some(note) = file_note
-        && note.contains("\"supervisor-error\"")
+    let file_note = crate::ginux::result_note(result_path);
+    if crate::ginux::peek_outcome(result_path) == Some(crate::ginux::Outcome::SupervisorError)
         && category == Some(crate::failure::Category::Protocol)
     {
         let (category, timing) = if worker_started {
@@ -754,7 +735,7 @@ fn enrich_stream_error(
     let detail = format!(
         "; invocation {invocation} launcher exit {}; {}; log tail: {}",
         exit_message(exit),
-        file_note.unwrap_or("no result file was produced"),
+        file_note.as_deref().unwrap_or("no result file was produced"),
         drained.tail,
     );
     match category {
@@ -925,102 +906,18 @@ fn join_drain(handle: Drain) -> DrainedLog {
 // Result file (authoritative per §2)
 // ---------------------------------------------------------------------------
 
-/// Parsed supervisor result record.
-struct ResultRecord {
-    outcome: String,
-    code: Option<i64>,
-    signal: Option<u64>,
-}
-
-/// JSON value kind for diagnostics.
-fn json_value_kind(value: &serde_json::Value) -> &'static str {
-    match value {
-        serde_json::Value::Null => "null",
-        serde_json::Value::Bool(_) => "a boolean",
-        serde_json::Value::Number(_) => "a number",
-        serde_json::Value::String(_) => "a string",
-        serde_json::Value::Array(_) => "an array",
-        serde_json::Value::Object(_) => "an object",
-    }
-}
-
-/// Terse note about result-file state for stream-error diagnostics.
-fn read_result_file_note(result_path: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(result_path).ok()?;
-    let short: String = text.chars().take(300).collect();
-    Some(format!("result file present: {short}"))
-}
-
-/// Read and validate the supervisor result file. Missing or malformed is a
-/// `protocol` failure, never success (§2).
-fn read_result_record(result_path: &Path, invocation: &str) -> Result<ResultRecord> {
-    let text = std::fs::read_to_string(result_path).map_err(|err| {
-        anyhow::Error::new(crate::failure::Category::Protocol.error(format!("invocation {invocation} produced no result file at {}: \
-             {err:#} (missing result file is never success)",
-            result_path.display(),
-        )))
-    })?;
-    let value: serde_json::Value = serde_json::from_str(&text).map_err(|err| {
-        anyhow::Error::new(crate::failure::Category::Protocol.error(format!("invocation {invocation} result file is not valid JSON: \
-             {err:#} (malformed result file is never success)"
-        )))
-    })?;
-    let version = value.get("version").and_then(|v| v.as_u64());
-    if version != Some(1) {
-        bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} result file has unsupported \
-             version {version:?} (want 1)"
-        )));
-    }
-    let outcome = value
-        .get("outcome")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    if !matches!(outcome, "exited" | "signaled" | "supervisor-error") {
-        bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} result file has unknown outcome \
-             {outcome:?} (want exited|signaled|supervisor-error)"
-        )));
-    }
-    let field = |name: &str| match value.get(name) {
-        None => Ok(None),
-        Some(serde_json::Value::Null) => Ok(None),
-        Some(serde_json::Value::Number(n)) => n.as_i64().map(Some).ok_or_else(|| {
-            anyhow::Error::new(crate::failure::Category::Protocol.error(format!("invocation {invocation} result file field {name:?} \
-                 is not an integer"
-            )))
-        }),
-        Some(other) => bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} result file field {name:?} is {}, \
-             want an integer or null",
-            json_value_kind(other),
-        ))),
-    };
-    // `generation` belongs to Ginux's numbering; it is validated, not consumed.
-    field("generation")?;
-    Ok(ResultRecord {
-        outcome: outcome.to_string(),
-        code: field("code")?,
-        signal: field("signal")?
-            .map(u64::try_from)
-            .transpose()
-            .map_err(|_| {
-                crate::failure::Category::Protocol.error(format!(
-                    "invocation {invocation} result file field \"signal\" is negative"
-                ))
-            })?,
-    })
-}
-
 /// The stream result and the authoritative result file must agree. A worker
 /// `ok` requires a clean `exited`/`0` record; a worker failure requires the
 /// domain to have run it. Contradictions are `protocol` failures, never
 /// success.
 fn check_agreement(invocation: &str, result: &ResultPayload, record: &ResultRecord) -> Result<()> {
     if result.ok {
-        if record.outcome == "supervisor-error" {
+        if record.outcome == Outcome::SupervisorError {
             bail!(crate::failure::Category::Supervisor.error(format!("invocation {invocation} worker reported success but the \
                  supervisor failed during finalization (refusing publication)"
             )));
         }
-        if record.outcome != "exited" || record.code != Some(0) {
+        if record.outcome != Outcome::Exited || record.code != Some(0) {
             bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} worker reported success but \
                  the authoritative result is {}/{}",
                 record.outcome,
@@ -1033,7 +930,7 @@ fn check_agreement(invocation: &str, result: &ResultPayload, record: &ResultReco
         }
         return Ok(());
     }
-    if record.outcome == "supervisor-error" {
+    if record.outcome == Outcome::SupervisorError {
         bail!(crate::failure::Category::Supervisor.error(format!("invocation {invocation} worker reported failure and the \
              supervisor also failed during finalization (refusing publication)"
         )));
@@ -1059,12 +956,12 @@ fn check_launcher_exit(
         }
         return Ok(());
     }
-    if record.outcome == "signaled" {
+    if record.outcome == Outcome::Signaled {
         bail!(crate::failure::Category::Workload.error(format!("invocation {invocation} worker was terminated by signal {}",
             record.signal.map(|s| s.to_string()).unwrap_or_default(),
         )));
     }
-    if record.outcome == "exited" && record.code != Some(0) {
+    if record.outcome == Outcome::Exited && record.code != Some(0) {
         let detail = result
             .failure
             .as_ref()

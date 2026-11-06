@@ -31,6 +31,7 @@ mod core;
 mod diagnostics;
 mod domain;
 mod failure;
+mod ginux;
 #[doc(hidden)]
 pub mod fsx;
 mod helpers;

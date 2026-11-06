@@ -307,9 +307,6 @@ impl Retained {
             .prefix(&format!("{GENERATION_PREFIX}{generation}-"))
             .tempdir_in(&self.directory)?;
         let path = directory.path().join(FILES);
-        if path.as_os_str().as_bytes().len() > 512 {
-            bail!("state snapshot destination exceeds launcher path bound");
-        }
         Ok(Pending {
             directory,
             path,
