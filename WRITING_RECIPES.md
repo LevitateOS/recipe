@@ -177,12 +177,16 @@ truncated, malformed or wrong-digest transfers cannot replace valid bytes.
 
 Use `git_checkout(url, exact_dest, full_commit)` for pinned Git. The destination
 is exact, the commit is a full 40/64-hex object id, and acquisition validates the
-origin and selected tree. Local repositories must be explicit imported inputs;
-remote transport uses the invocation's mediated network grants.
+origin and selected tree. Git URLs must identify the direct repository; Git
+redirects are disabled. Cached repositories with includes, URL rewrites,
+TLS/proxy overrides, filters or duplicate origins are rejected without changing
+the cache. Hooks, fsmonitor, replacement objects and submodule recursion are
+disabled. Local repositories must be explicit imported inputs; remote transport
+uses the invocation's mediated network grants.
 
 Callers grant endpoint authorities with repeated `--network-host HOST:PORT` or
 `RecipeEngine::with_network_hosts`. Recipes cannot add grants. Networking stays
-off by default. Every redirect destination needs a grant; choose a direct
+off by default. Every HTTP download redirect destination needs a grant; choose a direct
 publisher endpoint where possible. Network byte/connection bounds and teardown
 apply to helpers and subprocess clients alike. Metadata helpers do not make
 unverified package payloads trustworthy.

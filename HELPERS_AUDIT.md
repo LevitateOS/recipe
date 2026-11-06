@@ -98,12 +98,15 @@ check unless the recipe explicitly handles them. Phase hooks return context.
 `download` requires a full SHA256. Its optional fourth boolean requests checked
 resume. Errors in status, length, range identity, hash or destination publication
 cannot replace a previously valid destination. `git_checkout` requires a full
-commit and exact destination. URL/version/digest facts remain recipe-owned.
+commit, exact destination and direct repository URL; Git redirects are disabled.
+Cached includes, URL rewrites, transport overrides, filters and duplicate origins
+are rejected intact. Hooks, fsmonitor, replacement objects and submodule
+recursion are disabled. URL/version/digest facts remain recipe-owned.
 
 Network helpers and external clients need explicit caller-granted endpoint
 permissions. Metadata helpers are bounded conveniences; downloading a payload
 and then trusting a digest calculated from those same unauthenticated bytes is
-not source verification. Redirect targets also need grants.
+not source verification. HTTP download redirect targets also need grants.
 
 `extract` is a checked archive operation, not a success marker. External RPM
 pipelines must check the converter and extractor independently. Runtime support

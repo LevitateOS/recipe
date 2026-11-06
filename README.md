@@ -199,7 +199,9 @@ UDP, proxy, listening service or native host-network fallback.
 
 `download(url, dest, sha256[, resume])` verifies staged bytes before replacing a
 valid destination. `git_checkout(url, exact_dest, full_commit)` requires a full
-40/64-hex commit. Redirect destinations also require explicit endpoint grants.
+40/64-hex commit and a direct repository URL: Git redirects are disabled, and
+cached repository settings that override transport or execute hooks/filters are
+rejected. HTTP download redirect destinations need explicit endpoint grants.
 Source recipes own version/URL/digest facts; Rust/TOML declares permissions.
 Canonical rootfs source policy also declares `memory_mib` and
 `preseed_memory_mib`: Fedora uses 8192 MiB and Alpine 4096 MiB. Fedora's
