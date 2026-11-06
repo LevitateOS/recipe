@@ -108,7 +108,7 @@ impl DomainConfig {
         out.push_str(&format!("vcpus = {}\n", self.vcpus));
         out.push_str(&format!("memory_mib = {}\n", self.memory_mib));
         out.push_str("\n[execution]\nprofile = \"balanced\"\nbackend = \"ptrace-native\"\n");
-        out.push_str("\n[contract]\nprofile = \"balanced\"\n");
+        out.push_str("\n[contract]\nprofile = \"gate5-balanced-v1\"\n");
         // Only domain paths cross this interface. The launcher's memory backend
         // owns these bytes; no writable host directory is assigned.
         out.push_str(&format!(
