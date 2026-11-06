@@ -94,7 +94,7 @@ pub(crate) fn publish(
     // copying data or following arbitrary archive paths.
     let payloads = staging.0.path().join(".payloads");
     fs::create_dir(&payloads)?;
-    let mut regulars = BTreeMap::<String, (PathBuf, u32)>::new();
+    let mut regulars = BTreeMap::<String, (PathBuf, u32, u64)>::new();
     for (raw_count, entry) in archive.entries()?.raw(true).enumerate() {
         if raw_count >= max_entries * 3 {
             bail!("excessive export headers");
@@ -175,6 +175,10 @@ pub(crate) fn publish(
             bail!("invalid export size");
         }
         let mode = entry.header().mode()? & 0o777;
+        let mtime = entry.header().mtime()?;
+        let modified = std::time::UNIX_EPOCH
+            .checked_add(std::time::Duration::from_secs(mtime))
+            .context("invalid export timestamp")?;
         let payload = if kind.is_file() {
             let payload = payloads.join(regulars.len().to_string());
             let mut file = OpenOptions::new()
@@ -185,9 +189,10 @@ pub(crate) fn publish(
             if std::io::copy(&mut entry, &mut file)? != size {
                 bail!("truncated export entry");
             }
+            file.set_modified(modified)?;
             file.set_permissions(fs::Permissions::from_mode(mode))?;
             file.sync_all()?;
-            regulars.insert(path.to_owned(), (payload.clone(), mode));
+            regulars.insert(path.to_owned(), (payload.clone(), mode, mtime));
             Some(payload)
         } else if kind.is_hard_link() {
             let target = target
@@ -196,14 +201,14 @@ pub(crate) fn publish(
                 .to_str()
                 .context("hardlink target must be UTF-8")?;
             validate_path(target)?;
-            let (payload, prior_mode) = regulars
+            let (payload, prior_mode, prior_mtime) = regulars
                 .get(target)
                 .context("hardlink target must be a prior regular file")?
                 .clone();
-            if mode != prior_mode {
-                bail!("hardlink modes disagree");
+            if mode != prior_mode || mtime != prior_mtime {
+                bail!("hardlink metadata disagrees");
             }
-            regulars.insert(path.to_owned(), (payload.clone(), mode));
+            regulars.insert(path.to_owned(), (payload.clone(), mode, mtime));
             Some(payload)
         } else {
             None
@@ -229,10 +234,10 @@ pub(crate) fn publish(
                 destination.join(suffix)
             };
             if kind.is_symlink() {
-                links.insert(destination, target.as_ref().unwrap().clone());
+                links.insert(destination, (target.as_ref().unwrap().clone(), mtime));
             } else if kind.is_dir() {
                 fs::create_dir_all(&destination)?;
-                directories.insert(destination, mode);
+                directories.insert(destination, (mode, modified));
             } else {
                 fs::create_dir_all(destination.parent().context("missing output parent")?)?;
                 fs::hard_link(payload.as_ref().unwrap(), destination)?;
@@ -255,8 +260,31 @@ pub(crate) fn publish(
             bail!("export symlink conflicts with a file or parent directory");
         }
     }
-    for (destination, target) in &links {
+    for (destination, (target, mtime)) in &links {
         std::os::unix::fs::symlink(target, destination)?;
+        let path = CString::new(destination.as_os_str().as_bytes())?;
+        let times = [
+            libc::timespec {
+                tv_sec: 0,
+                tv_nsec: libc::UTIME_OMIT,
+            },
+            libc::timespec {
+                tv_sec: (*mtime).try_into().context("invalid symlink timestamp")?,
+                tv_nsec: 0,
+            },
+        ];
+        if unsafe {
+            libc::utimensat(
+                libc::AT_FDCWD,
+                path.as_ptr(),
+                times.as_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error())
+                .context("cannot preserve symlink timestamp");
+        }
     }
     // Rootfs products may contain absolute links meaningful inside their future
     // root. Preserve their bytes; never follow them while publishing.
@@ -267,7 +295,8 @@ pub(crate) fn publish(
         }
     }
     // Apply directory modes after all children and links have been created.
-    for (directory, mode) in directories.iter().rev() {
+    for (directory, (mode, modified)) in directories.iter().rev() {
+        File::open(directory)?.set_modified(*modified)?;
         File::open(directory)?.sync_all()?;
         fs::set_permissions(directory, fs::Permissions::from_mode(*mode))?;
     }

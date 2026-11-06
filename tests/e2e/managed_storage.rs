@@ -27,6 +27,9 @@ fn is_built(ctx) {
 fn build(ctx) {
     mkdir("/out/rootfs");
     copy_tree_contents("/inputs/rootfs", "/out/rootfs");
+    exec_checked("/usr/bin/touch",["-d","@1234567890","/out/rootfs/usr/bin/tool"]);
+    exec_checked("/usr/bin/touch",["-h","-d","@1234567891","/out/rootfs/absolute-link"]);
+    exec_checked("/usr/bin/touch",["-d","@1234567892","/out/rootfs/usr/bin"]);
     ctx
 }
 fn is_installed(ctx) {
@@ -90,6 +93,19 @@ fn cleanup(ctx, reason) {
     assert_eq!(
         std::fs::read_link(first_root.join("absolute-link")).unwrap(),
         Path::new("/usr/bin/tool")
+    );
+    assert_eq!(std::fs::metadata(&first_file).unwrap().mtime(), 1234567890);
+    assert_eq!(
+        std::fs::symlink_metadata(first_root.join("absolute-link"))
+            .unwrap()
+            .mtime(),
+        1234567891
+    );
+    assert_eq!(
+        std::fs::metadata(first_root.join("usr/bin"))
+            .unwrap()
+            .mtime(),
+        1234567892
     );
     let second = invoke("cleanup");
     let second_file = Path::new(second["outputs"]["rootfs"].as_str().unwrap()).join("usr/bin/tool");
