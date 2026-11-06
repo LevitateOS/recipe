@@ -29,6 +29,7 @@ impl GinuxLauncher {
     pub fn run(
         &self,
         operation: crate::worker::protocol::Operation,
+        cleanup_reason: Option<&str>,
         recipe: &Path,
         search_path: Option<&Path>,
         persist_state: bool,
@@ -55,6 +56,7 @@ impl GinuxLauncher {
         let report = crate::launch::run_domain(
             &prepared,
             operation,
+            cleanup_reason,
             &self.path,
             persist_state,
             &options,
@@ -80,13 +82,17 @@ impl GinuxLauncher {
             report.result_outcome,
         );
         if !report.result.ok {
-            let failure = report.failure.as_ref();
-            let first = report.result.failures.first();
+            // The protocol guarantees a failure record on every non-ok result.
+            let failure = report
+                .result
+                .failure
+                .clone()
+                .expect("protocol: a failed result carries its failure");
             return Err(anyhow::Error::new(WorkloadFailure {
-                fatal: failure.map(|failure| failure.fatal).unwrap_or(true),
-                phase: first.map(|failure|failure.phase.clone()).unwrap_or_default(),
-                reason: first.map(|failure|failure.reason.clone()).unwrap_or_default(),
-                message: first.map(|failure|failure.message.clone()).unwrap_or_else(||"worker failed without detail".into()),
+                fatal: failure.fatal,
+                phase: failure.phase,
+                reason: failure.reason,
+                message: failure.message,
             }).context(crate::failure::Category::Workload.error(format!("`{operation}` failed in the Ginux domain (invocation {})", prepared.invocation_id))));
         }
         ctx_summary_to_map(&report.result.ctx_summary).map_err(|err| {

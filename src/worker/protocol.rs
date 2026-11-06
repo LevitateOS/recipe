@@ -14,7 +14,7 @@
 //! - `total-length` is the full frame size **including** its own 4 bytes, so
 //!   `payload.len() == total-length - HEADER_LEN` with
 //!   `HEADER_LEN == 14` (4 + 4 + 4 + 2).
-//! - `version` is always [`PROTOCOL_VERSION`] (6). Anything else is a
+//! - `version` is always [`PROTOCOL_VERSION`] (7). Anything else is a
 //!   `protocol` failure: the receiver aborts, never retries on the same
 //!   invocation.
 //! - `seq` numbers each direction independently starting at 1. The receiver
@@ -54,7 +54,7 @@ use std::io::{Read, Write};
 use serde::{Deserialize, Serialize};
 
 /// Protocol version carried in every frame header.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Maximum total frame size in bytes (4 MiB), header included.
 pub const MAX_FRAME_LEN: usize = 4 * 1024 * 1024;
@@ -84,7 +84,6 @@ pub enum Op {
     Request = 1,
     Checkpoint = 2,
     Ack = 3,
-    Failure = 4,
     Result = 5,
     Diagnostic = 6,
 }
@@ -95,7 +94,6 @@ impl Op {
             Self::Request => "request",
             Self::Checkpoint => "checkpoint",
             Self::Ack => "ack",
-            Self::Failure => "failure",
             Self::Result => "result",
             Self::Diagnostic => "diagnostic",
         }
@@ -107,7 +105,6 @@ impl Op {
             1 => Ok(Op::Request),
             2 => Ok(Op::Checkpoint),
             3 => Ok(Op::Ack),
-            4 => Ok(Op::Failure),
             5 => Ok(Op::Result),
             6 => Ok(Op::Diagnostic),
             other => Err(ProtocolError::UnknownOp(other)),
@@ -118,7 +115,7 @@ impl Op {
     pub fn direction(self) -> Direction {
         match self {
             Op::Request | Op::Ack => Direction::HostToWorker,
-            Op::Checkpoint | Op::Failure | Op::Result | Op::Diagnostic => Direction::WorkerToHost,
+            Op::Checkpoint | Op::Result | Op::Diagnostic => Direction::WorkerToHost,
         }
     }
 }
@@ -247,11 +244,8 @@ pub fn restored_state_budget(options: &InvocationOptions) -> Result<usize, Proto
         invocation_id: "x".repeat(MAX_INVOCATION_ID),
         operation: Operation::Install,
         persist_state: true,
-        recipe_digest: "0".repeat(64),
-        options: InvocationOptions {
-            cleanup_reason: "x".repeat(MAX_CLEANUP_REASON),
-            ..options.clone()
-        },
+        cleanup_reason: Some("x".repeat(MAX_CLEANUP_REASON)),
+        options: options.clone(),
         restored_states: Default::default(),
     });
     Ok(MAX_FRAME_LEN.saturating_sub(encode_message(u32::MAX, &request)?.len()))
@@ -269,8 +263,8 @@ pub struct RequestPayload {
     pub operation: Operation,
     /// Caller persist flag (`--no-persist-state` negated).
     pub persist_state: bool,
-    /// Digest of the recipe inputs (opaque string, no path).
-    pub recipe_digest: String,
+    /// The cleanup reason, present exactly when `operation` is cleanup.
+    pub cleanup_reason: Option<String>,
     /// Explicit invocation options; never inferred from coordinator environment.
     pub options: InvocationOptions,
     /// Matching per-recipe runtime state; the coordinator restores its files.
@@ -281,7 +275,6 @@ pub struct RequestPayload {
 #[serde(deny_unknown_fields)]
 pub struct InvocationOptions {
     pub defines: Vec<(String, String)>,
-    pub cleanup_reason: String,
     pub execution: crate::ExecutionOptions,
 }
 
@@ -289,7 +282,6 @@ impl Default for InvocationOptions {
     fn default() -> Self {
         Self {
             defines: Vec::new(),
-            cleanup_reason: Reason::Manual.as_str().into(),
             execution: crate::ExecutionOptions::default(),
         }
     }
@@ -311,7 +303,7 @@ impl InvocationOptions {
         self.execution
             .validate()
             .map_err(|error| ProtocolError::PayloadInvalid(error.to_string()))?;
-        if self.defines.len() > 64 || self.cleanup_reason.len() > MAX_CLEANUP_REASON {
+        if self.defines.len() > 64 {
             return Err(ProtocolError::PayloadInvalid(
                 "invocation options exceed their bounds".into(),
             ));
@@ -356,27 +348,17 @@ pub struct CheckpointPayload {
 pub struct AckPayload {
     /// Checkpoint `seq` being acknowledged.
     pub seq: u64,
-    /// Durable storage generation now backing that checkpoint.
-    pub generation: u64,
+    /// Durable storage generation now backing that checkpoint; `None` when
+    /// persistence is disabled and nothing will be recovered.
+    pub generation: Option<u64>,
 }
 
-/// Op 4 (worker→host): structured failure instead of (or before) a result.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FailurePayload {
-    /// True when the invocation cannot continue (no further frames but
-    /// `result` still terminates the stream).
-    pub fatal: bool,
-    /// Phase that failed (empty when the failure is not phase-scoped).
-    pub phase: String,
-    /// Machine-readable reason.
-    pub reason: String,
-    /// Human-readable detail (goes to logs, never parsed).
-    pub message: String,
-}
-
-/// One entry of [`ResultPayload::failures`].
+/// Why an invocation failed ([`ResultPayload::failure`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FailureInfo {
+    /// True when the invocation could not run its lifecycle (not autofix-eligible).
+    pub fatal: bool,
+    /// Phase that failed (empty when the failure is not phase-scoped).
     pub phase: String,
     pub reason: String,
     pub message: String,
@@ -387,7 +369,8 @@ pub struct FailureInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResultPayload {
     pub ok: bool,
-    pub failures: Vec<FailureInfo>,
+    /// Present exactly when `ok` is false.
+    pub failure: Option<FailureInfo>,
     /// Summary of the final `ctx` (plain JSON, no paths required).
     pub ctx_summary: serde_json::Value,
 }
@@ -497,7 +480,6 @@ pub enum FramePayload {
     Request(RequestPayload),
     Checkpoint(CheckpointPayload),
     Ack(AckPayload),
-    Failure(FailurePayload),
     Result(ResultPayload),
     Diagnostic(DiagnosticPayload),
 }
@@ -508,7 +490,6 @@ impl FramePayload {
             FramePayload::Request(_) => Op::Request,
             FramePayload::Checkpoint(_) => Op::Checkpoint,
             FramePayload::Ack(_) => Op::Ack,
-            FramePayload::Failure(_) => Op::Failure,
             FramePayload::Result(_) => Op::Result,
             FramePayload::Diagnostic(_) => Op::Diagnostic,
         }
@@ -663,8 +644,26 @@ pub fn valid_invocation_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+fn check_result(p: &ResultPayload) -> Result<(), ProtocolError> {
+    if p.ok == p.failure.is_some() {
+        return Err(ProtocolError::PayloadInvalid(
+            "a result carries a failure exactly when it is not ok".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn check_request(p: &RequestPayload) -> Result<(), ProtocolError> {
     p.options.validate_for(p.operation)?;
+    match (&p.cleanup_reason, p.operation) {
+        (Some(reason), Operation::Cleanup) if reason.len() <= MAX_CLEANUP_REASON => {}
+        (None, operation) if operation != Operation::Cleanup => {}
+        _ => {
+            return Err(ProtocolError::PayloadInvalid(
+                "a cleanup reason (≤ 4096 B) comes with cleanup and only with cleanup".into(),
+            ));
+        }
+    }
     if p.restored_states.len() > 1024 || (!p.persist_state && !p.restored_states.is_empty()) {
         return Err(ProtocolError::PayloadInvalid(
             "invalid restored state set".into(),
@@ -715,8 +714,10 @@ fn serialize_payload(payload: &FramePayload) -> Result<Vec<u8>, ProtocolError> {
             serde_json::to_vec(p)
         }
         FramePayload::Ack(p) => serde_json::to_vec(p),
-        FramePayload::Failure(p) => serde_json::to_vec(p),
-        FramePayload::Result(p) => serde_json::to_vec(p),
+        FramePayload::Result(p) => {
+            check_result(p)?;
+            serde_json::to_vec(p)
+        }
         FramePayload::Diagnostic(p) => {
             check_diagnostic(p)?;
             serde_json::to_vec(p)
@@ -755,12 +756,6 @@ fn parse_payload(op: Op, seq: u32, json: &[u8]) -> Result<Frame, ProtocolError> 
             })?;
             FramePayload::Ack(p)
         }
-        Op::Failure => {
-            let p: FailurePayload = serde_json::from_str(text).map_err(|e| {
-                ProtocolError::PayloadInvalid(format!("failure payload malformed: {e}"))
-            })?;
-            FramePayload::Failure(p)
-        }
         Op::Diagnostic => {
             let p: DiagnosticPayload = serde_json::from_str(text).map_err(|e| {
                 ProtocolError::PayloadInvalid(format!("diagnostic payload malformed: {e}"))
@@ -772,6 +767,7 @@ fn parse_payload(op: Op, seq: u32, json: &[u8]) -> Result<Frame, ProtocolError> 
             let p: ResultPayload = serde_json::from_str(text).map_err(|e| {
                 ProtocolError::PayloadInvalid(format!("result payload malformed: {e}"))
             })?;
+            check_result(&p)?;
             FramePayload::Result(p)
         }
     };

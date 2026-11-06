@@ -68,8 +68,6 @@ pub struct ExtraInput {
 pub struct Discovered {
     /// Staged inputs sorted by domain name.
     pub inputs: Vec<StagedInput>,
-    /// sha256 hex of the main recipe source (protocol `recipe_digest`).
-    pub recipe_digest: String,
     /// Main recipe file stem (invocation-id basis).
     pub recipe_stem: String,
     /// Canonical host recipe directories (leak-check markers, never emitted).
@@ -85,7 +83,6 @@ pub fn discover_inputs(
     let mut collector = Collector::new(search_path);
 
     let recipe_source = read_recipe_file(recipe)?;
-    let recipe_digest = hex::encode(Sha256::digest(recipe_source.as_bytes()));
     let recipe_stem = recipe
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
@@ -157,7 +154,7 @@ pub fn discover_inputs(
         }
     }
 
-    collector.finish(recipe_digest, recipe_stem)
+    collector.finish(recipe_stem)
 }
 
 /// Resolve the discovered link graph without consulting the live host tree.
@@ -442,7 +439,7 @@ impl<'a> Collector<'a> {
         )
     }
 
-    fn finish(self, recipe_digest: String, recipe_stem: String) -> Result<Discovered> {
+    fn finish(self, recipe_stem: String) -> Result<Discovered> {
         let mut inputs = self.staged;
         inputs.sort_by(|left, right| left.name.cmp(&right.name));
         use std::os::unix::fs::MetadataExt;
@@ -464,7 +461,6 @@ impl<'a> Collector<'a> {
         }
         Ok(Discovered {
             inputs,
-            recipe_digest,
             recipe_stem,
             host_dirs: self.host_dirs,
         })

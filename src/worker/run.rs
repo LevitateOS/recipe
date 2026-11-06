@@ -44,7 +44,7 @@ use crate::core::executor::{
     install_with_context, remove_with_context, run_check_with_context,
 };
 use crate::worker::protocol::{
-    CheckpointPayload, Direction, FailureInfo, FailurePayload, FramePayload, FrameReceiver,
+    CheckpointPayload, Direction, FailureInfo, FramePayload, FrameReceiver,
     FrameSender, RequestPayload, ResultPayload,
 };
 
@@ -233,25 +233,18 @@ pub fn run_worker() -> Result<()> {
     }
     let tx = &mut channel.sender;
     match outcome {
-        Ok(summary) => send_result(tx, &mut output, true, Vec::new(), summary),
+        Ok(summary) => send_result(tx, &mut output, true, None, summary),
         Err(failure) => {
-            send_failure(
-                tx,
-                &mut output,
-                failure.fatal,
-                &failure.phase,
-                failure.reason,
-                &failure.message,
-            )?;
             send_result(
                 tx,
                 &mut output,
                 false,
-                vec![FailureInfo {
+                Some(FailureInfo {
+                    fatal: failure.fatal,
                     phase: failure.phase,
                     reason: failure.reason.to_string(),
                     message: failure.message,
-                }],
+                }),
                 serde_json::Value::Object(serde_json::Map::new()),
             )
         }
@@ -367,7 +360,7 @@ fn run_operation(
             &local.recipe,
             search_path,
             &defines,
-            &req.options.cleanup_reason,
+            req.cleanup_reason.as_deref().unwrap_or(Reason::Manual.as_str()),
             req.persist_state,
             &mut exec,
         )
@@ -465,7 +458,7 @@ fn report_checkpoint(
     compiled: &CompiledRecipe,
     ctx_map: &rhai::Map,
     point: CheckpointPoint,
-) -> Result<u64> {
+) -> Result<Option<u64>> {
     *checkpoint_no += 1;
     let seq = *checkpoint_no;
     let state = match ctx_map.get("state") {
@@ -505,7 +498,7 @@ fn report_checkpoint(
     drop(channel);
     let generation = wait_ack(rx, input, seq, ack_timeout)?;
     crate::diagnostics::trace(&format!(
-        "worker: checkpoint #{seq} acked (generation {generation})"
+        "worker: checkpoint #{seq} acked (generation {generation:?})"
     ));
     Ok(generation)
 }
@@ -517,7 +510,7 @@ fn wait_ack(
     input: &mut impl Read,
     checkpoint_no: u64,
     timeout: Duration,
-) -> Result<u64> {
+) -> Result<Option<u64>> {
     wait_readable(timeout)
         .with_context(|| format!("wait for ack of checkpoint #{checkpoint_no}"))?;
     let frame = rx
@@ -575,54 +568,32 @@ fn wait_readable(timeout: Duration) -> Result<()> {
 /// `failure` (fatal) then `result`, so the host never hangs on a silent
 /// worker. Send errors propagate (transport collapse → nonzero exit).
 fn abort(tx: &mut FrameSender, output: &mut impl Write, reason: &str, message: &str) -> Result<()> {
-    send_failure(tx, output, true, "", reason, message)?;
     send_result(
         tx,
         output,
         false,
-        vec![FailureInfo {
+        Some(FailureInfo {
+            fatal: true,
             phase: String::new(),
             reason: reason.to_string(),
             message: message.to_string(),
-        }],
+        }),
         serde_json::Value::Object(serde_json::Map::new()),
     )
-}
-
-fn send_failure(
-    tx: &mut FrameSender,
-    output: &mut impl Write,
-    fatal: bool,
-    phase: &str,
-    reason: &str,
-    message: &str,
-) -> Result<()> {
-    tx.send(
-        output,
-        &FramePayload::Failure(FailurePayload {
-            fatal,
-            phase: phase.to_string(),
-            reason: reason.to_string(),
-            message: message.to_string(),
-        }),
-    )
-    .map_err(|e| anyhow!("send failure: {e}"))?;
-    output.flush().context("flush failure")?;
-    Ok(())
 }
 
 fn send_result(
     tx: &mut FrameSender,
     output: &mut impl Write,
     ok: bool,
-    failures: Vec<FailureInfo>,
+    failure: Option<FailureInfo>,
     ctx_summary: serde_json::Value,
 ) -> Result<()> {
     tx.send(
         output,
         &FramePayload::Result(ResultPayload {
             ok,
-            failures,
+            failure,
             ctx_summary,
         }),
     )

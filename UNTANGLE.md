@@ -1147,4 +1147,12 @@ Special cases: **168** at audit start.
   - The worker's checkpoint-ack wait is bounded by the invocation's execution deadline, not a fixed 300 s.
   - Left for **X3b** (wire change plus a protocol version bump): A33 `recipe_digest`, A34/A35/H1 duplicated failure frame and the exit-0 convention, A37 `cleanup_reason` on every request, I5/J50–J52 multi-channel state/ids/persist, H2/H3 worker stdout/stdin coupling, A43, C31/H27 generation sentinel, H28.
   - Checks: build clean, CLI snapshots byte-identical. Privileged suite: pending.
+  - X8 follow-up commit: the shared image validator had reworded user-facing errors ("unsafe rootfs image path", "unsafe archive path", …), which broke `image_producer` and two `managed_inputs::cli_image_*` tests in the X8 privileged run. The original texts are restored, and those three tests pass again.
+- [x] **X3 (part b: protocol v7)** Commit: `git log --grep "X3b:"`.
+  - `PROTOCOL_VERSION` 6 → 7. The retained identity tag now derives from it (A59), so a protocol change invalidates saved state on purpose.
+  - The request drops the unread `recipe_digest` (A33) and carries `cleanup_reason: Option<String>` exactly for cleanup (A37, validated). `InvocationOptions` has no cleanup reason.
+  - The separate failure frame is gone: `ResultPayload.failure: Option<FailureInfo{fatal, phase, reason, message}>` is present exactly when `!ok` (validated both ways). The backend builds `WorkloadFailure` from that one record (A34/A35: no more "fatal defaults to true" when a frame was missing). `abort` sends the same shape.
+  - `AckPayload.generation: Option<u64>` replaces the `UNGROUNDED_GENERATION = 0` sentinel (C31/H27).
+  - Still open in X3: H1 (exit-code convention), H2/H3 (worker stdout/stdin writer coupling, the suspect in the intermittent git test), I5/J50–J52, H28, A43. These are concentrated in `launch`/`worker::run` and are taken up with X6.
+  - Checks: build clean, CLI snapshots byte-identical. Privileged suite: pending.
 

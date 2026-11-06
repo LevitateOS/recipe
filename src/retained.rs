@@ -122,7 +122,10 @@ impl Retained {
             })
             .collect::<Vec<_>>();
         let identity = hex::encode(Sha256::digest(serde_json::to_vec(&(
-            "recipe-state-v1-transport-v6",
+            &format!(
+                "recipe-state-v1-transport-v{}",
+                crate::worker::protocol::PROTOCOL_VERSION
+            ),
             &prepared.network,
             &prepared.root_reference,
             worker_digest,

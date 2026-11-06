@@ -55,8 +55,6 @@ use anyhow::{Context, Result, bail};
 pub struct PreparedInvocation {
     /// `<recipe-name>-<unix-millis>-<pid>`, `[A-Za-z0-9_-]{1,64}` (§5).
     pub invocation_id: String,
-    /// sha256 hex of the main recipe source (protocol `recipe_digest`).
-    pub recipe_digest: String,
     /// Staged inputs sorted by domain name (recipe, base, imports, extras).
     pub inputs: Vec<StagedInput>,
     pub(crate) root_reference: String,
@@ -126,7 +124,6 @@ pub fn prepare_invocation(
 
     Ok(PreparedInvocation {
         invocation_id,
-        recipe_digest: discovered.recipe_digest,
         inputs: discovered.inputs,
         root_reference: config.root_reference().to_owned(),
         network,

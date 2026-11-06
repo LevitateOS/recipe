@@ -217,10 +217,11 @@ impl RecipeEngine {
             crate::cancellation::check()?;
             let result = launcher.run(
                 worker::protocol::Operation::Install,
+                None,
                 recipe_path,
                 self.recipes_path.as_deref(),
                 self.persist_state,
-                self.invocation_options(worker::protocol::Reason::Manual.as_str()),
+                self.invocation_options(),
                 &self.inputs,
                 &self.build_dir,
                 self.state_dir.as_deref(),
@@ -275,10 +276,11 @@ impl RecipeEngine {
     pub fn remove(&self, recipe_path: &Path) -> Result<rhai::Map> {
         self.launcher()?.run(
             worker::protocol::Operation::Remove,
+            None,
             recipe_path,
             self.recipes_path.as_deref(),
             self.persist_state,
-            self.invocation_options(worker::protocol::Reason::Manual.as_str()),
+            self.invocation_options(),
             &self.inputs,
             &self.build_dir,
             self.state_dir.as_deref(),
@@ -291,10 +293,11 @@ impl RecipeEngine {
     pub fn cleanup_with_reason(&self, recipe_path: &Path, reason: &str) -> Result<rhai::Map> {
         self.launcher()?.run(
             worker::protocol::Operation::Cleanup,
+            Some(reason),
             recipe_path,
             self.recipes_path.as_deref(),
             self.persist_state,
-            self.invocation_options(reason),
+            self.invocation_options(),
             &self.inputs,
             &self.build_dir,
             self.state_dir.as_deref(),
@@ -305,10 +308,11 @@ impl RecipeEngine {
     pub fn is_installed(&self, recipe_path: &Path) -> Result<rhai::Map> {
         self.launcher()?.run(
             worker::protocol::Operation::IsInstalled,
+            None,
             recipe_path,
             self.recipes_path.as_deref(),
             self.persist_state,
-            self.invocation_options(worker::protocol::Reason::Manual.as_str()),
+            self.invocation_options(),
             &self.inputs,
             &self.build_dir,
             self.state_dir.as_deref(),
@@ -319,10 +323,11 @@ impl RecipeEngine {
     pub fn is_built(&self, recipe_path: &Path) -> Result<rhai::Map> {
         self.launcher()?.run(
             worker::protocol::Operation::IsBuilt,
+            None,
             recipe_path,
             self.recipes_path.as_deref(),
             self.persist_state,
-            self.invocation_options(worker::protocol::Reason::Manual.as_str()),
+            self.invocation_options(),
             &self.inputs,
             &self.build_dir,
             self.state_dir.as_deref(),
@@ -333,20 +338,20 @@ impl RecipeEngine {
     pub fn is_acquired(&self, recipe_path: &Path) -> Result<rhai::Map> {
         self.launcher()?.run(
             worker::protocol::Operation::IsAcquired,
+            None,
             recipe_path,
             self.recipes_path.as_deref(),
             self.persist_state,
-            self.invocation_options(worker::protocol::Reason::Manual.as_str()),
+            self.invocation_options(),
             &self.inputs,
             &self.build_dir,
             self.state_dir.as_deref(),
         )
     }
 
-    fn invocation_options(&self, cleanup_reason: &str) -> worker::protocol::InvocationOptions {
+    fn invocation_options(&self) -> worker::protocol::InvocationOptions {
         worker::protocol::InvocationOptions {
             defines: self.defines.clone(),
-            cleanup_reason: cleanup_reason.to_owned(),
             execution: self.execution.clone(),
         }
     }

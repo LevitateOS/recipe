@@ -22,7 +22,7 @@
 //!   appear in human diagnostics, never as results.
 //! - Acknowledged checkpoints record `{seq → generation}` in the returned
 //!   report after the supervisor snapshot and matching state record are durable.
-//!   Disabled persistence acknowledges generation 0 without promising recovery.
+//!   Disabled persistence acknowledges with no generation: nothing will be recovered.
 //!
 //! Before launch, the input owner snapshots and verifies the selected assembled
 //! rootfs tar, creates a fresh domain root, and copies the worker plus staged
@@ -74,21 +74,17 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 /// Bytes of log tail attached to failure diagnostics.
 const LOG_TAIL_BYTES: usize = 4096;
 
-/// Explicitly non-resumable acknowledgement when persistence is disabled.
-const UNGROUNDED_GENERATION: u64 = 0;
 
 /// Outcome of one supervised domain run.
 #[derive(Debug)]
 pub(crate) struct LaunchReport {
     /// The exactly-once worker result frame.
     pub result: ResultPayload,
-    /// The worker `failure` frame when the worker sent one before `result`.
-    pub failure: Option<crate::worker::protocol::FailurePayload>,
     /// Checkpoints acked during the run.
     pub checkpoints_acked: u64,
     /// Invocation-local `{checkpoint seq → acked generation}` association
     /// (§4).
-    pub generations: Vec<(u64, u64)>,
+    pub generations: Vec<(u64, Option<u64>)>,
     /// Launcher exit code when it exited normally (`None` when killed or
     /// signaled).
     pub launcher_code: Option<i32>,
@@ -109,11 +105,12 @@ pub(crate) struct LaunchReport {
 /// protocol to exactly one result.
 ///
 /// Restore matching state/files and acknowledge new checkpoints only after both
-/// are durable. Disabled persistence uses [`UNGROUNDED_GENERATION`]. No path
+/// are durable. Disabled persistence acknowledges without a generation. No path
 /// here evaluates recipe code on the host.
 pub(crate) fn run_domain(
     prepared: &PreparedInvocation,
     operation: crate::worker::protocol::Operation,
+    cleanup_reason: Option<&str>,
     launcher: &Path,
     persist_state: bool,
     options: &crate::worker::protocol::InvocationOptions,
@@ -125,6 +122,7 @@ pub(crate) fn run_domain(
     let outcome = run_domain_inner(
         prepared,
         operation,
+        cleanup_reason,
         launcher,
         persist_state,
         options,
@@ -150,6 +148,7 @@ pub(crate) fn run_domain(
 fn run_domain_inner(
     prepared: &PreparedInvocation,
     operation: crate::worker::protocol::Operation,
+    cleanup_reason: Option<&str>,
     launcher: &Path,
     persist_state: bool,
     options: &crate::worker::protocol::InvocationOptions,
@@ -272,7 +271,7 @@ fn run_domain_inner(
     let pump = pump_protocol(
         &invocation,
         operation,
-        &prepared.recipe_digest,
+        cleanup_reason,
         persist_state,
         options,
         stdin,
@@ -337,7 +336,6 @@ fn run_domain_inner(
 
     Ok(LaunchReport {
         result: stream.result,
-        failure: stream.failure,
         checkpoints_acked: stream.checkpoints,
         generations: stream.generations,
         launcher_code: exit,
@@ -351,9 +349,8 @@ fn run_domain_inner(
 /// Completed worker stream: exactly one result plus the relayed checkpoints.
 struct WorkerStream {
     result: ResultPayload,
-    failure: Option<crate::worker::protocol::FailurePayload>,
     checkpoints: u64,
-    generations: Vec<(u64, u64)>,
+    generations: Vec<(u64, Option<u64>)>,
     stdin: DeadlinePipe<std::process::ChildStdin>,
     execution_deadline: Instant,
 }
@@ -365,7 +362,7 @@ struct WorkerStream {
 fn pump_protocol(
     invocation: &str,
     operation: crate::worker::protocol::Operation,
-    recipe_digest: &str,
+    cleanup_reason: Option<&str>,
     persist_state: bool,
     options: &crate::worker::protocol::InvocationOptions,
     stdin: std::process::ChildStdin,
@@ -387,7 +384,7 @@ fn pump_protocol(
             invocation_id: invocation.to_string(),
             operation,
             persist_state,
-            recipe_digest: recipe_digest.to_string(),
+            cleanup_reason: cleanup_reason.map(str::to_owned),
             options: options.clone(),
             restored_states: retained
                 .as_ref()
@@ -402,7 +399,6 @@ fn pump_protocol(
 
     let mut checkpoints: u64 = 0;
     let mut generations = Vec::new();
-    let mut failure = None;
     let mut diagnostic_budget = crate::worker::protocol::DiagnosticBudget::default();
     let execution_deadline = Instant::now() + Duration::from_secs(options.execution.timeout_secs);
     let result = loop {
@@ -461,16 +457,16 @@ fn pump_protocol(
                     bail!("checkpoint sequence mismatch");
                 }
                 let generation = if let Some(state) = retained.as_mut() {
-                    capture_checkpoint(
+                    Some(capture_checkpoint(
                         state,
                         control
                             .as_mut()
                             .context("missing snapshot control socket")?,
                         &point,
                         timeout,
-                    )?
+                    )?)
                 } else {
-                    UNGROUNDED_GENERATION
+                    None
                 };
                 generations.push((seq, generation));
                 stdin.reset(timeout);
@@ -485,15 +481,6 @@ fn pump_protocol(
                     classify_stream_error(invocation, "flush checkpoint ack", err, false)
                 })?;
             }
-            FramePayload::Failure(payload) => {
-                if failure.is_some() {
-                    bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} sent a second failure \
-                         frame (at most one failure before the exactly-once result; refusing \
-                         host fallback)"
-                    )));
-                }
-                failure = Some(payload);
-            }
             FramePayload::Result(payload) => break payload,
             FramePayload::Request(_) | FramePayload::Ack(_) => {
                 bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} received a host-direction \
@@ -505,7 +492,6 @@ fn pump_protocol(
 
     Ok(WorkerStream {
         result,
-        failure,
         checkpoints,
         generations,
         stdin,
@@ -1056,8 +1042,8 @@ fn check_launcher_exit(
     }
     if record.outcome == "exited" && record.code != Some(0) {
         let detail = result
-            .failures
-            .first()
+            .failure
+            .as_ref()
             .map(|failure| {
                 format!(
                     "phase={} reason={}: {}",
