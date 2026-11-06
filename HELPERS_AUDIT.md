@@ -59,9 +59,6 @@ check unless the recipe explicitly handles them. Phase hooks return context.
 | `is_dir` | `helpers/install/filesystem.rs` | `is_dir(path) -> bool` | Directory check in the domain view. |
 | `is_file` | `helpers/install/filesystem.rs` | `is_file(path) -> bool` | Regular file check in the domain view. |
 | `join_path` | ``helpers/util/paths.rs`` | `join_path(a, b) -> String` | Pure join |
-| `llm_extract` | `helpers/llm.rs` | `llm_extract(content, prompt) -> String` | Unavailable inside the worker; optional repair belongs to coordinator. |
-| `llm_find_download_url` | `helpers/llm.rs` | `llm_find_download_url(content, criteria) -> String` | Unavailable inside the worker. |
-| `llm_find_latest_version` | `helpers/llm.rs` | `llm_find_latest_version(url, project) -> String` | Unavailable inside the worker. |
 | `ln` | ``helpers/install/filesystem.rs`` | `ln(target, link) -> ()` | symlink (unix) |
 | `ln_force` | ``helpers/install/filesystem.rs`` | `ln_force(target, link) -> ()` | replace existing link/path |
 | `log` | ``helpers/util/log.rs`` | `log(msg) -> ()` | diagnostic stream via `src/diagnostics.rs` |

@@ -199,7 +199,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             );
             println!(
                 "  {}",
-                format!("verify_sha256(\"{}\");", hashes.sha256).green()
+                format!("verify_sha256(path, \"{}\");", hashes.sha256).green()
             );
         }
     }

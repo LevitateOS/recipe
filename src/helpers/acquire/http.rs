@@ -9,44 +9,20 @@ use crate::core::output;
 use rhai::EvalAltResult;
 use std::io::Read;
 use std::path::Path;
-use std::sync::OnceLock;
 use std::time::Duration;
 
-/// Default HTTP timeout in seconds
-const DEFAULT_HTTP_TIMEOUT_SECS: u64 = 30;
-
-/// Get HTTP timeout from environment variable or use default.
-/// Cached for performance (only reads env var once).
-fn get_http_timeout() -> Duration {
-    static TIMEOUT: OnceLock<Duration> = OnceLock::new();
-    *TIMEOUT.get_or_init(|| {
-        let secs = std::env::var("RECIPE_HTTP_TIMEOUT")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(DEFAULT_HTTP_TIMEOUT_SECS);
-        // Clamp to reasonable range (5-300 seconds)
-        Duration::from_secs(secs.clamp(5, 300))
-    })
-}
+/// Metadata request timeout. Helpers run in the worker, whose environment
+/// carries no coordinator settings, so this is fixed.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Default GitHub API base URL
 const GITHUB_API_BASE: &str = "https://api.github.com";
 
-/// Get GitHub token from environment, if set.
-/// Tokens increase rate limits from 60/hr to 5000/hr.
-fn get_github_token() -> Option<String> {
-    std::env::var("GITHUB_TOKEN").ok()
-}
-
-/// Create a GitHub API request builder with proper headers and optional auth.
+/// Create an unauthenticated GitHub API request (the worker holds no credentials).
 fn github_request(url: &str) -> Result<ureq::Request, Box<EvalAltResult>> {
-    let mut request = super::http_request(url, get_http_timeout())?
+    let request = super::http_request(url, HTTP_TIMEOUT)?
         .set("Accept", "application/vnd.github.v3+json")
         .set("User-Agent", "recipe-package-manager");
-
-    if let Some(token) = get_github_token() {
-        request = request.set("Authorization", &format!("Bearer {}", token));
-    }
 
     Ok(request)
 }
@@ -72,7 +48,7 @@ fn response_json(response: ureq::Response) -> Result<serde_json::Value, Box<Eval
 
 /// Fetch content from a URL (GET request)
 pub fn http_get(url: &str) -> Result<String, Box<EvalAltResult>> {
-    let response = super::http_request(url, get_http_timeout())?
+    let response = super::http_request(url, HTTP_TIMEOUT)?
         .call()
         .map_err(|error| format!("HTTP GET failed: {error}"))?;
     response_text(response)

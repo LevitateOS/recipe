@@ -1221,4 +1221,13 @@ Special cases: **168** at audit start.
     - The `ginux: audit` absence checks: they guard an external contract on purpose.
   - No ignored doctests remain: the nine `ignore` examples were removed in X1 and X8. There are no unit tests.
   - Still open in X16: the shared `ManagedCommand` builder and fixtures (F1–F8), tests reading private layouts (F26–F33), literals copied from src (F10–F25), the environment preflight (F37), timing-dependent fixtures (F39–F45), and F52 `cheat-test`.
+- [~] **X11** Helper registry (first part). Commit: `git log --grep "X11:"`.
+  - The `llm_*` helpers are removed from the worker, which has no provider, config or credentials (E42/E43/E73/E75/D15; approved default). `helpers/llm.rs` is deleted, and the catalog rows and README are updated.
+  - Knobs that cannot reach the worker are removed (D14/D32/C32):
+    - the `RECIPE_TRACE_HELPERS` trace (with every `trace_helper` call and the "rerun with RECIPE_TRACE_HELPERS=1" advice);
+    - `RECIPE_HTTP_TIMEOUT`, now a fixed 30 s metadata timeout;
+    - `GITHUB_TOKEN`: GitHub requests are unauthenticated, as they effectively already were in the worker.
+  - The stale check advice ("return ctx on success path") now names `ready`/`needs_work` (C33).
+  - `recipe hash` prints `verify_sha256(path, "<hash>")` (B76). This is the one intended CLI snapshot difference (`hash-hello.txt`).
+  - Still open in X11: per-family registration with one name per helper (D1/D10/D11/E23), readiness constructors owned by core (C10/D9), generated catalog docs (D2/D3/D6/D37), and the consistent helper policies (E5, E13–E20, E30–E37, E40, D18–D23, D25, D30, D31, D36, D40, D44, J5, J6, J9–J11, J19, J21, J22).
 

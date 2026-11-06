@@ -21,7 +21,7 @@ pub(crate) fn report_phase_failure(name: &str, phase: &str, error: &Error) {
     output::error(&format!("{name}: {phase} recipe step failed"));
     output::detail(&format!("  reason: {error}"));
     output::detail(
-        "  action: check the corresponding recipe function, then rerun with RECIPE_TRACE_HELPERS=1 for helper-level traces.",
+        "  action: check the corresponding recipe function.",
     );
     output::detail(
         "  action: if this fails on shell command output, reproduce that command manually and fix the underlying environment/network/path issue first.",

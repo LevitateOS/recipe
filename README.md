@@ -236,8 +236,8 @@ provider fallback. A named profile can override provider settings.
 Use `--autofix-attempts` (1–8, default 2), `--autofix-cwd`, `--autofix-prompt-file` and repeated
 `--autofix-allow-path` to bound repair. Patches cannot alter readiness checks,
 change disallowed paths or hide command failures. Changed recipe bytes create a
-new invocation identity; old state is not restored across a patch. Recipe-side
-LLM helpers are unavailable inside the worker.
+new invocation identity; old state is not restored across a patch. Recipes have
+no LLM helpers; the provider never runs inside the worker.
 
 ## Validation and limits
 

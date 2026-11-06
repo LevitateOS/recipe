@@ -218,7 +218,7 @@ pub(crate) fn run_check_with_context(
             output::hook_event(&name, &format!("check.{check_name}"), crate::core::events::HookStatus::Failed, &format!("{e}"));
             output::error(&format!("{name}: {check_name} check failed"));
             output::detail(&format!("  reason: {e}"));
-            output::detail("  action: check that function and return ctx on success path; rerun with RECIPE_TRACE_HELPERS=1.");
+            output::detail("  action: check that function; it must return ready(ctx) or needs_work(ctx, reason).");
             anyhow!("{check_name} failed: {e}")
         })?;
 
