@@ -299,6 +299,7 @@ fn run_domain_inner(
         &mut control,
         &mut worker_diagnostics,
         &mut worker_started,
+        timeout,
     );
     let mut stream = match pump {
         Ok(stream) => stream,
@@ -391,8 +392,8 @@ fn pump_protocol(
     control: &mut Option<DeadlinePipe<UnixStream>>,
     worker_diagnostics: &mut std::fs::File,
     worker_started: &mut bool,
+    timeout: Duration,
 ) -> Result<WorkerStream> {
-    let timeout = frame_timeout()?;
     let mut stdin = DeadlinePipe::new(stdin, timeout)?;
     let mut stdout = DeadlinePipe::new(stdout, timeout)?;
     let mut tx = FrameSender::new();
