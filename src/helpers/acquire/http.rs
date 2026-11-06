@@ -54,6 +54,14 @@ pub fn http_get(url: &str) -> Result<String, Box<EvalAltResult>> {
     response_text(response)
 }
 
+fn github_error(repo: &str, error: ureq::Error) -> String {
+    match error {
+        ureq::Error::Status(403, _) => "GitHub API rate limit exceeded. Try again later.".into(),
+        ureq::Error::Status(404, _) => format!("Repository '{repo}' not found"),
+        error => format!("GitHub API request failed: {error}"),
+    }
+}
+
 /// Get the latest release version from a GitHub repository
 ///
 /// # Arguments
@@ -64,22 +72,13 @@ pub fn http_get(url: &str) -> Result<String, Box<EvalAltResult>> {
 pub fn github_latest_release(repo: &str) -> Result<String, Box<EvalAltResult>> {
     let url = format!("{}/repos/{}/releases/latest", GITHUB_API_BASE, repo);
 
-    let response = github_request(&url)?.call().map_err(|e| {
-        // Handle rate limiting specifically
-        if let ureq::Error::Status(403, _) = e {
-            return "GitHub API rate limit exceeded. Try again later.".into();
-        }
-        if let ureq::Error::Status(404, _) = e {
-            return format!("Repository '{}' not found", repo);
-        }
-        format!("GitHub API request failed: {}", e)
-    })?;
+    let response = github_request(&url)?.call().map_err(|e| github_error(repo, e))?;
 
     let json = response_json(response)?;
 
     json.get("tag_name")
         .and_then(|v| v.as_str())
-        .map(|s| s.trim_start_matches('v').to_string())
+        .map(|s| s.strip_prefix('v').unwrap_or(s).to_string())
         .ok_or_else(|| "No tag_name in GitHub response".into())
 }
 
@@ -93,16 +92,7 @@ pub fn github_latest_release(repo: &str) -> Result<String, Box<EvalAltResult>> {
 pub fn github_latest_tag(repo: &str) -> Result<String, Box<EvalAltResult>> {
     let url = format!("{}/repos/{}/tags", GITHUB_API_BASE, repo);
 
-    let response = github_request(&url)?.call().map_err(|e| {
-        // Handle rate limiting specifically
-        if let ureq::Error::Status(403, _) = e {
-            return "GitHub API rate limit exceeded. Try again later.".into();
-        }
-        if let ureq::Error::Status(404, _) = e {
-            return format!("Repository '{}' not found", repo);
-        }
-        format!("GitHub API request failed: {}", e)
-    })?;
+    let response = github_request(&url)?.call().map_err(|e| github_error(repo, e))?;
 
     let json = response_json(response)?;
 
@@ -110,7 +100,7 @@ pub fn github_latest_tag(repo: &str) -> Result<String, Box<EvalAltResult>> {
         .and_then(|arr| arr.first())
         .and_then(|v| v.get("name"))
         .and_then(|v| v.as_str())
-        .map(|s| s.trim_start_matches('v').to_string())
+        .map(|s| s.strip_prefix('v').unwrap_or(s).to_string())
         .ok_or_else(|| "No tags found in GitHub response".into())
 }
 
@@ -148,15 +138,7 @@ pub fn github_download_release(
     super::verify::validate_sha256(sha256)?;
     // Get latest release info
     let url = format!("{}/repos/{}/releases/latest", GITHUB_API_BASE, repo);
-    let response = github_request(&url)?.call().map_err(|e| {
-        if let ureq::Error::Status(403, _) = e {
-            return "GitHub API rate limit exceeded. Try again later.".into();
-        }
-        if let ureq::Error::Status(404, _) = e {
-            return format!("Repository '{}' not found", repo);
-        }
-        format!("GitHub API request failed: {}", e)
-    })?;
+    let response = github_request(&url)?.call().map_err(|e| github_error(repo, e))?;
 
     let json = response_json(response)?;
 

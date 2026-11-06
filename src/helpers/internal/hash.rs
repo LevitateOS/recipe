@@ -28,17 +28,37 @@ impl HashAlgorithm {
             Self::Blake3 => "BLAKE3",
         }
     }
+
+    fn hex_len(self) -> usize {
+        match self {
+            Self::Sha256 | Self::Blake3 => 64,
+            Self::Sha512 => 128,
+        }
+    }
+}
+
+/// The expected digest in lowercase, or an error when it is not one.
+pub fn expected_digest(expected: &str, algorithm: HashAlgorithm) -> Result<String, Box<EvalAltResult>> {
+    if expected.len() != algorithm.hex_len() || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!(
+            "expected {} must contain exactly {} hexadecimal characters",
+            algorithm.name(),
+            algorithm.hex_len()
+        )
+        .into());
+    }
+    Ok(expected.to_ascii_lowercase())
 }
 
 /// Verify a file's hash against an expected value.
 ///
 /// Shows progress for files larger than 100MB.
-
 pub fn verify_file_hash(
     file: &Path,
     expected: &str,
     algorithm: HashAlgorithm,
 ) -> Result<(), Box<EvalAltResult>> {
+    let expected = expected_digest(expected, algorithm)?;
     let mut f = std::fs::File::open(file).map_err(|e| format!("cannot open file: {}", e))?;
 
     // Size only decides whether to show progress.
@@ -67,12 +87,12 @@ pub fn verify_file_hash(
         }
     };
 
-    if hash != expected.to_lowercase() {
+    if hash != expected {
         return Err(format!(
             "{} integrity check failed for '{}'\n  expected: {}\n  got:      {}",
             algorithm.name(),
             file.display(),
-            expected.to_lowercase(),
+            expected,
             hash
         )
         .into());

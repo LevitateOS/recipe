@@ -26,10 +26,7 @@ pub(super) fn is_valid_sha256(s: &str) -> bool {
 
 /// Reject a malformed expected digest before any work starts.
 pub(super) fn validate_sha256(sha256: &str) -> Result<(), Box<EvalAltResult>> {
-    if !is_valid_sha256(sha256) {
-        return Err("download SHA256 must contain exactly 64 hexadecimal characters".into());
-    }
-    Ok(())
+    hash::expected_digest(sha256, HashAlgorithm::Sha256).map(drop)
 }
 
 pub(super) fn parse_sha256_from_checksum_file(content: &str, filename: &str) -> Option<String> {
