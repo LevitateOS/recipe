@@ -2,12 +2,8 @@
 //!
 //! Provides helpers for checking updates and fetching remote content.
 //!
-//! ## GitHub Authentication
-//!
-//! Set `GITHUB_TOKEN` environment variable to increase rate limits:
-//! ```bash
-//! export GITHUB_TOKEN="ghp_xxxxxxxxxxxxxxxxxxxx"
-//! ```
+//! Requests use the invocation's endpoint grants and the compiler image's TLS
+//! trust. Ordinary invocations do not inherit coordinator environment secrets.
 
 use crate::core::output;
 use rhai::EvalAltResult;
@@ -103,7 +99,7 @@ pub(crate) fn github_latest_release_with_base(
     let response = github_request(&url)?.call().map_err(|e| {
         // Handle rate limiting specifically
         if let ureq::Error::Status(403, _) = e {
-            return "GitHub API rate limit exceeded. Try again later or set GITHUB_TOKEN.".into();
+            return "GitHub API rate limit exceeded. Try again later.".into();
         }
         if let ureq::Error::Status(404, _) = e {
             return format!("Repository '{}' not found", repo);
@@ -140,7 +136,7 @@ pub(crate) fn github_latest_tag_with_base(
     let response = github_request(&url)?.call().map_err(|e| {
         // Handle rate limiting specifically
         if let ureq::Error::Status(403, _) = e {
-            return "GitHub API rate limit exceeded. Try again later or set GITHUB_TOKEN.".into();
+            return "GitHub API rate limit exceeded. Try again later.".into();
         }
         if let ureq::Error::Status(404, _) = e {
             return format!("Repository '{}' not found", repo);
@@ -205,7 +201,7 @@ fn github_download_release_impl(
     let url = format!("{}/repos/{}/releases/latest", base_url, repo);
     let response = github_request(&url)?.call().map_err(|e| {
         if let ureq::Error::Status(403, _) = e {
-            return "GitHub API rate limit exceeded. Try again later or set GITHUB_TOKEN.".into();
+            return "GitHub API rate limit exceeded. Try again later.".into();
         }
         if let ureq::Error::Status(404, _) = e {
             return format!("Repository '{}' not found", repo);
@@ -273,7 +269,7 @@ pub fn github_release_assets(repo: &str) -> Result<Vec<(String, String)>, Box<Ev
     let url = format!("{}/repos/{}/releases/latest", GITHUB_API_BASE, repo);
     let response = github_request(&url)?.call().map_err(|e| {
         if let ureq::Error::Status(403, _) = e {
-            return "GitHub API rate limit exceeded. Try again later or set GITHUB_TOKEN.".into();
+            return "GitHub API rate limit exceeded. Try again later.".into();
         }
         if let ureq::Error::Status(404, _) = e {
             return format!("Repository '{}' not found", repo);
