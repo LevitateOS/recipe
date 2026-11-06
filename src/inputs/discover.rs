@@ -20,14 +20,7 @@ use sha2::{Digest, Sha256};
 
 use crate::core::executor::parse_extends;
 
-/// Domain name of the main recipe inside `/inputs`.
-pub const MAIN_NAME: &str = "main.rhai";
-/// Domain path of the main recipe inside `/inputs`.
-pub const MAIN_NAME_DOMAIN: &str = "/inputs/main.rhai";
-
-/// Configured-launch inputs are copied directly, not through a ustar name field.
-/// Keep `/inputs/` + NAME + NUL within the launcher's 256-byte path buffer.
-const MAX_INPUT_NAME: usize = 247;
+use crate::domain::{MAIN_RECIPE_NAME as MAIN_NAME, MAX_INPUT_NAME};
 /// Explicit assets include installation DVDs; stream bounded copies.
 const MAX_INPUT_FILE: u64 = 16 * 1024 * 1024 * 1024;
 const MAX_INPUTS_TOTAL: u64 = 32 * 1024 * 1024 * 1024;
@@ -518,10 +511,10 @@ pub(super) fn validate_input_name(name: &str) -> Result<()> {
     if name
         .split('/')
         .any(|part| part.is_empty() || part == "." || part == "..")
-        || matches!(
-            name.split('/').next(),
-            Some("recipe-worker" | ".recipe-input-modes.json")
-        )
+        || name
+            .split('/')
+            .next()
+            .is_some_and(|first| crate::domain::RESERVED_INPUT_NAMES.contains(&first))
     {
         bail!("input preparation failure: input name {name:?} is reserved");
     }

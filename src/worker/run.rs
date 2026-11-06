@@ -122,24 +122,18 @@ struct LocalConfig {
 
 impl LocalConfig {
     fn from_env() -> Result<Self> {
-        let recipe = std::env::args_os()
-            .nth(2)
-            .map(PathBuf::from)
-            .context("private worker usage: recipe --__recipe-worker <recipe-path>")?;
+        let recipe = PathBuf::from(crate::domain::MAIN_RECIPE);
         if !recipe.exists() {
             bail!("worker recipe not found: {}", recipe.display());
         }
-        let build_dir = PathBuf::from("/work/build");
+        let build_dir = PathBuf::from(crate::domain::BUILD);
         if !build_dir.is_dir() {
             bail!(
                 "worker build directory is unavailable: {}",
                 build_dir.display()
             );
         }
-        let search_path = recipe
-            .parent()
-            .context("worker recipe has no parent directory")?
-            .to_path_buf();
+        let search_path = PathBuf::from(crate::domain::INPUTS);
         Ok(Self {
             recipe,
             build_dir,
@@ -288,16 +282,16 @@ pub fn run_worker() -> Result<()> {
 /// Require the private argv entry, the coordinator's bootstrap flag, and an
 /// invocation id. Public backend selection never uses these environment values.
 fn ensure_internal_entry() -> Result<String> {
-    if std::env::args_os().nth(1).as_deref()
-        != Some(std::ffi::OsStr::new(crate::worker::WORKER_ENTRY_ARG))
-        || std::env::args_os().count() != 3
-        || std::env::var("RECIPE_WORKER").as_deref() != Ok("1")
+    if !std::env::args_os()
+        .skip(1)
+        .eq(crate::domain::WORKER_ARGS.map(std::ffi::OsString::from))
+        || std::env::var(crate::domain::ENV_WORKER).as_deref() != Ok("1")
     {
         bail!(
             "private worker entry requires coordinator bootstrap arguments; refusing host execution"
         );
     }
-    let id = std::env::var("RECIPE_INVOCATION")
+    let id = std::env::var(crate::domain::ENV_INVOCATION)
         .context("private worker entry requires RECIPE_INVOCATION; refusing host execution")?;
     crate::inputs::validate_invocation_id(&id)?;
     Ok(id)

@@ -10,6 +10,3 @@ pub mod run;
 
 pub use run::run_worker;
 
-/// Private argv marker supplied only to the staged worker by the coordinator.
-#[doc(hidden)]
-pub const WORKER_ENTRY_ARG: &str = "--__recipe-worker";

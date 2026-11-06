@@ -135,21 +135,15 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
     let mut destination = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(inputs.join("recipe-worker"))?;
+        .open(inputs.join(crate::domain::WORKER_NAME))?;
     root.worker_digest = copy_hashed(&mut worker, &mut destination, MAX_WORKER_BYTES)?.1;
     destination.set_permissions(std::fs::Permissions::from_mode(0o555))?;
 
     // No shared cached tree or mutable hardlinks are handed to the domain.
     // Write syscalls still require Ginux storage mediation; these directories
     // do not grant native host filesystem access.
-    for path in [
-        "work",
-        "work/build",
-        super::TOOLS_DOMAIN_PATH.trim_start_matches('/'),
-        "work/tmp",
-        "out",
-    ] {
-        let directory = root.path().join(path);
+    for path in crate::domain::WRITABLE_DIRS {
+        let directory = root.path().join(path.trim_start_matches('/'));
         std::fs::create_dir(&directory)?;
         std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o777))?;
     }
@@ -159,10 +153,14 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
     let modes = invocation
         .inputs
         .iter()
-        .map(|input| (&input.name, input.mode))
-        .collect::<std::collections::BTreeMap<_, _>>();
-    let manifest = inputs.join(".recipe-input-modes.json");
-    std::fs::write(&manifest, serde_json::to_vec(&modes)?)?;
+        .map(|input| (input.name.clone(), input.mode))
+        .collect::<crate::domain::InputModes>();
+    let manifest = inputs.join(crate::domain::INPUT_MODES_NAME);
+    let modes = serde_json::to_vec(&modes)?;
+    if modes.len() as u64 > crate::domain::MAX_INPUT_MODES_BYTES {
+        bail!("input permission manifest exceeds its bound");
+    }
+    std::fs::write(&manifest, modes)?;
     std::fs::set_permissions(manifest, std::fs::Permissions::from_mode(0o444))?;
     for entry in walkdir::WalkDir::new(&inputs).follow_links(false) {
         let entry = entry?;
@@ -302,7 +300,7 @@ fn unpack_image(snapshot: File, root: &Path) -> Result<()> {
         if relative.as_os_str().is_empty() {
             bail!("empty rootfs image entry");
         }
-        if ["inputs", "work", "out"]
+        if crate::domain::RESERVED_ROOTS
             .iter()
             .any(|name| relative.starts_with(name))
         {

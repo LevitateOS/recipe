@@ -476,12 +476,12 @@ fn check_request(p: &RequestPayload) -> Result<(), ProtocolError> {
 }
 
 fn valid_recipe_identity(path: &str) -> bool {
-    path.len() <= 255
-        && path.starts_with("/inputs/")
+    path.len() <= crate::domain::MAX_PATH
         && !path.contains('\0')
-        && path[8..]
-            .split('/')
-            .all(|part| !part.is_empty() && part != "." && part != "..")
+        && crate::domain::input_name(path).is_some_and(|name| {
+            name.split('/')
+                .all(|part| !part.is_empty() && part != "." && part != "..")
+        })
 }
 
 fn check_checkpoint(p: &CheckpointPayload) -> Result<(), ProtocolError> {

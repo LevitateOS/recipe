@@ -1092,3 +1092,9 @@ Special cases: **168** at audit start.
   - Moved to later fixes because those fixes rewrite the same code: A43→X3, A79→X7, A83/B68→X4, C69/I19/I20→X10, I21→X9, E38/E74→X11, E66→X12, E60/E94–E96→X14. Moved to leave-as-is with reasons: A81, E41.
   - Checks: build clean, CLI snapshots byte-identical. Privileged suite: pending (started with the commit).
   - Bugs fixed: none.
+- [x] **X2** Name the Ginux domain layout once. Commit: `git log --grep "X2:"`.
+  - New `src/domain.rs` owns every in-domain fact: mount points, writable dirs and export roots, reserved image roots and input names, the main recipe/worker/modes-manifest names and paths, the `InputModes` schema and bound, `MAX_PATH`/`MAX_INPUT_NAME`, the worker argv and env names, and `tool_bin_dirs()`. `inputs/{config,env,root,discover}`, `publication`, `retained`, `worker::{run,protocol}`, `core::{invocation,executor::state}` and `helpers::install::filesystem` read it. No domain path literal remains outside `domain.rs`.
+  - The worker now checks its whole argv against `domain::WORKER_ARGS` and takes the recipe and search path from `domain`, instead of trusting argv[2]. The modes-manifest bound is checked by both writer and reader.
+  - Checks: build clean, CLI snapshots byte-identical. Privileged suite: pending.
+  - Bugs fixed: none.
+

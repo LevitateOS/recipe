@@ -26,8 +26,6 @@ const MAX_CONFIG: usize = 4096;
 /// the same reference validation. The launcher resolves the reference.
 const DEFAULT_ROOT_REF: &str = "oci:rocky-10.2.20260525.0-amd64-rootfs@sha256:1026f8d3b36eaea1bcab8e609045991f08c70eb7645cb37f58f48faa8b40be9c";
 
-/// Domain init: the worker binary shipped inside `/inputs`.
-const WORKER_INIT: &str = "/inputs/recipe-worker";
 
 /// Domain config for one invocation; [`DomainConfig::render`] produces the
 /// parser-accepted text.
@@ -47,21 +45,16 @@ pub struct DomainConfig {
 
 impl DomainConfig {
     /// Build the invocation config: id/root/init/args/env plus fixed
-    /// profile selections. `main_domain_path` is the staged main recipe
-    /// (`/inputs/main.rhai`); `env` is the §5 allowlisted environment.
-    ///
-    /// `args` carries argv *after* argv[0]: the launcher supplies argv[0]
-    /// from `init` (standard execve convention).
+    /// profile selections. `env` is the §5 allowlisted environment; the worker
+    /// init and argv come from [`crate::domain`].
     pub fn for_invocation(
         invocation_id: &str,
-        main_domain_path: &str,
         env: &[(String, String)],
         options: &crate::ExecutionOptions,
     ) -> Result<Self> {
         options.validate()?;
         validate_id(invocation_id)?;
         let root = root_reference()?;
-        validate_domain_path_value("args[0]", main_domain_path)?;
         if env.len() > MAX_ENV {
             bail!(
                 "input preparation failure: {} env entries exceed the §2 limit of {MAX_ENV} × 256 B",
@@ -86,11 +79,8 @@ impl DomainConfig {
         Ok(Self {
             id: invocation_id.to_string(),
             root,
-            init: WORKER_INIT.to_string(),
-            args: vec![
-                crate::worker::WORKER_ENTRY_ARG.to_string(),
-                main_domain_path.to_string(),
-            ],
+            init: crate::domain::WORKER.to_string(),
+            args: crate::domain::WORKER_ARGS.map(str::to_string).to_vec(),
             environment,
             vcpus,
             memory_mib: options.memory_mib,
@@ -130,7 +120,12 @@ impl DomainConfig {
         out.push_str("\n[contract]\nprofile = \"balanced\"\n");
         // Only domain paths cross this interface. The launcher's memory backend
         // owns these bytes; no writable host directory is assigned.
-        out.push_str("\n[storage]\nassignments = [\"memory:/work\", \"memory:/work/build\", \"memory:/work/tools\", \"memory:/work/tmp\", \"memory:/out\"]\n");
+        out.push_str(&format!(
+            "\n[storage]\nassignments = [{}]\n",
+            crate::domain::WRITABLE_DIRS
+                .map(|dir| format!("\"memory:{dir}\""))
+                .join(", ")
+        ));
         out.push_str(&format!("max_objects = {}\n", self.storage_max_objects));
         if let Some(bytes) = self.storage_max_bytes {
             out.push_str(&format!("max_bytes = {bytes}\n"));
@@ -184,22 +179,6 @@ fn validate_id(id: &str) -> Result<()> {
     env::validate_invocation_id(id)
 }
 
-
-fn validate_domain_path_value(field: &str, value: &str) -> Result<()> {
-    if value.len() > MAX_ARG {
-        bail!(
-            "input preparation failure: {field} {value:?} has {} B, exceeding §2 128 B",
-            value.len(),
-        );
-    }
-    if !value.starts_with('/') || value.contains("..") || value.contains('\0') {
-        bail!(
-            "input preparation failure: {field} {value:?} is not a domain path \
-             (want an absolute `/...` path with no `..`)"
-        );
-    }
-    Ok(())
-}
 
 /// Mirror of the domain parser's reference rule for `root`/`storage`/`devices`.
 fn validate_reference(value: &str) -> Result<()> {

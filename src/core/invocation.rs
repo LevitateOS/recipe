@@ -47,14 +47,11 @@ pub(crate) fn scope(
                 .unwrap_or_default()
                 .into(),
         ),
-        (
-            "tools".into(),
-            crate::inputs::TOOLS_DOMAIN_PATH.into(),
-        ),
-        ("inputs".into(), "/inputs".into()),
-        ("output".into(), "/out".into()),
-        ("target".into(), "/out".into()),
-        ("temp".into(), "/work/tmp".into()),
+        ("tools".into(), crate::domain::TOOLS.into()),
+        ("inputs".into(), crate::domain::INPUTS.into()),
+        ("output".into(), crate::domain::OUT.into()),
+        ("target".into(), crate::domain::OUT.into()),
+        ("temp".into(), crate::domain::TMP.into()),
     ]
     .into();
     let jobs = i64::from(options.jobs);

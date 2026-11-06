@@ -141,7 +141,7 @@ impl Retained {
         let allowed = prepared
             .inputs
             .iter()
-            .map(|input| format!("/inputs/{}", input.name))
+            .map(|input| crate::domain::input_path(&input.name))
             .collect::<HashSet<_>>();
         let record_path = directory.join("current.json");
         let current = match regular(&record_path) {
@@ -314,7 +314,7 @@ impl Retained {
         copy_hash(&mut input, &mut output, self.archive_bound)?;
         output.sync_all()?;
         drop(output);
-        self.commit(pending, "/inputs/main.rhai", state)
+        self.commit(pending, crate::domain::MAIN_RECIPE, state)
     }
 }
 

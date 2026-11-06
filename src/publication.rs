@@ -335,7 +335,7 @@ pub(crate) fn publish(
 }
 
 fn validate_path(path: &str) -> Result<()> {
-    if path.len() > 255
+    if path.len() > crate::domain::MAX_PATH
         || path.contains('\0')
         || path
             .split('/')
@@ -343,7 +343,11 @@ fn validate_path(path: &str) -> Result<()> {
     {
         bail!("invalid export path {path:?}");
     }
-    if !matches!(path.split('/').next(), Some("work" | "out")) {
+    if !path
+        .split('/')
+        .next()
+        .is_some_and(|root| crate::domain::WRITABLE_ROOTS.contains(&root))
+    {
         bail!("output is outside the writable domain filesystem: {path:?}");
     }
     Ok(())

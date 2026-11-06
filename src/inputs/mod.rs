@@ -36,15 +36,13 @@ mod root;
 pub(crate) use root::{prepare_root, seed_target};
 
 pub(crate) use config::DomainConfig;
-pub(crate) use discover::{ExtraInput, InputKind, MAIN_NAME_DOMAIN, StagedInput, discover_inputs};
+pub(crate) use discover::{ExtraInput, InputKind, StagedInput, discover_inputs};
 pub(crate) use env::{allowlisted_env, invocation_id, validate_invocation_id};
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-/// Canonical tool destination shared by root preparation and the executor.
-pub(crate) const TOOLS_DOMAIN_PATH: &str = "/work/tools";
 
 /// Operations the worker entry point dispatches (interfaces §4, op 1).
 const SUPPORTED_OPERATIONS: &[&str] = &[
@@ -110,7 +108,7 @@ pub fn prepare_invocation(
     let env = allowlisted_env(&invocation_id)?;
 
     let network = network::NetworkPolicy::resolve(options)?;
-    let config = DomainConfig::for_invocation(&invocation_id, MAIN_NAME_DOMAIN, &env, options)?
+    let config = DomainConfig::for_invocation(&invocation_id, &env, options)?
         .with_network(network.clone());
     let config_text = config.render()?;
 

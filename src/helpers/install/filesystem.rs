@@ -217,15 +217,15 @@ pub fn copy_tree_contents(src_dir: &str, dst_dir: &str) -> Result<(), Box<EvalAl
     }
 
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    let input_modes: std::collections::BTreeMap<String, u32> = if src_root.starts_with("/inputs") {
+    let input_modes: crate::domain::InputModes = if src_root.starts_with(crate::domain::INPUTS) {
         use std::io::Read;
-        let file = std::fs::File::open("/inputs/.recipe-input-modes.json")
+        let file = std::fs::File::open(crate::domain::INPUT_MODES)
             .map_err(|e| format!("cannot read immutable input modes: {e}"))?;
         let mut bytes = Vec::new();
-        file.take(32 * 1024 * 1024 + 1)
+        file.take(crate::domain::MAX_INPUT_MODES_BYTES + 1)
             .read_to_end(&mut bytes)
             .map_err(|e| format!("cannot read immutable input modes: {e}"))?;
-        if bytes.len() > 32 * 1024 * 1024 {
+        if bytes.len() as u64 > crate::domain::MAX_INPUT_MODES_BYTES {
             return Err("input mode metadata exceeds bound".into());
         }
         serde_json::from_slice(&bytes).map_err(|e| format!("invalid immutable input modes: {e}"))?
@@ -253,7 +253,7 @@ pub fn copy_tree_contents(src_dir: &str, dst_dir: &str) -> Result<(), Box<EvalAl
             )
         })?;
 
-        let permissions = if let Ok(relative) = path.strip_prefix("/inputs") {
+        let permissions = if let Ok(relative) = path.strip_prefix(crate::domain::INPUTS) {
             let name = relative
                 .to_str()
                 .ok_or("non-Unicode immutable input path")?;

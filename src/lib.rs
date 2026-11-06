@@ -28,6 +28,7 @@
 mod backend;
 mod cancellation;
 mod core;
+mod domain;
 mod helpers;
 mod inputs;
 mod launch;
@@ -55,7 +56,8 @@ pub mod bin_support {
     pub use crate::core::output::{info, set_machine_events};
     pub use crate::helpers::internal::hash::{FileHashes, compute_all_hashes};
     pub use crate::worker::protocol::{MAX_DIAGNOSTIC_BYTES, MAX_DIAGNOSTIC_FRAMES};
-    pub use crate::worker::{WORKER_ENTRY_ARG, run_worker};
+    pub use crate::domain::WORKER_ENTRY_ARG;
+    pub use crate::worker::run_worker;
 }
 
 use anyhow::{Context, Result};

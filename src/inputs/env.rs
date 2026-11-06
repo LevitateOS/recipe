@@ -73,16 +73,13 @@ pub fn validate_invocation_id(id: &str) -> Result<()> {
 /// and literals only.
 pub fn allowlisted_env(invocation_id: &str) -> Result<Vec<(String, String)>> {
     validate_invocation_id(invocation_id)?;
+    use crate::domain;
+    let mut path: Vec<String> = domain::tool_bin_dirs().collect();
+    path.extend([domain::TOOLS.into(), "/usr/bin".into(), "/bin".into()]);
     Ok(vec![
-        (
-            "PATH".to_string(),
-            format!(
-                "{0}/usr/bin:{0}/usr/sbin:{0}/bin:{0}/sbin:{0}:/usr/bin:/bin",
-                super::TOOLS_DOMAIN_PATH
-            ),
-        ),
-        ("RECIPE_WORKER".to_string(), "1".to_string()),
-        ("RECIPE_INVOCATION".to_string(), invocation_id.to_string()),
-        ("TMPDIR".to_string(), "/work/tmp".to_string()),
+        ("PATH".to_string(), path.join(":")),
+        (domain::ENV_WORKER.to_string(), "1".to_string()),
+        (domain::ENV_INVOCATION.to_string(), invocation_id.to_string()),
+        ("TMPDIR".to_string(), domain::TMP.to_string()),
     ])
 }

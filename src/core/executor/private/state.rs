@@ -32,13 +32,9 @@ pub(crate) fn resolve_deps(
     let original_path = crate::helpers::internal::cmd::environment("PATH").unwrap_or_default();
     let resolver = build_deps::BuildDepsResolver::new(engine, search_path, defines);
     resolver.resolve_with_context(dep_names, persist_enabled, exec)?;
-    let tools_prefix = Path::new(crate::inputs::TOOLS_DOMAIN_PATH);
-    let mut paths = vec![
-        tools_prefix.join("usr/bin"),
-        tools_prefix.join("usr/sbin"),
-        tools_prefix.join("bin"),
-        tools_prefix.join("sbin"),
-    ];
+    let tools_prefix = Path::new(crate::domain::TOOLS);
+    let mut paths: Vec<std::path::PathBuf> =
+        crate::domain::tool_bin_dirs().map(Into::into).collect();
     paths.extend(std::env::split_paths(&original_path));
     let path = std::env::join_paths(paths)?;
     let mut values = vec![(std::ffi::OsString::from("PATH"), path)];
