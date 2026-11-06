@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Every executable operation runs in a Ginux domain (API 2 recipes, coordinator-
+  owned state, checkpointing and publication); see `README.md`.
+- Worker protocol v7: one failure record per result, optional ack generations,
+  cleanup reasons only on cleanup. Saved state from earlier versions is not reused.
+- Default destinations are per recipe under the state directory.
+- The library API returns the final context as JSON.
+
+### Fixed
+
+- Tar hardlink members extract relative to the destination.
+- Zip symlink members extract as links; archive modes drop setuid/setgid/sticky.
+- `git apply` during autofix no longer writes to the CLI's JSON stdout.
+
 ## [0.1.4] - 2026-03-13
 
 ### Added
@@ -22,19 +37,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - 2026-01-16
 
-### Added
-
-- Initial release
-- S-expression parser for recipe files
-- Recipe data structures for all actions:
-  - `acquire` - Download sources, binaries, or clone git repos
-  - `build` - Extract archives or run build steps
-  - `install` - Install files to prefix
-  - `configure` - Post-install configuration
-  - `start` / `stop` - Service management
-  - `remove` - Uninstall packages
-- Executor with shell-based command execution
-- Variable expansion (`$PREFIX`, `$NPROC`, `$ARCH`, `$BUILD_DIR`)
-- Dry-run and verbose modes
-- SHA256 checksum verification
-- Example recipes for ripgrep, fd, jq, and redis
+- Initial release (an S-expression recipe format later replaced by Rhai recipes;
+  see the git history for the original feature list).

@@ -22,15 +22,40 @@ mod metadata;
 
 fn default_help_footer() -> String {
     format!(
-        "Defaults:\n  Recipes directory: {}\n  Build directory: temporary directory if --build-dir is not set\n  LLM profiles: $XDG_CONFIG_HOME/recipe/llm.toml (or ~/.config/recipe/llm.toml)\n  JSON output: stdout by default; recipe logs and helper output stay on stderr\n\nExamples:\n  recipe install kitty\n  recipe install ./custom/foo.rhai --define VERSION=1.2.3\n  recipe isbuilt kitty --no-persist-ctx\n  recipe list\n\nManual pages:\n  man recipe\n  man 5 recipe-recipe\n  man 7 recipe-helpers\n\nRun 'recipe <command> --help' for command-specific options.",
+        "Defaults:\n  Recipes directory: {}\n  Build destination: stable directory under state storage unless --build-dir is set\n  LLM profiles: $XDG_CONFIG_HOME/recipe/llm.toml (or ~/.config/recipe/llm.toml)\n  JSON output: stdout by default; recipe logs and helper output stay on stderr\n\nExamples:\n  recipe install kitty\n  recipe install ./custom/foo.rhai --define VERSION=1.2.3\n  recipe isbuilt kitty --no-persist-state\n  recipe list\n\nManual pages:\n  man recipe\n  man 5 recipe-recipe\n  man 7 recipe-helpers\n\nRun 'recipe <command> --help' for command-specific options.",
         metadata::default_recipes_path().display()
     )
 }
 
-fn main() -> Result<()> {
+fn run() -> Result<()> {
+    // Private worker command: same binary, protocol-driven; environment
+    // variables alone never change public CLI dispatch. The worker reads one
+    // request frame from stdin, runs the existing engine in-process under the
+    // worker execution context, and terminates stdout with exactly one result frame.
+    // Private dispatch precedes public CLI parsing; the recipe path follows
+    // the coordinator-supplied marker.
+    if std::env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new(
+            levitate_recipe::bin_support::WORKER_ENTRY_ARG,
+        ))
+    {
+        return levitate_recipe::bin_support::run_worker();
+    }
+    levitate_recipe::bin_support::install_cli_handlers()?;
     let matches = cli::Cli::command()
         .after_help(default_help_footer())
         .get_matches();
     let cli = cli::Cli::from_arg_matches(&matches).expect("clap validated arguments");
     commands::execute(cli)
+}
+
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("Error: {error:#}");
+            let signal = levitate_recipe::bin_support::signal();
+            std::process::ExitCode::from(if signal != 0 { (128 + signal) as u8 } else { 1 })
+        }
+    }
 }

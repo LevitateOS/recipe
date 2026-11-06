@@ -1,13 +1,8 @@
-//! Environment variable helpers
+//! Read the environment seen by commands in the current invocation.
 
-/// Get an environment variable, returning empty string if not set
+/// Return an effective child environment value, or empty if unset.
 pub fn get_env(name: &str) -> String {
-    std::env::var(name).unwrap_or_default()
-}
-
-/// Set an environment variable
-pub fn set_env(name: &str, value: &str) {
-    // SAFETY: We are setting env vars in a single-threaded recipe context.
-    // The caller must ensure no other threads are reading env vars concurrently.
-    unsafe { std::env::set_var(name, value) };
+    crate::process::environment(name)
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }

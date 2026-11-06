@@ -1,0 +1,2 @@
+Error: backend startup failure: ginux backend selected but GINUX_BIN is not set (no launcher to start; refusing host fallback): environment variable not found
+exit=1

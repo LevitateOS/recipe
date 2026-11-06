@@ -42,7 +42,13 @@ pub fn append_line_if_missing(path: &str, line: &str) -> Result<bool, Box<EvalAl
         return Err("append_line_if_missing requires a single line without newline".into());
     }
 
-    let existing = read_file_or_empty(path);
+    // Only a missing file counts as empty; an unreadable one must not get a
+    // duplicate line.
+    let existing = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(format!("read failed: {error}").into()),
+    };
     if existing.lines().any(|candidate| candidate == line) {
         return Ok(false);
     }
@@ -82,19 +88,11 @@ pub fn replace_in_file(path: &str, from: &str, to: &str) -> Result<(), Box<EvalA
     })
 }
 
-/// List files matching a glob pattern
-pub fn glob_list(pattern: &str) -> rhai::Array {
-    // Deterministic ordering matters for callers that merge/overlay results
-    // (e.g., kconfig fragments). The glob crate does not guarantee ordering.
-    let mut out: Vec<String> = glob::glob(pattern)
-        .map(|paths| {
-            paths
-                .filter_map(|r| r.ok())
-                .map(|p| p.to_string_lossy().to_string())
-                .collect()
-        })
-        .unwrap_or_default();
-
-    out.sort();
-    out.into_iter().map(rhai::Dynamic::from).collect()
+/// List the paths a glob pattern matches, sorted (callers that overlay
+/// results, such as kconfig fragments, rely on the order).
+pub fn glob_list(pattern: &str) -> Result<rhai::Array, Box<EvalAltResult>> {
+    Ok(super::filesystem::glob_matches(pattern)?
+        .into_iter()
+        .map(|path| path.to_string_lossy().into_owned().into())
+        .collect())
 }

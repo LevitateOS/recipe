@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const AUTOFIX_PROMPT: &str = r#"
 You are patching Rhai recipe files for the `recipe` package manager.
@@ -10,7 +9,7 @@ Goal: fix the failing `recipe install` by editing code/config files as needed.
 Hard constraints:
 - Output MUST be a single unified diff suitable for `git apply` (no prose, no markdown, no code fences).
 - Do NOT change or weaken lifecycle checks:
-  - Do NOT modify `fn is_installed`, `fn is_built`, or `fn is_acquired`.
+  - Do NOT modify the lifecycle check functions: {CHECKS}.
 - Do NOT "paper over" failures:
   - Do NOT add `|| true` or other patterns that ignore errors from critical commands.
 - Assume you cannot run commands or inspect the filesystem: all relevant context is included below.
@@ -34,12 +33,10 @@ pub(super) fn strip_outer_code_fence(s: String) -> String {
 }
 
 pub(super) fn git_repo_root(from: &Path) -> Option<PathBuf> {
-    let out = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(from)
-        .output()
-        .ok()?;
-    if !out.status.success() {
+    let mut command = crate::process::git();
+    command.args(["rev-parse", "--show-toplevel"]).current_dir(from);
+    let out = crate::process::Run::new(command).run().ok()?;
+    if !out.exit.success() {
         return None;
     }
     let s = String::from_utf8_lossy(&out.stdout);
@@ -87,42 +84,6 @@ pub(super) fn normalize_allow_paths(cwd: &Path, cfg: &crate::AutoFixConfig) -> V
             }
         })
         .collect()
-}
-
-pub(super) fn parse_extends(source: &str) -> Option<String> {
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("//! extends:") {
-            return Some(rest.trim().to_string());
-        }
-        if !trimmed.starts_with("//") {
-            break;
-        }
-    }
-    None
-}
-
-pub(super) fn resolve_base_path(
-    base_rel: &str,
-    child_path: &Path,
-    search_path: Option<&Path>,
-) -> Option<PathBuf> {
-    if let Some(child_dir) = child_path.parent() {
-        let candidate = child_dir.join(base_rel);
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    if let Some(sp) = search_path {
-        let candidate = sp.join(base_rel);
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    None
 }
 
 pub(super) fn read_file(p: &Path) -> Result<String> {
@@ -183,7 +144,8 @@ pub(super) fn build_prompt(
     extra_prompt: Option<&str>,
 ) -> String {
     let mut p = String::new();
-    p.push_str(AUTOFIX_PROMPT);
+    let checks = crate::lifecycle::CHECKS.map(|check| format!("`fn {check}`")).join(", ");
+    p.push_str(&AUTOFIX_PROMPT.replace("{CHECKS}", &checks));
 
     p.push_str("\nWORKING DIRECTORY:\n");
     p.push_str(&cwd.display().to_string());

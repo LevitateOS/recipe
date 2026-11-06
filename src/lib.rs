@@ -1,109 +1,82 @@
-//! Rhai-based package recipe executor for LevitateOS
+//! Managed Rhai package recipes executed through the configured Ginux launcher.
 //!
-//! Recipes are Rhai scripts that use a `ctx` map for state. The engine provides
-//! helper functions and executes phase functions defined in each recipe.
+//! Every executable recipe declares `const RECIPE_API = 2;`. Setup reads
+//! immutable `RUNTIME`; hooks receive `ctx.runtime`, resumable `ctx.state` and
+//! named `ctx.outputs`. Package facts are initialized from current recipe bytes.
 //!
-//! # Recipe Pattern
+//! Checks return `ready(ctx)` or `needs_work(ctx, reason)`. Check errors fail
+//! execution. Acquire/build/install/remove hooks return the updated context.
+//! Custom readiness is rechecked after successful work; persisted booleans do
+//! not replace filesystem or product validation.
 //!
-//! ```rhai
-//! let ctx = #{
-//!     name: "mypackage",
-//!     version: "1.0",
-//!     installed: false,
-//! };
+//! Explicit `RecipeEngine::add_input` selections are imported read-only under
+//! `/inputs`. Owned build work uses `/work/build`, dependency tools `/work/tools`,
+//! and the installed-target/product tree `/out`. A named `target` input seeds
+//! `/out` on fresh state. Hooks never inspect coordinator host paths.
 //!
-//! fn is_acquired(ctx) { if ctx.source == "" { throw "not acquired"; } ctx }
-//! fn is_built(ctx) { if !is_file(ctx.artifact) { throw "not built"; } ctx }
-//! fn is_installed(ctx) { if !ctx.installed { throw "not installed"; } ctx }
+//! Only `ctx.state` and its matching filesystem snapshot are checkpointed.
+//! Publication validates selected files/directories before returning their host
+//! paths in `ctx.outputs`; failed execution cannot publish incomplete work.
 //!
-//! fn acquire(ctx) { ctx.source = download(...); ctx }
-//! fn build(ctx) { run(...); ctx }
-//! fn install(ctx) { ctx.installed = true; ctx }
+//! Acquisition uses `download(url, exact_dest, sha256[, resume])` or pinned
+//! `git_checkout(url, exact_dest, full_commit)`. Explicit invocation network
+//! grants are required. Commands and helpers execute inside the domain.
 //!
-//! # Cleanup Lifecycle
-//!
-//! Recipes may optionally define:
-//! - `fn cleanup(ctx, reason) { ...; ctx }`
-//!
-//! `reason` is an enum-like string:
-//! - `manual`
-//! - `auto.<phase>.<outcome>` (examples: `auto.acquire.success`, `auto.build.failure`)
-//!
-//! The intent is that cleanup is an engine-invoked hygiene hook (not an ad-hoc
-//! manual step), and `recipe cleanup` is just a manual trigger with `reason=manual`.
-//! ```
-//!
-//! # Phase Lifecycle
-//!
-//! 1. `is_installed()` - Check if already done (skip if doesn't throw)
-//! 2. `is_built()` - Check if build needed
-//! 3. `is_acquired()` - Check if acquire needed
-//! 4. Execute needed phases (acquire, build, install)
-//! 5. Persist ctx after each phase
-//!
-//! # Engine-Provided Functions
-//!
-//! ## Filesystem
-//! - `is_file(path)` - Check if path is a file
-//! - `is_dir(path)` - Check if path is a directory
-//! - `mkdir(path)` - Create directory recursively
-//! - `rm(path)` - Remove file or directory
-//! - `mv(src, dst)` - Move/rename
-//! - `chmod(path, mode)` - Change permissions
-//!
-//! ## Paths
-//! - `join_path(a, b)` - Join path components
-//! - `basename(path)` - Get filename
-//!
-//! ## Commands
-//! - `shell(cmd)` - Run shell command, throw on failure
-//! - `shell_status(cmd)` - Run command, return exit code
-//!
-//! ## Network
-//! - `download(url, dest)` - HTTP download
-//! - `download_with_resume(url, dest)` - HTTP download with Range resume (throws if resume can't be honored)
-//! - `http_get(url)` - Fetch URL content as string
-//! - `torrent(url, dest_dir)` - BitTorrent download into `dest_dir`
-//!
-//! ## Verification
-//! - `verify_sha256(path, hash)` - Verify checksum
-//! - `fetch_sha256(url, filename)` - Fetch a SHA256 from a remote checksum file
-//! - `check_disk_space(path, bytes)` - Verify free space
-//!
-//! ## Archive
-//! - `extract(archive, dest)` - Auto-detect format and extract
-//!
-//! ## File I/O
-//! - `read_file(path)` - Read file as string
-//! - `write_file(path, content)` - Write string to file
-//!
-//! ## String
-//! - `trim(str)` - Remove whitespace
-//!
-//! ## Logging
-//! - `log(msg)` - Print info message
-//!
-//! # Variables Available in Scripts
-//!
-//! - `RECIPE_DIR` - Directory containing the recipe file
-//! - `BUILD_DIR` - Temporary build directory
-//! - `ARCH` - Target architecture (x86_64, aarch64)
-//! - `NPROC` - Number of CPUs
-//! - `RPM_PATH` - Path to RPM repository (from environment)
+//! See README.md, WRITING_RECIPES.md and HELPERS_AUDIT.md for the current CLI,
+//! helper signatures, input/output contracts, resource limits and recovery.
 
+mod backend;
+mod cancellation;
 mod core;
-pub mod helpers;
+mod diagnostics;
+mod domain;
+mod failure;
+mod ginux;
+#[doc(hidden)]
+pub mod fsx;
+mod helpers;
+#[doc(hidden)]
+pub mod image;
+mod inputs;
+mod launch;
+mod lifecycle;
+mod invocation_log;
 mod llm;
-pub mod logging;
+mod options;
+mod process;
+mod publication;
+mod recipes;
+mod retained;
+mod temporary;
+mod worker;
 
-pub use core::output;
-pub use logging::{
-    RECIPE_HOOK_EVENT, RecipeHookEvent, RecipeHookSink, emit_hook_event, emit_hook_event_struct,
-    make_machine_hook_event, set_event_sink, set_event_sink_handler, set_machine_events,
-};
+pub use backend::GinuxLauncher;
+pub use core::executor::{DeclaredMetadata, declared_metadata};
+pub use options::ExecutionOptions;
 
-use anyhow::Result;
-use rhai::{Engine, module_resolvers::FileModuleResolver};
+/// The default destination (lock and saved-state scope) for `recipe` under
+/// `state_dir` (or the per-user application state).
+pub fn default_destination(
+    state_dir: Option<&std::path::Path>,
+    recipe: &std::path::Path,
+) -> anyhow::Result<std::path::PathBuf> {
+    retained::default_destination(&retained::state_root(state_dir)?, recipe)
+}
+
+/// Entry points used only by this crate's own binaries and integration tests.
+#[doc(hidden)]
+pub mod bin_support {
+    pub use crate::cancellation::{install_cli_handlers, signal};
+    pub use crate::core::output::info;
+    pub use crate::helpers::internal::hash::{FileHashes, compute_all_hashes};
+    pub use crate::worker::protocol::{MAX_DIAGNOSTIC_BYTES, MAX_DIAGNOSTIC_FRAMES};
+    pub use crate::domain::WORKER_ENTRY_ARG;
+    /// The cleanup reason when the user gives none.
+    pub const DEFAULT_CLEANUP_REASON: &str = crate::lifecycle::CleanupReason::Manual.as_str();
+    pub use crate::worker::run_worker;
+}
+
+use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 /// Configure Recipe's automatic LLM-based repair loop for failed installs.
@@ -114,8 +87,9 @@ use std::path::{Path, PathBuf};
 pub struct AutoFixConfig {
     /// Maximum number of patch attempts per failing `recipe install`.
     pub attempts: u8,
-    /// Working directory used for patch application and LLM invocation. If unset, Recipe will try
-    /// to detect the git repo root and fall back to the recipe's directory.
+    /// Working directory used for patch application and LLM invocation. If unset: the git
+    /// repository containing the current directory, else the one containing the recipe, else the
+    /// recipe's directory.
     pub cwd: Option<PathBuf>,
     /// Optional extra instructions appended to the built-in autofix prompt.
     pub prompt_file: Option<PathBuf>,
@@ -137,44 +111,66 @@ impl Default for AutoFixConfig {
 
 /// Recipe execution engine
 pub struct RecipeEngine {
-    engine: Engine,
     build_dir: PathBuf,
     recipes_path: Option<PathBuf>,
     /// User-defined scope constants (injected via --define KEY=VALUE)
     defines: Vec<(String, String)>,
-    persist_ctx: bool,
+    inputs: Vec<inputs::ExtraInput>,
+    persist_state: bool,
+    execution: ExecutionOptions,
+    state_dir: Option<PathBuf>,
     llm_profile: Option<String>,
     autofix: Option<AutoFixConfig>,
+    /// Explicit launcher selection; None resolves mandatory Ginux from the
+    /// environment when an operation starts.
+    launcher: Option<GinuxLauncher>,
+    /// Owns `build_dir` when it is a throwaway destination; removed on drop.
+    _temporary: Option<tempfile::TempDir>,
 }
 
 impl RecipeEngine {
     /// Create a new recipe engine
     pub fn new(build_dir: PathBuf) -> Self {
-        let mut engine = Engine::new();
-
-        // Safety limits to prevent runaway recipes
-        engine.set_max_operations(2_000_000); // ~2M ops before abort
-        engine.set_max_call_levels(64); // prevent deep recursion
-        engine.set_max_string_size(64 * 1024 * 1024); // 64 MB max string
-
-        helpers::register_all(&mut engine);
-
         Self {
-            engine,
             build_dir,
             recipes_path: None,
             defines: Vec::new(),
-            persist_ctx: true,
+            inputs: Vec::new(),
+            persist_state: true,
+            execution: ExecutionOptions::default(),
+            state_dir: None,
             llm_profile: None,
             autofix: None,
+            launcher: None,
+            _temporary: None,
         }
+    }
+
+    /// An engine whose destination is a fresh directory removed with the engine,
+    /// for invocations that keep no state.
+    pub fn with_temporary_destination() -> Result<Self> {
+        let temporary = tempfile::tempdir().context("cannot create a temporary destination")?;
+        let mut engine = Self::new(temporary.path().to_owned());
+        engine._temporary = Some(temporary);
+        Ok(engine)
+    }
+
+    /// Configure the required Ginux executable.
+    pub fn with_launcher(mut self, launcher: GinuxLauncher) -> Self {
+        self.launcher = Some(launcher);
+        self
+    }
+
+    /// Resolve the Ginux executable before executing recipe code.
+    pub fn launcher(&self) -> Result<GinuxLauncher> {
+        self.launcher
+            .clone()
+            .map(Ok)
+            .unwrap_or_else(GinuxLauncher::from_env)
     }
 
     /// Set the recipes path for module resolution
     pub fn with_recipes_path(mut self, path: PathBuf) -> Self {
-        let mut resolver = FileModuleResolver::new();
-        resolver.set_base_path(&path);
-        self.engine.set_module_resolver(resolver);
         self.recipes_path = Some(path);
         self
     }
@@ -185,11 +181,23 @@ impl RecipeEngine {
         self
     }
 
-    /// Configure whether recipe execution persists ctx back to source files.
+    /// Configure whether runtime state and matching files are retained.
     ///
     /// Default is `true`.
-    pub fn with_ctx_persistence(mut self, persist: bool) -> Self {
-        self.persist_ctx = persist;
+    pub fn with_state_persistence(mut self, persist: bool) -> Self {
+        self.persist_state = persist;
+        self
+    }
+
+    /// Select target, job count and main-recipe force policy.
+    pub fn with_execution_options(mut self, options: ExecutionOptions) -> Self {
+        self.execution = options;
+        self
+    }
+
+    /// Select coordinator-owned runtime state storage.
+    pub fn with_state_dir(mut self, path: Option<PathBuf>) -> Self {
+        self.state_dir = path;
         self
     }
 
@@ -204,178 +212,120 @@ impl RecipeEngine {
         self.defines.push((key, value));
     }
 
+    /// Import an explicitly selected file or source tree read-only under /inputs.
+    /// Source imports exclude root .git/target metadata; contained links are preserved.
+    /// Named rootfs/target trees preserve filesystem links and permissions.
+    pub fn add_input(&mut self, name: String, path: PathBuf) {
+        self.inputs.push(inputs::ExtraInput { name, path });
+    }
+
     /// Execute a recipe script (install a package)
     ///
     /// Follows the package lifecycle:
-    /// 1. is_installed() - Check if already done (skip if doesn't throw)
+    /// 1. is_installed() - Skip only on explicit ready(ctx).
     /// 2. is_built() - Check if build needed
     /// 3. is_acquired() - Check if acquire needed
     /// 4. Execute needed phases
-    /// 5. Persist ctx after each phase
+    /// 5. Checkpoint ctx.state together with matching owned files.
     ///
     /// Returns the final ctx map containing all recipe state.
-    pub fn execute(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        llm::with_llm_profile(self.llm_profile.as_deref(), || {
-            if let Some(autofix) = self.autofix.as_ref() {
-                core::executor::install_with_options(
-                    &self.engine,
-                    &self.build_dir,
-                    recipe_path,
-                    &self.defines,
-                    self.persist_ctx,
-                    self.recipes_path.as_deref(),
-                    Some(autofix),
-                )
-            } else {
-                core::executor::install(
-                    &self.engine,
-                    &self.build_dir,
-                    recipe_path,
-                    &self.defines,
-                    self.persist_ctx,
-                    self.recipes_path.as_deref(),
-                )
-            }
-        })
+    pub fn execute(&self, recipe_path: &Path) -> Result<serde_json::Value> {
+        let launcher = self.launcher()?;
+        let install = || {
+            self.invoke(&launcher, worker::protocol::Operation::Install, None, recipe_path)
+        };
+        let Some(cfg) = &self.autofix else {
+            return install();
+        };
+        if !(1..=8).contains(&cfg.attempts) {
+            anyhow::bail!("autofix attempts must be between 1 and 8");
+        }
+        let mut repairs = 0;
+        loop {
+            let error = match install() {
+                Ok(ctx) => return Ok(ctx),
+                Err(error) => error,
+            };
+            // Autofix repairs failed build or install phases; acquisition
+            // failures come from inputs a patch cannot fix.
+            let failure = error
+                .downcast_ref::<backend::WorkloadFailure>()
+                .map(|failure| &failure.0)
+                .filter(|failure| {
+                    matches!(failure.phase, Some(lifecycle::Phase::Build | lifecycle::Phase::Install))
+                });
+            let Some(failure) = failure.filter(|_| repairs < cfg.attempts) else {
+                return Err(error);
+            };
+            repairs += 1;
+            core::output::warning(&format!(
+                "autofix: repairing {} failure (attempt {repairs}/{})",
+                failure.phase.map_or("-", lifecycle::Phase::name), cfg.attempts
+            ));
+            core::autofix::run_and_apply(
+                cfg,
+                recipe_path,
+                self.recipes_path.as_deref(),
+                &self.defines,
+                failure.reason(),
+                &failure.message,
+                self.llm_profile.as_deref(),
+            )
+            .context("coordinator autofix failed")?;
+            // The next launch rediscovers and hashes all patched inputs;
+            // saved state from the failed identity is never translated.
+        }
     }
 
     /// Remove an installed package
     ///
     /// Returns the final ctx map after removal.
-    pub fn remove(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        llm::with_llm_profile(self.llm_profile.as_deref(), || {
-            core::executor::remove(
-                &self.engine,
-                recipe_path,
-                self.recipes_path.as_deref(),
-                &self.defines,
-                self.persist_ctx,
-            )
-        })
-    }
-
-    /// Clean up build artifacts
-    ///
-    /// Returns the final ctx map after cleanup.
-    pub fn cleanup(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        self.cleanup_with_reason(recipe_path, "manual")
+    pub fn remove(&self, recipe_path: &Path) -> Result<serde_json::Value> {
+        self.invoke(&self.launcher()?, worker::protocol::Operation::Remove, None, recipe_path)
     }
 
     /// Clean up build artifacts with an explicit reason.
     ///
     /// Returns the final ctx map after cleanup.
-    pub fn cleanup_with_reason(&self, recipe_path: &Path, reason: &str) -> Result<rhai::Map> {
-        llm::with_llm_profile(self.llm_profile.as_deref(), || {
-            core::executor::cleanup(
-                &self.engine,
-                &self.build_dir,
-                recipe_path,
-                self.recipes_path.as_deref(),
-                &self.defines,
-                reason,
-                self.persist_ctx,
-            )
-        })
+    pub fn cleanup_with_reason(&self, recipe_path: &Path, reason: &str) -> Result<serde_json::Value> {
+        self.invoke(&self.launcher()?, worker::protocol::Operation::Cleanup, Some(reason), recipe_path)
     }
 
     /// Execute `is_installed(ctx)` manually.
-    pub fn is_installed(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        llm::with_llm_profile(self.llm_profile.as_deref(), || {
-            core::executor::is_installed(
-                &self.engine,
-                &self.build_dir,
-                recipe_path,
-                self.recipes_path.as_deref(),
-                &self.defines,
-            )
-        })
+    pub fn is_installed(&self, recipe_path: &Path) -> Result<serde_json::Value> {
+        self.invoke(&self.launcher()?, worker::protocol::Operation::IsInstalled, None, recipe_path)
     }
 
     /// Execute `is_built(ctx)` manually.
-    pub fn is_built(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        llm::with_llm_profile(self.llm_profile.as_deref(), || {
-            core::executor::is_built(
-                &self.engine,
-                &self.build_dir,
-                recipe_path,
-                self.recipes_path.as_deref(),
-                &self.defines,
-            )
-        })
+    pub fn is_built(&self, recipe_path: &Path) -> Result<serde_json::Value> {
+        self.invoke(&self.launcher()?, worker::protocol::Operation::IsBuilt, None, recipe_path)
     }
 
     /// Execute `is_acquired(ctx)` manually.
-    pub fn is_acquired(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        llm::with_llm_profile(self.llm_profile.as_deref(), || {
-            core::executor::is_acquired(
-                &self.engine,
-                &self.build_dir,
-                recipe_path,
-                self.recipes_path.as_deref(),
-                &self.defines,
-            )
+    pub fn is_acquired(&self, recipe_path: &Path) -> Result<serde_json::Value> {
+        self.invoke(&self.launcher()?, worker::protocol::Operation::IsAcquired, None, recipe_path)
+    }
+
+    fn invoke(
+        &self,
+        launcher: &GinuxLauncher,
+        operation: worker::protocol::Operation,
+        cleanup_reason: Option<&str>,
+        recipe: &Path,
+    ) -> Result<serde_json::Value> {
+        launcher.run(&launch::Invocation {
+            operation,
+            cleanup_reason,
+            recipe,
+            search_path: self.recipes_path.as_deref(),
+            persist_state: self.persist_state,
+            options: worker::protocol::InvocationOptions {
+                defines: self.defines.clone(),
+                execution: self.execution.clone(),
+            },
+            inputs: &self.inputs,
+            destination: &self.build_dir,
+            state_dir: self.state_dir.as_deref(),
         })
-    }
-
-    /// Get the recipes path
-    pub fn recipes_path(&self) -> Option<&Path> {
-        self.recipes_path.as_deref()
-    }
-
-    /// Get the underlying Rhai engine (for advanced use)
-    pub fn engine(&self) -> &Engine {
-        &self.engine
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    #[test]
-    fn test_engine_creation() {
-        let build_dir = TempDir::new().unwrap();
-        let engine = RecipeEngine::new(build_dir.path().to_path_buf());
-        assert!(engine.recipes_path.is_none());
-    }
-
-    #[test]
-    fn test_minimal_recipe() {
-        let build_dir = TempDir::new().unwrap();
-        let engine = RecipeEngine::new(build_dir.path().to_path_buf());
-
-        let recipe_dir = TempDir::new().unwrap();
-        let recipe_path = recipe_dir.path().join("test.rhai");
-        std::fs::write(
-            &recipe_path,
-            r#"
-let ctx = #{
-    name: "test",
-    installed: false,
-};
-
-fn is_installed(ctx) {
-    if !ctx.installed { throw "not installed"; }
-    ctx
-}
-
-fn acquire(ctx) { ctx }
-fn install(ctx) {
-    ctx.installed = true;
-    ctx
-}
-
-fn cleanup(ctx, reason) { ctx }
-"#,
-        )
-        .unwrap();
-
-        let result = engine.execute(&recipe_path);
-        assert!(result.is_ok(), "Failed: {:?}", result);
-
-        // Verify ctx was persisted
-        let content = std::fs::read_to_string(&recipe_path).unwrap();
-        assert!(content.contains("installed: true"));
     }
 }

@@ -1,8 +1,6 @@
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use super::{parser, prompt};
 
@@ -36,6 +34,12 @@ fn validate_patch_protects_lifecycle_functions(cwd: &Path, patch: &str) -> Resul
             } else {
                 current_file = None;
             }
+            in_hunk = false;
+            continue;
+        }
+
+        if let Some(path) = line.strip_prefix("+++ b/") {
+            current_file = Some(path.to_owned());
             in_hunk = false;
             continue;
         }
@@ -130,12 +134,13 @@ fn validate_patch(cwd: &Path, allow_paths: &[PathBuf], patch: &str) -> Result<()
         }
 
         // Hard block attempts to (re)define lifecycle check functions.
-        if line.contains("fn is_installed")
-            || line.contains("fn is_built")
-            || line.contains("fn is_acquired")
+        if crate::lifecycle::CHECKS
+            .iter()
+            .any(|check| line.contains(&format!("fn {check}")))
         {
             bail!(
-                "Refusing autofix patch: must not change lifecycle check functions (is_installed/is_built/is_acquired)"
+                "Refusing autofix patch: must not change lifecycle check functions ({})",
+                crate::lifecycle::CHECKS.join("/")
             );
         }
 
@@ -181,6 +186,33 @@ fn validate_patch(cwd: &Path, allow_paths: &[PathBuf], patch: &str) -> Result<()
         }
     }
 
+    let paths = parser::extract_patch_paths(patch);
+    if paths.is_empty() || paths.len() > 32 {
+        bail!("autofix requires between 1 and 32 source paths");
+    }
+    for line in patch.lines() {
+        if line.starts_with("+++ ") || line.starts_with("--- ") {
+            if !(line.starts_with("+++ b/") || line.starts_with("--- a/")) {
+                bail!("autofix supports modifications of existing files with a/ and b/ headers");
+            }
+        }
+    }
+    for relative in paths {
+        if relative.chars().any(char::is_whitespace)
+            || relative.contains('"')
+            || relative.contains('\\')
+        {
+            bail!("autofix patch paths must be unquoted relative source names");
+        }
+        let path = cwd_abs.join(&relative);
+        if !std::fs::symlink_metadata(&path)?.is_file() {
+            bail!("autofix source must be an existing regular file");
+        }
+        let actual = path.canonicalize()?;
+        if !allow_abs.iter().any(|root| actual.starts_with(root)) {
+            bail!("autofix path resolves outside allowed roots: {relative}");
+        }
+    }
     validate_patch_protects_lifecycle_functions(cwd, patch)?;
 
     Ok(())
@@ -194,48 +226,25 @@ fn apply_patch(cwd: &Path, patch: &str) -> Result<()> {
         patch_bytes.push(b'\n');
     }
 
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::process::git();
     cmd.current_dir(cwd)
-        .args(["apply", "--whitespace=nowarn", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-
-    let mut child = cmd.spawn().context("Spawning git apply")?;
-    {
-        let mut stdin = child.stdin.take().context("Opening git apply stdin")?;
-        stdin
-            .write_all(&patch_bytes)
-            .context("Writing patch to git apply")?;
-    }
-    let status = child.wait().context("Waiting for git apply")?;
-    if !status.success() {
-        bail!("git apply failed with status {status}");
+        .args(["apply", "--whitespace=nowarn", "-"]);
+    // Coordinator stdout carries the final JSON, so git output is diagnostics.
+    let finished = crate::process::Run::new(cmd)
+        .stdin(patch_bytes)
+        .route(crate::process::Route::Diagnostics, crate::process::Route::Diagnostics)
+        .keep(crate::process::Keep::Tail(64 * 1024))
+        .run()
+        .context("running git apply")?;
+    if !finished.exit.success() {
+        bail!("git apply failed with {}", finished.exit);
     }
     Ok(())
 }
 
-fn run_llm(prompt: String, cwd: &Path) -> Result<String> {
-    let cfg = crate::llm::resolve_config_for_call().map_err(anyhow::Error::msg)?;
-    let stdin = prompt.into_bytes();
-
-    let out = match cfg.default_provider {
-        crate::llm::LlmProviderId::Codex => {
-            let inv = crate::llm::providers::codex::build(&cfg, cwd, stdin)
-                .map_err(anyhow::Error::msg)?;
-            let res = crate::llm::run_call(inv.cmd, inv.call).map_err(anyhow::Error::msg)?;
-            crate::llm::providers::codex::finalize(res, inv.last_message_file.path())
-                .map_err(anyhow::Error::msg)?
-        }
-        crate::llm::LlmProviderId::Claude => {
-            let inv = crate::llm::providers::claude::build(&cfg, cwd, stdin)
-                .map_err(anyhow::Error::msg)?;
-            let res = crate::llm::run_call(inv.cmd, inv.call).map_err(anyhow::Error::msg)?;
-            crate::llm::providers::claude::finalize(res).map_err(anyhow::Error::msg)?
-        }
-    };
-
-    Ok(prompt::strip_outer_code_fence(out))
+fn run_llm(prompt: String, cwd: &Path, profile: Option<&str>) -> Result<String> {
+    let reply = crate::llm::complete(prompt, cwd, profile).map_err(anyhow::Error::msg)?;
+    Ok(prompt::strip_outer_code_fence(reply))
 }
 
 pub(crate) fn run_and_apply(
@@ -245,6 +254,7 @@ pub(crate) fn run_and_apply(
     defines: &[(String, String)],
     reason: &str,
     failure: &str,
+    profile: Option<&str>,
 ) -> Result<()> {
     let cwd = prompt::detect_cwd(cfg, recipe_path)?;
     let allow_paths = prompt::normalize_allow_paths(&cwd, cfg);
@@ -254,10 +264,11 @@ pub(crate) fn run_and_apply(
 
     let mut comment_prompt = child_prompt;
 
-    let extends = prompt::parse_extends(&child_source);
+    let extends = crate::recipes::parse_extends(&child_source);
     let base_path = extends
         .as_deref()
-        .and_then(|base_rel| prompt::resolve_base_path(base_rel, recipe_path, search_path));
+        .filter(|base_rel| crate::recipes::check_related_target(base_rel).is_ok())
+        .and_then(|base_rel| crate::recipes::find_related(base_rel, recipe_path, search_path));
     let base_source = match &base_path {
         Some(p) => Some(prompt::read_file(p)?),
         None => None,
@@ -268,19 +279,21 @@ pub(crate) fn run_and_apply(
         comment_prompt = prompt::extract_autofix_prompt_block(bs);
     }
 
-    // Kernel-specific context: if we can find linux-deps, include it too.
+    // Context: the recipes this one declares as `deps`/`build_deps`, found by
+    // the engine's rule. Input preparation already rejected dynamic declarations.
     let mut extra_files: Vec<(PathBuf, String)> = Vec::new();
-    if let Some(sp) = search_path {
-        let linux_deps = sp.join("linux-deps.rhai");
-        if linux_deps.is_file() {
-            let combined = format!(
-                "{}\n{}",
-                child_source,
-                base_source.as_deref().unwrap_or_default()
-            );
-            if combined.contains("linux-deps") {
-                let content = prompt::read_file(&linux_deps)?;
-                extra_files.push((linux_deps, content));
+    for source in std::iter::once(child_source.as_str()).chain(base_source.as_deref()) {
+        let references = crate::inputs::static_references(source).unwrap_or_default();
+        for (file, module) in references {
+            let Some(path) = (!module)
+                .then(|| crate::recipes::find_related(&file, recipe_path, search_path))
+                .flatten()
+            else {
+                continue;
+            };
+            if !extra_files.iter().any(|(known, _)| *known == path) {
+                let content = prompt::read_file(&path)?;
+                extra_files.push((path, content));
             }
         }
     }
@@ -303,7 +316,7 @@ pub(crate) fn run_and_apply(
         extra_prompt.as_deref(),
     );
 
-    let patch = run_llm(prompt, &cwd).context("LLM invocation failed")?;
+    let patch = run_llm(prompt, &cwd, profile).context("LLM invocation failed")?;
     validate_patch(&cwd, &allow_paths, &patch)?;
     apply_patch(&cwd, &patch)?;
     Ok(())

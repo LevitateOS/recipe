@@ -1,6 +1,11 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+/// The library owns option defaults; flags only expose them.
+fn defaults() -> levitate_recipe::ExecutionOptions {
+    levitate_recipe::ExecutionOptions::default()
+}
+
 #[derive(Parser)]
 #[command(name = "recipe")]
 #[command(about = "Local-first package manager using Rhai recipes")]
@@ -18,13 +23,61 @@ pub(crate) struct Cli {
     )]
     pub(crate) recipes_path: PathBuf,
 
-    /// Build directory used for acquire/build/install work; uses a temporary directory if omitted.
+    /// Logical build destination and lock (default: stable destination under the state directory).
     #[arg(short, long, global = true)]
     pub(crate) build_dir: Option<PathBuf>,
+
+    /// Store resumable state here (default: the per-user application-state directory).
+    #[arg(long, global = true)]
+    pub(crate) state_dir: Option<PathBuf>,
+
+    /// Execution target OS (only native Linux is currently supported).
+    #[arg(long, global = true, default_value_t = defaults().target_os)]
+    pub(crate) target_os: String,
+    /// Execution target architecture (only native x86_64 is currently supported).
+    #[arg(long, global = true, default_value_t = defaults().target_arch)]
+    pub(crate) target_arch: String,
+    /// Parallel jobs requested by recipes; Ginux task limits still apply.
+    #[arg(short = 'j', long, global = true, default_value_t = defaults().jobs)]
+    pub(crate) jobs: u16,
+    /// Rerun acquisition, build and installation for the main recipe.
+    #[arg(long, global = true)]
+    pub(crate) force_acquire: bool,
+    /// Rerun build and installation for the main recipe.
+    #[arg(long, global = true)]
+    pub(crate) force_build: bool,
+    /// Rerun installation for the main recipe.
+    #[arg(long, global = true)]
+    pub(crate) force_install: bool,
+
+    /// Maximum supervised execution time in seconds, including silent work.
+    #[arg(long, global = true, default_value_t = defaults().timeout_secs)]
+    pub(crate) timeout_secs: u64,
+
+    /// Domain memory limit in MiB, including writable storage and metadata.
+    #[arg(long, global = true, default_value_t = defaults().memory_mib)]
+    pub(crate) memory_mib: u64,
+    /// Maximum writable filesystem objects.
+    #[arg(long, global = true, default_value_t = defaults().storage_max_objects)]
+    pub(crate) storage_max_objects: u64,
+    /// Explicit writable data byte cap (otherwise memory minus filesystem metadata).
+    #[arg(long, global = true)]
+    pub(crate) storage_max_bytes: Option<u64>,
+
+    /// Permit outbound TCP to this HOST:PORT (repeatable); networking is off by default.
+    #[arg(long = "network-host", global = true, value_name = "HOST:PORT")]
+    pub(crate) network_hosts: Vec<String>,
+    /// Bound cumulative sent and received network bytes for this invocation.
+    #[arg(long, global = true, default_value_t = defaults().network_max_bytes)]
+    pub(crate) network_max_bytes: u64,
 
     /// Define scope constants (KEY=VALUE), injected into Rhai scope before execution
     #[arg(short, long = "define", global = true, value_name = "KEY=VALUE")]
     pub(crate) defines: Vec<String>,
+
+    /// Import NAME=PATH as read-only /inputs/NAME; trees exclude root .git and target.
+    #[arg(long = "input", global = true, value_name = "NAME=PATH")]
+    pub(crate) inputs: Vec<String>,
 
     /// Write final ctx JSON to a file instead of stdout; useful when scripting around recipe output.
     #[arg(long, global = true)]
@@ -38,9 +91,9 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub(crate) llm_profile: Option<String>,
 
-    /// Do not persist updated ctx back into recipe source files; useful for inspection and dry debugging.
-    #[arg(long, global = true, default_value_t = false)]
-    pub(crate) no_persist_ctx: bool,
+    /// Disable state/file recovery. Filesystem effects still occur.
+    #[arg(long = "no-persist-state", global = true, default_value_t = false)]
+    pub(crate) no_persist_state: bool,
 }
 
 #[derive(Subcommand)]
@@ -58,10 +111,10 @@ pub(crate) enum Commands {
         autofix: bool,
 
         /// Maximum number of patch attempts per failing install step.
-        #[arg(long, default_value_t = 2)]
+        #[arg(long, default_value_t = levitate_recipe::AutoFixConfig::default().attempts)]
         autofix_attempts: u8,
 
-        /// Working directory used for LLM invocation and patch application. Defaults to the current working directory.
+        /// Working directory used for LLM invocation and patch application. Defaults to the git repository of the current directory, else the recipe's.
         #[arg(long)]
         autofix_cwd: Option<PathBuf>,
 
@@ -99,7 +152,7 @@ pub(crate) enum Commands {
     /// Evaluate the recipe's `is_installed(ctx)` hook manually
     #[command(name = "isinstalled")]
     #[command(
-        after_help = "Examples:\n  recipe isinstalled kitty\n  recipe isinstalled ./recipes/kitty.rhai --no-persist-ctx\n\nUseful when debugging whether install state detection is correct."
+        after_help = "Examples:\n  recipe isinstalled kitty\n  recipe isinstalled ./recipes/kitty.rhai --no-persist-state\n\nUseful when debugging whether install state detection is correct."
     )]
     IsInstalled {
         /// Recipe path or recipe name. Name lookup follows the same rules as `recipe install`.

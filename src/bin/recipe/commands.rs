@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use levitate_recipe::{AutoFixConfig, RecipeEngine, helpers, output};
+use levitate_recipe::{AutoFixConfig, GinuxLauncher, RecipeEngine, bin_support};
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -10,8 +10,22 @@ use super::{
 };
 
 pub(crate) fn execute(cli: Cli) -> Result<()> {
+    let execution = levitate_recipe::ExecutionOptions {
+        target_os: cli.target_os,
+        target_arch: cli.target_arch,
+        jobs: cli.jobs,
+        machine_events: cli.machine_events,
+        timeout_secs: cli.timeout_secs,
+        memory_mib: cli.memory_mib,
+        storage_max_objects: cli.storage_max_objects,
+        storage_max_bytes: cli.storage_max_bytes,
+        network_hosts: cli.network_hosts,
+        network_max_bytes: cli.network_max_bytes,
+        force_acquire: cli.force_acquire,
+        force_build: cli.force_build,
+        force_install: cli.force_install,
+    };
     let recipes_path = cli.recipes_path;
-    output::set_machine_events(cli.machine_events);
 
     if !recipes_path.exists() {
         std::fs::create_dir_all(&recipes_path).with_context(|| {
@@ -36,7 +50,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let autofix_cfg = if autofix {
                 Some(AutoFixConfig {
-                    attempts: autofix_attempts.max(1),
+                    attempts: autofix_attempts,
                     cwd: autofix_cwd,
                     prompt_file: autofix_prompt_file,
                     allow_paths: autofix_allow_path,
@@ -45,10 +59,14 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 None
             };
             let engine = create_engine(
+                &recipe_path,
                 cli.build_dir.as_deref(),
+                cli.state_dir.as_deref(),
+                execution.clone(),
                 Some(&recipes_path),
                 &cli.defines,
-                cli.no_persist_ctx,
+                &cli.inputs,
+                cli.no_persist_state,
                 cli.llm_profile.clone(),
                 autofix_cfg,
             )?;
@@ -59,10 +77,14 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
         Commands::Remove { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(
+                &recipe_path,
                 cli.build_dir.as_deref(),
+                cli.state_dir.as_deref(),
+                execution.clone(),
                 Some(&recipes_path),
                 &cli.defines,
-                cli.no_persist_ctx,
+                &cli.inputs,
+                cli.no_persist_state,
                 cli.llm_profile.clone(),
                 None,
             )?;
@@ -73,10 +95,14 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
         Commands::Cleanup { recipe, reason } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(
+                &recipe_path,
                 cli.build_dir.as_deref(),
+                cli.state_dir.as_deref(),
+                execution.clone(),
                 Some(&recipes_path),
                 &cli.defines,
-                cli.no_persist_ctx,
+                &cli.inputs,
+                cli.no_persist_state,
                 cli.llm_profile.clone(),
                 None,
             )?;
@@ -84,7 +110,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-                .unwrap_or("manual");
+                .unwrap_or(levitate_recipe::bin_support::DEFAULT_CLEANUP_REASON);
             let ctx = engine.cleanup_with_reason(&recipe_path, cleanup_reason)?;
             emit_json(&ctx, json_output.as_deref())?;
         }
@@ -92,10 +118,14 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
         Commands::IsInstalled { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(
+                &recipe_path,
                 cli.build_dir.as_deref(),
+                cli.state_dir.as_deref(),
+                execution.clone(),
                 Some(&recipes_path),
                 &cli.defines,
-                cli.no_persist_ctx,
+                &cli.inputs,
+                cli.no_persist_state,
                 cli.llm_profile.clone(),
                 None,
             )?;
@@ -106,10 +136,14 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
         Commands::IsBuilt { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(
+                &recipe_path,
                 cli.build_dir.as_deref(),
+                cli.state_dir.as_deref(),
+                execution.clone(),
                 Some(&recipes_path),
                 &cli.defines,
-                cli.no_persist_ctx,
+                &cli.inputs,
+                cli.no_persist_state,
                 cli.llm_profile.clone(),
                 None,
             )?;
@@ -120,10 +154,14 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
         Commands::IsAcquired { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(
+                &recipe_path,
                 cli.build_dir.as_deref(),
+                cli.state_dir.as_deref(),
+                execution.clone(),
                 Some(&recipes_path),
                 &cli.defines,
-                cli.no_persist_ctx,
+                &cli.inputs,
+                cli.no_persist_state,
                 cli.llm_profile.clone(),
                 None,
             )?;
@@ -135,7 +173,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
 
         Commands::Info { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
-            show_info(&recipe_path)?;
+            show_info(&recipe_path, Some(&recipes_path))?;
         }
 
         Commands::Hash { file } => {
@@ -145,9 +183,9 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 anyhow::bail!("File not found: {}", file.display());
             }
 
-            output::info(&format!("Computing hashes for {}...", file.display()));
+            bin_support::info(&format!("Computing hashes for {}...", file.display()));
 
-            let hashes = helpers::acquire::compute_hashes(&file)
+            let hashes = bin_support::compute_all_hashes(&file)
                 .with_context(|| format!("Failed to compute hashes for {}", file.display()))?;
 
             println!();
@@ -161,7 +199,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             );
             println!(
                 "  {}",
-                format!("verify_sha256(\"{}\");", hashes.sha256).green()
+                format!("verify_sha256(path, \"{}\");", hashes.sha256).green()
             );
         }
     }
@@ -169,11 +207,8 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-fn emit_json(ctx: &rhai::Map, path: Option<&Path>) -> Result<()> {
-    let dynamic = rhai::Dynamic::from(ctx.clone());
-    let json: serde_json::Value = rhai::serde::from_dynamic(&dynamic)
-        .map_err(|e| anyhow::anyhow!("Failed to serialize ctx: {}", e))?;
-    let json_str = serde_json::to_string(&json)?;
+fn emit_json(ctx: &serde_json::Value, path: Option<&Path>) -> Result<()> {
+    let json_str = serde_json::to_string(ctx)?;
     match path {
         Some(p) => {
             std::fs::write(p, &json_str)
@@ -186,28 +221,36 @@ fn emit_json(ctx: &rhai::Map, path: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
+/// Configure one executable operation through mandatory Ginux. Metadata and
+/// hashing commands do not evaluate recipe code and need no execution domain.
 fn create_engine(
+    recipe: &Path,
     build_dir: Option<&Path>,
+    state_dir: Option<&Path>,
+    execution: levitate_recipe::ExecutionOptions,
     recipes_path: Option<&Path>,
     defines: &[String],
-    no_persist_ctx: bool,
+    inputs: &[String],
+    no_persist_state: bool,
     llm_profile: Option<String>,
     autofix: Option<AutoFixConfig>,
 ) -> Result<RecipeEngine> {
-    let build_dir = match build_dir {
+    execution.validate()?;
+    let launcher = GinuxLauncher::from_env()?;
+    let engine = match build_dir {
         Some(dir) => {
             std::fs::create_dir_all(dir)
                 .with_context(|| format!("Failed to create build directory: {}", dir.display()))?;
-            dir.to_path_buf()
+            RecipeEngine::new(dir.to_path_buf())
         }
-        None => {
-            let temp = tempfile::tempdir().context("Failed to create temporary build directory")?;
-            temp.keep()
-        }
+        None if no_persist_state => RecipeEngine::with_temporary_destination()?,
+        None => RecipeEngine::new(levitate_recipe::default_destination(state_dir, recipe)?),
     };
-
-    let mut engine = RecipeEngine::new(build_dir)
-        .with_ctx_persistence(!no_persist_ctx)
+    let mut engine = engine
+        .with_launcher(launcher)
+        .with_state_persistence(!no_persist_state)
+        .with_state_dir(state_dir.map(Path::to_owned))
+        .with_execution_options(execution)
         .with_llm_profile(llm_profile)
         .with_autofix(autofix);
 
@@ -223,28 +266,38 @@ fn create_engine(
         }
     }
 
+    for input in inputs {
+        let (name, path) = input
+            .split_once('=')
+            .context("--input requires NAME=PATH")?;
+        if name.is_empty() || path.is_empty() {
+            anyhow::bail!("--input requires nonempty NAME=PATH");
+        }
+        engine.add_input(name.to_owned(), PathBuf::from(path));
+    }
+
     Ok(engine)
 }
 
 fn resolve_recipe_path(recipe: &Path, recipes_path: &Path) -> Result<PathBuf> {
     if recipe.is_absolute() {
-        if recipe.exists() {
+        if recipe.is_file() {
             return Ok(recipe.to_path_buf());
         }
         anyhow::bail!("Recipe file not found: {}", recipe.display());
     }
 
-    if recipe.exists() {
+    if recipe.is_file() {
         return Ok(recipe.to_path_buf());
     }
 
     let in_recipes = recipes_path.join(recipe);
-    if in_recipes.exists() {
+    if in_recipes.is_file() {
         return Ok(in_recipes);
     }
 
     let with_ext = recipes_path.join(format!("{}.rhai", recipe.display()));
-    if with_ext.exists() {
+    if with_ext.is_file() {
         return Ok(with_ext);
     }
 
@@ -259,13 +312,13 @@ fn list_recipes(recipes_path: &Path) -> Result<()> {
     use owo_colors::OwoColorize;
 
     if !recipes_path.exists() {
-        output::info(&format!("No recipes found in {}", recipes_path.display()));
+        bin_support::info(&format!("No recipes found in {}", recipes_path.display()));
         return Ok(());
     }
 
     let mut found = false;
     for path in enumerate_recipes(recipes_path) {
-        let meta = RecipeMetadata::load(&path);
+        let meta = RecipeMetadata::load(&path, Some(recipes_path))?;
         println!(
             "  {} {}",
             meta.name.bold(),
@@ -275,16 +328,16 @@ fn list_recipes(recipes_path: &Path) -> Result<()> {
     }
 
     if !found {
-        output::info(&format!("No recipes found in {}", recipes_path.display()));
+        bin_support::info(&format!("No recipes found in {}", recipes_path.display()));
     }
 
     Ok(())
 }
 
-fn show_info(recipe_path: &Path) -> Result<()> {
+fn show_info(recipe_path: &Path, search_path: Option<&Path>) -> Result<()> {
     use owo_colors::OwoColorize;
 
-    let meta = RecipeMetadata::load(recipe_path);
+    let meta = RecipeMetadata::load(recipe_path, search_path)?;
 
     println!("{:<12} {}", "Name:".bold(), meta.name.bold().cyan());
     println!(
@@ -302,53 +355,4 @@ fn show_info(recipe_path: &Path) -> Result<()> {
     );
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::metadata::extract_string_value;
-    use std::path::Path;
-    use tempfile::TempDir;
-
-    #[test]
-    fn test_extract_string_value() {
-        assert_eq!(extract_string_value("name: \"test\","), "test");
-        assert_eq!(extract_string_value("version: \"1.0\","), "1.0");
-        assert_eq!(
-            extract_string_value("  description: \"A test package\","),
-            "A test package"
-        );
-    }
-
-    #[test]
-    fn test_resolve_recipe_path_absolute() {
-        let (_dir, recipes_path) = create_test_recipes_dir();
-        let recipe_path = write_recipe(&recipes_path, "test", "");
-
-        let result = resolve_recipe_path(&recipe_path, &recipes_path);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_resolve_recipe_path_with_ext() {
-        let (_dir, recipes_path) = create_test_recipes_dir();
-        write_recipe(&recipes_path, "test", "");
-
-        let result = resolve_recipe_path(Path::new("test"), &recipes_path);
-        assert!(result.is_ok());
-        assert!(result.unwrap().ends_with("test.rhai"));
-    }
-
-    fn create_test_recipes_dir() -> (TempDir, PathBuf) {
-        let dir = TempDir::new().unwrap();
-        let recipes_path = dir.path().to_path_buf();
-        (dir, recipes_path)
-    }
-
-    fn write_recipe(recipes_path: &Path, name: &str, content: &str) -> PathBuf {
-        let path = recipes_path.join(format!("{}.rhai", name));
-        std::fs::write(&path, content).unwrap();
-        path
-    }
 }

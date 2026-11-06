@@ -7,4 +7,3 @@ pub mod cmd;
 pub mod fs_utils;
 pub mod hash;
 pub mod progress;
-pub mod url_utils;

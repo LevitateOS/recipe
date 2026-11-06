@@ -1,11 +1,12 @@
 [package]
 name = "levitate-recipe"
+default-run = "recipe"
 version = "0.1.4"
 edition = "2024"
 description = "Rhai-based package recipe executor for LevitateOS"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/levitate-os/levitate-recipe"
-homepage = "https://github.com/levitate-os/levitate-recipe"
+repository = "https://github.com/LevitateOS/recipe"
+homepage = "https://github.com/LevitateOS/recipe"
 documentation = "https://docs.rs/levitate-recipe"
 readme = "README.md"
 keywords = ["package-manager", "recipe", "rhai", "scripting", "build"]
@@ -15,30 +16,32 @@ categories = ["command-line-utilities", "development-tools"]
 name = "recipe"
 path = "src/bin/recipe.rs"
 
+[[bin]]
+name = "recipe-image"
+path = "src/bin/recipe-image.rs"
+
 [dependencies]
-# Pinned: extends mechanism relies on AST += merge semantics (child shadows base let bindings)
-rhai = { version = "=1.19.0", features = ["sync", "serde"] }
+# Pinned exactly: `internals` APIs are version-sensitive. Users: `//! extends:` merging
+# (AST `+=`, src/core/executor.rs), setup/hook evaluation via GlobalRuntimeState/Caches and
+# the `Stmt::Var` layout (src/core/invocation.rs), and static AST walks over `Stmt`/`Expr`
+# (src/core/executor.rs declared_metadata, src/inputs/discover.rs static_references).
+rhai = { version = "=1.19.0", features = ["sync", "serde", "internals"] }
 anyhow = "1"
-clap = { version = "4", features = ["derive", "env"] }
+clap = { version = "4", features = ["derive"] }
 sha2 = "0.10"
-sha3 = "0.10"
 blake3 = "1.5"
 toml = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 hex = "0.4"
 tempfile = "3"
-num_cpus = "1.16"
 glob = "0.3"
 dirs = "5"
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "2", features = ["native-certs"] }
 serde_json = "1"
 fs2 = "0.4"
-semver = "1"
 walkdir = "2"
 owo-colors = "4"
 indicatif = "0.17"
-librqbit = { version = "8.1.1", default-features = false, features = ["rust-tls", "disable-upload"] }
-tokio = { version = "1", features = ["rt-multi-thread", "time", "process", "io-util", "io-std"] }
 libc = "0.2"
 
 # Native archive extraction (no external tools needed)
@@ -50,11 +53,7 @@ zstd = "0.13"
 zip = "2.2"
 
 [dev-dependencies]
-tempfile = "3"
-wiremock = "0.6"
-tokio = { version = "1", features = ["rt", "macros"] }
 leviso-cheat-test = { path = "../../testing/cheat-test" }
-filetime = "0.2"
 
 [package.metadata.generate-rpm]
 assets = [

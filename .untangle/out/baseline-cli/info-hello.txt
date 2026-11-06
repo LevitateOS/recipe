@@ -1,0 +1,4 @@
+[1mName:       [0m [36m[1mhello[0m[39m
+[1mVersion:    [0m [32m1.0[39m
+[1mRecipe:     [0m [2mexamples/hello.rhai[0m
+exit=0

@@ -1,6 +1,5 @@
 use crate::llm::provider::{LlmProviderId, ProviderConfig, ResolvedLlmConfig};
 use serde::Deserialize;
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -8,36 +7,8 @@ const DEFAULT_TIMEOUT_SECS: u64 = 300;
 const DEFAULT_MAX_OUTPUT_BYTES: usize = 10 * 1024 * 1024;
 const DEFAULT_MAX_INPUT_BYTES: usize = 10 * 1024 * 1024;
 
-thread_local! {
-    static SELECTED_PROFILE: RefCell<Option<String>> = const { RefCell::new(None) };
-}
-
-pub(crate) fn with_llm_profile<T>(profile: Option<&str>, f: impl FnOnce() -> T) -> T {
-    let prev = SELECTED_PROFILE.with(|p| p.borrow().clone());
-    SELECTED_PROFILE.with(|p| *p.borrow_mut() = profile.map(|s| s.to_owned()));
-
-    // Ensure we always restore the previous profile even if `f()` panics.
-    struct RestoreGuard {
-        prev: Option<String>,
-    }
-    impl Drop for RestoreGuard {
-        fn drop(&mut self) {
-            let prev = std::mem::take(&mut self.prev);
-            SELECTED_PROFILE.with(|p| *p.borrow_mut() = prev);
-        }
-    }
-
-    let _guard = RestoreGuard { prev };
-    f()
-}
-
-fn selected_profile() -> Option<String> {
-    SELECTED_PROFILE.with(|p| p.borrow().clone())
-}
-
 #[derive(Debug, Clone, Deserialize, Default)]
 struct LlmToml {
-    version: Option<u32>,
     default_provider: Option<String>,
     default_profile: Option<String>,
     timeout_secs: Option<u64>,
@@ -75,9 +46,6 @@ struct ProviderToml {
 
 impl LlmToml {
     fn merge(&mut self, other: LlmToml) {
-        if other.version.is_some() {
-            self.version = other.version;
-        }
         if other.default_provider.is_some() {
             self.default_provider = other.default_provider;
         }
@@ -270,20 +238,45 @@ fn build_resolved(cfg: &LlmToml) -> Result<ResolvedLlmConfig, String> {
         .as_ref()
         .ok_or_else(|| "Missing required table [providers] in recipe/llm.toml".to_owned())?;
 
-    let codex = provider_required("codex", providers.codex.as_ref())?;
-    let claude = provider_required("claude", providers.claude.as_ref())?;
+    // Only the provider that will run must be configured.
+    let unused = ProviderToml::default();
+    let (codex, claude) = match default_provider {
+        LlmProviderId::Codex => (
+            provider_required("codex", providers.codex.as_ref())?,
+            providers.claude.as_ref().unwrap_or(&unused),
+        ),
+        LlmProviderId::Claude => (
+            providers.codex.as_ref().unwrap_or(&unused),
+            provider_required("claude", providers.claude.as_ref())?,
+        ),
+    };
+    // `config_overrides` are Codex `-c key=value` settings; Claude has no equivalent.
+    if claude.config_overrides.as_ref().is_some_and(|overrides| !overrides.is_empty()) {
+        return Err("[providers.claude] config_overrides is Codex-only; use args".to_owned());
+    }
+    let at_least = |name: &str, value: Option<u64>, default: u64, minimum: u64| match value {
+        None => Ok(default),
+        Some(value) if value >= minimum => Ok(value),
+        Some(value) => Err(format!(
+            "`{name} = {value}` in recipe/llm.toml is below its minimum of {minimum}"
+        )),
+    };
 
     Ok(ResolvedLlmConfig {
         default_provider,
-        timeout_secs: cfg.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS).max(1),
-        max_output_bytes: cfg
-            .max_output_bytes
-            .unwrap_or(DEFAULT_MAX_OUTPUT_BYTES)
-            .max(1024),
-        max_input_bytes: cfg
-            .max_input_bytes
-            .unwrap_or(DEFAULT_MAX_INPUT_BYTES)
-            .max(1024),
+        timeout_secs: at_least("timeout_secs", cfg.timeout_secs, DEFAULT_TIMEOUT_SECS, 1)?,
+        max_output_bytes: at_least(
+            "max_output_bytes",
+            cfg.max_output_bytes.map(|n| n as u64),
+            DEFAULT_MAX_OUTPUT_BYTES as u64,
+            1024,
+        )? as usize,
+        max_input_bytes: at_least(
+            "max_input_bytes",
+            cfg.max_input_bytes.map(|n| n as u64),
+            DEFAULT_MAX_INPUT_BYTES as u64,
+            1024,
+        )? as usize,
         codex: resolve_provider_cfg("codex", codex),
         claude: resolve_provider_cfg("claude", claude),
     })
@@ -314,10 +307,12 @@ fn load_config_impl() -> Result<LlmToml, String> {
     Ok(merged)
 }
 
-pub(crate) fn resolve_config_for_call() -> Result<ResolvedLlmConfig, String> {
+pub(crate) fn resolve_config_for_call(profile: Option<&str>) -> Result<ResolvedLlmConfig, String> {
     let merged = load_config_impl()?;
 
-    let selected = selected_profile().or_else(|| merged.default_profile.clone());
+    let selected = profile
+        .map(str::to_owned)
+        .or_else(|| merged.default_profile.clone());
 
     let mut effective = merged.clone();
     if let Some(name) = selected {

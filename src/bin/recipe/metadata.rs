@@ -8,49 +8,27 @@ pub(crate) struct RecipeMetadata {
 }
 
 impl RecipeMetadata {
-    /// Load metadata from a recipe file by parsing its ctx block
-    pub(crate) fn load(path: &Path) -> Self {
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => return Self::default(),
-        };
-
-        let mut meta = Self::default();
-
-        for line in content.lines() {
-            let line = line.trim();
-            if line.starts_with("name:") {
-                meta.name = extract_string_value(line);
-            } else if line.starts_with("version:") {
-                meta.version = Some(extract_string_value(line));
-            } else if line.starts_with("description:") {
-                meta.description = Some(extract_string_value(line));
+    /// Read the loader's merged declaration without executing recipe code.
+    pub(crate) fn load(path: &Path, search_path: Option<&Path>) -> anyhow::Result<Self> {
+        let declared = levitate_recipe::declared_metadata(path, search_path)?;
+        let field = |name: &str| {
+            if declared.dynamic_fields.contains(name) {
+                Some("<dynamic>".to_owned())
+            } else {
+                declared.fields.get(name).cloned()
             }
-        }
-
-        if meta.name.is_empty() {
-            meta.name = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_string())
-                .unwrap_or_default();
-        }
-
-        meta
+        };
+        Ok(Self {
+            name: field("name").unwrap_or_else(|| {
+                path.file_stem()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+                    .to_owned()
+            }),
+            version: field("version"),
+            description: field("description"),
+        })
     }
-}
-
-/// Extract string value from a line like `name: "value",`
-pub(crate) fn extract_string_value(line: &str) -> String {
-    let Some(colon_pos) = line.find(':') else {
-        return String::new();
-    };
-    let value_part = line[colon_pos + 1..].trim();
-    value_part
-        .trim_start_matches('"')
-        .trim_end_matches(',')
-        .trim_end_matches('"')
-        .to_string()
 }
 
 /// Iterator over recipe files in a directory
@@ -78,60 +56,4 @@ pub(crate) fn default_recipes_path() -> PathBuf {
         });
 
     data_home.join("recipe/recipes")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    fn create_test_recipes_dir() -> (TempDir, PathBuf) {
-        let dir = TempDir::new().unwrap();
-        let recipes_path = dir.path().to_path_buf();
-        (dir, recipes_path)
-    }
-
-    fn write_recipe(recipes_path: &Path, name: &str, content: &str) -> PathBuf {
-        let path = recipes_path.join(format!("{}.rhai", name));
-        std::fs::write(&path, content).unwrap();
-        path
-    }
-
-    #[test]
-    fn test_extract_string_value() {
-        assert_eq!(extract_string_value("name: \"test\","), "test");
-        assert_eq!(extract_string_value("version: \"1.0\","), "1.0");
-        assert_eq!(
-            extract_string_value("  description: \"A test package\","),
-            "A test package"
-        );
-    }
-
-    #[test]
-    fn test_recipe_metadata_load() {
-        let (_dir, recipes_path) = create_test_recipes_dir();
-        let recipe_path = write_recipe(
-            &recipes_path,
-            "test",
-            r#"let ctx = #{
-    name: "mypackage",
-    version: "2.0",
-    description: "A test package",
-};"#,
-        );
-
-        let meta = RecipeMetadata::load(&recipe_path);
-        assert_eq!(meta.name, "mypackage");
-        assert_eq!(meta.version, Some("2.0".to_string()));
-        assert_eq!(meta.description, Some("A test package".to_string()));
-    }
-
-    #[test]
-    fn test_recipe_metadata_fallback_name() {
-        let (_dir, recipes_path) = create_test_recipes_dir();
-        let recipe_path = write_recipe(&recipes_path, "test", "let ctx = #{};");
-
-        let meta = RecipeMetadata::load(&recipe_path);
-        assert_eq!(meta.name, "test");
-    }
 }

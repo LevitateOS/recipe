@@ -1,0 +1,59 @@
+Clean up build artifacts
+
+Usage: recipe cleanup [OPTIONS] <RECIPE>
+
+Arguments:
+  <RECIPE>  Recipe path or recipe name. Name lookup follows the same rules as `recipe install`
+
+Options:
+      --reason <REASON>
+          Cleanup reason passed to `cleanup(ctx, reason)`. Defaults to `manual`
+  -r, --recipes-path <RECIPES_PATH>
+          Recipes directory used for name lookup, listing, and default recipe resolution [default: /home/vince/.local/share/recipe/recipes]
+  -b, --build-dir <BUILD_DIR>
+          Logical build destination and lock (default: stable destination under the state directory)
+      --state-dir <STATE_DIR>
+          Store resumable state here (default: the per-user application-state directory)
+      --target-os <TARGET_OS>
+          Execution target OS (only native Linux is currently supported) [default: linux]
+      --target-arch <TARGET_ARCH>
+          Execution target architecture (only native x86_64 is currently supported) [default: x86_64]
+  -j, --jobs <JOBS>
+          Parallel jobs requested by recipes; Ginux task limits still apply [default: 1]
+      --force-acquire
+          Rerun acquisition, build and installation for the main recipe
+      --force-build
+          Rerun build and installation for the main recipe
+      --force-install
+          Rerun installation for the main recipe
+      --timeout-secs <TIMEOUT_SECS>
+          Maximum supervised execution time in seconds, including silent work [default: 3600]
+      --memory-mib <MEMORY_MIB>
+          Domain memory limit in MiB, including writable storage and metadata [default: 2048]
+      --storage-max-objects <STORAGE_MAX_OBJECTS>
+          Maximum writable filesystem objects [default: 16384]
+      --storage-max-bytes <STORAGE_MAX_BYTES>
+          Explicit writable data byte cap (otherwise memory minus filesystem metadata)
+      --network-host <HOST:PORT>
+          Permit outbound TCP to this HOST:PORT (repeatable); networking is off by default
+      --network-max-bytes <NETWORK_MAX_BYTES>
+          Bound cumulative sent and received network bytes for this invocation [default: 8589934592]
+  -d, --define <KEY=VALUE>
+          Define scope constants (KEY=VALUE), injected into Rhai scope before execution
+      --input <NAME=PATH>
+          Import NAME=PATH as read-only /inputs/NAME; trees exclude root .git and target
+      --json-output <JSON_OUTPUT>
+          Write final ctx JSON to a file instead of stdout; useful when scripting around recipe output
+      --machine-events
+          Emit machine-readable hook events (JSON objects) alongside the normal human-readable progress log
+      --llm-profile <LLM_PROFILE>
+          Select an LLM profile from XDG `recipe/llm.toml` (under `[profiles.<name>]`) for autofix/LLM features
+      --no-persist-state
+          Disable state/file recovery. Filesystem effects still occur
+  -h, --help
+          Print help
+
+Examples:
+  recipe cleanup kitty
+  recipe cleanup kitty --reason manual
+  recipe cleanup ./recipes/kitty.rhai --build-dir /tmp/recipe-build

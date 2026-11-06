@@ -4,30 +4,30 @@ use crate::core::output;
 use rhai::EvalAltResult;
 use std::path::{Path, PathBuf};
 
+/// The paths `pattern` matches, sorted. An invalid pattern or an unreadable
+/// directory on the way is an error; no match is an empty list.
+pub(crate) fn glob_matches(pattern: &str) -> Result<Vec<PathBuf>, Box<EvalAltResult>> {
+    let mut paths = glob::glob(pattern)
+        .map_err(|e| format!("invalid pattern: {e}"))?
+        .map(|path| path.map_err(|e| format!("glob error: {e}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    paths.sort();
+    Ok(paths)
+}
+
 /// Check if a path exists
 pub fn exists(path: &str) -> bool {
     // Use symlink_metadata to detect dangling symlinks too
     Path::new(path).symlink_metadata().is_ok()
 }
 
-/// Check if a file exists
-pub fn file_exists(path: &str) -> bool {
+/// Check whether the selected path resolves to a regular file.
+pub fn is_file(path: &str) -> bool {
     Path::new(path).is_file()
 }
-
-/// Check if a file exists (alias for file_exists)
-pub fn is_file(path: &str) -> bool {
-    file_exists(path)
-}
-
-/// Check if a directory exists
-pub fn dir_exists(path: &str) -> bool {
-    Path::new(path).is_dir()
-}
-
-/// Check if a directory exists (alias for dir_exists)
+/// Check whether the selected path resolves to a directory.
 pub fn is_dir(path: &str) -> bool {
-    dir_exists(path)
+    Path::new(path).is_dir()
 }
 
 /// Create a directory and all parent directories
@@ -38,8 +38,7 @@ pub fn mkdir(path: &str) -> Result<(), Box<EvalAltResult>> {
 
 /// Remove files matching a glob pattern
 pub fn rm_files(pattern: &str) -> Result<(), Box<EvalAltResult>> {
-    for path in glob::glob(pattern).map_err(|e| format!("invalid pattern: {}", e))? {
-        let path = path.map_err(|e| format!("glob error: {}", e))?;
+    for path in glob_matches(pattern)? {
         output::detail(&format!("rm {}", path.display()));
         if path.is_dir() {
             std::fs::remove_dir_all(&path)
@@ -53,36 +52,19 @@ pub fn rm_files(pattern: &str) -> Result<(), Box<EvalAltResult>> {
 
 /// Check if a glob pattern matches at least one path
 pub fn glob_exists(pattern: &str) -> Result<bool, Box<EvalAltResult>> {
-    let mut entries = glob::glob(pattern).map_err(|e| format!("invalid pattern: {}", e))?;
-    Ok(entries.any(|entry| entry.is_ok()))
+    Ok(!glob_matches(pattern)?.is_empty())
 }
 
-fn ensure_parent_dir(path: &Path) -> Result<(), Box<EvalAltResult>> {
-    let Some(parent) = path.parent() else {
-        return Ok(());
-    };
-    if parent.as_os_str().is_empty() {
-        return Ok(());
-    }
-    std::fs::create_dir_all(parent).map_err(|e| {
-        format!(
-            "failed to create parent directory for {}: {}",
-            path.display(),
-            e
-        )
-        .into()
-    })
-}
 
 fn copy_file_impl(src: &Path, dest: &Path) -> Result<(), Box<EvalAltResult>> {
     if !src.is_file() {
-        return Err(format!("copy_file source is not a file: {}", src.display()).into());
+        return Err(format!("copy source is not a file: {}", src.display()).into());
     }
-    ensure_parent_dir(dest)?;
+    crate::helpers::internal::fs_utils::ensure_parent_dir(dest)?;
     output::detail(&format!("cp {} {}", src.display(), dest.display()));
     std::fs::copy(src, dest).map(|_| ()).map_err(|e| {
         format!(
-            "copy_file failed: {} -> {}: {}",
+            "copy failed: {} -> {}: {}",
             src.display(),
             dest.display(),
             e
@@ -91,7 +73,6 @@ fn copy_file_impl(src: &Path, dest: &Path) -> Result<(), Box<EvalAltResult>> {
     })
 }
 
-#[cfg(target_os = "linux")]
 fn clone_file_reflink(src: &Path, dest: &Path) -> std::io::Result<()> {
     use std::fs::OpenOptions;
     use std::os::fd::AsRawFd;
@@ -99,27 +80,18 @@ fn clone_file_reflink(src: &Path, dest: &Path) -> std::io::Result<()> {
     const FICLONE: libc::c_ulong = 0x4004_9409;
 
     let src_file = OpenOptions::new().read(true).open(src)?;
-    let dest_file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(dest)?;
+    // FICLONE replaces the whole destination, so it needs no truncation first;
+    // a failed clone leaves existing bytes in place.
+    let dest_file = OpenOptions::new().create(true).write(true).truncate(false).open(dest)?;
 
     let request = FICLONE as libc::Ioctl;
     let rc = unsafe { libc::ioctl(dest_file.as_raw_fd(), request, src_file.as_raw_fd()) };
     if rc == -1 {
         return Err(std::io::Error::last_os_error());
     }
-    Ok(())
+    dest_file.set_permissions(src_file.metadata()?.permissions())
 }
 
-#[cfg(not(target_os = "linux"))]
-fn clone_file_reflink(_src: &Path, _dest: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "reflink not supported on this platform",
-    ))
-}
 
 fn copy_path_to_dir(src: &Path, dest_dir: &Path) -> Result<(), Box<EvalAltResult>> {
     let Some(name) = src.file_name() else {
@@ -141,8 +113,7 @@ pub fn copy_into_dir(pattern: &str, dest_dir: &str) -> Result<(), Box<EvalAltRes
     }
 
     let mut matched = false;
-    for path in glob::glob(pattern).map_err(|e| format!("invalid pattern: {}", e))? {
-        let path = path.map_err(|e| format!("glob error: {}", e))?;
+    for path in glob_matches(pattern)? {
         if !path.is_file() {
             continue;
         }
@@ -169,7 +140,7 @@ pub fn copy_file_reflink(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>
     if !src.is_file() {
         return Err(format!("copy_file_reflink source is not a file: {}", src.display()).into());
     }
-    ensure_parent_dir(dest)?;
+    crate::helpers::internal::fs_utils::ensure_parent_dir(dest)?;
     output::detail(&format!(
         "cp --reflink=auto {} {}",
         src.display(),
@@ -177,11 +148,25 @@ pub fn copy_file_reflink(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>
     ));
     match clone_file_reflink(src, dest) {
         Ok(()) => Ok(()),
-        Err(_) => copy_file_impl(src, dest),
+        // Only "this filesystem cannot clone" falls back to copying.
+        Err(e)
+            if matches!(
+                e.raw_os_error(),
+                Some(libc::EOPNOTSUPP | libc::EXDEV | libc::EINVAL | libc::ENOTTY | libc::ENOSYS)
+            ) =>
+        {
+            copy_file_impl(src, dest)
+        }
+        Err(e) => Err(format!(
+            "copy_file_reflink failed: {} -> {}: {}",
+            src.display(),
+            dest.display(),
+            e
+        )
+        .into()),
     }
 }
 
-#[cfg(unix)]
 fn copy_symlink(link_path: &Path, dest_path: &Path) -> Result<(), Box<EvalAltResult>> {
     let target = std::fs::read_link(link_path)
         .map_err(|e| format!("read_link failed for {}: {}", link_path.display(), e))?;
@@ -190,21 +175,9 @@ fn copy_symlink(link_path: &Path, dest_path: &Path) -> Result<(), Box<EvalAltRes
         target.display(),
         dest_path.display()
     ));
-    match std::fs::remove_file(dest_path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => {
-            return Err(format!(
-                "failed to replace existing symlink {}: {}",
-                dest_path.display(),
-                e
-            )
-            .into());
-        }
-    }
-    std::os::unix::fs::symlink(&target, dest_path).map_err(|e| {
+    crate::helpers::internal::fs_utils::replace_symlink(&target, dest_path).map_err(|e| {
         format!(
-            "copy_tree_contents symlink failed: {} -> {}: {}",
+            "symlink copy failed: {} -> {}: {}",
             target.display(),
             dest_path.display(),
             e
@@ -213,10 +186,6 @@ fn copy_symlink(link_path: &Path, dest_path: &Path) -> Result<(), Box<EvalAltRes
     })
 }
 
-#[cfg(not(unix))]
-fn copy_symlink(_link_path: &Path, _dest_path: &Path) -> Result<(), Box<EvalAltResult>> {
-    Err("copy_tree_contents symlink support requires unix".into())
-}
 
 /// Recursively copy the contents of src_dir into dst_dir
 pub fn copy_tree_contents(src_dir: &str, dst_dir: &str) -> Result<(), Box<EvalAltResult>> {
@@ -240,7 +209,25 @@ pub fn copy_tree_contents(src_dir: &str, dst_dir: &str) -> Result<(), Box<EvalAl
         .into());
     }
 
-    for entry in WalkDir::new(src_root).min_depth(1) {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let input_modes: crate::domain::InputModes = if src_root.starts_with(crate::domain::INPUTS) {
+        use std::io::Read;
+        let file = std::fs::File::open(crate::domain::INPUT_MODES)
+            .map_err(|e| format!("cannot read immutable input modes: {e}"))?;
+        let mut bytes = Vec::new();
+        file.take(crate::domain::MAX_INPUT_MODES_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("cannot read immutable input modes: {e}"))?;
+        if bytes.len() as u64 > crate::domain::MAX_INPUT_MODES_BYTES {
+            return Err("input mode metadata exceeds bound".into());
+        }
+        serde_json::from_slice(&bytes).map_err(|e| format!("invalid immutable input modes: {e}"))?
+    } else {
+        Default::default()
+    };
+    let mut inodes = std::collections::HashMap::new();
+    let mut directories = Vec::new();
+    for entry in WalkDir::new(src_root).follow_links(false).min_depth(1) {
         let entry = entry.map_err(|e| format!("copy_tree_contents walk failed: {}", e))?;
         let path = entry.path();
         let relative = path.strip_prefix(src_root).map_err(|e| {
@@ -259,6 +246,17 @@ pub fn copy_tree_contents(src_dir: &str, dst_dir: &str) -> Result<(), Box<EvalAl
             )
         })?;
 
+        let permissions = if let Ok(relative) = path.strip_prefix(crate::domain::INPUTS) {
+            let name = relative
+                .to_str()
+                .ok_or("non-Unicode immutable input path")?;
+            let mode = *input_modes
+                .get(name)
+                .ok_or("immutable input mode is missing")?;
+            std::fs::Permissions::from_mode(mode & 0o777)
+        } else {
+            metadata.permissions()
+        };
         if metadata.is_dir() {
             output::detail(&format!("mkdir {}", dest_path.display()));
             std::fs::create_dir_all(&dest_path).map_err(|e| -> Box<EvalAltResult> {
@@ -269,28 +267,43 @@ pub fn copy_tree_contents(src_dir: &str, dst_dir: &str) -> Result<(), Box<EvalAl
                 )
                 .into()
             })?;
+            directories.push((dest_path, permissions));
             continue;
         }
 
-        ensure_parent_dir(&dest_path)?;
+        crate::helpers::internal::fs_utils::ensure_parent_dir(&dest_path)?;
         if metadata.file_type().is_symlink() {
             copy_symlink(path, &dest_path)?;
             continue;
         }
 
-        copy_file_impl(path, &dest_path)?;
-        std::fs::set_permissions(&dest_path, metadata.permissions()).map_err(
-            |e| -> Box<EvalAltResult> {
-                format!(
-                    "copy_tree_contents set_permissions failed for {}: {}",
-                    dest_path.display(),
-                    e
-                )
-                .into()
-            },
-        )?;
+        let identity = (metadata.dev(), metadata.ino());
+        if let Some(first) = inodes.get(&identity) {
+            crate::helpers::internal::fs_utils::remove_existing(&dest_path)
+                .map_err(|e| format!("cannot replace hardlink destination: {e}"))?;
+            std::fs::hard_link(first, &dest_path)
+                .map_err(|e| format!("copy_tree_contents hardlink failed: {e}"))?;
+        } else {
+            // Replace rather than write through an existing link or shared inode.
+            crate::helpers::internal::fs_utils::remove_existing(&dest_path)
+                .map_err(|e| format!("cannot replace copy destination: {e}"))?;
+            copy_file_impl(path, &dest_path)?;
+            inodes.insert(identity, dest_path.clone());
+        }
+        std::fs::set_permissions(&dest_path, permissions).map_err(|e| -> Box<EvalAltResult> {
+            format!(
+                "copy_tree_contents set_permissions failed for {}: {}",
+                dest_path.display(),
+                e
+            )
+            .into()
+        })?;
     }
 
+    for (path, permissions) in directories.into_iter().rev() {
+        std::fs::set_permissions(&path, permissions)
+            .map_err(|e| format!("copy_tree_contents directory permissions failed: {e}"))?;
+    }
     Ok(())
 }
 
@@ -328,44 +341,26 @@ pub fn move_file(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>> {
 }
 
 /// Create a symbolic link
-#[cfg(unix)]
 pub fn symlink(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>> {
     output::detail(&format!("ln -s {} {}", src, dest));
     std::os::unix::fs::symlink(src, dest).map_err(|e| format!("symlink failed: {}", e).into())
 }
 
 /// Create or replace a symbolic link
-#[cfg(unix)]
 pub fn symlink_force(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>> {
     let dest_path = Path::new(dest);
     output::detail(&format!("ln -sfn {} {}", src, dest));
 
-    match std::fs::remove_file(dest_path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) if e.kind() == std::io::ErrorKind::IsADirectory => {
-            return Err(format!("ln_force destination is an existing directory: {}", dest).into());
-        }
-        Err(e) => {
-            return Err(format!("failed to remove existing link target {}: {}", dest, e).into());
-        }
+    if std::fs::symlink_metadata(dest_path).is_ok_and(|meta| meta.is_dir()) {
+        return Err(format!("ln_force destination is an existing directory: {}", dest).into());
     }
-
-    std::os::unix::fs::symlink(src, dest).map_err(|e| format!("symlink failed: {}", e).into())
+    crate::helpers::internal::fs_utils::replace_symlink(Path::new(src), dest_path)
+        .map_err(|e| format!("symlink failed: {}", e).into())
 }
 
-#[cfg(not(unix))]
-pub fn symlink(_src: &str, _dest: &str) -> Result<(), Box<EvalAltResult>> {
-    Err("symlinks not supported on this platform".into())
-}
 
-#[cfg(not(unix))]
-pub fn symlink_force(_src: &str, _dest: &str) -> Result<(), Box<EvalAltResult>> {
-    Err("symlinks not supported on this platform".into())
-}
 
 /// Change file permissions
-#[cfg(unix)]
 pub fn chmod_file(path: &str, mode: i64) -> Result<(), Box<EvalAltResult>> {
     use std::os::unix::fs::PermissionsExt;
     output::detail(&format!("chmod {:o} {}", mode, path));
@@ -373,8 +368,3 @@ pub fn chmod_file(path: &str, mode: i64) -> Result<(), Box<EvalAltResult>> {
         .map_err(|e| format!("chmod failed: {}", e).into())
 }
 
-#[cfg(not(unix))]
-pub fn chmod_file(_path: &str, _mode: i64) -> Result<(), Box<EvalAltResult>> {
-    // No-op on non-Unix
-    Ok(())
-}

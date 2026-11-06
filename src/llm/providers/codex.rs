@@ -1,5 +1,4 @@
-use crate::llm::provider::{LlmProviderId, ProviderResult, ResolvedCall, ResolvedLlmConfig};
-use std::collections::BTreeMap;
+use crate::llm::provider::{ProviderResult, ResolvedCall, ResolvedLlmConfig};
 use std::path::Path;
 
 fn codex_config_path() -> Option<std::path::PathBuf> {
@@ -26,7 +25,7 @@ fn discover_mcp_server_names() -> Vec<String> {
 }
 
 pub(crate) struct CodexInvocation {
-    pub(crate) cmd: tokio::process::Command,
+    pub(crate) cmd: std::process::Command,
     pub(crate) call: ResolvedCall,
     pub(crate) last_message_file: tempfile::NamedTempFile,
 }
@@ -36,11 +35,11 @@ pub(crate) fn build(
     cwd: &Path,
     stdin_prompt: Vec<u8>,
 ) -> Result<CodexInvocation, String> {
-    let mut cmd = tokio::process::Command::new(&cfg.codex.bin);
+    let mut cmd = std::process::Command::new(&cfg.codex.bin);
 
     cmd.arg("exec");
-    // Recipe LLM helpers should be pure text transforms of provided input. Disable the shell tool
-    // so Codex doesn't run its own command explorations while "extracting" from provided content.
+    // Autofix sends all context in the prompt and wants only a diff back; without the shell tool
+    // Codex cannot explore or change the checkout itself.
     cmd.args(["--disable", "shell_tool"]);
     for arg in &cfg.codex.args {
         cmd.arg(arg);
@@ -55,7 +54,7 @@ pub(crate) fn build(
         cmd.args(["--config", ov]);
     }
 
-    // Effort maps to Codex's config override used in Ralph.
+    // Map the requested effort to Codex's config override.
     if let Some(effort) = &cfg.codex.effort {
         cmd.arg("--config");
         cmd.arg(format!("model_reasoning_effort={}", effort));
@@ -84,14 +83,11 @@ pub(crate) fn build(
     // Read prompt from stdin
     cmd.arg("-");
 
-    let mut env = BTreeMap::new();
-    env.extend(cfg.codex.env.clone());
+    let env = cfg.codex.env.clone();
 
     Ok(CodexInvocation {
         cmd,
         call: ResolvedCall {
-            provider: LlmProviderId::Codex,
-            prompt: "<stdin>".to_owned(),
             stdin: stdin_prompt,
             timeout_secs: cfg.timeout_secs,
             max_output_bytes: cfg.max_output_bytes,
@@ -106,13 +102,9 @@ pub(crate) fn build(
 }
 
 pub(crate) fn finalize(result: ProviderResult, last_message_path: &Path) -> Result<String, String> {
-    if result.exit_code != 0 {
+    if !result.exit.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
-        return Err(format!(
-            "codex exited with code {}: {}",
-            result.exit_code,
-            stderr.trim()
-        ));
+        return Err(format!("codex exited with {}: {}", result.exit, stderr.trim()));
     }
 
     let text = std::fs::read_to_string(last_message_path).map_err(|e| {
@@ -127,6 +119,5 @@ pub(crate) fn finalize(result: ProviderResult, last_message_path: &Path) -> Resu
         return Err("codex last message file was empty".to_owned());
     }
 
-    // Return as-is (no semantic parsing), just trim trailing whitespace.
     Ok(trimmed.to_owned())
 }

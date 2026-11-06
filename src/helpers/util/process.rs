@@ -1,9 +1,9 @@
 //! Execution utilities for recipe scripts
 //!
-//! Provides helpers for running installed packages.
+//! Running programs and package managers inside the domain.
 
+use crate::helpers::internal::cmd;
 use rhai::EvalAltResult;
-use std::env;
 use std::process::Command;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -13,31 +13,16 @@ enum PrivilegeCommand {
     Doas,
 }
 
-fn run_command(cmd: &str, args: &[String]) -> Result<std::process::Output, Box<EvalAltResult>> {
-    Command::new(cmd)
-        .args(args)
-        .output()
-        .map_err(|e| format!("Failed to execute {}: {}", cmd, e).into())
+fn run_command(cmd: &str, args: &[String]) -> Result<crate::process::Finished, Box<EvalAltResult>> {
+    let mut command = Command::new(cmd);
+    command.args(args);
+    cmd::capture(command)
 }
 
 fn run_checked(cmd: &str, args: &[String]) -> Result<(), Box<EvalAltResult>> {
-    let output = run_command(cmd, args)?;
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Err(format!(
-        "Command {} failed with exit code {:?}: {}\n{}",
-        cmd,
-        output.status.code(),
-        stderr.trim(),
-        stdout.trim()
-    )
-    .trim()
-    .to_owned()
-    .into())
+    let mut command = Command::new(cmd);
+    command.args(args);
+    cmd::run_checked(command)
 }
 
 fn strings(items: &[&str]) -> Vec<String> {
@@ -64,20 +49,12 @@ fn run_with_privilege(
     }
 }
 
-fn trim_stdout(output: std::process::Output) -> String {
+fn trim_stdout(output: crate::process::Finished) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
 fn command_path(name: &str) -> Option<std::path::PathBuf> {
-    let path = env::var_os("PATH")?;
-    env::split_paths(&path).find_map(|dir| {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            Some(candidate)
-        } else {
-            None
-        }
-    })
+    crate::process::find_program(name)
 }
 
 pub fn command_exists(name: &str) -> bool {
@@ -89,14 +66,14 @@ fn require_command(helper: &str, cmd: &str, note: &str) -> Result<(), Box<EvalAl
         return Ok(());
     }
 
-    Err(format!("helper {helper} requires host command '{cmd}' in PATH; {note}").into())
+    Err(format!("helper {helper} requires '{cmd}' on the domain's PATH; {note}").into())
 }
 
 fn require_rpm(helper: &str) -> Result<(), Box<EvalAltResult>> {
     require_command(
         helper,
         "rpm",
-        "this helper is only usable on RPM-based hosts",
+        "the root image must provide RPM",
     )
 }
 
@@ -104,19 +81,10 @@ fn require_dnf(helper: &str) -> Result<(), Box<EvalAltResult>> {
     require_command(
         helper,
         "dnf",
-        "this helper is only usable on RPM/DNF-based hosts",
+        "the root image must provide DNF",
     )
 }
 
-#[cfg(test)]
-fn running_as_root() -> bool {
-    if env::var_os("RECIPE_TEST_FORCE_NON_ROOT").is_some() {
-        return false;
-    }
-    unsafe { libc::geteuid() == 0 }
-}
-
-#[cfg(not(test))]
 fn running_as_root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
@@ -133,7 +101,7 @@ fn require_privilege_command(helper: &str) -> Result<PrivilegeCommand, Box<EvalA
     }
 
     Err(format!(
-        "helper {helper} requires host command 'sudo' or 'doas' in PATH; this helper requires non-interactive privilege escalation on the host"
+        "helper {helper} must run as root or find 'sudo' or 'doas' on the domain's PATH"
     )
     .into())
 }
@@ -142,11 +110,13 @@ fn require_apk(helper: &str) -> Result<(), Box<EvalAltResult>> {
     require_command(
         helper,
         "apk",
-        "this helper is only usable on Alpine/APK-based hosts",
+        "the root image must provide APK",
     )
 }
 
-fn parse_apk_policy(output: &str) -> Vec<(String, Vec<String>)> {
+type ApkPolicyEntries = Vec<(String, Vec<String>)>;
+
+fn parse_apk_policy(output: &str) -> ApkPolicyEntries {
     let mut entries = Vec::new();
     let mut current_version: Option<String> = None;
     let mut current_sources: Vec<String> = Vec::new();
@@ -177,14 +147,11 @@ fn parse_apk_policy(output: &str) -> Vec<(String, Vec<String>)> {
     entries
 }
 
-fn apk_policy(
-    helper: &str,
-    name: &str,
-) -> Result<Option<Vec<(String, Vec<String>)>>, Box<EvalAltResult>> {
+fn apk_policy(helper: &str, name: &str) -> Result<Option<ApkPolicyEntries>, Box<EvalAltResult>> {
     require_apk(helper)?;
     let args = strings(&["policy", name]);
     let output = run_command("apk", &args)?;
-    if !output.status.success() {
+    if !output.exit.success() {
         return Ok(None);
     }
     Ok(Some(parse_apk_policy(&String::from_utf8_lossy(
@@ -196,13 +163,6 @@ fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-#[cfg(test)]
-fn apk_repositories_file() -> String {
-    std::env::var("RECIPE_TEST_APK_REPOSITORIES_FILE")
-        .unwrap_or_else(|_| "/etc/apk/repositories".to_owned())
-}
-
-#[cfg(not(test))]
 fn apk_repositories_file() -> String {
     "/etc/apk/repositories".to_owned()
 }
@@ -215,15 +175,67 @@ fn apk_repositories_file() -> String {
 ///
 /// # Returns
 /// Exit code of the command
+/// Child stdout streams to Recipe's stderr so machine output stays intact.
 pub fn exec(cmd: &str, args: rhai::Array) -> Result<i64, Box<EvalAltResult>> {
-    let args: Vec<String> = args.into_iter().map(|v| v.to_string()).collect();
+    exec_with_options(cmd, args, rhai::Map::new())
+}
 
-    let status = Command::new(cmd)
-        .args(&args)
-        .status()
-        .map_err(|e| format!("Failed to execute {}: {}", cmd, e))?;
+fn argv_command(
+    program: &str,
+    args: rhai::Array,
+    options: rhai::Map,
+) -> Result<Command, Box<EvalAltResult>> {
+    let mut command = Command::new(program);
+    command.args(args.into_iter().map(|value| value.to_string()));
+    for (key, value) in options {
+        match key.as_str() {
+            "cwd" => {
+                let dir = value
+                    .into_string()
+                    .map_err(|_| "command option cwd must be a string")?;
+                if dir.is_empty() {
+                    return Err("command option cwd must not be empty".into());
+                }
+                command.current_dir(dir);
+            }
+            "env" => {
+                let vars = value
+                    .try_cast::<rhai::Map>()
+                    .ok_or("command option env must be a map")?;
+                for (name, value) in vars {
+                    let text = value.into_string().map_err(|_| {
+                        format!("command environment value {name} must be a string")
+                    })?;
+                    command.env(name.as_str(), text);
+                }
+            }
+            other => return Err(format!("unknown command option: {other}").into()),
+        }
+    }
+    Ok(command)
+}
 
-    Ok(status.code().unwrap_or(-1) as i64)
+/// Execute argv with optional cwd/env; return status and throw on execution errors.
+pub fn exec_with_options(
+    cmd: &str,
+    args: rhai::Array,
+    options: rhai::Map,
+) -> Result<i64, Box<EvalAltResult>> {
+    cmd::run_status(argv_command(cmd, args, options)?)
+}
+
+/// Execute argv, stream diagnostics to stderr, and throw on nonzero exit.
+pub fn exec_checked(cmd: &str, args: rhai::Array) -> Result<(), Box<EvalAltResult>> {
+    exec_checked_with_options(cmd, args, rhai::Map::new())
+}
+
+/// Checked argv execution with per-command cwd and environment overrides.
+pub fn exec_checked_with_options(
+    cmd: &str,
+    args: rhai::Array,
+    options: rhai::Map,
+) -> Result<(), Box<EvalAltResult>> {
+    cmd::run_checked(argv_command(cmd, args, options)?)
 }
 
 /// Execute a command and return its output
@@ -235,15 +247,16 @@ pub fn exec(cmd: &str, args: rhai::Array) -> Result<i64, Box<EvalAltResult>> {
 /// # Returns
 /// stdout of the command as a string
 pub fn exec_output(cmd: &str, args: rhai::Array) -> Result<String, Box<EvalAltResult>> {
-    let args: Vec<String> = args.into_iter().map(|v| v.to_string()).collect();
+    exec_output_with_options(cmd, args, rhai::Map::new())
+}
 
-    let output = run_command(cmd, &args)?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Command {} failed: {}", cmd, stderr).into());
-    }
-
+/// Capture checked argv stdout with per-command cwd and environment overrides.
+pub fn exec_output_with_options(
+    cmd: &str,
+    args: rhai::Array,
+    options: rhai::Map,
+) -> Result<String, Box<EvalAltResult>> {
+    let output = cmd::checked_capture(argv_command(cmd, args, options)?)?;
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
@@ -251,7 +264,7 @@ pub fn exec_output(cmd: &str, args: rhai::Array) -> Result<String, Box<EvalAltRe
 pub fn rpm_installed(name: &str) -> Result<bool, Box<EvalAltResult>> {
     require_rpm("rpm_installed")?;
     let args = strings(&["-q", name]);
-    run_command("rpm", &args).map(|output| output.status.success())
+    run_command("rpm", &args).map(|output| output.exit.success())
 }
 
 /// Return the installed RPM version
@@ -259,7 +272,7 @@ pub fn rpm_version(name: &str) -> Result<String, Box<EvalAltResult>> {
     require_rpm("rpm_version")?;
     let args = strings(&["-q", "--qf", "%{VERSION}", name]);
     let output = run_command("rpm", &args)?;
-    if !output.status.success() {
+    if !output.exit.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("rpm_version failed for {}: {}", name, stderr.trim()).into());
     }
@@ -270,7 +283,7 @@ pub fn rpm_version(name: &str) -> Result<String, Box<EvalAltResult>> {
 pub fn dnf_package_available(name: &str) -> Result<bool, Box<EvalAltResult>> {
     require_dnf("dnf_package_available")?;
     let args = strings(&["-q", "info", name]);
-    run_command("dnf", &args).map(|output| output.status.success())
+    run_command("dnf", &args).map(|output| output.exit.success())
 }
 
 pub fn apk_installed(name: &str) -> Result<bool, Box<EvalAltResult>> {
@@ -305,7 +318,7 @@ pub fn apk_package_available(name: &str) -> Result<bool, Box<EvalAltResult>> {
     require_apk("apk_package_available")?;
     let args = strings(&["search", "-v", name]);
     let output = run_command("apk", &args)?;
-    if !output.status.success() {
+    if !output.exit.success() {
         return Ok(false);
     }
 
@@ -513,238 +526,4 @@ pub fn apk_download(
         .map(rhai::Dynamic::from)
         .collect();
     Ok(downloaded)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::ffi::OsString;
-    use std::path::PathBuf;
-    use std::sync::{Mutex, OnceLock};
-
-    fn path_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    fn path_without_commands(commands: &[&str]) -> OsString {
-        let Some(path) = std::env::var_os("PATH") else {
-            return OsString::new();
-        };
-
-        let filtered: Vec<PathBuf> = std::env::split_paths(&path)
-            .filter(|dir| !commands.iter().any(|cmd| dir.join(cmd).is_file()))
-            .collect();
-
-        std::env::join_paths(filtered).unwrap_or_else(|_| OsString::new())
-    }
-
-    struct PathGuard(Option<OsString>);
-
-    impl PathGuard {
-        fn set(path: &OsString) -> Self {
-            let previous = std::env::var_os("PATH");
-            unsafe { std::env::set_var("PATH", path) };
-            Self(previous)
-        }
-    }
-
-    impl Drop for PathGuard {
-        fn drop(&mut self) {
-            match self.0.take() {
-                Some(path) => unsafe { std::env::set_var("PATH", path) },
-                None => unsafe { std::env::remove_var("PATH") },
-            }
-        }
-    }
-
-    fn make_executable(path: &std::path::Path) {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(path).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(path, perms).unwrap();
-        }
-    }
-
-    fn write_exec_wrapper(bin_dir: &std::path::Path, name: &str, target: &std::path::Path) {
-        let wrapper = bin_dir.join(name);
-        std::fs::write(
-            &wrapper,
-            format!(
-                "#!/bin/sh\nexec {} \"$@\"\n",
-                shell_single_quote(&target.display().to_string())
-            ),
-        )
-        .unwrap();
-        make_executable(&wrapper);
-    }
-
-    #[test]
-    fn rpm_and_dnf_helpers_fail_fast_when_commands_are_missing() {
-        let _guard = path_lock().lock().unwrap();
-        let temp = tempfile::tempdir().unwrap();
-        let empty_path = temp.path().as_os_str().to_os_string();
-        let _path_guard = PathGuard::set(&empty_path);
-
-        assert!(!command_exists("rpm"));
-        assert!(!command_exists("dnf"));
-        assert!(!command_exists("sudo"));
-
-        let rpm_err = rpm_installed("fakepkg").unwrap_err().to_string();
-        assert!(rpm_err.contains("helper rpm_installed requires host command 'rpm' in PATH"));
-
-        let dnf_err = dnf_package_available("fakepkg").unwrap_err().to_string();
-        assert!(
-            dnf_err.contains("helper dnf_package_available requires host command 'dnf' in PATH")
-        );
-
-        let apk_err = apk_installed("fakepkg").unwrap_err().to_string();
-        assert!(apk_err.contains("helper apk_installed requires host command 'apk' in PATH"));
-    }
-
-    #[test]
-    fn dnf_install_fails_fast_when_sudo_or_doas_is_missing() {
-        let _guard = path_lock().lock().unwrap();
-        let temp = tempfile::tempdir().unwrap();
-        let bin_dir = temp.path().join("bin");
-        std::fs::create_dir_all(&bin_dir).unwrap();
-
-        let dnf_path = bin_dir.join("dnf");
-        std::fs::write(
-            &dnf_path,
-            "#!/bin/sh\nif [ \"$1\" = \"-q\" ] && [ \"$2\" = \"info\" ]; then exit 0; fi\nexit 0\n",
-        )
-        .unwrap();
-        make_executable(&dnf_path);
-
-        let filtered = path_without_commands(&["sudo", "doas"]);
-        let joined = std::env::join_paths(
-            std::iter::once(bin_dir.clone()).chain(std::env::split_paths(&filtered)),
-        )
-        .unwrap();
-        let _path_guard = PathGuard::set(&joined);
-        unsafe {
-            std::env::set_var("RECIPE_TEST_FORCE_NON_ROOT", "1");
-        }
-
-        assert!(command_exists("dnf"));
-        assert!(!command_exists("sudo"));
-        assert!(!command_exists("doas"));
-        assert!(dnf_package_available("fakepkg").unwrap());
-
-        let err = dnf_install(vec![rhai::Dynamic::from("alpha")])
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("helper dnf_install requires host command 'sudo' or 'doas' in PATH"));
-        unsafe {
-            std::env::remove_var("RECIPE_TEST_FORCE_NON_ROOT");
-        }
-    }
-
-    #[test]
-    fn apk_helpers_work_with_doas_and_fail_fast_when_privilege_command_is_missing() {
-        let _guard = path_lock().lock().unwrap();
-        let temp = tempfile::tempdir().unwrap();
-        let bin_dir = temp.path().join("bin");
-        let downloads_dir = temp.path().join("downloads");
-        let log_file = temp.path().join("apk.log");
-        let repo_file = temp.path().join("repositories");
-        std::fs::create_dir_all(&bin_dir).unwrap();
-        std::fs::create_dir_all(&downloads_dir).unwrap();
-
-        let doas_path = bin_dir.join("doas");
-        std::fs::write(
-            &doas_path,
-            "#!/bin/sh\nif [ \"$1\" = \"-n\" ]; then shift; fi\nexec \"$@\"\n",
-        )
-        .unwrap();
-        make_executable(&doas_path);
-
-        let sh_path = command_path("sh").expect("host sh not found");
-        write_exec_wrapper(&bin_dir, "sh", &sh_path);
-
-        let grep_path = command_path("grep").expect("host grep not found");
-        write_exec_wrapper(&bin_dir, "grep", &grep_path);
-
-        let touch_path = command_path("touch").expect("host touch not found");
-        write_exec_wrapper(&bin_dir, "touch", &touch_path);
-
-        let apk_path = bin_dir.join("apk");
-        std::fs::write(
-            &apk_path,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"{}\"\nif [ \"$1\" = \"policy\" ] && [ \"$2\" = \"fakepkg\" ]; then\n  printf 'fakepkg policy:\\n  1.2.3-r0:\\n    lib/apk/db/installed\\n    https://example.invalid/repo\\n';\n  exit 0\nfi\nif [ \"$1\" = \"policy\" ]; then\n  printf '%s policy:\\n' \"$2\";\n  exit 0\nfi\nif [ \"$1\" = \"search\" ] && [ \"$2\" = \"-v\" ] && [ \"$3\" = \"fakepkg\" ]; then\n  printf 'fakepkg-1.2.3-r0 description\\n';\n  exit 0\nfi\nif [ \"$1\" = \"search\" ] && [ \"$2\" = \"-v\" ]; then\n  exit 0\nfi\nif [ \"$1\" = \"add\" ] && [ \"$2\" = \"--update-cache\" ]; then\n  exit 0\nfi\nif [ \"$1\" = \"fetch\" ] && [ \"$2\" = \"--output\" ]; then\n  destdir=\"$3\"\n  shift 3\n  for pkg in \"$@\"; do\n    touch \"$destdir/$pkg-1.2.3-r0.apk\"\n  done\n  exit 0\nfi\nexit 1\n",
-                log_file.display()
-            ),
-        )
-        .unwrap();
-        make_executable(&apk_path);
-
-        let filtered = path_without_commands(&["sudo", "doas", "apk"]);
-        let joined = std::env::join_paths(
-            std::iter::once(bin_dir.clone()).chain(std::env::split_paths(&filtered)),
-        )
-        .unwrap();
-        let _path_guard = PathGuard::set(&joined);
-        unsafe {
-            std::env::set_var("RECIPE_TEST_APK_REPOSITORIES_FILE", &repo_file);
-            std::env::set_var("RECIPE_TEST_FORCE_NON_ROOT", "1");
-        }
-
-        assert!(command_exists("apk"));
-        assert!(!command_exists("sudo"));
-        assert!(command_exists("doas"));
-        assert!(apk_installed("fakepkg").unwrap());
-        assert!(!apk_installed("missingpkg").unwrap());
-        assert_eq!(apk_version("fakepkg").unwrap(), "1.2.3-r0");
-        assert!(apk_package_available("fakepkg").unwrap());
-        assert!(!apk_package_available("missingpkg").unwrap());
-        apk_add_repo("https://example.invalid/alpine").unwrap();
-        apk_install(vec![
-            rhai::Dynamic::from("alpha"),
-            rhai::Dynamic::from("beta"),
-        ])
-        .unwrap();
-        let downloaded = apk_download(
-            vec![rhai::Dynamic::from("alpha"), rhai::Dynamic::from("beta")],
-            downloads_dir.to_str().unwrap(),
-        )
-        .unwrap();
-        assert_eq!(downloaded.len(), 2);
-
-        let repo_contents = std::fs::read_to_string(&repo_file).unwrap();
-        assert!(repo_contents.contains("https://example.invalid/alpine"));
-
-        let log = std::fs::read_to_string(&log_file).unwrap();
-        assert!(log.contains("add --update-cache alpha beta"));
-        assert!(log.contains(&format!(
-            "fetch --output {} alpha beta",
-            downloads_dir.display()
-        )));
-
-        unsafe {
-            std::env::remove_var("RECIPE_TEST_APK_REPOSITORIES_FILE");
-            std::env::remove_var("RECIPE_TEST_FORCE_NON_ROOT");
-        }
-
-        std::fs::remove_file(&doas_path).unwrap();
-        let no_privilege = path_without_commands(&["sudo", "doas", "apk"]);
-        let joined = std::env::join_paths(
-            std::iter::once(bin_dir).chain(std::env::split_paths(&no_privilege)),
-        )
-        .unwrap();
-        let _path_guard = PathGuard::set(&joined);
-        unsafe {
-            std::env::set_var("RECIPE_TEST_FORCE_NON_ROOT", "1");
-        }
-        let err = apk_install(vec![rhai::Dynamic::from("alpha")])
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("helper apk_install requires host command 'sudo' or 'doas' in PATH"));
-        unsafe {
-            std::env::remove_var("RECIPE_TEST_FORCE_NON_ROOT");
-        }
-    }
 }

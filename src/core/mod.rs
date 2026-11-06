@@ -2,11 +2,8 @@
 //!
 //! Minimal executor that handles ctx-based recipes.
 
-mod autofix;
-pub mod build_deps;
-pub mod ctx;
-pub mod events;
-pub mod executor;
-pub mod lock;
-pub mod output;
-pub mod runner;
+pub(crate) mod autofix;
+pub(crate) mod events;
+pub(crate) mod executor;
+pub(crate) mod invocation;
+pub(crate) mod output;

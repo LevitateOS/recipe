@@ -18,13 +18,6 @@ impl LlmProviderId {
         }
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn as_str(&self) -> &'static str {
-        match self {
-            Self::Codex => "codex",
-            Self::Claude => "claude",
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -50,10 +43,6 @@ pub(crate) struct ResolvedLlmConfig {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedCall {
-    #[allow(dead_code)]
-    pub(crate) provider: LlmProviderId,
-    #[allow(dead_code)]
-    pub(crate) prompt: String,
     pub(crate) stdin: Vec<u8>,
     pub(crate) timeout_secs: u64,
     pub(crate) max_output_bytes: usize,
@@ -68,5 +57,5 @@ pub(crate) struct ResolvedCall {
 pub(crate) struct ProviderResult {
     pub(crate) stdout: Vec<u8>,
     pub(crate) stderr: Vec<u8>,
-    pub(crate) exit_code: i32,
+    pub(crate) exit: crate::process::Exit,
 }

@@ -1,11 +1,11 @@
 mod actions;
-mod attempt;
+mod context;
+mod dependencies;
 mod flow;
+mod loaded;
 mod reporting;
-mod state;
 
-#[cfg(test)]
-mod tests;
-
-pub(crate) use actions::{cleanup, is_acquired, is_built, is_installed, remove};
-pub(crate) use attempt::{install, install_with_options};
+pub(crate) use actions::{check, cleanup, remove};
+pub(crate) use context::ExecutionContext;
+pub(crate) use flow::install;
+pub(crate) use loaded::{EngineError, Load};

@@ -7,8 +7,8 @@
 //! - **paths**: join_path, basename, dirname
 //! - **string**: trim, contains, replace, split
 //! - **shell**: shell, shell_in, shell_output
-//! - **process**: exec, exec_output, rpm/dnf helpers
-//! - **env**: env, set_env
+//! - **process**: exec_checked, exec, exec_output, rpm/dnf helpers
+//! - **env**: env
 //! - **log**: log, debug, warn
 
 pub mod env;
@@ -31,12 +31,13 @@ pub use shell::{shell, shell_in, shell_output, shell_output_in, shell_status, sh
 pub use process::{
     apk_add_repo, apk_download, apk_install, apk_installed, apk_package_available, apk_version,
     command_exists, dnf_add_repo, dnf_download, dnf_download_with_resolve, dnf_install,
-    dnf_install_allow_erasing, dnf_package_available, exec, exec_output, rpm_installed,
-    rpm_version,
+    dnf_install_allow_erasing, dnf_package_available, exec, exec_checked,
+    exec_checked_with_options, exec_output, exec_output_with_options, exec_with_options,
+    rpm_installed, rpm_version,
 };
 
 // Re-export commonly used items from env
-pub use env::{get_env, set_env};
+pub use env::get_env;
 
 // Re-export commonly used items from log
 pub use log::{debug, log, warn};

@@ -1,396 +1,257 @@
-# recipe
+# Recipe
 
-Local-first package recipe executor for LevitateOS.
+Recipe executes Rhai package recipes inside a configured Ginux domain. The
+coordinator imports explicit immutable inputs, retains matching state/filesystem
+checkpoints and publishes the recipe's named outputs. Recipe code and payload
+commands do not run on the coordinator host.
 
-- Recipes are **Rhai scripts**.
-- State lives in the recipe file itself as a `ctx` map (`let ctx = #{ ... };`) and is persisted after each phase.
-- The CLI is designed to keep **stdout machine-readable** (final `ctx` JSON) and send logs/tool output to **stderr**.
+The current contract is `const RECIPE_API = 2;`. Recipes define package facts,
+custom readiness and acquire/build/install behavior. Callers select inputs,
+resource limits, endpoint permissions and the outputs they consume.
 
-If you are looking for deeper docs:
+## Build and prepare the environment
 
-- Recipe authoring guide (current implementation): `WRITING_RECIPES.md`
-- Spec and design requirements: `REQUIREMENTS.md`
-- Current helper API surface (authoritative): `HELPERS_AUDIT.md`
-- Installed man pages: `recipe(1)`, `recipe-recipe(5)`, `recipe-helpers(7)`
-- Lifecycle notes: `PHASES.md`
+From the LevitateOS workspace:
 
-## Status
-
-**Alpha.** The implementation is intentionally explicit and conservative.
-
-Implemented:
-
-- Phase executor with `is_*` checks, `acquire/build/install`, ctx persistence
-- `//! extends: <base.rhai>` (AST merge: base runs first, child overrides)
-- Per-recipe execution lock (`.rhai.lock`)
-- Build dependency resolver (`deps` and `build_deps`) that installs tool recipes into `BUILD_DIR/.tools`
-- LLM helpers (`llm_extract`, etc) and an opt-in LLM-based repair loop (`--autofix`)
-
-Not implemented yet (still in the spec):
-
-- Sysroot/prefix confinement for safe A/B composition
-- Atomic staging/commit and `installed_files` tracking
-- Higher-level install helpers (`install_bin`, `install_to_dir`, etc.)
-- Update/upgrade lifecycle commands
-
-## Current Implementation Reality
-
-`REQUIREMENTS.md` is the target specification. The current binary is narrower.
-
-- There are no `--sysroot` or `--prefix` CLI flags yet.
-- The current CLI supports `install`, `remove`, `cleanup`, `isinstalled`, `isbuilt`, `isacquired`, `list`, `info`, and `hash`.
-- Recipes currently get `RECIPE_DIR`, `BUILD_DIR`, `ARCH`, `NPROC`, and `RPM_PATH`.
-- Base/dependency execution may also provide `BASE_RECIPE_DIR` and `TOOLS_PREFIX`.
-- Filesystem helpers operate on explicit paths. Higher-level helpers such as `install_bin` and `install_to_dir` are not implemented yet.
-- `cleanup(ctx, reason)` with two arguments is required by this repository's install flow.
-
-If you are debugging behavior, trust the current source and this README before you trust the broader spec.
-
-## Host Requirements
-
-To build and run the current implementation, assume at least:
-
-- Rust toolchain: `cargo`, `rustc`
-- `git`
-- POSIX `sh`
-- A working C toolchain for Rust crates with native code
-
-On fresh Fedora minimal, the minimum known bootstrap is:
-
-```bash
-sudo dnf install -y rust cargo gcc git pkgconf-pkg-config
+```sh
+cargo build --offline -p levitate-recipe --bin recipe --bin recipe-image
 ```
 
-`recipe` itself is mostly Rust, but the current dependency set includes native archive/compression crates (`bzip2`, `xz2`, `zstd`), so a compiler toolchain is part of the practical bootstrap.
+Prepare a compiler image explicitly from pinned, already acquired inputs. The
+[bootstrap guide](bootstrap/README.md) describes the manifest and provenance:
 
-### Optional External Commands by Feature
-
-| Command | When it is needed |
-|---------|-------------------|
-| `git` | `git_clone*` helpers, autofix patch application, git repo root detection |
-| `sh` | `shell*` helpers |
-| `tar` | `extract_from_tarball()` helper only |
-| `df` | `check_disk_space()` helper only |
-| `codex` / `claude` | LLM helpers and `recipe install --autofix` only |
-| arbitrary host commands | when a recipe uses `exec*` or `shell*` to call them |
-
-Important: the core `extract()` helper is native Rust and does not rely on host `tar`/`unzip`.
-
-## Bootstrap on a Fresh Machine
-
-If you cloned LevitateOS and only need this submodule:
-
-```bash
-git submodule update --init -- tools/recipe
+```sh
+target/debug/recipe-image \
+  --manifest tools/recipe/bootstrap/ginux-build-image.json \
+  --input-root .artifacts/ginux-env \
+  --output .artifacts/ginux-env/prepared-image
 ```
 
-Build from the submodule itself:
+The output directory must be new. Configure the actual built Ginux launcher and
+verified image before executing recipes:
 
-```bash
-cd tools/recipe
-cargo build
-./target/debug/recipe --help
+```sh
+export GINUX_BIN=/absolute/path/to/ginux
+export GINUX_ROOTFS=/absolute/path/to/prepared-image/rootfs.tar
+export GINUX_ROOT=oci:compiler@sha256:IMAGE_SHA256_FROM_PROVENANCE
+export RECIPE_WORKER_BIN=/absolute/path/to/recipe
 ```
 
-Build from the LevitateOS repo root:
+`GINUX_ROOTFS` must match the digest in `GINUX_ROOT`. Without `GINUX_ROOT`, the
+pinned bare Rocky base (no compiler) is selected. If `GINUX_ROOTFS` is omitted, the image tar is
+looked up at `$XDG_CACHE_HOME/recipe/images/<digest>.tar`. The worker is staged
+separately; changing Recipe does not require rebuilding an unchanged image.
+The current native launcher requires Linux x86_64 and privileges for its chroot
+bootstrap. Run the configured coordinator/launcher with those privileges; a
+plain `sudo` wrapper around only the launcher closes required inherited channels.
+Unavailable launch capabilities fail explicitly.
+The invocation examples below assume those privileges are available. When using
+sudo, pass the declared image/worker selections to the whole coordinator command:
 
-```bash
-cargo build --manifest-path tools/recipe/Cargo.toml
+```sh
+sudo env GINUX_BIN="$GINUX_BIN" GINUX_ROOTFS="$GINUX_ROOTFS" \
+  GINUX_ROOT="$GINUX_ROOT" RECIPE_WORKER_BIN="$RECIPE_WORKER_BIN" \
+  "$RECIPE_WORKER_BIN" install ./hello.rhai --build-dir ./hello-work
 ```
 
-Optional local install:
 
-```bash
-cd tools/recipe
-cargo install --path .
+Only install commands required by a recipe in its compiler image. For example,
+a Git recipe needs Git there. An explicit Rust musl target needs its matching
+standard library/linker support. GNU and musl outputs are distinct products.
+The demonstrated native GNU Cargo invocation uses one job,
+`LD_LIBRARY_PATH=/usr/lib`, and `RUSTFLAGS=-C link-arg=-Wl,--threads=1`.
+
+## Run a recipe
+
+```sh
+recipe install ./producer.rhai \
+  --build-dir .artifacts/work/example \
+  --state-dir .artifacts/state/example \
+  --input source=/absolute/path/to/offline-source \
+  --json-output .artifacts/example-result.json
+recipe isinstalled ./producer.rhai --build-dir .artifacts/work/example \
+  --state-dir .artifacts/state/example --input source=/absolute/path/to/offline-source
 ```
 
-Tests are not standalone today. `Cargo.toml` has a path dev-dependency on `../../testing/cheat-test`, so `cargo test` expects a normal LevitateOS checkout around this submodule.
+Pass the same recipe, inputs and destination for retained lifecycle operations.
+Use the returned `ctx.outputs` paths; they identify published host files or
+directories. Paths in recipe hooks refer to the domain filesystem instead.
+Logs and tool output go to stderr; stdout or `--json-output` contains final JSON.
+Published paths and retained state keep the coordinator's ownership and private
+export-directory permissions. A privileged producer needs an appropriately
+privileged consumer, or explicit installation of selected product files with
+the desired ownership. Selecting a publication with a symlink does not grant
+another user access. No automatic privilege bridge is provided.
 
-For reproducible distro-native container runs, use the checked-in Podman runner:
 
-```bash
-tools/recipe/scripts/podman-test.sh alpine
-tools/recipe/scripts/podman-test.sh fedora
-tools/recipe/scripts/podman-test.sh rocky
-tools/recipe/scripts/podman-test.sh all
+For the repository's actual offline live-tool producer:
+
+```sh
+distro-builder artifact prepare-tool-source recfstab .artifacts/recfstab-source
+recipe install distro-builder/recipes/recfstab.rhai \
+  --input source=.artifacts/recfstab-source \
+  --build-dir .artifacts/work/recfstab --json-output .artifacts/recfstab.json
 ```
 
-This script mounts `tools/recipe` and `testing/cheat-test`, bootstraps upstream `rustup` inside the container, and runs the full suite with an isolated `CARGO_TARGET_DIR=/tmp/recipe-target` so container results are not polluted by host build artifacts.
+Source preparation vendors only the selected production closure, offline, with
+versions from the workspace lock. The managed recipe performs compilation.
+Canonical product preparation calls this same producer. `just tools-install`
+explicitly prepares the separate QEMU/OVMF product; scenario commands consume
+existing prepared artifacts.
 
-## Operational Defaults
+## Recipe interface
 
-- If `--recipes-path` is not set, Recipe uses `$RECIPE_PATH`, otherwise `~/.local/share/recipe/recipes`.
-- The recipes directory is created automatically if it does not exist.
-- If `--build-dir` is not set, Recipe creates a temporary build directory and keeps it instead of auto-deleting it.
-- `--json-output <file>` is the safest way to consume result JSON in scripts, because recipe logs and helper output are sent to stderr.
+[WRITING_RECIPES.md](WRITING_RECIPES.md) contains a runnable recipe and lifecycle
+details. [HELPERS_AUDIT.md](HELPERS_AUDIT.md) lists registered helpers.
 
-## RPM Packaging (Rust Native)
+- Setup reads immutable `RUNTIME`; hooks receive the same data as `ctx.runtime`.
+- Checks return `ready(ctx)` or `needs_work(ctx, "concrete reason")`. Check errors
+  stop execution. Phase hooks return an updated context map.
+- Package/build facts remain recipe fields. Only `ctx.state` is restored between
+  invocations; setup runs again and current facts remain current.
+- `ctx.outputs` names files/directories under owned `/out` or `/work`. Successful
+  execution, validated archive data and acknowledged matching checkpoints are
+  required for publication. Failed work cannot replace earlier publications.
+- Dependencies use the same lifecycle and shared `/work/tools`. They are not
+  separate host installers.
+- `list` and `info` inspect loader-owned declared metadata without running setup
+  or helper code. Dynamic metadata is reported unavailable.
 
-This crate is configured for `cargo-generate-rpm`.
+## Inputs and selected targets
 
-```bash
-cargo install cargo-generate-rpm
-cargo build --release
-cargo generate-rpm
-```
+`--input NAME=PATH` imports a file or directory read-only at `/inputs/NAME`.
+A host path in a define grants no filesystem access. Root `.git` and `target`
+directories are omitted from ordinary source imports. Input bytes, modes, link
+identity and link targets participate in state identity. Confined relative links
+and hardlinks are preserved. Named `rootfs`/`target` trees may contain absolute
+rootfs symlink bytes; they never authorize following host paths.
 
-By default, the RPM is written under `target/generate-rpm/`.
+`--input target=PATH` seeds the owned target `/out` for a fresh identity. With
+retained state, Recipe restores that target instead. Hooks inspect
+`ctx.runtime.paths.target`; compiler-image files under `/usr` cannot establish
+that a selected product is installed. Removal changes the owned target, leaving
+the imported input and earlier published generations unchanged. There is no
+live-system activation command.
 
-## Alpine APK Packaging
+## State, diagnostics and recovery
 
-Build a release `.apk` in an Alpine 3.23 container:
+`--build-dir` selects a stable logical destination and its shared lock. Domain
+work remains `/work/build`. The default destination is under the selected state
+root, which defaults to `$XDG_STATE_HOME/recipe` (normally `~/.local/state/recipe`).
+Use `--state-dir PATH` to choose a different state root.
 
-```bash
-tools/recipe/scripts/build-apk.sh
-```
+Identity includes the recipe/module/dependency closure, declared input content,
+custom defines, execution options, image and worker. Changed inputs start fresh
+state. Checkpoints become recoverable only after both files and separate
+`ctx.state` records are durable. Interrupted, unacknowledged work is discarded.
+A successful failure-cleanup hook is also checkpointed with its returned state
+and matching files, while the producer operation still fails and publishes
+nothing. Cleanup/checkpoint diagnostics preserve the original producer failure.
+A corrupt current record/snapshot fails before workload startup; retain it for
+diagnosis and choose a new state directory to start explicitly fresh.
 
-By default, the APK is written under `target/packages/apk/`.
+`--no-persist-state` disables state/files recovery; it does not disable managed
+execution or publication. Retention keeps the current and three recent input
+identities per destination/recipe scope, with current and previous complete
+filesystem generations. Pruning runs under the destination lock. Published
+products are not garbage-collected as state snapshots.
 
-## Output Discipline (Important)
+Diagnostics live in `<state-root>/logs/<invocation-id>/`, outside invocation
+scratch: `worker.log`, `supervisor-stderr.log` and `result.json`. Logs are bounded;
+active leases protect running invocations, and up to 32 recent completed
+invocations are retained. The coordinator prints the diagnostic directory.
+Private leased scratch is reclaimed after abandoned invocations; arbitrary
+workspace directories are never cleanup candidates.
 
-The `recipe` CLI prints the final `ctx` JSON to stdout (or writes it to `--json-output <file>`).
+SIGINT/SIGTERM cancel execution and await descendant teardown. Cancellation and
+deadline failure preserve the last complete checkpoint and do not publish failed
+work. `--timeout-secs` bounds the whole execution, including legitimate silent
+commands (default 3600, range 1–86400). Transport partial-frame waits are bounded
+separately by `RECIPE_FRAME_TIMEOUT_SECS` (default 300, range 1–86400).
 
-- All recipe logs, phase banners, helper traces, shell output, and LLM provider output are written to **stderr**.
-- If you want a clean JSON pipeline, prefer `--json-output` for long-running installs.
+## Options
 
-## Recipe Model
+Run `recipe --help` and `recipe install --help` for the complete current syntax.
 
-Recipes use a `ctx` map for state.
+| Option | Meaning |
+| --- | --- |
+| `-r, --recipes-path DIR` | Name/module/dependency search directory; defaults to `$RECIPE_PATH` or the per-user recipe data directory. |
+| `-b, --build-dir DIR` | Logical destination identity and lock. |
+| `--input NAME=PATH` | Explicit immutable file/tree input. |
+| `--define KEY=VALUE` | Recipe-specific constant; not a runtime path substitute. |
+| `--target-os linux --target-arch x86_64` | Currently supported native execution platform. |
+| `-j, --jobs N` | Requested jobs, 1–16, default 1; Ginux task limits still apply. |
+| `--force-install` | Rerun installation for the main recipe. |
+| `--force-build` | Rerun build and installation for the main recipe. |
+| `--force-acquire` | Rerun acquisition, build and installation for the main recipe. |
+| `--memory-mib N` | Domain memory bound, default 2048 MiB. |
+| `--storage-max-objects N` | Writable object bound, default 16384. |
+| `--storage-max-bytes N` | Explicit writable data cap within the memory bound. |
+| `--network-host HOST:PORT` | Explicit outbound TCP authority, repeatable, at most eight. Networking otherwise stays off. |
+| `--network-max-bytes N` | Cumulative network send/receive cap, default 8 GiB. |
+| `--json-output FILE` | Final context result, separate from stderr diagnostics. |
 
-- Check functions (`is_*`) should `throw` when the phase needs to run.
-- Phase functions (`acquire/build/install/remove/cleanup`) take `ctx` and return an updated `ctx`.
-- `cleanup(ctx, reason)` is **required** for normal installs in this repo. If you do not need cleanup, make it a no-op that returns `ctx`.
+Storage accounts hardlink data once. Inputs, restored snapshots and publications
+are bounded and validated; increasing a bound does not add a missing syscall or
+compiler capability. Network grants resolve/pin numeric TCP endpoints before
+launch, install the corresponding hostname map and mediate readiness/teardown.
+They do not isolate virtual hosts sharing an allowed IP and port. There is no
+UDP, proxy, listening service or native host-network fallback.
 
-Minimal example:
+`download(url, dest, sha256[, resume])` verifies staged bytes before replacing a
+valid destination. `git_checkout(url, exact_dest, full_commit)` requires a full
+40/64-hex commit and a direct repository URL: Git redirects are disabled, and
+cached repository settings that override transport or execute hooks/filters are
+rejected. HTTP download redirect destinations need explicit endpoint grants.
+Source recipes own version/URL/digest facts; Rust/TOML declares permissions.
+Canonical rootfs source policy also declares `memory_mib` and
+`preseed_memory_mib`: Fedora uses 8192 MiB and Alpine 4096 MiB. Fedora's
+3,484,483,584-byte ISO and retained valid bytes during refresh exceed the small
+2 GiB default. Direct large-ISO invocations must select suitable bounds too.
+These configured limits are not evidence of a completed full-ISO/VM run.
 
-```rhai
-let ctx = #{
-    name: "ripgrep",
-    version: "14.1.0",
-    url: "https://example.com/ripgrep.tar.gz",
-    sha256: "abc123...",
-    archive: "",
-    installed: false,
-};
+## Optional coordinator repair
 
-fn is_acquired(ctx) {
-    if ctx.archive == "" || !is_file(ctx.archive) { throw "not acquired"; }
-    ctx
-}
-
-fn acquire(ctx) {
-    mkdir(BUILD_DIR);
-    let archive = download(ctx.url, join_path(BUILD_DIR, "src.tar.gz"));
-    verify_sha256(archive, ctx.sha256);
-    ctx.archive = archive;
-    ctx
-}
-
-fn is_installed(ctx) {
-    if !ctx.installed { throw "not installed"; }
-    ctx
-}
-
-fn install(ctx) {
-    // Place files using helpers or shell/exec.
-    ctx.installed = true;
-    ctx
-}
-
-fn cleanup(ctx, reason) {
-    // Called automatically on success/failure paths, and via `recipe cleanup`.
-    ctx
-}
-```
-
-### Cleanup Reasons
-
-`cleanup(ctx, reason)` is invoked with:
-
-- `manual` for `recipe cleanup`
-- `auto.acquire.success`, `auto.acquire.failure`
-- `auto.build.success`, `auto.build.failure`
-- `auto.install.success`, `auto.install.failure`
-
-### Extending Recipes
-
-At the top of a recipe, you can declare a base recipe:
-
-```rhai
-//! extends: linux-base.rhai
-```
-
-Behavior:
-
-- Base recipe is compiled first, then merged with the child AST.
-- Child functions with the same name and arity override base functions.
-- Top-level statements run base-first, then child.
-- Recursive `extends` is rejected.
-
-## Dependency Recipes (`deps` and `build_deps`)
-
-Recipes may declare:
-
-- `let deps = ["foo", "bar"];` for dependencies needed across phases.
-- `let build_deps = ["linux-deps"];` for tool dependencies needed only when building.
-
-The resolver:
-
-- Executes dependency recipes from `--recipes-path`.
-- Installs tools into `BUILD_DIR/.tools`.
-- Prepends `.tools/{usr/bin,usr/sbin,bin,sbin}` to `PATH` for the duration of the phase.
-- Exposes `TOOLS_PREFIX` to dependency recipes.
-
-## CLI
-
-```bash
-recipe install <name-or-path>
-recipe remove <name-or-path>
-recipe cleanup <name-or-path> [--reason <reason>]
-recipe isinstalled <name-or-path>
-recipe isbuilt <name-or-path>
-recipe isacquired <name-or-path>
-recipe list
-recipe info <name-or-path>
-recipe hash <file>
-```
-
-Resolution for `<name-or-path>`:
-
-- Absolute paths are used as-is.
-- Relative paths are tried as-is, then under `--recipes-path`, then with `.rhai` appended.
-
-### Global Flags
-
-- `-r, --recipes-path <dir>`: where to search for `<name>.rhai` and resolve `//! extends:`
-- `-b, --build-dir <dir>`: where downloads/build artifacts go (otherwise a kept temp dir)
-- `--define KEY=VALUE`: inject constants into the Rhai scope before execution (repeatable; available to install/remove/cleanup/is*)
-- `--json-output <file>`: write the final ctx JSON to a file (stdout stays quiet)
-- `--llm-profile <name>`: select a profile from XDG `recipe/llm.toml` (see below)
-
-### Cleanup Reason
-
-- `recipe cleanup` defaults to `reason = "manual"`.
-- Use `recipe cleanup <name-or-path> --reason <reason>` to pass a custom manual lifecycle reason.
-
-### Install Flags (Autofix)
-
-`recipe install` also supports:
-
-- `--autofix`: on selected failures, ask the configured provider to return a unified diff, apply it, and retry
-- `--autofix-attempts <n>`: maximum patch attempts (default: 2)
-- `--autofix-cwd <dir>`: working directory used for LLM invocation and `git apply` (defaults to detected git repo root)
-- `--autofix-prompt-file <file>`: append extra instructions to the autofix prompt
-- `--autofix-allow-path <path>`: constrain patched files to allowed roots (repeatable)
-
-## LLM Integration
-
-Recipe integrates with external CLIs for two things:
-
-- Rhai helpers: `llm_extract`, `llm_find_latest_version`, `llm_find_download_url`
-- The opt-in repair loop: `recipe install --autofix`
-
-Design constraints:
-
-- Codex and Claude have **equal footing**. There is no implicit fallback.
-- Recipe does **not** interpret model output. It returns raw text, or in autofix mode it applies a unified diff.
-
-### XDG Config: `recipe/llm.toml`
-
-Config is loaded from:
-
-- `$XDG_CONFIG_DIRS/recipe/llm.toml` (default: `/etc/xdg/recipe/llm.toml`)
-- `$XDG_CONFIG_HOME/recipe/llm.toml` (default: `~/.config/recipe/llm.toml`)
-
-Multiple files are merged (user config overrides system config).
-
-Example:
+Normal execution needs no AI provider. `recipe install --autofix` explicitly
+opts into bounded coordinator-side patch/retry after an eligible build/install
+failure. Provider configuration comes from XDG `recipe/llm.toml`; select a profile
+with `--llm-profile`. The provider process is outside the worker domain. A minimal explicit provider
+configuration is:
 
 ```toml
 version = 1
-default_provider = "codex" # or "claude" (required)
-default_profile = "kernels_nightly" # optional
-timeout_secs = 300
-max_output_bytes = 10485760
-max_input_bytes = 10485760
+default_provider = "codex"
 
 [providers.codex]
 bin = "codex"
-args = ["--sandbox", "read-only", "--skip-git-repo-check"]
-
-[providers.claude]
-bin = "claude"
-args = ["-p", "--output-format", "text", "--no-chrome"]
-
-[profiles.kernels_nightly]
-default_provider = "codex"
-
-[profiles.kernels_nightly.providers.codex]
-model = "gpt-5.3-codex"
-effort = "xhigh" # mapped to Codex config `model_reasoning_effort`
 ```
 
-Provider keys you can set (globally under `[providers.*]` or per profile under `[profiles.<name>.providers.*]`):
+Only the `default_provider`'s block is required.
 
-- `bin`: executable name or path
-- `args`: extra CLI args
-- `model`: provider-specific model id
-- `effort`: provider-specific effort control
-- `config`: (Codex only) repeated `--config key=value` overrides
-- `env`: environment variables to add to the provider process
+Use the chosen provider's installed CLI/configuration; there is no implicit
+provider fallback. A named profile can override provider settings.
 
-Notes:
+Use `--autofix-attempts` (1–8, default 2), `--autofix-cwd`, `--autofix-prompt-file` and repeated
+`--autofix-allow-path` to bound repair. Patches cannot alter readiness checks,
+change disallowed paths or hide command failures. Changed recipe bytes create a
+new invocation identity; old state is not restored across a patch. Recipes have
+no LLM helpers; the provider never runs inside the worker.
 
-- Codex is invoked via `codex exec` and Recipe disables the Codex `shell_tool` for these calls.
-- MCP servers are hard-disabled for Codex runs by overriding `mcp_servers.<name>.enabled=false` at invocation time.
+## Validation and limits
 
-## Autofix Prompts
+Run focused real CLI/integration cases with the actual launcher and prepared
+image. Build a worker snapshot before a run and keep it unchanged for that run:
 
-Autofix prompt sources (in order):
-
-- A built-in base prompt (unified diff only, no prose)
-- Optional recipe-supplied block starting with `// AUTOFIX_PROMPT:` in the recipe (or its base recipe)
-- Optional `--autofix-prompt-file` contents
-
-Recipe-supplied prompt block format:
-
-```rhai
-// AUTOFIX_PROMPT: High-level instruction line.
-// More instructions...
-// Blank line ends the block.
+```sh
+cargo test --offline -p levitate-recipe --test e2e --no-run
+RECIPE_TEST_BIN=/absolute/path/to/recipe cargo test --offline \
+  -p levitate-recipe --test e2e managed_target:: -- --test-threads=1
 ```
 
-Autofix guardrails:
+The checkout's workspace and configured launch privileges are required. See the
+superproject implementation checkpoint for exact tested revisions and remaining
+production/VM evidence. Native tool lifecycle, custom-rootfs, selected-target,
+checkpoint/link preservation and mediated acquisition are separately exercised;
+none implies general Linux syscall or every distro package support.
 
-- Patch output must be a unified diff suitable for `git apply`.
-- Patch paths must stay within `--autofix-allow-path` roots.
-- Patches that modify `is_installed/is_built/is_acquired` or introduce `|| true` are rejected.
-
-## Default Recipes Path
-
-If `--recipes-path` is not provided, the CLI uses:
-
-- `$RECIPE_PATH` if set
-- otherwise `$XDG_DATA_HOME/recipe/recipes` (default: `~/.local/share/recipe/recipes`)
-
-## Building
-
-```bash
-cd tools/recipe
-cargo build
-
-# or from the LevitateOS repo root
-cargo build --manifest-path tools/recipe/Cargo.toml
-```
-
-Install the binary into Cargo's bin directory:
-
-```bash
-cd tools/recipe
-cargo install --path .
-```
-
-## License
-
-MIT OR Apache-2.0
+License: MIT OR Apache-2.0.

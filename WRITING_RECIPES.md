@@ -1,629 +1,271 @@
-# Writing Recipes
+# Writing Recipe recipes
 
-This is the author-facing guide for the `recipe` implementation that exists
-today.
+A recipe owns its package facts and lifecycle. Callers select immutable inputs,
+endpoint permissions and a managed execution environment. Every executable
+recipe declares `const RECIPE_API = 2;`.
 
-If this guide, `REQUIREMENTS.md`, and the code disagree, trust:
+## Runnable local example
 
-1. current source code
-2. `HELPERS_AUDIT.md`
-3. this guide
-4. `REQUIREMENTS.md`
-
-`REQUIREMENTS.md` is still the broader target spec. This guide is about what
-you can actually write and run now.
-
-## Core Model
-
-Recipes are Rhai scripts.
-
-They work by:
-
-- declaring a top-level `ctx` map
-- using `is_*` checks that throw when work is needed
-- mutating and returning `ctx` from phase functions
-- persisting `ctx` back into the recipe file after successful phases
-
-Normal install flow is:
-
-1. `is_installed(ctx)`
-2. `is_built(ctx)`
-3. `is_acquired(ctx)`
-4. `acquire(ctx)` if needed
-5. `build(ctx)` if needed and defined
-6. `install(ctx)`
-7. `cleanup(ctx, reason)` automatically on phase success/failure
-
-Important: `cleanup(ctx, reason)` is effectively mandatory for normal installs
-in this repo. If you do not need cleanup, define a no-op hook.
-
-## Minimal Template
-
-This is the smallest useful install recipe shape for the current executor:
+Save this as `hello.rhai`. With a configured Ginux launcher/image from the
+[README](README.md), `recipe install ./hello.rhai --build-dir ./hello-work`
+produces a named program without downloading or compiling anything on the host.
 
 ```rhai
+const RECIPE_API = 2;
 let ctx = #{
-    name: "jq",
-    version: "1.7.1",
-    url: "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64",
-    sha256: "replace-me",
-    downloaded: "",
-    bin_path: "",
+    name: "hello",
+    version: "1.0",
+    program: join_path(RUNTIME.paths.output, "bin/hello"),
+    payload: "#!/bin/sh\nprintf 'hello\\n'\n",
 };
 
+fn is_acquired(ctx) { ready(ctx) }
+fn acquire(ctx) { ctx }
+fn is_built(ctx) { ready(ctx) }
+fn build(ctx) { ctx }
+
 fn is_installed(ctx) {
-    let bin_dir = join_path(env("HOME"), ".local/bin");
-    let bin_path = join_path(bin_dir, "jq");
-    if !is_file(bin_path) { throw "not installed"; }
-    ctx.bin_path = bin_path;
-    ctx
-}
-
-fn is_acquired(ctx) {
-    if ctx.downloaded == "" || !is_file(ctx.downloaded) { throw "not acquired"; }
-    ctx
-}
-
-fn acquire(ctx) {
-    mkdir(BUILD_DIR);
-    let downloaded = download(ctx.url, join_path(BUILD_DIR, "jq"));
-    verify_sha256(downloaded, ctx.sha256);
-    ctx.downloaded = downloaded;
-    ctx
+    if !is_file(ctx.program) { return needs_work(ctx, "hello output is missing"); }
+    if read_file(ctx.program) != ctx.payload {
+        return needs_work(ctx, "hello output has different contents");
+    }
+    ctx.outputs.program = ctx.program;
+    ready(ctx)
 }
 
 fn install(ctx) {
-    let bin_dir = join_path(env("HOME"), ".local/bin");
-    mkdir(bin_dir);
-
-    let dst = join_path(bin_dir, "jq");
-    mv(ctx.downloaded, dst);
-    chmod(dst, 0o755);
-
-    ctx.bin_path = dst;
+    mkdir(dirname(ctx.program));
+    write_file(ctx.program, ctx.payload);
+    chmod(ctx.program, 0o755);
+    ctx.outputs.program = ctx.program;
     ctx
 }
 
-fn cleanup(ctx, reason) {
-    ctx
-}
-```
-
-Notes:
-
-- `build(ctx)` is optional. Omit it for prebuilt binaries.
-- `is_built(ctx)` is also optional. Omit it if there is no build phase.
-- `remove(ctx)` is optional, but needed if you want `recipe remove` to work.
-
-## Required and Optional Functions
-
-### Required for Normal `recipe install`
-
-- `let ctx = #{ ... };`
-- `install(ctx)`
-- `cleanup(ctx, reason)`
-
-In practice, most real recipes should also define:
-
-- `is_installed(ctx)`
-- `acquire(ctx)`
-
-### Optional
-
-- `is_acquired(ctx)`
-- `is_built(ctx)`
-- `build(ctx)`
-- `remove(ctx)`
-
-Behavior of missing checks:
-
-- missing `is_installed` means install is needed
-- missing `is_built` means build is needed
-- missing `is_acquired` means acquire is needed
-
-Behavior of missing phases:
-
-- missing `build(ctx)` is fine if your recipe does not need a build phase
-- missing `remove(ctx)` means `recipe remove` will fail for that recipe
-
-## The `ctx` Contract
-
-### The Exact `ctx` Literal Matters
-
-`ctx` persistence looks for the exact byte sequence:
-
-```rhai
-let ctx = #{
-```
-
-That means these are not equivalent for persistence purposes:
-
-- `let ctx = #{` works
-- `let ctx=#{` does not
-- `const ctx = #{` does not
-
-If the exact form is missing, the recipe can still execute, but persistence will
-not find the block and install/remove/cleanup operations will fail when they try
-to write state back.
-
-### Keep `ctx` Values Simple
-
-Current persistence round-trips these types cleanly:
-
-- strings
-- integers
-- booleans
-- `()`
-
-Other Rhai values are serialized by stringifying them and then writing the
-result as a quoted string. That means arrays, maps, timestamps, and other
-non-scalar values are not safe persistent `ctx` state today.
-
-Rule of thumb: keep persistent `ctx` fields scalar and reconstruct richer values
-inside checks/phases.
-
-### `ctx` Is Persisted Incrementally
-
-After a successful phase, `ctx` is written back to the recipe source file.
-
-That means:
-
-- a successful `acquire(ctx)` persists even if `install(ctx)` later fails
-- rerunning the recipe resumes from the persisted state
-- file permissions are preserved where possible
-- keys are written back in sorted order, not original source order
-
-This is intentional. It is how resume behavior works.
-
-## Writing Checks Correctly
-
-Checks are not boolean predicates. They are throw-based gates.
-
-- return updated `ctx` when the phase is already satisfied
-- `throw` when the phase still needs to run
-
-Example:
-
-```rhai
-fn is_acquired(ctx) {
-    let src_dir = join_path(BUILD_DIR, "ripgrep-" + ctx.version);
-    if !is_dir(src_dir) { throw "source tree missing"; }
-    ctx.src_dir = src_dir;
+fn remove(ctx) {
+    if is_file(ctx.program) { rm(ctx.program); }
+    ctx.outputs = #{};
     ctx
 }
 ```
 
-This matters because the executor carries the returned `ctx` forward even when
-the phase is skipped.
+The result's `outputs.program` is a published host path. `/out/bin/hello` is its
+path inside hooks. Use the same recipe/destination with `isinstalled` or `remove`.
+A successful remove does not delete an earlier published generation.
 
-That lets checks do useful discovery work:
+## Runtime, package facts and resumable state
 
-- infer source directories
-- rediscover output paths
-- refresh cached derived fields
+Setup runs once per invocation inside Ginux. It can use immutable `RUNTIME` to
+initialize recipe fields. Hooks receive the same engine-owned `ctx.runtime`.
+Never save runtime paths or package versions in `ctx.state` to override current
+setup on a later invocation.
 
-### Actual Flow Rules
+| Field | Contract |
+| --- | --- |
+| `runtime.paths.recipe_dir` | Staged directory of the selected recipe. |
+| `runtime.paths.base_recipe_dir` | Staged base directory when extending a recipe; empty otherwise. |
+| `runtime.paths.inputs` | `/inputs`, containing explicitly imported inputs. |
+| `runtime.paths.build` | `/work/build`, owned build/acquisition work. |
+| `runtime.paths.tools` | `/work/tools`, shared dependency products. |
+| `runtime.paths.temp` | `/work/tmp`, owned scratch. |
+| `runtime.paths.output` | `/out`, selectable product files/directories. |
+| `runtime.paths.target` | `/out`, the owned installed-target view. |
+| `runtime.target.os`, `.arch` | Explicit supported execution target. |
+| `runtime.host.os`, `.arch` | The worker's own platform. |
+| `runtime.operation` | The running operation (`install`, `remove`, `cleanup`, `is_installed`, `is_built`, `is_acquired`). |
+| `runtime.options.jobs` | Requested job count. |
+| `runtime.options.force_acquire`, `.force_build`, `.force_install` | Current force selection for the main recipe. |
+| `runtime.options.persist_state` | Whether recovery is enabled. |
 
-Current install flow is:
+Top-level `ctx.name`, `ctx.version`, source URLs/digests, target ABI choices and
+other package facts are initialized from the current recipe. Put only genuinely
+resumable recipe data in `ctx.state`, for example a verified internal progress
+marker. Readiness must still inspect the real files.
 
-1. run `is_installed(ctx)`
-2. if it passes, stop
-3. run `is_built(ctx)`
-4. if it passes, skip both `build(ctx)` and `is_acquired(ctx)`
-5. if it throws, run `is_acquired(ctx)`
-6. run `acquire(ctx)` only if `is_acquired(ctx)` threw or was missing
-7. if `build(ctx)` exists, rerun `is_built(ctx)` after acquire
-8. run `build(ctx)` only if build is still needed and the function exists
-9. run `install(ctx)`
+Only `ctx.state` is serialized/restored. JSON-compatible maps, arrays, strings,
+booleans, null and finite numbers are accepted. Unsupported values fail with a
+field path. A matching state record and filesystem snapshot form one checkpoint;
+state alone cannot establish completed work.
 
-Two practical consequences:
+## Lifecycle and readiness
 
-- if `is_built(ctx)` passes, acquire is not checked
-- if acquire makes `is_built(ctx)` pass on the second check, build and
-  `build_deps` are skipped
-- if you define `is_built(ctx)`, it should actually mean "everything needed to
-  skip build is already ready"
-
-## Phase Responsibilities
-
-Keep the phases cleanly separated.
-
-### `acquire(ctx)`
-
-Use this for:
-
-- downloads
-- checksum verification
-- cloning repos
-
-Typical outputs:
-
-- archive path
-- source checkout path
-- downloaded binary path
-
-### `build(ctx)`
-
-Use this for:
-
-- compilation
-- patching
-- code generation
-- transforming acquired inputs into installable artifacts
-
-Typical outputs:
-
-- build directory
-- compiled binary path
-- staged artifact path
-
-### `install(ctx)`
-
-Use this for:
-
-- final file placement
-- chmod/symlink steps
-- installer invocations
-- marking installation state
-
-Current implementation note: there is no sysroot/prefix confinement yet. If
-your install code points at host paths, it will mutate the host.
-
-### `cleanup(ctx, reason)`
-
-Always define it.
-
-Even if you do nothing:
+Install checks `is_installed` first, then determines whether build/acquisition
+are needed from `is_built` and `is_acquired`. Dependencies and necessary phases
+run in dependency order. Each defined check returns exactly one of:
 
 ```rhai
-fn cleanup(ctx, reason) { ctx }
+ready(ctx);
+needs_work(ctx, "a concrete reason");
 ```
 
-Automatic reasons used by the executor:
+A check exception is an error. Do not use exceptions, booleans or ordinary context
+maps to request work. Custom checks should verify relevant bytes, release, ABI,
+configuration or companion products, not just a saved boolean. After successful
+work the executor rechecks readiness. Rediscover `ctx.outputs` when reusing an
+installation.
 
-- `auto.acquire.success`
-- `auto.acquire.failure`
-- `auto.build.success`
-- `auto.build.failure`
-- `auto.install.success`
-- `auto.install.failure`
+`acquire(ctx)`, `build(ctx)`, `install(ctx)` and `remove(ctx)` return the updated
+context. Prebuilt recipes may omit build work. Missing checks indicate work is
+needed; a missing required action fails instead of inventing an implementation.
+Manual `isacquired`, `isbuilt` and `isinstalled` execute their actual custom check
+and return nonzero when it reports work needed.
 
-Manual cleanup uses:
+`--force-install`, `--force-build` and `--force-acquire` select progressively more
+work for the main recipe. Dependencies retain their own readiness. Current force
+options are available under `ctx.runtime.options` if a recipe needs to refresh
+its acquisition cache explicitly.
 
-- `manual`
+## Immutable inputs and target trees
 
-Good uses for cleanup:
-
-- remove temporary files inside `BUILD_DIR`
-- normalize `ctx` after a failed phase
-- delete half-written intermediate artifacts
-
-## Available Constants
-
-These constants are pushed into the Rhai scope by the executor.
-
-### Always Present for Normal Installs
-
-- `RECIPE_DIR`: parent directory of the recipe file
-- `BUILD_DIR`: build/work directory for this run
-- `ARCH`: host architecture from Rust `std::env::consts::ARCH`
-- `NPROC`: CPU count
-- `RPM_PATH`: current `RPM_PATH` environment value, or empty string
-
-### Present Only in Some Contexts
-
-- `BASE_RECIPE_DIR`: parent directory of the base recipe when using
-  `//! extends: ...`
-- `TOOLS_PREFIX`: only when executing a dependency recipe
-
-### User Defines
-
-`--define KEY=VALUE` pushes a string constant into scope.
-
-Example:
-
-```bash
-recipe install foo --define PREFIX=/usr/local
+```sh
+recipe install ./tool.rhai --input source=./offline-source
+recipe isinstalled ./kernel.rhai --input target=./existing-bundle \
+  --input kconfig=./kconfig --define KERNEL_TARGET=acorn
 ```
 
-Then in Rhai:
+Inputs are read-only at `/inputs/<name>`. Use named inputs for source trees,
+archives, configuration and executable inputs. Defines are genuine recipe
+choices such as a target ABI; they do not expose a host path. Changes to imported
+bytes/modes/links change retained-state identity.
+
+The named `target` input seeds owned `/out` on fresh execution; retained state
+restores the same owned tree. Inspect `ctx.runtime.paths.target` for installation
+and removal. A compiler-image binary under `/usr` is a build tool, not evidence
+that it is installed in the selected product.
+
+Rootfs/target absolute symlink bytes are preserved without host traversal.
+Ordinary source trees require confined relative links. Hardlinks, directory/file
+modes and empty directories survive input/checkpoint/publication. Mutating an
+owned alias affects its owned peers, not the imported input.
+
+## Named output contracts
 
 ```rhai
-let dst = join_path(PREFIX, "bin");
+ctx.outputs.program = join_path(ctx.runtime.paths.output, "bin/tool");
+ctx.outputs.rootfs = join_path(ctx.runtime.paths.output, "rootfs");
 ```
 
-Values from `--define` are strings.
+Select actual regular files or directories under assigned `/out` or `/work`.
+Choose a complete bundle once when that is the consumer contract; overlapping
+selections can account duplicate published bytes. A successful phase alone is
+not publication: the coordinator validates the complete archive, bounds, links
+and selected paths before publishing the final generation. The returned context
+contains absolute host publication paths; hooks keep using domain paths. Products
+retain coordinator ownership/private export-directory permissions. Privileged
+producers require matching consumer privileges or explicit product installation;
+a returned path or selection symlink grants no additional access.
 
-## Helper Surface
+Consumers must validate required output names and kinds. Never guess a sibling
+build path, accept stale JSON from another invocation or search for an old
+host-built executable. Deleting a published product does not modify retained
+owned files; a later successful invocation can publish a fresh generation.
 
-The authoritative helper reference is:
+## Verified acquisition
 
-- `HELPERS_AUDIT.md`
-
-Do not rely on the helper list in `REQUIREMENTS.md` alone. It includes helpers
-that do not exist yet.
-
-### Helper Categories You Actually Have Today
-
-- path helpers: `join_path`, `basename`, `dirname`
-- string helpers: `trim`, `starts_with`, `ends_with`, `contains`, `replace`,
-  `split`
-- logging helpers: `log`, `debug`, `warn`
-- shell helpers: `shell`, `shell_in`, `shell_status`, `shell_status_in`,
-  `shell_output`, `shell_output_in`
-- process helpers: `exec`, `exec_output`
-- file I/O helpers: `read_file`, `read_file_or_empty`, `write_file`,
-  `append_file`, `glob_list`
-- filesystem helpers: `exists`, `file_exists`, `is_file`, `dir_exists`,
-  `is_dir`, `mkdir`, `rm`, `mv`, `ln`, `chmod`
-- network/acquire helpers: `download`, `verify_sha256`, `verify_sha512`,
-  `verify_blake3`, `fetch_sha256`, `http_get`, `git_clone`,
-  `git_clone_depth`, `torrent`, `download_with_resume`
-- GitHub helpers: `github_latest_release`, `github_latest_tag`,
-  `github_download_release`, `extract_from_tarball`, `parse_version`
-- build helpers: `extract`, `extract_with_format`
-- env helpers: `env`, `set_env`
-- LLM helpers: `llm_extract`, `llm_find_latest_version`,
-  `llm_find_download_url`
-
-### `shell*` vs `exec*`
-
-Use `shell*` when you need shell syntax:
-
-- pipes
-- redirects
-- glob expansion
-- variable interpolation in a shell string
-
-Use `exec*` when you already have a command and argument list:
+Source package facts belong in the recipe or an imported facts module:
 
 ```rhai
-exec("strip", ["--strip-unneeded", binary_path]);
-```
-
-That avoids shell quoting issues.
-
-### Helper Footguns Worth Knowing
-
-- `git_clone(url, dest_dir)` clones into `dest_dir/<repo-name>`, not exactly to
-  `dest_dir`
-- `git_clone_depth(url, dest_dir, depth)` behaves the same way
-- `extract()` is native Rust and does not depend on host `tar`
-- `extract_from_tarball()` does rely on host `tar`
-- `rm(pattern)` can recursively remove matched directories; treat it as
-  destructive
-
-## Dependencies: `deps` and `build_deps`
-
-Recipes can declare top-level dependency arrays:
-
-```rhai
-let deps = ["pkg-config-runtime"];
-let build_deps = ["meson", "ninja"];
-```
-
-### How They Behave
-
-- `deps` are resolved before the main phase flow and stay on `PATH` for the main
-  recipe execution
-- `build_deps` are resolved only if build is still needed after checks
-- `build_deps` are added to `PATH` only for the actual build portion
-- dependency recipes are found by name as `<name>.rhai` under `--recipes-path`
-- tools are installed into `BUILD_DIR/.tools`
-- tool paths are prepended as `.tools/{usr/bin,usr/sbin,bin,sbin}`
-
-That means your main recipe normally just calls the tool by name:
-
-```rhai
-fn build(ctx) {
-    shell_in(ctx.src_dir, "meson setup build");
-    shell_in(ctx.src_dir, "ninja -C build");
+fn acquire(ctx) {
+    let archive = join_path(ctx.runtime.paths.build, "source.tar.xz");
+    download(ctx.url, archive, ctx.sha256);
     ctx
 }
 ```
 
-### How Dependency Recipes Run
+Use `download(url, exact_dest, sha256[, resume_bool])`. A full 64-hex SHA256 is
+required. The helper stages bytes, validates status/length/hash and replaces the
+destination only after success. Resume validates response identity/ranges;
+truncated, malformed or wrong-digest transfers cannot replace valid bytes.
+`verify_sha256`, `verify_sha512` and `verify_blake3` validate existing files.
 
-Dependency recipes are executed differently from normal recipes:
+Use `git_checkout(url, exact_dest, full_commit)` for pinned Git. The destination
+is exact, the commit is a full 40/64-hex object id, and acquisition validates the
+origin and selected tree. Git URLs must identify the direct repository; Git
+redirects are disabled. Cached repositories with includes, URL rewrites,
+TLS/proxy overrides, filters or duplicate origins are rejected without changing
+the cache. Hooks, fsmonitor, replacement objects and submodule recursion are
+disabled. Local repositories must be explicit imported inputs; remote transport
+uses the invocation's mediated network grants.
 
-- their `BUILD_DIR` becomes `BUILD_DIR/.deps/<dep-name>`
-- they get `TOOLS_PREFIX`
-- they do not use normal per-recipe ctx persistence
-- they do not take the normal recipe lock
-- they use a simplified flow: `is_installed` -> optional `is_acquired` /
-  `acquire` -> `install`
+Callers grant endpoint authorities with repeated `--network-host HOST:PORT` or
+`RecipeEngine::with_network_hosts`. Recipes cannot add grants. Networking stays
+off by default. Every HTTP download redirect destination needs a grant; choose a direct
+publisher endpoint where possible. Network byte/connection bounds and teardown
+apply to helpers and subprocess clients alike. Metadata helpers do not make
+unverified package payloads trustworthy.
 
-If you are authoring a tool recipe meant for `build_deps`, still define
-`cleanup(ctx, reason)` if you want cleanup behavior, but the normal top-level
-install strictness around cleanup is looser there.
+## Commands and extraction
 
-### Environment Fixups for Tool Recipes
-
-When dependency tools are installed, the resolver may also export:
-
-- `BISON_PKGDATADIR`
-- `M4`
-- `LIBRARY_PATH`
-- `C_INCLUDE_PATH`
-- `CPLUS_INCLUDE_PATH`
-- `PKG_CONFIG_PATH`
-
-Those are only set if the corresponding path exists under `.tools/usr`.
-
-## `extends` Behavior
-
-Recipes can inherit from a base recipe with a leading comment:
+`exec_checked(program, args[, options])` throws on nonzero exit;
+`exec_output(...)` returns checked stdout; `exec(...)` returns a status that the
+recipe handles deliberately. Arguments are an array. An optional map supports
+child-only `cwd` and `env`, without mutating the worker's global environment:
 
 ```rhai
-//! extends: linux-base.rhai
+exec_checked("cargo", ["build", "--release", "--locked", "--offline"], #{
+    cwd: "/inputs/source",
+    env: #{CARGO_HOME: join_path(ctx.runtime.paths.build, "cargo")},
+});
 ```
 
-Rules:
+Commands run inside Ginux and need binaries/libraries in the selected image or
+shared tools. Use `shell` only when shell syntax is necessary and quote data.
+For pipelines, use a checked `bash -o pipefail -c ...` or separately checked
+producer/consumer steps. Do not discard extraction failures.
 
-- it must appear in the leading comment block before the first non-comment line
-- base recipe is compiled first
-- child AST is merged on top
-- child functions with the same name and arity override base functions
-- top-level statements run base first, then child
-- recursive extends are rejected
+`extract(archive, dest)` and `extract_with_format(archive, dest, format)` use the
+archive helper. Archive extraction remains subject to domain storage ownership,
+path validation and supported runtime operations. A helper existing in the
+registry is not evidence that every external package's executable works.
 
-### Important Persistence Caveat
+## Dependencies and inheritance
 
-If the child recipe does not declare its own `ctx` block, ctx persistence falls
-back to the base recipe's `ctx`.
-
-That is useful for shared state, but it can also be a trap:
-
-- running child installs may mutate the shared base recipe file
-- multiple child recipes can end up sharing one persisted state source
-
-If you want per-child state, define a `ctx` block in the child recipe.
-
-## Authoring Patterns That Work Well
-
-### Pattern 1: Let Checks Rediscover State
-
-Instead of persisting every derived path forever, let checks reconstruct them.
-
-Good:
+Literal declarations are discovered before launch without evaluating Rhai:
 
 ```rhai
-fn is_built(ctx) {
-    let out = join_path(BUILD_DIR, "out/mytool");
-    if !is_file(out) { throw "not built"; }
-    ctx.out = out;
-    ctx
-}
+let deps = ["runtime-tools"];
+let build_deps = ["compiler-tools"];
 ```
 
-This keeps `ctx` simple and resilient.
+Dependency recipes use the same contract and shared `runtime.paths.tools`.
+Their executables are prepended to worker PATH. Their own state is paired with
+the shared filesystem generation; custom dependency readiness remains active.
+Do not depend on host build-directory conventions or per-dependency publication.
 
-### Pattern 2: Persist Stable Facts, Not Rich Objects
+A child can start with `//! extends: base.rhai`. The loader compiles/merges the
+base first; child functions of the same name/arity override it. Setup statements
+run base-first. Only one level is supported: a base that itself extends fails.
+Literal imports preserve module paths. Cycles and dynamic imports/dependency
+declarations fail preparation. Pure facts modules need no
+executable lifecycle.
 
-Good `ctx` fields:
+## Cleanup and failure
 
-- `version`
-- `sha256`
-- `downloaded`
-- `src_dir`
-- `bin_path`
-- `installed`
+Omit `cleanup` when there is no recipe-specific cleanup. A defined hook accepts
+`cleanup(ctx, reason)` and returns updated context. Reasons are `manual` and
+`auto.<phase>.<success|failure>`. Manual `recipe cleanup --reason TEXT` passes the
+explicit reason. Guard cleanup of useful cache/product files by the reason;
+automatic success cleanup must not erase a product needed by readiness.
 
-Bad current `ctx` fields:
+A cleanup error after success fails the command. Failure cleanup errors are
+reported alongside the original failure. A completed failure-cleanup hook has its
+returned `ctx.state` and matching files checkpointed, so restart restores that
+last complete cleanup. The producer operation still fails and publishes nothing;
+cleanup/checkpoint diagnostics preserve its primary failure. Source inputs and previous publications
+remain immutable; failed work is not published. `remove` modifies the owned
+selected target, not the live host system.
 
-- arrays of file lists
-- nested maps
-- opaque Rhai objects
+See the [README recovery section](README.md#state-diagnostics-and-recovery) for
+checkpoint/log paths, retention, cancellation and timeouts. Optional coordinator
+repair is explicit and cannot rewrite readiness checks to obtain success.
 
-### Pattern 3: Prefer Explicit Paths
+## Metadata and verification
 
-Use helpers that make file flow obvious:
+`recipe list` and `recipe info` use the loader's merged declared metadata.
+Literal inherited name/version/description are available without running setup.
+Dynamic expressions are unavailable metadata; malformed literals fail clearly.
+No coordinator-side Rhai evaluation is used for discovery.
 
-```rhai
-let archive = download(ctx.url, join_path(BUILD_DIR, "src.tar.gz"));
-verify_sha256(archive, ctx.sha256);
-extract(archive, BUILD_DIR);
-```
-
-That matches the implementation style and avoids hidden state.
-
-## Debugging Recipes
-
-### Use the Check Commands
-
-Useful commands:
-
-```bash
-recipe isinstalled mypkg
-recipe isbuilt mypkg
-recipe isacquired mypkg
-```
-
-Those run the check directly and return updated `ctx` JSON on success.
-
-### Keep Stdout Clean
-
-The CLI prints final `ctx` JSON to stdout.
-
-Everything else goes to stderr:
-
-- logs
-- phase banners
-- helper traces
-- child process output
-
-If you need reliable machine-readable output, use:
-
-```bash
-recipe install mypkg --json-output result.json
-```
-
-### Trace Helpers
-
-Set:
-
-```bash
-RECIPE_TRACE_HELPERS=1
-```
-
-This emits helper-level trace lines.
-
-### Dry-ish Runs
-
-Use:
-
-```bash
-recipe install mypkg --no-persist-ctx
-```
-
-That disables source mutation while still executing the recipe.
-
-## Common Failure Modes
-
-### Missing `cleanup(ctx, reason)`
-
-Normal install flow will fail before doing work if the recipe lacks a 2-arg
-cleanup hook.
-
-Fix:
-
-```rhai
-fn cleanup(ctx, reason) { ctx }
-```
-
-### `ctx` Persistence Broke After Refactoring
-
-If persistence suddenly stops working, check whether the recipe still uses:
-
-```rhai
-let ctx = #{
-```
-
-The executor is looking for that exact text.
-
-### Recipe Writes to the Real Host
-
-That is possible today. There is no implemented sysroot/prefix confinement yet.
-
-If you need safe destination routing, pass explicit destinations with
-`--define`, keep installs under a controlled prefix, and audit every path.
-
-## Practical Checklist
-
-Before calling a recipe "done", verify:
-
-- `ctx` uses the exact `let ctx = #{` form
-- persistent `ctx` fields are scalar
-- `is_installed(ctx)` exists and is truthful
-- `cleanup(ctx, reason)` exists
-- `build(ctx)` is only present if the recipe really has a build phase
-- `is_built(ctx)` only passes when build can truly be skipped
-- destination paths are explicit and safe
-- helper usage matches `HELPERS_AUDIT.md`, not wishful spec helpers
-
-## Related Documents
-
-- `README.md`: current CLI, bootstrap, and runtime reality
-- `HELPERS_AUDIT.md`: authoritative current helper list
-- `PHASES.md`: lifecycle overview
-- `REQUIREMENTS.md`: target design, broader than current implementation
+Compile syntax before runtime, then exercise the real CLI with representative
+inputs, reuse, changed input, remove and failure paths. A successful compile is
+source evidence; a managed run proves only its observed image/recipe/workload.
+Do not rebuild kernels just to validate caller or prepared-bundle migration.

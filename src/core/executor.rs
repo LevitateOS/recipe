@@ -1,9 +1,9 @@
 //! Recipe executor - install, remove, cleanup operations
 //!
 //! Executes recipes using the ctx pattern where:
-//! - `is_acquired(ctx)`, `is_built(ctx)`, `is_installed(ctx)` throw if phase needed
+//! - `is_acquired(ctx)`, `is_built(ctx)`, `is_installed(ctx)` return ready(ctx) or needs_work(ctx, reason)
 //! - `acquire(ctx)`, `build(ctx)`, `install(ctx)` return updated ctx
-//! - `ctx` is persisted to the recipe file after each phase (unless disabled)
+//! - checkpoints send runtime state to the coordinator without source mutation
 
 use anyhow::{Context, Result, anyhow};
 use rhai::{AST, Engine};
@@ -12,56 +12,29 @@ use std::path::{Path, PathBuf};
 
 mod private;
 
-/// Parse `//! extends: <path>` from leading comments.
-///
-/// Only looks at comment lines at the top of the file. Stops at the first
-/// non-comment, non-empty line.
-pub(crate) fn parse_extends(source: &str) -> Option<String> {
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("//! extends:") {
-            return Some(rest.trim().to_string());
-        }
-        if !trimmed.starts_with("//") {
-            break;
-        }
-    }
-    None
-}
+pub(crate) use private::{EngineError, ExecutionContext, Load, check, cleanup, install, remove};
 
-/// Resolve a base recipe path.
-///
-/// Tries relative to the child recipe's directory first, then the search path.
+use crate::recipes::parse_extends;
+
+/// Package facts `declared_metadata` reports.
+const METADATA_FIELDS: [&str; 3] = ["name", "version", "description"];
+
+/// Resolve a base recipe: beside the child first, then the search path.
 fn resolve_base_path(
     base_rel: &str,
     child_path: &Path,
     search_path: Option<&Path>,
 ) -> Result<PathBuf> {
-    // Try relative to child
-    if let Some(child_dir) = child_path.parent() {
-        let candidate = child_dir.join(base_rel);
-        if candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-
-    // Try search path
-    if let Some(sp) = search_path {
-        let candidate = sp.join(base_rel);
-        if candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-
-    anyhow::bail!(
-        "Base recipe '{}' not found (child: {}, search_path: {:?})",
-        base_rel,
-        child_path.display(),
-        search_path
-    )
+    crate::recipes::check_related_target(base_rel)
+        .map_err(|problem| anyhow::anyhow!("Base recipe '{base_rel}' {problem}"))?;
+    crate::recipes::find_related(base_rel, child_path, search_path).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Base recipe '{}' not found (child: {}, search_path: {:?})",
+            base_rel,
+            child_path.display(),
+            search_path
+        )
+    })
 }
 
 #[derive(Debug)]
@@ -69,11 +42,8 @@ pub(crate) struct CompiledRecipe {
     pub ast: AST,
     /// The "main" recipe file (the one the user invoked).
     pub recipe_path: PathBuf,
-    pub recipe_source: String,
     /// Optional base recipe from `//! extends:`.
     pub base_path: Option<PathBuf>,
-    pub base_source: Option<String>,
-    pub base_dir: Option<PathBuf>,
 }
 
 /// Compile a recipe with `//! extends:` resolution.
@@ -82,7 +52,7 @@ pub(crate) struct CompiledRecipe {
 /// and merged with the child AST. Child functions with the same name+arity replace
 /// base functions. Top-level statements run base-first, then child.
 ///
-/// Returns the merged AST plus the source texts/paths needed for ctx persistence.
+/// Returns the merged AST and immutable recipe identities.
 pub(crate) fn compile_recipe(
     engine: &Engine,
     recipe_path: &Path,
@@ -129,149 +99,97 @@ pub(crate) fn compile_recipe(
         // Merge: child overrides base functions, top-level runs base then child
         base_ast += child_ast;
 
-        let base_dir = base_path.parent().map(|p| p.to_path_buf());
         Ok(CompiledRecipe {
             ast: base_ast,
             recipe_path,
-            recipe_source: source,
             base_path: Some(base_path),
-            base_source: Some(base_source),
-            base_dir,
         })
     } else {
         let ast = engine
             .compile(&source)
-            .map_err(|e| anyhow!("Failed to compile recipe: {}", e))?;
+            .map_err(|e| anyhow!("Failed to compile recipe {}: {}", recipe_path.display(), e))?;
         Ok(CompiledRecipe {
             ast,
             recipe_path,
-            recipe_source: source,
             base_path: None,
-            base_source: None,
-            base_dir: None,
         })
     }
 }
 
-/// Install a package by executing its recipe
-///
-/// Follows the recipe workflow:
-/// 1. Check is_installed(ctx) - skip if doesn't throw
-/// 2. Check is_built(ctx) - skip build if doesn't throw
-/// 3. Check is_acquired(ctx) - skip acquire if doesn't throw
-/// 4. Execute needed steps (acquire, build, install)
-/// 5. Persist ctx after each step
-///
-/// Returns the final ctx map containing all recipe state.
-pub fn install(
-    engine: &Engine,
-    build_dir: &Path,
-    recipe_path: &Path,
-    defines: &[(String, String)],
-    persist_ctx: bool,
-    search_path: Option<&Path>,
-) -> Result<rhai::Map> {
-    private::install(
-        engine,
-        build_dir,
-        recipe_path,
-        defines,
-        persist_ctx,
-        search_path,
-    )
+/// Metadata declared in the same compiled recipe used by the worker.
+/// Values requiring execution are listed explicitly rather than evaluated on host.
+#[derive(Debug, Default)]
+pub struct DeclaredMetadata {
+    pub fields: std::collections::BTreeMap<String, String>,
+    pub dynamic_fields: std::collections::BTreeSet<String>,
 }
 
-pub(crate) fn install_with_options(
-    engine: &Engine,
-    build_dir: &Path,
-    recipe_path: &Path,
-    defines: &[(String, String)],
-    persist_ctx: bool,
-    search_path: Option<&Path>,
-    autofix: Option<&crate::AutoFixConfig>,
-) -> Result<rhai::Map> {
-    private::install_with_options(
-        engine,
-        build_dir,
-        recipe_path,
-        defines,
-        persist_ctx,
-        search_path,
-        autofix,
-    )
+/// Read literal metadata from the merged recipe AST without executing setup,
+/// imports, hooks or helper calls. Dynamic fields remain unavailable.
+pub fn declared_metadata(recipe: &Path, search_path: Option<&Path>) -> Result<DeclaredMetadata> {
+    use rhai::{Expr, Stmt};
+    let mut engine = Engine::new();
+    engine.set_optimization_level(rhai::OptimizationLevel::None);
+    let compiled = compile_recipe(&engine, recipe, search_path)?;
+    let mut metadata = DeclaredMetadata::default();
+    for statement in compiled.ast.statements() {
+        match statement {
+            Stmt::Var(declaration, _, _) if declaration.0.name == "ctx" => {
+                metadata = DeclaredMetadata::default();
+                match &declaration.1 {
+                    Expr::Map(values, _) => {
+                        for (name, value) in &values.0 {
+                            metadata.set(name.name.as_str(), value)?;
+                        }
+                    }
+                    _ => {
+                        metadata
+                            .dynamic_fields
+                            .extend(METADATA_FIELDS.map(str::to_owned));
+                    }
+                }
+            }
+            Stmt::Assignment(assignment) => {
+                let binary = &assignment.1;
+                if let Expr::Dot(property, _, _) = &binary.lhs {
+                    if let (Expr::Variable(variable, _, _), Expr::Property(field, _)) =
+                        (&property.lhs, &property.rhs)
+                    {
+                        if variable.1 == "ctx" {
+                            if assignment.0.is_op_assignment() {
+                                metadata.fields.remove(field.2.as_str());
+                                metadata.dynamic_fields.insert(field.2.to_string());
+                            } else {
+                                metadata.set(field.2.as_str(), &binary.rhs)?;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(metadata)
 }
 
-/// Remove an installed package
-///
-/// Returns the final ctx map after removal.
-pub fn remove(
-    engine: &Engine,
-    recipe_path: &Path,
-    search_path: Option<&Path>,
-    defines: &[(String, String)],
-    persist_ctx: bool,
-) -> Result<rhai::Map> {
-    private::remove(engine, recipe_path, search_path, defines, persist_ctx)
-}
-
-/// Clean up build artifacts
-///
-/// Returns the final ctx map after cleanup.
-pub fn cleanup(
-    engine: &Engine,
-    build_dir: &Path,
-    recipe_path: &Path,
-    search_path: Option<&Path>,
-    defines: &[(String, String)],
-    reason: &str,
-    persist_ctx: bool,
-) -> Result<rhai::Map> {
-    private::cleanup(
-        engine,
-        build_dir,
-        recipe_path,
-        search_path,
-        defines,
-        reason,
-        persist_ctx,
-    )
-}
-
-/// Execute `is_installed(ctx)` manually.
-///
-/// Returns the updated ctx map on success.
-pub fn is_installed(
-    engine: &Engine,
-    build_dir: &Path,
-    recipe_path: &Path,
-    search_path: Option<&Path>,
-    defines: &[(String, String)],
-) -> Result<rhai::Map> {
-    private::is_installed(engine, build_dir, recipe_path, search_path, defines)
-}
-
-/// Execute `is_built(ctx)` manually.
-///
-/// Returns the updated ctx map on success.
-pub fn is_built(
-    engine: &Engine,
-    build_dir: &Path,
-    recipe_path: &Path,
-    search_path: Option<&Path>,
-    defines: &[(String, String)],
-) -> Result<rhai::Map> {
-    private::is_built(engine, build_dir, recipe_path, search_path, defines)
-}
-
-/// Execute `is_acquired(ctx)` manually.
-///
-/// Returns the updated ctx map on success.
-pub fn is_acquired(
-    engine: &Engine,
-    build_dir: &Path,
-    recipe_path: &Path,
-    search_path: Option<&Path>,
-    defines: &[(String, String)],
-) -> Result<rhai::Map> {
-    private::is_acquired(engine, build_dir, recipe_path, search_path, defines)
+impl DeclaredMetadata {
+    fn set(&mut self, name: &str, value: &rhai::Expr) -> Result<()> {
+        if !METADATA_FIELDS.contains(&name) {
+            return Ok(());
+        }
+        self.fields.remove(name);
+        self.dynamic_fields.remove(name);
+        match value {
+            rhai::Expr::StringConstant(text, _) => {
+                self.fields.insert(name.to_owned(), text.to_string());
+            }
+            _ if value.get_literal_value().is_some() => {
+                anyhow::bail!("declared metadata {name} must be a string")
+            }
+            _ => {
+                self.dynamic_fields.insert(name.to_owned());
+            }
+        }
+        Ok(())
+    }
 }

@@ -156,12 +156,6 @@ pub(super) fn find_fn_end_line(
 }
 
 pub(super) fn protected_fn_ranges(source: &str) -> Vec<ProtectedFnRange> {
-    let protected = [
-        ("is_installed", "is_installed"),
-        ("is_built", "is_built"),
-        ("is_acquired", "is_acquired"),
-    ];
-
     let mut out = Vec::new();
     let mut offset: usize = 0;
 
@@ -172,16 +166,14 @@ pub(super) fn protected_fn_ranges(source: &str) -> Vec<ProtectedFnRange> {
             continue;
         };
 
-        for (want, label) in protected {
-            if name == want
-                && let Some(end_line) = find_fn_end_line(source, offset, line_no)
-            {
-                out.push(ProtectedFnRange {
-                    name: label,
-                    start_line: line_no,
-                    end_line,
-                });
-            }
+        if let Some(check) = crate::lifecycle::CHECKS.into_iter().find(|check| *check == name)
+            && let Some(end_line) = find_fn_end_line(source, offset, line_no)
+        {
+            out.push(ProtectedFnRange {
+                name: check,
+                start_line: line_no,
+                end_line,
+            });
         }
 
         offset = offset.saturating_add(line.len().saturating_add(1));
