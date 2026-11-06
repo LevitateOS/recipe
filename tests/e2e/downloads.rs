@@ -365,3 +365,172 @@ fn install(ctx) {{
     let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(context["state"]["checked"], true);
 }
+
+#[test]
+fn managed_redirects_require_destination_grants_and_byte_budget() {
+    use sha2::Digest;
+    use std::net::TcpListener;
+
+    for allowed in [true, false] {
+        let (_dir, recipes) = create_test_env();
+        let payload = b"redirected verified payload";
+        let digest = hex::encode(sha2::Sha256::digest(payload));
+        let denied = TcpListener::bind("127.0.0.1:0").unwrap();
+        denied.set_nonblocking(true).unwrap();
+        let (target, destination) = if allowed {
+            let (url, task) = serve_response(
+                "200 OK",
+                &format!("Content-Length: {}\r\n", payload.len()),
+                payload,
+            );
+            (url, Some(task))
+        } else {
+            (
+                format!("http://{}/payload", denied.local_addr().unwrap()),
+                None,
+            )
+        };
+        let (url, redirect) = serve_response(
+            "302 Found",
+            &format!("Location: {target}\r\nContent-Length: 0\r\n"),
+            b"",
+        );
+        download_recipe(&recipes, &url, &digest, Some("previous payload"), false);
+        let mut command = download_command(&recipes, Some(&url));
+        if allowed {
+            command.args([
+                "--network-host",
+                target
+                    .strip_prefix("http://")
+                    .unwrap()
+                    .split('/')
+                    .next()
+                    .unwrap(),
+            ]);
+        }
+        let output = command.output().unwrap();
+        redirect.join().unwrap();
+        if let Some(destination) = destination {
+            destination.join().unwrap();
+        }
+        if allowed {
+            assert_success(&output);
+            let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(
+                std::fs::read(context["outputs"]["product"].as_str().unwrap()).unwrap(),
+                payload
+            );
+        } else {
+            assert!(!output.status.success());
+            assert!(String::from_utf8_lossy(&output.stderr).contains("DOWNLOAD_CACHE_PRESERVED"));
+            assert_eq!(
+                denied.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        }
+    }
+
+    let (_dir, recipes) = create_test_env();
+    let payload = vec![b'x'; 16 * 1024];
+    let digest = hex::encode(sha2::Sha256::digest(&payload));
+    let (url, server) = serve_response(
+        "200 OK",
+        &format!("Content-Length: {}\r\n", payload.len()),
+        &payload,
+    );
+    download_recipe(&recipes, &url, &digest, Some("previous payload"), false);
+    let output = download_command(&recipes, Some(&url))
+        .args(["--network-max-bytes", "512"])
+        .output()
+        .unwrap();
+    // The peer may observe closure as soon as the supervisor exhausts the grant.
+    let _ = server.join();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("DOWNLOAD_CACHE_PRESERVED"));
+}
+
+#[test]
+fn managed_concurrent_download_cache_survives_offline_reinstall() {
+    use sha2::Digest;
+    use std::process::Stdio;
+
+    let (dir, recipes) = create_test_env();
+    let payload = b"single verified acquisition shared by writers";
+    let digest = hex::encode(sha2::Sha256::digest(payload));
+    let (url, server) = serve_response(
+        "200 OK",
+        &format!("Content-Length: {}\r\n", payload.len()),
+        payload,
+    );
+    write_recipe(
+        &recipes,
+        "cached",
+        &format!(
+            r#"
+const RECIPE_API = 2;
+let ctx = #{{name: "cached-acquisition", source: join_path(RUNTIME.paths.build, "source"), digest: {digest:?}}};
+fn is_acquired(ctx) {{
+    if !is_file(ctx.source) {{ return needs_work(ctx, "fetch source"); }}
+    verify_sha256(ctx.source, ctx.digest); ready(ctx)
+}}
+fn is_built(ctx) {{ is_acquired(ctx) }}
+fn is_installed(ctx) {{
+    if !is_file("/out/product") {{ return needs_work(ctx, "install source"); }}
+    verify_sha256("/out/product", ctx.digest);
+    ctx.outputs.product = "/out/product"; ready(ctx)
+}}
+fn acquire(ctx) {{ download({url:?}, ctx.source, ctx.digest); ctx }}
+fn install(ctx) {{
+    verify_sha256(ctx.source, ctx.digest);
+    copy_file(ctx.source, "/out/product");
+    ctx.outputs.product = "/out/product"; ctx
+}}
+fn remove(ctx) {{ rm("/out/product"); ctx.outputs = #{{}}; ctx }}
+"#
+        ),
+    );
+    let command = |operation: &str| {
+        let mut command = recipe_command(&recipes);
+        command
+            .args([operation, "cached", "--recipes-path"])
+            .arg(&recipes)
+            .arg("--build-dir")
+            .arg(dir.path().join("destination"))
+            .arg("--state-dir")
+            .arg(dir.path().join("retained"))
+            .args([
+                "--network-host",
+                url.strip_prefix("http://")
+                    .unwrap()
+                    .split('/')
+                    .next()
+                    .unwrap(),
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command
+    };
+    let first = command("install").spawn().unwrap();
+    let second = command("install").spawn().unwrap();
+    let first = first.wait_with_output().unwrap();
+    let second = second.wait_with_output().unwrap();
+    assert_success(&first);
+    assert_success(&second);
+    // The server handles one request then closes. A second fetch cannot succeed.
+    server.join().unwrap();
+    for output in [&first, &second] {
+        let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            std::fs::read(context["outputs"]["product"].as_str().unwrap()).unwrap(),
+            payload
+        );
+    }
+    assert_success(&command("remove").output().unwrap());
+    let offline = command("install").output().unwrap();
+    assert_success(&offline);
+    let context: serde_json::Value = serde_json::from_slice(&offline.stdout).unwrap();
+    assert_eq!(
+        std::fs::read(context["outputs"]["product"].as_str().unwrap()).unwrap(),
+        payload
+    );
+}
