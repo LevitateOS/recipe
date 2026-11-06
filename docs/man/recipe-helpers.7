@@ -1,763 +1,258 @@
-.TH RECIPE-HELPERS 7 "2026-03-13" "recipe 0.1.4" "Recipe Helpers"
+.TH RECIPE-HELPERS 7 "2026-11-06" "Recipe" "Recipe Helpers"
 .SH NAME
-recipe-helpers \- current helper surface exposed to Rhai recipes
-.SH OVERVIEW
-This page documents the helper names currently registered by
-\fBtools/recipe/src/helpers/mod.rs\fR. It is intended as a stable LLM-oriented
-catalog: each helper entry uses the same schema and describes current behavior
-rather than future spec intent.
-.PP
-Schema used below:
-.IP "\[bu]" 4
-\fBSignature\fR: Rhai call shape
-.IP "\[bu]" 4
-\fBReturns\fR: result value
-.IP "\[bu]" 4
-\fBFails when\fR: common failure modes
-.IP "\[bu]" 4
-\fBExample\fR: minimal concrete invocation
-.SH READINESS HELPERS
-.TP
-\fBready(ctx)\fR
-Returns an API 2 readiness map with status "ready" and the updated ctx map.
-.TP
-\fBneeds_work(ctx, reason)\fR
-Returns an API 2 readiness map with status "needs_work", updated ctx, and a
-reason string. The executor rejects empty reasons and malformed results.
-.PP
-These constructors are for checks, not phase hooks. API 2 check errors fail
-execution. Native helper errors remain catchable but are not implicit legacy
-needs-work signals.
-.SH PATH HELPERS
-.TP
-\fBjoin_path\fR
-Signature: \fBjoin_path(a, b)\fR
-.br
-Returns: joined path string
-.br
-Fails when: never for ordinary string inputs
-.br
-Example: \fBjoin_path(BUILD_DIR, "src")\fR
-.TP
-\fBbasename\fR
-Signature: \fBbasename(path)\fR
-.br
-Returns: final path component as string
-.br
-Fails when: never for ordinary string inputs
-.br
-Example: \fBbasename("/tmp/foo.tar.xz")\fR
-.TP
-\fBdirname\fR
-Signature: \fBdirname(path)\fR
-.br
-Returns: parent path as string
-.br
-Fails when: never for ordinary string inputs
-.br
-Example: \fBdirname("/tmp/foo.tar.xz")\fR
-.SH STRING HELPERS
-.TP
-\fBtrim\fR
-Signature: \fBtrim(s)\fR
-.br
-Returns: trimmed string
-.br
-Fails when: never
-.br
-Example: \fBtrim("  hello  ")\fR
-.TP
-\fBstarts_with\fR
-Signature: \fBstarts_with(s, prefix)\fR
-.br
-Returns: boolean
-.br
-Fails when: never
-.br
-Example: \fBstarts_with(url, "https://")\fR
-.TP
-\fBends_with\fR
-Signature: \fBends_with(s, suffix)\fR
-.br
-Returns: boolean
-.br
-Fails when: never
-.br
-Example: \fBends_with(archive, ".tar.xz")\fR
-.TP
-\fBcontains\fR
-Signature: \fBcontains(s, pat)\fR
-.br
-Returns: boolean
-.br
-Fails when: never
-.br
-Example: \fBcontains(text, "Release")\fR
-.TP
-\fBreplace\fR
-Signature: \fBreplace(s, from, to)\fR
-.br
-Returns: replaced string
-.br
-Fails when: never
-.br
-Example: \fBreplace(version, "v", "")\fR
-.TP
-\fBsplit\fR
-Signature: \fBsplit(s, sep)\fR
-.br
-Returns: array of strings
-.br
-Fails when: never
-.br
-Example: \fBsplit("a:b:c", ":")\fR
-.SH LOGGING HELPERS
-.TP
-\fBlog\fR
-Signature: \fBlog(msg)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: stderr formatting fails
-.br
-Example: \fBlog("building kernel")\fR
-.TP
-\fBdebug\fR
-Signature: \fBdebug(msg)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: stderr formatting fails
-.br
-Example: \fBdebug("checking build cache")\fR
-.br
-Uses Rhai's built-in formatter with source/position diagnostics on stderr.
-The built-in \fBprint(value)\fR also writes to stderr, preserving JSON/protocol stdout.
-.TP
-\fBwarn\fR
-Signature: \fBwarn(msg)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: stderr formatting fails
-.br
-Example: \fBwarn("falling back to plain copy")\fR
-.SH SHELL HELPERS
-.TP
-\fBshell\fR
-Signature: \fBshell(cmd)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: \fBsh -c\fR execution fails or exits non-zero
-.br
-Example: \fBshell("make -j$(nproc)")\fR
-.TP
-\fBshell_in\fR
-Signature: \fBshell_in(dir, cmd)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: directory change or shell command fails
-.br
-Example: \fBshell_in(ctx.src_dir, "./configure")\fR
-.TP
-\fBshell_status\fR
-Signature: \fBshell_status(cmd)\fR
-.br
-Returns: integer exit code
-.br
-Fails when: the shell process cannot be started
-.br
-Example: \fBshell_status("test -f /usr/bin/bash")\fR
-.TP
-\fBshell_status_in\fR
-Signature: \fBshell_status_in(dir, cmd)\fR
-.br
-Returns: integer exit code
-.br
-Fails when: directory change or shell startup fails
-.br
-Example: \fBshell_status_in(ctx.src_dir, "make test")\fR
-.TP
-\fBshell_output\fR
-Signature: \fBshell_output(cmd)\fR
-.br
-Returns: stdout string
-.br
-Fails when: shell command fails
-.br
-Example: \fBtrim(shell_output("uname -m"))\fR
-.TP
-\fBshell_output_in\fR
-Signature: \fBshell_output_in(dir, cmd)\fR
-.br
-Returns: stdout string
-.br
-Fails when: directory change or shell command fails
-.br
-Example: \fBshell_output_in(ctx.src_dir, "git rev-parse HEAD")\fR
-.SH FILE AND TEXT HELPERS
-.TP
-\fBread_file\fR
-Signature: \fBread_file(path)\fR
-.br
-Returns: file contents as string
-.br
-Fails when: file does not exist or cannot be read
-.br
-Example: \fBread_file("/etc/os-release")\fR
-.TP
-\fBread_file_or_empty\fR
-Signature: \fBread_file_or_empty(path)\fR
-.br
-Returns: file contents or empty string
-.br
-Fails when: never for missing files
-.br
-Example: \fBread_file_or_empty("/etc/hostname")\fR
-.TP
-\fBwrite_file\fR
-Signature: \fBwrite_file(path, content)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: parent path is unwritable or file creation fails
-.br
-Example: \fBwrite_file(join_path(BUILD_DIR, "config"), "x=1\\n")\fR
-.TP
-\fBappend_file\fR
-Signature: \fBappend_file(path, content)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: file open or append fails
-.br
-Example: \fBappend_file("/etc/profile", "export FOO=1\\n")\fR
-.TP
-\fBappend_line_if_missing\fR
-Signature: \fBappend_line_if_missing(path, line)\fR
-.br
-Returns: boolean indicating whether a line was appended
-.br
-Fails when: file read or append fails
-.br
-Example: \fBappend_line_if_missing(passwd, "builder:x:1000:1000::/home/builder:/bin/bash")\fR
-.TP
-\fBreplace_in_file\fR
-Signature: \fBreplace_in_file(path, from, to)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: file read or write fails
-.br
-Example: \fBreplace_in_file(desktop, "Exec=kitty", "Exec=/usr/bin/kitty")\fR
-.TP
-\fBglob_list\fR
-Signature: \fBglob_list(pattern)\fR
-.br
-Returns: array of matching string paths
-.br
-Fails when: the glob pattern is invalid
-.br
-Example: \fBglob_list(join_path(font_dir, "*.ttf"))\fR
-.TP
-\fBglob_exists\fR
-Signature: \fBglob_exists(pattern)\fR
-.br
-Returns: boolean
-.br
-Fails when: the glob pattern is invalid
-.br
-Example: \fBglob_exists(join_path(font_dir, "*.otf"))\fR
-.SH FILESYSTEM HELPERS
-.TP
-\fBexists\fR
-Signature: \fBexists(path)\fR
-.br
-Returns: boolean, including dangling symlinks
-.br
-Fails when: never
-.br
-Example: \fBexists("/tmp/link")\fR
-.TP
-\fBfile_exists\fR, \fBis_file\fR
-Signature: \fBfile_exists(path)\fR
-.br
-Returns: boolean
-.br
-Fails when: never
-.br
-Example: \fBis_file(ctx.archive)\fR
-.TP
-\fBdir_exists\fR, \fBis_dir\fR
-Signature: \fBdir_exists(path)\fR
-.br
-Returns: boolean
-.br
-Fails when: never
-.br
-Example: \fBis_dir(ctx.src_dir)\fR
-.TP
-\fBmkdir\fR
-Signature: \fBmkdir(path)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: directory creation fails
-.br
-Example: \fBmkdir(join_path(env("HOME"), ".local/bin"))\fR
-.TP
-\fBrm\fR
-Signature: \fBrm(pattern)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: glob expansion or removal fails
-.br
-Example: \fBrm(join_path(BUILD_DIR, "*"))\fR
-.TP
-\fBmv\fR
-Signature: \fBmv(src, dst)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: rename fails
-.br
-Example: \fBmv(ctx.downloaded, dst)\fR
-.TP
-\fBln\fR
-Signature: \fBln(target, link)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: symlinks are unsupported or link creation fails
-.br
-Example: \fBln("/usr/bin/python3", "/usr/bin/python")\fR
-.TP
-\fBln_force\fR
-Signature: \fBln_force(target, link)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: destination is a directory, symlinks are unsupported, or replacement fails
-.br
-Example: \fBln_force("/usr/bin/kitty", join_path(bin_dir, "xterm"))\fR
-.TP
-\fBchmod\fR
-Signature: \fBchmod(path, mode)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: chmod fails on Unix
-.br
-Example: \fBchmod(dst, 0o755)\fR
-.TP
-\fBcopy_into_dir\fR
-Signature: \fBcopy_into_dir(pattern, dest_dir)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: destination is not a directory, pattern is invalid, or no files match
-.br
-Example: \fBcopy_into_dir(join_path(src_dir, "*.ttf"), fonts_dir)\fR
-.TP
-\fBcopy_file\fR
-Signature: \fBcopy_file(src, dst)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: source is not a file or copy fails
-.br
-Example: \fBcopy_file(ctx.kernel_image, join_path(boot_dir, "vmlinuz"))\fR
-.TP
-\fBcopy_file_reflink\fR
-Signature: \fBcopy_file_reflink(src, dst)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: source is not a file or fallback copy fails
-.br
-Example: \fBcopy_file_reflink(preseed, join_path(staging_dir, "ks.cfg"))\fR
-.TP
-\fBcopy_tree_contents\fR
-Signature: \fBcopy_tree_contents(src_dir, dst_dir)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: source or destination is not a directory, or recursive copy fails
-.br
-Example: \fBcopy_tree_contents(rootfs_seed, slot_root)\fR
-.TP
-\fBcopy_first_existing\fR
-Signature: \fBcopy_first_existing(sources, dst)\fR
-.br
-Returns: string path of the source that was copied
-.br
-Fails when: no listed source exists as a file or the copy fails
-.br
-Example: \fBcopy_first_existing([a, b], join_path(bin_dir, "mkisofs"))\fR
-.SH ACQUIRE HELPERS
-.TP
-\fBdownload\fR
-Signature: \fBdownload(url, dest [, sha256])\fR
-.br
-Returns: destination path string
-.br
-Fails when: download fails, destination cannot be written, or supplied SHA256 mismatches
-.br
-Example: \fBdownload(ctx.url, join_path(BUILD_DIR, "src.tar.xz"), ctx.sha256)\fR
-.PP
-The optional SHA256 must contain 64 hexadecimal characters. It is checked against
-the staged file before publication. Failed downloads or digest checks preserve
-the previous destination. Without a digest argument, recipes must verify the
-completed file separately.
-.TP
-\fBverify_sha256\fR
-Signature: \fBverify_sha256(path, expected)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: hash mismatch or file read fails
-.br
-Example: \fBverify_sha256(archive, ctx.sha256)\fR
-.TP
-\fBfetch_sha256\fR
-Signature: \fBfetch_sha256(url, filename)\fR
-.br
-Returns: matching checksum string
-.br
-Fails when: checksum file cannot be fetched or parsed
-.br
-Example: \fBfetch_sha256(checksums_url, "foo.tar.xz")\fR
-.TP
-\fBverify_sha512\fR
-Signature: \fBverify_sha512(path, expected)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: hash mismatch or file read fails
-.br
-Example: \fBverify_sha512(archive, ctx.sha512)\fR
-.TP
-\fBverify_blake3\fR
-Signature: \fBverify_blake3(path, expected)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: hash mismatch or file read fails
-.br
-Example: \fBverify_blake3(archive, ctx.blake3)\fR
-.TP
-\fBhttp_get\fR
-Signature: \fBhttp_get(url)\fR
-.br
-Returns: response body string
-.br
-Fails when: request fails
-.br
-Example: \fBhttp_get(releases_url)\fR
-.TP
-\fBgithub_latest_release\fR
-Signature: \fBgithub_latest_release(repo)\fR
-.br
-Returns: latest release version string with common prefixes stripped
-.br
-Fails when: GitHub request fails or response shape is invalid
-.br
-Example: \fBgithub_latest_release("sharkdp/bat")\fR
-.TP
-\fBgithub_latest_tag\fR
-Signature: \fBgithub_latest_tag(repo)\fR
-.br
-Returns: latest tag string with common prefixes stripped
-.br
-Fails when: GitHub request fails or response shape is invalid
-.br
-Example: \fBgithub_latest_tag("BurntSushi/ripgrep")\fR
-.TP
-\fBparse_version\fR
-Signature: \fBparse_version(s)\fR
-.br
-Returns: normalized version string
-.br
-Fails when: never
-.br
-Example: \fBparse_version("release-1.2.3")\fR
-.TP
-\fBgithub_download_release\fR
-Signature: \fBgithub_download_release(repo, pattern, dest_dir [, sha256])\fR
-.br
-Returns: downloaded asset path
-.br
-Fails when: release discovery, download, or supplied SHA256 verification fails
-.br
-Example: \fBgithub_download_release("owner/proj", "x86_64.rpm", BUILD_DIR)\fR
-.TP
-\fBextract_from_tarball\fR
-Signature: \fBextract_from_tarball(url, pattern, dest)\fR
-.br
-Returns: extracted path
-.br
-Fails when: download, tar extraction, or match selection fails
-.br
-Example: \fBextract_from_tarball(url, "bin/tool", BUILD_DIR)\fR
-.TP
-\fBgit_clone\fR
-Signature: \fBgit_clone(url, dest_dir)\fR
-.br
-Returns: clone path
-.br
-Fails when: git invocation fails
-.br
-Example: \fBgit_clone(ctx.repo, BUILD_DIR)\fR
-.TP
-\fBgit_clone_depth\fR
-Signature: \fBgit_clone_depth(url, dest_dir, depth)\fR
-.br
-Returns: clone path
-.br
-Fails when: git invocation fails
-.br
-Example: \fBgit_clone_depth(ctx.repo, BUILD_DIR, 1)\fR
-.TP
-\fBgit_checkout\fR
-Signature: \fBgit_checkout(url, dest, commit)\fR
-.br
-Returns: exact destination path
-.br
-Fails when: acquisition fails, origin differs, the checkout has local changes,
-or commit is not a full 40- or 64-character hexadecimal commit ID
-.br
-Example: \fBgit_checkout(ctx.repo, join_path(BUILD_DIR, "source"), ctx.commit)\fR
-.PP
-Pinned acquisition selects detached HEAD. A missing commit is fetched from the
-declared origin. A clean checkout already at that commit can be reused offline.
-Tracked modifications and untracked files are rejected; ignored build files are
-outside this check, so package-specific source readiness rules still apply.
-No reset or clean operation is performed.
-.PP
-All Git helpers verify the configured origin before reusing a standalone clone.
-Wrong-origin, damaged, linked, or non-directory destinations fail without deletion.
-Legacy clone calls reuse the selected revision and preserve local edits; their
-depth argument applies only to the initial clone. Fresh clones are staged beside
-the destination and published only on success. HTTP(S), SSH, and explicit
-\fBfile://\fR origins are supported. Inherited Git repository/index locator
-variables are cleared for these child commands. Whole-process limits remain the
-execution runtime's responsibility; Git's HTTP low-speed bound is 600 seconds.
-.TP
-\fBtorrent\fR
-Signature: \fBtorrent(url, dest_dir [, filename, sha256])\fR
-.br
-Returns: downloaded file path, or dest_dir for multi-file legacy calls
-.br
-Fails when: metadata, destination, transfer, or supplied SHA256 verification fails
-.br
-Example: \fBtorrent(ctx.magnet, BUILD_DIR)\fR
-.br
-Transfers use private staging. Metadata paths and existing destination parents
-are checked before payload writes. Completed files are flushed and published by
-rename. The four-argument form requires exactly the selected basename and verifies
-its SHA256 before replacing an old cache entry. Failed acquisition leaves the old
-entry intact. The two-argument form retains piece-checked reuse by copying existing
-files into staging; it does not provide a recipe-pinned digest. Multi-file legacy
-publication is atomic per file, not a transaction across the whole tree. Failed
-attempts discard their staging; process termination can leave hidden staging
-directories. Session persistence and cross-invocation partial resume are not provided.
-.TP
-\fBdownload_with_resume\fR
-Signature: \fBdownload_with_resume(url, dest [, sha256])\fR
-.br
-Returns: destination path
-.br
-Fails when: HTTP range download or supplied SHA256 verification fails
-.br
-Example: \fBdownload_with_resume(ctx.url, join_path(BUILD_DIR, "iso"))\fR
-.PP
-An existing destination is treated as a prefix. The server must return the exact
-requested remainder with HTTP 206, or HTTP 416 with a matching total size.
-HTTP 200 is rejected when resuming; use \fBdownload\fR to restart explicitly.
-Resumed bytes are staged beside the destination and replace it only on completion.
-A failed attempt preserves the destination and discards that attempt's progress.
-Staging requires space for the complete replacement file. A matching remote size
-does not establish integrity: supply the SHA256 argument or verify the result
-separately. The digest argument also verifies existing bytes on HTTP 416 reuse.
-.SH BUILD HELPERS
-.TP
-\fBextract\fR
-Signature: \fBextract(archive, dest)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: archive type is unsupported or extraction fails
-.br
-Example: \fBextract(archive, BUILD_DIR)\fR
-.TP
-\fBextract_with_format\fR
-Signature: \fBextract_with_format(archive, dest, format)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: format is unsupported or extraction fails
-.br
-Example: \fBextract_with_format(archive, BUILD_DIR, "tar.xz")\fR
-.SH PROCESS AND PACKAGE HELPERS
-.TP
-\fBenv\fR
-Signature: \fBenv(name)\fR
-.br
-Returns: environment variable value or empty string
-.br
-Fails when: never
-.br
-Example: \fBenv("HOME")\fR
-.TP
-\fBset_env\fR
-Signature: \fBset_env(name, value)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: environment mutation fails
-.br
-Example: \fBset_env("PATH", new_path)\fR
-.TP
-\fBcheck_disk_space\fR
-Signature: \fBcheck_disk_space(path, required_bytes)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: available space is below requirement or \fBdf\fR invocation fails
-.br
-Example: \fBcheck_disk_space(BUILD_DIR, 20 * 1024 * 1024 * 1024)\fR
-.TP
-\fBexec\fR
-Signature: \fBexec(cmd, args [, options])\fR
-.br
-Returns: integer exit code
-.br
-Fails when: process startup fails
-.br
-Example: \fBlet status = exec("test", ["-f", path]);\fR
-.TP
-\fBexec_checked\fR
-Signature: \fBexec_checked(cmd, args [, options])\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: process execution fails or exits non-zero
-.br
-Example: \fBexec_checked("make", ["-j8"], #{cwd: ctx.source_path})\fR
-.TP
-\fBexec_output\fR
-Signature: \fBexec_output(cmd, args [, options])\fR
-.br
-Returns: stdout string
-.br
-Fails when: process startup fails or exits non-zero
-.br
-Example: \fBtrim(exec_output("pkg-config", ["--modversion", "glib-2.0"]))\fR
-.PP
-The argv helpers pass arguments directly without shell expansion. Their optional
-options map accepts \fBcwd\fR (a nonempty string) and \fBenv\fR (a map of string
-values). Environment overrides affect only the child command. Unknown options
-are errors. Streaming stdout and stderr go to Recipe stderr; captured stdout is
-returned to the recipe and captured stderr goes to Recipe stderr. Child stdin
-is closed to protect worker control input.
-.TP
-\fBrpm_installed\fR
-Signature: \fBrpm_installed(name)\fR
-.br
-Returns: boolean
-.br
-Fails when: never; returns false if \fBrpm\fR cannot be queried
-.br
-Example: \fBrpm_installed("git")\fR
-.TP
-\fBrpm_version\fR
-Signature: \fBrpm_version(name)\fR
-.br
-Returns: installed version string
-.br
-Fails when: package is absent or rpm query fails
-.br
-Example: \fBrpm_version("bash")\fR
-.TP
-\fBdnf_package_available\fR
-Signature: \fBdnf_package_available(name)\fR
-.br
-Returns: boolean
-.br
-Fails when: never; returns false if \fBdnf\fR query fails
-.br
-Example: \fBdnf_package_available("ripgrep")\fR
-.TP
-\fBdnf_install\fR
-Signature: \fBdnf_install(packages)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: package list is empty or \fBsudo -n dnf install -y\fR fails
-.br
-Example: \fBdnf_install(["gcc", "make"])\fR
-.TP
-\fBdnf_install_allow_erasing\fR
-Signature: \fBdnf_install_allow_erasing(packages)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: package list is empty or DNF invocation fails
-.br
-Example: \fBdnf_install_allow_erasing(["mesa-libGL"])\fR
-.TP
-\fBdnf_add_repo\fR
-Signature: \fBdnf_add_repo(url)\fR
-.br
-Returns: \fB()\fR
-.br
-Fails when: \fBsudo -n dnf config-manager --add-repo\fR fails
-.br
-Example: \fBdnf_add_repo("https://download.example.invalid/repo.repo")\fR
-.TP
-\fBdnf_download\fR
-Signature: \fBdnf_download(packages, dest_dir, arches[, resolve])\fR
-.br
-Returns: array of downloaded RPM file paths created by the invocation
-.br
-Fails when: package list or arch list is empty, destination setup fails, or DNF download fails
-.br
-Example: \fBdnf_download(["kernel-devel"], BUILD_DIR, ["x86_64"], true)\fR
-.SH LLM HELPERS
-.TP
-\fBllm_extract\fR
-Signature: \fBllm_extract(content, prompt)\fR
-.br
-Returns: string
-.br
-Fails when: backend is unavailable
-.br
-Example: \fBllm_extract(html, "extract the latest stable version")\fR
-.TP
-\fBllm_find_latest_version\fR
-Signature: \fBllm_find_latest_version(url, project)\fR
-.br
-Returns: string
-.br
-Fails when: backend is unavailable
-.br
-Example: \fBllm_find_latest_version(releases_url, "ripgrep")\fR
-.TP
-\fBllm_find_download_url\fR
-Signature: \fBllm_find_download_url(content, criteria)\fR
-.br
-Returns: string
-.br
-Fails when: backend is unavailable
-.br
-Example: \fBllm_find_download_url(html, "linux x86_64 tar.xz")\fR
-.SH SOURCE OF TRUTH
-The canonical helper registration path is
-\fBtools/recipe/src/helpers/mod.rs\fR. If this page and the code disagree, trust
-the code and refresh the helper catalog.
+recipe-helpers \- registered managed Rhai helpers
+.SH DESCRIPTION
+Helpers execute inside the configured Ginux domain. Paths refer to its assigned
+filesystem; network access requires explicit invocation endpoint grants.
+Readiness checks return ready(ctx) or needs_work(ctx, reason). Native errors fail
+execution. Only ctx.state is restored between invocations.
+.SH HELPERS
+.TP
+\fBapk_add_repo(url) -> ()\fR
+Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used.
+.TP
+\fBapk_download(packages:Array, dest_dir) -> Array\fR
+Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used.
+.TP
+\fBapk_install(packages:Array) -> ()\fR
+Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used.
+.TP
+\fBapk_installed(name) -> bool\fR
+Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used.
+.TP
+\fBapk_package_available(name) -> bool\fR
+Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used.
+.TP
+\fBapk_version(name) -> String\fR
+Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used.
+.TP
+\fBappend_file(path, content) -> ()\fR
+
+.TP
+\fBappend_line_if_missing(path, line) -> bool\fR
+appends exact line once
+.TP
+\fBbasename(path) -> String\fR
+
+.TP
+\fBcheck_disk_space(path, required_bytes) -> ()\fR
+`df -k` based
+.TP
+\fBchmod(path, mode) -> ()\fR
+unix mode
+.TP
+\fBcommand_exists(name) -> bool\fR
+Probe current domain PATH.
+.TP
+\fBcontains(s, pat) -> bool\fR
+
+.TP
+\fBcopy_file(src, dst) -> ()\fR
+exact destination path
+.TP
+\fBcopy_file_reflink(src, dst) -> ()\fR
+Attempts reflink; falls back to a checked copy.
+.TP
+\fBcopy_first_existing(sources:Array, dst) -> String\fR
+copies first existing source
+.TP
+\fBcopy_into_dir(pattern, dest_dir) -> ()\fR
+copies matching files into directory
+.TP
+\fBcopy_tree_contents(src, dest) -> ()\fR
+Copies contents, preserving hardlink identity, symlink bytes and modes.
+.TP
+\fBdebug(value) -> ()\fR
+stderr, with source position
+.TP
+\fBdirname(path) -> String\fR
+
+.TP
+\fBdnf_add_repo(url) -> ()\fR
+Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used.
+.TP
+\fBdnf_download(packages:Array, dest_dir, arches:Array[, resolve]) -> Array\fR
+Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used.
+.TP
+\fBdnf_install(packages:Array) -> ()\fR
+Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used.
+.TP
+\fBdnf_install_allow_erasing(packages:Array) -> ()\fR
+Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used.
+.TP
+\fBdnf_package_available(name) -> bool\fR
+Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used.
+.TP
+\fBdownload(url, dest, sha256[, resume:bool]) -> String\fR
+Required SHA256; staged verified replacement; failure preserves valid destination.
+.TP
+\fBends_with(s, suffix) -> bool\fR
+
+.TP
+\fBenv(name) -> String\fR
+Read the explicit worker environment; empty when absent.
+.TP
+\fBexec(cmd, args:Array [, options:Map]) -> int\fR
+explicit exit status; child-only cwd/env
+.TP
+\fBexec_checked(cmd, args:Array [, options:Map]) -> ()\fR
+throws on nonzero; child-only cwd/env
+.TP
+\fBexec_output(cmd, args:Array [, options:Map]) -> String\fR
+checked stdout capture; child-only cwd/env
+.TP
+\fBexists(path) -> bool\fR
+
+.TP
+\fBextract(archive, dest) -> ()\fR
+Detect archive format; validate paths and reject invalid extraction.
+.TP
+\fBextract_with_format(archive, dest, format) -> ()\fR
+Explicit format; same checked extraction boundary.
+.TP
+\fBfetch_sha256(url, filename) -> String\fR
+parse checksum file
+.TP
+\fBgit_checkout(url, exact_dest, full_commit) -> String\fR
+Exact destination and full 40/64-hex commit; validates origin and checkout.
+.TP
+\fBgithub_download_release(repo, pattern, dest, sha256) -> String\fR
+Selects matching release asset; required digest and staged verified download.
+.TP
+\fBgithub_latest_release(repo) -> String\fR
+strips common prefixes
+.TP
+\fBgithub_latest_tag(repo) -> String\fR
+strips common prefixes
+.TP
+\fBglob_exists(pattern) -> bool\fR
+true if any match
+.TP
+\fBglob_list(pattern) -> Array\fR
+returns string paths
+.TP
+\fBhttp_get(url) -> String\fR
+Bounded metadata text; requires invocation network permission.
+.TP
+\fBis_dir(path) -> bool\fR
+Directory check in the domain view.
+.TP
+\fBis_file(path) -> bool\fR
+Regular file check in the domain view.
+.TP
+\fBjoin_path(a, b) -> String\fR
+Pure join
+.TP
+\fBllm_extract(content, prompt) -> String\fR
+Unavailable inside the worker; optional repair belongs to coordinator.
+.TP
+\fBllm_find_download_url(content, criteria) -> String\fR
+Unavailable inside the worker.
+.TP
+\fBllm_find_latest_version(url, project) -> String\fR
+Unavailable inside the worker.
+.TP
+\fBln(target, link) -> ()\fR
+symlink (unix)
+.TP
+\fBln_force(target, link) -> ()\fR
+replace existing link/path
+.TP
+\fBlog(msg) -> ()\fR
+stderr formatting via `core/output.rs`
+.TP
+\fBmkdir(path) -> ()\fR
+side-effecting
+.TP
+\fBmv(src, dst) -> ()\fR
+rename
+.TP
+\fBneeds_work(ctx, reason) -> Map\fR
+Check requests work with a nonempty reason.
+.TP
+\fBparse_version(s) -> String\fR
+strips v/release-/version-
+.TP
+\fBprint(value) -> ()\fR
+stderr; keeps JSON/protocol stdout intact
+.TP
+\fBread_file(path) -> String\fR
+
+.TP
+\fBread_file_or_empty(path) -> String\fR
+
+.TP
+\fBready(ctx) -> Map\fR
+Check succeeds with updated context.
+.TP
+\fBreplace(s, from, to) -> String\fR
+
+.TP
+\fBreplace_in_file(path, from, to) -> ()\fR
+whole-file text replacement
+.TP
+\fBrm(pattern) -> ()\fR
+glob delete
+.TP
+\fBrpm_installed(name) -> bool\fR
+Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used.
+.TP
+\fBrpm_version(name) -> String\fR
+Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used.
+.TP
+\fBshell(cmd) -> ()\fR
+uses `sh -c`
+.TP
+\fBshell_in(dir, cmd) -> ()\fR
+run in directory
+.TP
+\fBshell_output(cmd) -> String\fR
+captures stdout
+.TP
+\fBshell_output_in(dir, cmd) -> String\fR
+
+.TP
+\fBshell_status(cmd) -> int\fR
+returns exit code
+.TP
+\fBshell_status_in(dir, cmd) -> int\fR
+
+.TP
+\fBsplit(s, sep) -> Array\fR
+
+.TP
+\fBstarts_with(s, prefix) -> bool\fR
+
+.TP
+\fBtrim(s) -> String\fR
+
+.TP
+\fBverify_blake3(path, expected) -> ()\fR
+explicit file
+.TP
+\fBverify_sha256(path, expected) -> ()\fR
+explicit file
+.TP
+\fBverify_sha512(path, expected) -> ()\fR
+explicit file
+.TP
+\fBwarn(msg) -> ()\fR
+
+.TP
+\fBwrite_file(path, content) -> ()\fR
+
+.SH COMMANDS
+exec returns a status; exec_checked and exec_output fail on nonzero exit.
+Their optional options map accepts child-only cwd and env. Shell strings need
+proper quoting and checked pipelines. Diagnostics go to stderr.
+.SH OUTPUTS
+Use ctx.runtime.paths.build for work and ctx.runtime.paths.tools for shared
+dependency tools. Inputs are immutable below /inputs. The owned target is /out.
+Select real files/directories in ctx.outputs; the coordinator validates them
+before publication and returns their published host paths in the final context.
+.SH ACQUISITION
+Downloads require SHA256 and replace a valid destination only after complete
+verification. Git acquisition requires an exact destination and full commit id.
+Every redirect endpoint also needs a network grant. Package facts stay in Rhai.
 .SH SEE ALSO
-\fBrecipe\fR(1),
-\fBrecipe-recipe\fR(5)
+recipe(1), recipe-recipe(5), HELPERS_AUDIT.md, WRITING_RECIPES.md

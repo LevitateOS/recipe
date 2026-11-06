@@ -1,246 +1,101 @@
-.TH RECIPE-RECIPE 5 "2026-03-13" "recipe 0.1.4" "Recipe File Format"
+.TH RECIPE-RECIPE 5 "2026-11-06" "Recipe" "File Formats"
 .SH NAME
-recipe-recipe \- authoring format and lifecycle model for recipe files
-.SH OVERVIEW
-A recipe file is a Rhai script that declares a top-level \fBctx\fR map and one or
-more lifecycle hooks. The executor persists updated \fBctx\fR state back into the
-recipe source file after successful phases.
+recipe-recipe \- managed API 2 Rhai recipe contract
+.SH DESCRIPTION
+Every executable recipe declares const RECIPE_API = 2 and initializes ctx with
+current package facts. Setup executes once per invocation inside Ginux.
+Pure imported facts modules need no executable lifecycle.
+.SH RUNTIME AND STATE
+Setup reads immutable RUNTIME. Hooks receive the same ctx.runtime together with
+ctx.state and ctx.outputs. Runtime paths are:
+.TP
+.B paths.inputs
+/inputs, explicitly imported immutable files/trees.
+.TP
+.B paths.build
+/work/build, owned acquisition/build work.
+.TP
+.B paths.tools
+/work/tools, shared dependency tools.
+.TP
+.B paths.temp
+/work/tmp, owned scratch.
+.TP
+.B paths.output, paths.target
+/out, owned product/installed-target tree.
+.TP
+.B paths.recipe_dir, paths.base_recipe_dir
+Staged current/base recipe directories.
 .PP
-This page documents the behavior implemented by the current executor, not the
-broader future-facing requirements spec.
-.SH RECIPE STRUCTURE
-The minimum useful recipe shape is:
+runtime.target.os and .arch describe the selected execution target.
+runtime.options includes jobs, force_acquire, force_build, force_install and
+persist_state. Package versions, URLs and digests remain ordinary recipe facts.
+.PP
+Only ctx.state is serialized/restored, with matching filesystem checkpoints.
+Current setup, runtime and named outputs are not overwritten by an old context.
+State values must be JSON-compatible, with finite numbers; unsupported values
+fail with their field path. Readiness still checks real files/products.
+.SH CHECKS AND PHASES
+Checks is_installed(ctx), is_built(ctx) and is_acquired(ctx) return ready(ctx) or
+needs_work(ctx, nonempty_reason). Exceptions and malformed results fail execution.
+Ordinary context maps and booleans are not readiness results.
+.PP
+Install checks installation first, then determines build/acquisition work. It
+executes required dependencies and phases, rechecking custom readiness after
+success. acquire(ctx), build(ctx), install(ctx) and remove(ctx) return updated
+context maps. Prebuilt packages can omit build work. Missing required work fails
+instead of silently succeeding.
+.PP
+Optional cleanup(ctx, reason) returns context. Reasons are manual and
+auto.phase.success or auto.phase.failure. Guard cleanup of useful products/cache
+by reason. Errors after success fail the command; errors while handling failure
+are reported with the original failure. No no-op cleanup stub is required.
+.SH INPUTS AND OUTPUTS
+Callers import --input NAME=PATH read-only at /inputs/NAME. Defines select genuine
+recipe facts/choices; they do not grant host filesystem access. A named target
+input seeds /out for fresh state; retained state restores that owned target.
+Compiler-image files cannot establish installation in the selected product.
+.PP
+Select actual files/directories under assigned /out or /work using ctx.outputs.
+Consumers validate required names and kinds. Successful execution plus validated,
+bounded archive publication returns absolute host output paths in final JSON.
+Hooks continue to use domain paths. Imported inputs and earlier publications
+remain immutable across remove, cleanup and changed-input invocations.
+.SH ACQUISITION AND COMMANDS
+Downloads use download(url, exact_dest, sha256[, resume_bool]); the full SHA256 is
+required and staged bytes are checked before replacing a valid destination.
+Pinned Git uses git_checkout(url, exact_dest, full_commit), requiring a full
+40/64-hex commit. Endpoint permissions belong to the caller, off by default.
+.PP
+exec_checked and exec_output fail on nonzero; exec returns a status. Their
+argument arrays avoid shell parsing. Optional cwd/env maps affect only that
+child. Shell pipelines must check every producer/extractor failure. Commands
+and helpers execute inside Ginux and require suitable image/tools support.
+.SH DEPENDENCIES AND INHERITANCE
+Literal deps and build_deps declarations select recipes from the search path.
+They use the same lifecycle, state contract and shared /work/tools.
+.PP
+The leading declaration //! extends: base.rhai compiles/merges the base first;
+child functions of the same name/arity override it. Setup runs base-first.
+Literal module paths are preserved. Cycles and dynamic import/dependency
+declarations fail preparation. Discovery never evaluates setup on the host.
+.SH EXAMPLE
 .nf
-let ctx = #{
-    name: "jq",
-    version: "1.7.1",
-    url: "https://example.invalid/jq",
-    sha256: "replace-me",
-    downloaded: "",
-};
-
+const RECIPE_API = 2;
+let ctx = #{name: "hello", program: "/out/hello"};
+fn is_acquired(ctx) { ready(ctx) }
+fn acquire(ctx) { ctx }
+fn is_built(ctx) { ready(ctx) }
 fn is_installed(ctx) {
-    if !is_file(join_path(env("HOME"), ".local/bin/jq")) { throw "not installed"; }
-    ctx
+    if !is_file(ctx.program) { return needs_work(ctx, "missing hello"); }
+    ctx.outputs.program = ctx.program;
+    ready(ctx)
 }
-
-fn is_acquired(ctx) {
-    if ctx.downloaded == "" || !is_file(ctx.downloaded) { throw "not acquired"; }
-    ctx
-}
-
-fn acquire(ctx) {
-    mkdir(BUILD_DIR);
-    let downloaded = download(ctx.url, join_path(BUILD_DIR, "jq"));
-    verify_sha256(downloaded, ctx.sha256);
-    ctx.downloaded = downloaded;
-    ctx
-}
-
 fn install(ctx) {
-    let dst = join_path(join_path(env("HOME"), ".local"), "bin/jq");
-    copy_file(ctx.downloaded, dst);
-    chmod(dst, 0o755);
+    write_file(ctx.program, "hello\n");
+    ctx.outputs.program = ctx.program;
     ctx
 }
-
 .fi
-.SH API 2 INITIALIZATION AND READINESS
-A top-level \fBconst RECIPE_API = 2;\fR opts into setup once per invocation.
-Imports, initialized globals, constants, and inherited functions remain available
-to hooks. Put observations that must refresh between phases inside the hooks or
-checks. Check variable scopes are isolated; return discovered values through ctx.
-.PP
-API 2 checks return \fBready(ctx)\fR or \fBneeds_work(ctx, reason)\fR. Reasons
-must be nonempty strings. Errors and malformed results fail execution. Phase
-hooks still return plain ctx. Custom readiness checks run again after a producer;
-installation is also checked after success cleanup.
-.PP
-Unversioned recipes retain top-level reevaluation and deliberate throw as the
-needs-work signal. Interpreter and native-helper errors fail execution. Native
-errors remain catchable in Rhai. Unsupported API versions fail before setup.
-.PP
-Source-based persistence remains pending migration. Dependencies now use the
-common install executor, including build hooks, transitive dependencies, custom
-readiness, cleanup, and retry policy. They share one tools prefix with separate
-work directories; canonical source paths detect cycles before another lock or
-evaluation. Dependency declarations must be arrays of relative recipe names.
-.PP
-Transport v1 cannot represent separate dependency checkpoints. Persistent
-dependency execution fails before dependency setup; use \fB--no-persist-ctx\fR
-for explicitly non-resumable execution. Dependency sources are never rewritten
-or serialized as the parent's state. R07 state integration, dependency input
-staging, and actual managed execution/recovery remain outstanding.
-.SH API 2 CONTEXT NAMESPACES
-The engine supplies \fBRUNTIME\fR before top-level setup and attaches the same
-values as \fBctx.runtime\fR before checks and hooks. This namespace contains
-host/target os and arch, paths (recipe_dir, base_recipe_dir, build, tools, inputs,
-output, temp), operation, and options (jobs, persist_state). The current target
-default is native Linux. Inputs/output are /inputs and /out domain paths; build
-and tool paths are supplied by the current execution flow.
-.PP
-Fresh inputs replace a stale runtime snapshot in source. Hooks must preserve the
-engine-owned runtime namespace. Conflicting defines for engine paths/platform
-values and a recipe declaration of RUNTIME are rejected.
-.PP
-\fBctx.state\fR and \fBctx.outputs\fR default to empty maps. Returned contexts
-must preserve map types. They hold recipe runtime data and named products.
-Explicit target/input transport, durable state import/storage, strict value
-serialization, output contracts, and publication remain pending integration.
-The persist_state option records requested policy, not proof of resumability.
-.SH CTX CONTRACT
-.TP
-\fBCanonical declaration\fR
-The persistence layer looks for the exact byte sequence:
-.br
-\fBlet ctx = #{\fR
-.PP
-\fBlet ctx=#{\fR and other variants can execute, but persistence will not find
-them.
-.TP
-\fBPersistent value types\fR
-Strings, integers, booleans, and \fB()\fR round-trip cleanly. Richer values may be
-stringified and written back as strings. Keep persistent \fBctx\fR values simple.
-.TP
-\fBPersistence behavior\fR
-The executor writes updated \fBctx\fR back into the recipe source file after
-successful phases. This allows resume behavior across repeated runs.
-.SH LIFECYCLE HOOKS
-.TP
-\fBis_installed(ctx)\fR
-Return updated \fBctx\fR when the install state is already satisfied. Throw to
-request install work.
-.TP
-\fBis_built(ctx)\fR
-Return updated \fBctx\fR when build outputs are already present. Throw to request
-build work.
-.TP
-\fBis_acquired(ctx)\fR
-Return updated \fBctx\fR when sources or downloads are already present. Throw to
-request acquire work.
-.TP
-\fBacquire(ctx)\fR
-Download or otherwise fetch source material.
-.TP
-\fBbuild(ctx)\fR
-Transform acquired inputs into installable outputs.
-.TP
-\fBinstall(ctx)\fR
-Place files, symlinks, configuration, or other install state.
-.TP
-\fBremove(ctx)\fR
-Undo install state for \fBrecipe remove\fR.
-.TP
-\fBcleanup(ctx, reason)\fR
-Optional hook used by automatic phase cleanup and manual \fBrecipe cleanup\fR.
-An absent hook is a no-op. A present hook must take ctx and reason and return ctx.
-Errors after successful phases fail execution. Errors during failure cleanup are
-reported without replacing the original phase failure. Dependencies use the same
-rules. Manual cleanup without a hook returns initialized ctx and does not write
-a cleanup checkpoint.
-.SH HOOK ORDER
-Normal install flow:
-.IP "1." 4
-Run \fBis_installed(ctx)\fR.
-.IP "2." 4
-If it passes, stop.
-.IP "3." 4
-Run \fBis_built(ctx)\fR.
-.IP "4." 4
-If it passes, skip both \fBbuild(ctx)\fR and \fBis_acquired(ctx)\fR.
-.IP "5." 4
-If it throws, run \fBis_acquired(ctx)\fR.
-.IP "6." 4
-Run \fBacquire(ctx)\fR only if acquire is needed or the hook is missing.
-.IP "7." 4
-If \fBbuild(ctx)\fR exists, rerun \fBis_built(ctx)\fR after acquire.
-.IP "8." 4
-Run \fBbuild(ctx)\fR only if build is still needed.
-.IP "9." 4
-Run \fBinstall(ctx)\fR.
-.IP "10." 4
-Run \fBcleanup(ctx, reason)\fR on success and failure paths when defined.
-.SH RETURN VALUES AND STATE
-Checks and phases return an updated \fBctx\fR map. The executor uses that returned
-map as the input to the next phase. A check can therefore rediscover paths or
-recompute derived state even when it skips work.
-.PP
-Missing checks mean work is needed:
-.IP "\[bu]" 4
-missing \fBis_installed\fR means install is needed
-.IP "\[bu]" 4
-missing \fBis_built\fR means build is needed
-.IP "\[bu]" 4
-missing \fBis_acquired\fR means acquire is needed
-.PP
-Missing phases:
-.IP "\[bu]" 4
-missing \fBbuild(ctx)\fR is allowed for prebuilt payload
-.IP "\[bu]" 4
-missing \fBremove(ctx)\fR means \fBrecipe remove\fR will fail
-.IP "\[bu]" 4
-missing \fBcleanup(ctx, reason)\fR is allowed; no no-op stub is needed
-.SH PATHS AND FILES
-Recipes currently receive these commonly used bindings and environment-derived
-values through the executor:
-.TP
-\fBBUILD_DIR\fR
-Work directory for installs, manual checks, cleanup, and removal.
-.TP
-\fBRECIPE_DIR\fR
-Directory containing the current recipe.
-.TP
-\fBARCH\fR
-Current architecture string.
-.TP
-\fBNPROC\fR
-Available CPU count.
-.TP
-\fBRPM_PATH\fR
-RPM path string used by some package-oriented recipes.
-.PP
-CLI and RecipeEngine operations also expose \fBTOOLS_PREFIX\fR as BUILD_DIR/.tools.
-Dependencies receive their own work directory and the parent's shared tools prefix.
-Base-recipe execution additionally exposes \fBBASE_RECIPE_DIR\fR.
-.SH FAILURE SEMANTICS
-Checks must \fBthrow\fR to request work. Returning \fBfalse\fR is not the contract.
-.PP
-Helpers generally raise an evaluation error on failure. Use \fBshell()\fR or
-\fBexec_checked()\fR for checked execution. \fBexec()\fR returns a status code
-that the recipe must handle explicitly.
-.SH MINIMAL EXAMPLE
-.nf
-let ctx = #{
-    name: "hello",
-    installed: false,
-};
-
-fn is_installed(ctx) {
-    if !ctx.installed { throw "not installed"; }
-    ctx
-}
-
-fn install(ctx) {
-    ctx.installed = true;
-    ctx
-}
-
-.fi
-.SH EXTENDS
-Recipes may declare:
-.nf
-//! extends: linux-base.rhai
-.fi
-.PP
-Behavior:
-.IP "\[bu]" 4
-Base recipe is compiled first, then merged with the child AST.
-.IP "\[bu]" 4
-Child functions with the same name and arity override base functions.
-.IP "\[bu]" 4
-Top-level statements run base-first, then child.
-.IP "\[bu]" 4
-Recursive \fBextends\fR is rejected.
 .SH SEE ALSO
-\fBrecipe\fR(1),
-\fBrecipe-helpers\fR(7)
+recipe(1), recipe-helpers(7), WRITING_RECIPES.md

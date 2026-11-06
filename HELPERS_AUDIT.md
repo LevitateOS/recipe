@@ -1,223 +1,127 @@
-# recipe Helper Audit
+# Recipe helper reference
 
-**Last Updated:** 2026-03-13  
-**Scope:** Rhai helpers exposed by `tools/recipe/src/helpers/mod.rs` (what recipe authors can call).
+The executable contract is `const RECIPE_API = 2;`. This catalog follows
+`src/helpers/mod.rs::register_all`. Helpers with effects run inside Ginux, under
+its configured filesystem, task, memory and network assignments. They never
+select a native host execution path.
 
-This document audits:
+Checks use `ready(ctx)`/`needs_work(ctx, reason)`; native helper errors fail the
+check unless the recipe explicitly handles them. Phase hooks return context.
+`RUNTIME` during setup and `ctx.runtime` during hooks provide invocation paths;
+`ctx.state` is the only restored recipe namespace.
 
-- What helpers are currently exposed to recipes
-- Where we diverge from `tools/recipe/REQUIREMENTS.md` Section 6
-- What is missing to support safe A/B composition into an inactive slot sysroot
+## Registered helpers
 
-**Verification note:** The helper list below is derived from
-`tools/recipe/src/helpers/mod.rs` `register_all()` (currently 74 helpers).
+| Helper | Owner | Signature | Behavior |
+| --- | --- | --- | --- |
+| `apk_add_repo` | ``helpers/util/process.rs`` | `apk_add_repo(url) -> ()` | Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used. |
+| `apk_download` | ``helpers/util/process.rs`` | `apk_download(packages:Array, dest_dir) -> Array` | Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used. |
+| `apk_install` | ``helpers/util/process.rs`` | `apk_install(packages:Array) -> ()` | Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used. |
+| `apk_installed` | ``helpers/util/process.rs`` | `apk_installed(name) -> bool` | Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used. |
+| `apk_package_available` | ``helpers/util/process.rs`` | `apk_package_available(name) -> bool` | Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used. |
+| `apk_version` | ``helpers/util/process.rs`` | `apk_version(name) -> String` | Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used. |
+| `append_file` | ``helpers/install/io.rs`` | `append_file(path, content) -> ()` |  |
+| `append_line_if_missing` | ``helpers/install/io.rs`` | `append_line_if_missing(path, line) -> bool` | appends exact line once |
+| `basename` | ``helpers/util/paths.rs`` | `basename(path) -> String` |  |
+| `check_disk_space` | ``helpers/install/disk.rs`` | `check_disk_space(path, required_bytes) -> ()` | `df -k` based |
+| `chmod` | ``helpers/install/filesystem.rs`` | `chmod(path, mode) -> ()` | unix mode |
+| `command_exists` | `helpers/util/process.rs` | `command_exists(name) -> bool` | Probe current domain PATH. |
+| `contains` | ``helpers/util/string.rs`` | `contains(s, pat) -> bool` |  |
+| `copy_file` | ``helpers/install/filesystem.rs`` | `copy_file(src, dst) -> ()` | exact destination path |
+| `copy_file_reflink` | `helpers/install/filesystem.rs` | `copy_file_reflink(src, dst) -> ()` | Attempts reflink; falls back to a checked copy. |
+| `copy_first_existing` | ``helpers/install/filesystem.rs`` | `copy_first_existing(sources:Array, dst) -> String` | copies first existing source |
+| `copy_into_dir` | ``helpers/install/filesystem.rs`` | `copy_into_dir(pattern, dest_dir) -> ()` | copies matching files into directory |
+| `copy_tree_contents` | `helpers/install/filesystem.rs` | `copy_tree_contents(src, dest) -> ()` | Copies contents, preserving hardlink identity, symlink bytes and modes. |
+| `debug` | `Rhai built-in; callback in `helpers/mod.rs`` | `debug(value) -> ()` | stderr, with source position |
+| `dirname` | ``helpers/util/paths.rs`` | `dirname(path) -> String` |  |
+| `dnf_add_repo` | ``helpers/util/process.rs`` | `dnf_add_repo(url) -> ()` | Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used. |
+| `dnf_download` | ``helpers/util/process.rs`` | `dnf_download(packages:Array, dest_dir, arches:Array[, resolve]) -> Array` | Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used. |
+| `dnf_install` | ``helpers/util/process.rs`` | `dnf_install(packages:Array) -> ()` | Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used. |
+| `dnf_install_allow_erasing` | ``helpers/util/process.rs`` | `dnf_install_allow_erasing(packages:Array) -> ()` | Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used. |
+| `dnf_package_available` | ``helpers/util/process.rs`` | `dnf_package_available(name) -> bool` | Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used. |
+| `download` | `helpers/acquire/download.rs` | `download(url, dest, sha256[, resume:bool]) -> String` | Required SHA256; staged verified replacement; failure preserves valid destination. |
+| `ends_with` | ``helpers/util/string.rs`` | `ends_with(s, suffix) -> bool` |  |
+| `env` | `helpers/util/env.rs` | `env(name) -> String` | Read the explicit worker environment; empty when absent. |
+| `exec` | ``helpers/util/process.rs`` | `exec(cmd, args:Array [, options:Map]) -> int` | explicit exit status; child-only cwd/env |
+| `exec_checked` | ``helpers/util/process.rs`` | `exec_checked(cmd, args:Array [, options:Map]) -> ()` | throws on nonzero; child-only cwd/env |
+| `exec_output` | ``helpers/util/process.rs`` | `exec_output(cmd, args:Array [, options:Map]) -> String` | checked stdout capture; child-only cwd/env |
+| `exists` | ``helpers/install/filesystem.rs`` | `exists(path) -> bool` |  |
+| `extract` | `helpers/build/extract.rs` | `extract(archive, dest) -> ()` | Detect archive format; validate paths and reject invalid extraction. |
+| `extract_with_format` | `helpers/build/extract.rs` | `extract_with_format(archive, dest, format) -> ()` | Explicit format; same checked extraction boundary. |
+| `fetch_sha256` | ``helpers/acquire/verify.rs`` | `fetch_sha256(url, filename) -> String` | parse checksum file |
+| `git_checkout` | `helpers/acquire/git.rs` | `git_checkout(url, exact_dest, full_commit) -> String` | Exact destination and full 40/64-hex commit; validates origin and checkout. |
+| `github_download_release` | `helpers/acquire/http/api.rs` | `github_download_release(repo, pattern, dest, sha256) -> String` | Selects matching release asset; required digest and staged verified download. |
+| `github_latest_release` | ``helpers/acquire/http.rs`` | `github_latest_release(repo) -> String` | strips common prefixes |
+| `github_latest_tag` | ``helpers/acquire/http.rs`` | `github_latest_tag(repo) -> String` | strips common prefixes |
+| `glob_exists` | ``helpers/install/filesystem.rs`` | `glob_exists(pattern) -> bool` | true if any match |
+| `glob_list` | ``helpers/install/io.rs`` | `glob_list(pattern) -> Array` | returns string paths |
+| `http_get` | `helpers/acquire/http/api.rs` | `http_get(url) -> String` | Bounded metadata text; requires invocation network permission. |
+| `is_dir` | `helpers/install/filesystem.rs` | `is_dir(path) -> bool` | Directory check in the domain view. |
+| `is_file` | `helpers/install/filesystem.rs` | `is_file(path) -> bool` | Regular file check in the domain view. |
+| `join_path` | ``helpers/util/paths.rs`` | `join_path(a, b) -> String` | Pure join |
+| `llm_extract` | `helpers/llm.rs` | `llm_extract(content, prompt) -> String` | Unavailable inside the worker; optional repair belongs to coordinator. |
+| `llm_find_download_url` | `helpers/llm.rs` | `llm_find_download_url(content, criteria) -> String` | Unavailable inside the worker. |
+| `llm_find_latest_version` | `helpers/llm.rs` | `llm_find_latest_version(url, project) -> String` | Unavailable inside the worker. |
+| `ln` | ``helpers/install/filesystem.rs`` | `ln(target, link) -> ()` | symlink (unix) |
+| `ln_force` | ``helpers/install/filesystem.rs`` | `ln_force(target, link) -> ()` | replace existing link/path |
+| `log` | ``helpers/util/log.rs`` | `log(msg) -> ()` | stderr formatting via `core/output.rs` |
+| `mkdir` | ``helpers/install/filesystem.rs`` | `mkdir(path) -> ()` | side-effecting |
+| `mv` | ``helpers/install/filesystem.rs`` | `mv(src, dst) -> ()` | rename |
+| `needs_work` | `core readiness` | `needs_work(ctx, reason) -> Map` | Check requests work with a nonempty reason. |
+| `parse_version` | ``helpers/acquire/http.rs`` | `parse_version(s) -> String` | strips v/release-/version- |
+| `print` | `Rhai built-in; callback in `helpers/mod.rs`` | `print(value) -> ()` | stderr; keeps JSON/protocol stdout intact |
+| `read_file` | ``helpers/install/io.rs`` | `read_file(path) -> String` |  |
+| `read_file_or_empty` | ``helpers/install/io.rs`` | `read_file_or_empty(path) -> String` |  |
+| `ready` | `core readiness` | `ready(ctx) -> Map` | Check succeeds with updated context. |
+| `replace` | ``helpers/util/string.rs`` | `replace(s, from, to) -> String` |  |
+| `replace_in_file` | ``helpers/install/io.rs`` | `replace_in_file(path, from, to) -> ()` | whole-file text replacement |
+| `rm` | ``helpers/install/filesystem.rs`` | `rm(pattern) -> ()` | glob delete |
+| `rpm_installed` | ``helpers/util/process.rs`` | `rpm_installed(name) -> bool` | Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used. |
+| `rpm_version` | ``helpers/util/process.rs`` | `rpm_version(name) -> String` | Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used. |
+| `shell` | ``helpers/util/shell.rs`` | `shell(cmd) -> ()` | uses `sh -c` |
+| `shell_in` | ``helpers/util/shell.rs`` | `shell_in(dir, cmd) -> ()` | run in directory |
+| `shell_output` | ``helpers/util/shell.rs`` | `shell_output(cmd) -> String` | captures stdout |
+| `shell_output_in` | ``helpers/util/shell.rs`` | `shell_output_in(dir, cmd) -> String` |  |
+| `shell_status` | ``helpers/util/shell.rs`` | `shell_status(cmd) -> int` | returns exit code |
+| `shell_status_in` | ``helpers/util/shell.rs`` | `shell_status_in(dir, cmd) -> int` |  |
+| `split` | ``helpers/util/string.rs`` | `split(s, sep) -> Array` |  |
+| `starts_with` | ``helpers/util/string.rs`` | `starts_with(s, prefix) -> bool` |  |
+| `trim` | ``helpers/util/string.rs`` | `trim(s) -> String` |  |
+| `verify_blake3` | ``helpers/acquire/verify.rs`` | `verify_blake3(path, expected) -> ()` | explicit file |
+| `verify_sha256` | ``helpers/acquire/verify.rs`` | `verify_sha256(path, expected) -> ()` | explicit file |
+| `verify_sha512` | ``helpers/acquire/verify.rs`` | `verify_sha512(path, expected) -> ()` | explicit file |
+| `warn` | ``helpers/util/log.rs`` | `warn(msg) -> ()` |  |
+| `write_file` | ``helpers/install/io.rs`` | `write_file(path, content) -> ()` |  |
 
----
+## Acquisition and publication
 
-## Exposed Helpers (Today)
+`download` requires a full SHA256. Its optional fourth boolean requests checked
+resume. Errors in status, length, range identity, hash or destination publication
+cannot replace a previously valid destination. `git_checkout` requires a full
+commit and exact destination. URL/version/digest facts remain recipe-owned.
 
-These names are the Rhai function names.
+Network helpers and external clients need explicit caller-granted endpoint
+permissions. Metadata helpers are bounded conveniences; downloading a payload
+and then trusting a digest calculated from those same unauthenticated bytes is
+not source verification. Redirect targets also need grants.
 
-| Rhai Helper | Rust Implementation | Signature (Rhai) | Notes |
-|---|---|---|---|
-| `join_path` | `helpers/util/paths.rs` | `join_path(a, b) -> String` | Pure join |
-| `basename` | `helpers/util/paths.rs` | `basename(path) -> String` |  |
-| `dirname` | `helpers/util/paths.rs` | `dirname(path) -> String` |  |
-| `trim` | `helpers/util/string.rs` | `trim(s) -> String` |  |
-| `starts_with` | `helpers/util/string.rs` | `starts_with(s, prefix) -> bool` |  |
-| `ends_with` | `helpers/util/string.rs` | `ends_with(s, suffix) -> bool` |  |
-| `contains` | `helpers/util/string.rs` | `contains(s, pat) -> bool` |  |
-| `replace` | `helpers/util/string.rs` | `replace(s, from, to) -> String` |  |
-| `split` | `helpers/util/string.rs` | `split(s, sep) -> Array` |  |
-| `log` | `helpers/util/log.rs` | `log(msg) -> ()` | stderr formatting via `core/output.rs` |
-| `debug` | Rhai built-in; callback in `helpers/mod.rs` | `debug(value) -> ()` | stderr, with source position |
-| `print` | Rhai built-in; callback in `helpers/mod.rs` | `print(value) -> ()` | stderr; keeps JSON/protocol stdout intact |
-| `warn` | `helpers/util/log.rs` | `warn(msg) -> ()` |  |
-| `shell` | `helpers/util/shell.rs` | `shell(cmd) -> ()` | uses `sh -c` |
-| `shell_in` | `helpers/util/shell.rs` | `shell_in(dir, cmd) -> ()` | run in directory |
-| `shell_status` | `helpers/util/shell.rs` | `shell_status(cmd) -> int` | returns exit code |
-| `shell_status_in` | `helpers/util/shell.rs` | `shell_status_in(dir, cmd) -> int` |  |
-| `shell_output` | `helpers/util/shell.rs` | `shell_output(cmd) -> String` | captures stdout |
-| `shell_output_in` | `helpers/util/shell.rs` | `shell_output_in(dir, cmd) -> String` |  |
-| `read_file` | `helpers/install/io.rs` | `read_file(path) -> String` |  |
-| `read_file_or_empty` | `helpers/install/io.rs` | `read_file_or_empty(path) -> String` |  |
-| `write_file` | `helpers/install/io.rs` | `write_file(path, content) -> ()` |  |
-| `append_file` | `helpers/install/io.rs` | `append_file(path, content) -> ()` |  |
-| `append_line_if_missing` | `helpers/install/io.rs` | `append_line_if_missing(path, line) -> bool` | appends exact line once |
-| `glob_list` | `helpers/install/io.rs` | `glob_list(pattern) -> Array` | returns string paths |
-| `glob_exists` | `helpers/install/filesystem.rs` | `glob_exists(pattern) -> bool` | true if any match |
-| `copy_into_dir` | `helpers/install/filesystem.rs` | `copy_into_dir(pattern, dest_dir) -> ()` | copies matching files into directory |
-| `copy_file` | `helpers/install/filesystem.rs` | `copy_file(src, dst) -> ()` | exact destination path |
-| `copy_file_reflink` | `helpers/install/filesystem.rs` | `copy_file_reflink(src, dst) -> ()` | reflink when available, fallback copy |
-| `copy_tree_contents` | `helpers/install/filesystem.rs` | `copy_tree_contents(src_dir, dst_dir) -> ()` | recursive contents copy |
-| `copy_first_existing` | `helpers/install/filesystem.rs` | `copy_first_existing(sources:Array, dst) -> String` | copies first existing source |
-| `exists` | `helpers/install/filesystem.rs` | `exists(path) -> bool` |  |
-| `file_exists` | `helpers/install/filesystem.rs` | `file_exists(path) -> bool` |  |
-| `is_file` | `helpers/install/filesystem.rs` | `is_file(path) -> bool` | alias |
-| `dir_exists` | `helpers/install/filesystem.rs` | `dir_exists(path) -> bool` |  |
-| `is_dir` | `helpers/install/filesystem.rs` | `is_dir(path) -> bool` | alias |
-| `mkdir` | `helpers/install/filesystem.rs` | `mkdir(path) -> ()` | side-effecting |
-| `rm` | `helpers/install/filesystem.rs` | `rm(pattern) -> ()` | glob delete |
-| `mv` | `helpers/install/filesystem.rs` | `mv(src, dst) -> ()` | rename |
-| `ln` | `helpers/install/filesystem.rs` | `ln(target, link) -> ()` | symlink (unix) |
-| `ln_force` | `helpers/install/filesystem.rs` | `ln_force(target, link) -> ()` | replace existing link/path |
-| `chmod` | `helpers/install/filesystem.rs` | `chmod(path, mode) -> ()` | unix mode |
-| `replace_in_file` | `helpers/install/io.rs` | `replace_in_file(path, from, to) -> ()` | whole-file text replacement |
-| `download` | `helpers/acquire/download.rs` | `download(url, dest [, sha256]) -> String` | optional digest before atomic replacement |
-| `verify_sha256` | `helpers/acquire/verify.rs` | `verify_sha256(path, expected) -> ()` | explicit file |
-| `fetch_sha256` | `helpers/acquire/verify.rs` | `fetch_sha256(url, filename) -> String` | parse checksum file |
-| `verify_sha512` | `helpers/acquire/verify.rs` | `verify_sha512(path, expected) -> ()` | explicit file |
-| `verify_blake3` | `helpers/acquire/verify.rs` | `verify_blake3(path, expected) -> ()` | explicit file |
-| `extract` | `helpers/build/extract.rs` | `extract(archive, dest) -> ()` | auto-detect format |
-| `extract_with_format` | `helpers/build/extract.rs` | `extract_with_format(archive, dest, format) -> ()` | explicit format |
-| `env` | `helpers/util/env.rs` | `env(name) -> String` | empty string if unset |
-| `set_env` | `helpers/util/env.rs` | `set_env(name, value) -> ()` | process env |
-| `http_get` | `helpers/acquire/http.rs` | `http_get(url) -> String` | timeout via `RECIPE_HTTP_TIMEOUT` |
-| `github_latest_release` | `helpers/acquire/http.rs` | `github_latest_release(repo) -> String` | strips common prefixes |
-| `github_latest_tag` | `helpers/acquire/http.rs` | `github_latest_tag(repo) -> String` | strips common prefixes |
-| `parse_version` | `helpers/acquire/http.rs` | `parse_version(s) -> String` | strips v/release-/version- |
-| `github_download_release` | `helpers/acquire/http/api.rs` | `github_download_release(repo, pattern, dest_dir [, sha256]) -> String` | latest matching asset; optional digest before replacement |
-| `extract_from_tarball` | `helpers/acquire/http.rs` | `extract_from_tarball(url, pattern, dest) -> String` | downloads + extracts file |
-| `check_disk_space` | `helpers/install/disk.rs` | `check_disk_space(path, required_bytes) -> ()` | `df -k` based |
-| `command_exists` | `helpers/util/process.rs` | `command_exists(name) -> bool` | host command probe |
-| `apk_installed` | `helpers/util/process.rs` | `apk_installed(name) -> bool` | fails fast if `apk` is absent |
-| `apk_version` | `helpers/util/process.rs` | `apk_version(name) -> String` | fails fast if `apk` is absent |
-| `apk_package_available` | `helpers/util/process.rs` | `apk_package_available(name) -> bool` | fails fast if `apk` is absent |
-| `apk_install` | `helpers/util/process.rs` | `apk_install(packages:Array) -> ()` | fails fast if `apk` is absent or no `sudo`/`doas` privilege runner is available |
-| `apk_add_repo` | `helpers/util/process.rs` | `apk_add_repo(url) -> ()` | fails fast if `apk` is absent or no `sudo`/`doas` privilege runner is available |
-| `apk_download` | `helpers/util/process.rs` | `apk_download(packages:Array, dest_dir) -> Array` | fails fast if `apk` is absent |
-| `exec_checked` | `helpers/util/process.rs` | `exec_checked(cmd, args:Array [, options:Map]) -> ()` | throws on nonzero; child-only cwd/env |
-| `exec` | `helpers/util/process.rs` | `exec(cmd, args:Array [, options:Map]) -> int` | explicit exit status; child-only cwd/env |
-| `exec_output` | `helpers/util/process.rs` | `exec_output(cmd, args:Array [, options:Map]) -> String` | checked stdout capture; child-only cwd/env |
-| `rpm_installed` | `helpers/util/process.rs` | `rpm_installed(name) -> bool` | fails fast if `rpm` is absent |
-| `rpm_version` | `helpers/util/process.rs` | `rpm_version(name) -> String` | fails fast if `rpm` is absent |
-| `dnf_package_available` | `helpers/util/process.rs` | `dnf_package_available(name) -> bool` | fails fast if `dnf` is absent |
-| `dnf_install` | `helpers/util/process.rs` | `dnf_install(packages:Array) -> ()` | fails fast if `dnf` is absent or no `sudo`/`doas` privilege runner is available |
-| `dnf_install_allow_erasing` | `helpers/util/process.rs` | `dnf_install_allow_erasing(packages:Array) -> ()` | fails fast if `dnf` is absent or no `sudo`/`doas` privilege runner is available |
-| `dnf_add_repo` | `helpers/util/process.rs` | `dnf_add_repo(url) -> ()` | fails fast if `dnf` is absent or no `sudo`/`doas` privilege runner is available |
-| `dnf_download` | `helpers/util/process.rs` | `dnf_download(packages:Array, dest_dir, arches:Array[, resolve]) -> Array` | fails fast if `dnf` is absent or no `sudo`/`doas` privilege runner is available |
-| `git_clone` | `helpers/acquire/git.rs` | `git_clone(url, dest_dir) -> String` | dest_dir/<repo>; verifies origin on reuse |
-| `git_clone_depth` | `helpers/acquire/git.rs` | `git_clone_depth(url, dest_dir, depth) -> String` | same destination convention; shallow initial clone |
-| `git_checkout` | `helpers/acquire/git.rs` | `git_checkout(url, dest, commit) -> String` | exact destination; full pinned commit; origin/cleanliness checks |
-| `torrent` | `helpers/acquire/torrent.rs` | `torrent(url, dest_dir [, filename, sha256]) -> String` | staged librqbit transfer; optional exact-file SHA256 before publication |
-| `download_with_resume` | `helpers/acquire/download.rs` | `download_with_resume(url, dest [, sha256]) -> String` | exact HTTP Range; optional digest before replacement/416 reuse |
-| `llm_extract` | `helpers/llm.rs` | `llm_extract(content, prompt) -> String` | TODO backend |
-| `llm_find_latest_version` | `helpers/llm.rs` | `llm_find_latest_version(url, project) -> String` | TODO backend |
-| `llm_find_download_url` | `helpers/llm.rs` | `llm_find_download_url(content, criteria) -> String` | TODO backend |
+`extract` is a checked archive operation, not a success marker. External RPM
+pipelines must check the converter and extractor independently. Runtime support
+for an actual binary/archive must be demonstrated with the selected image.
 
----
+## Commands
 
-## Missing / Mismatched vs `REQUIREMENTS.md` Helper Spec (Section 6)
+`exec` returns a status. `exec_checked` and `exec_output` throw on nonzero exit;
+the latter returns captured stdout. Each accepts an argument array and optional
+`#{cwd: "/work/build", env: #{KEY: "value"}}` with child-only scope. Shell
+variants use a shell string and need quoting for variable data. All command,
+recipe and helper diagnostics go to stderr; stdout remains final JSON/protocol.
 
-### Missing Entirely (Not Exposed to Rhai)
+## Paths and products
 
-- `copy(pattern)` (REQ-HELPER-011)
-- `cd(directory)` (REQ-HELPER-040)
-- `run(command)` + aliases `shell(command)`, `run_output(command)`, `run_status(command)` (REQ-HELPER-050..053)
-- Installation helpers (REQ-HELPER-060..065):
-  - `install_bin(pattern)`
-  - `install_lib(pattern)`
-  - `install_man(pattern)`
-  - `install_to_dir(pattern, subdir[, mode])`
-  - `rpm_install()`
-
-### Existing Internal Building Blocks (Not Exposed)
-
-Some “missing” helpers are largely implementable from existing internal utilities:
-
-- `tools/recipe/src/helpers/internal/fs_utils.rs`:
-  - globbing (`glob_paths*`)
-  - copying/moving (`copy_file`, `move_file`)
-  - basic path safety primitives (`is_safe_path`, `validate_safe_path`)
-- `tools/recipe/src/helpers/internal/url_utils.rs`:
-  - URL scheme validation and filename extraction/sanitization
-- `tools/recipe/src/helpers/internal/cmd.rs`:
-  - shell builder (though most recipes already use `shell_*`)
-
-### Implemented But Signature/Semantics Diverge
-
-The current implementation is “explicit path in, explicit path out” (good for
-purity), while the spec still assumes “last downloaded file” context.
-
-- `download(url)` (REQ-HELPER-010) vs implemented `download(url, dest)`
-- `verify_sha256(expected)` (REQ-HELPER-020) vs implemented `verify_sha256(path, expected)`
-- `extract(format)` (REQ-HELPER-030) vs implemented `extract(archive, dest)`
-- `exec(command)` / `exec_output(command)` (REQ-HELPER-054..055) vs implemented `exec(cmd, args:Array)`
-
-If we keep the explicit model, `tools/recipe/REQUIREMENTS.md` should be revised
-to match it (or we add compatible wrapper helpers).
-
-### Implemented But Not Specified In Section 6
-
-These helpers exist today, but do not appear in the spec helper list:
-
-- `read_file_or_empty(path) -> String` (convenience)
-- `append_file(path, content) -> ()`
-- `replace_in_file(path, from, to) -> ()`
-- `shell_in(dir, cmd) -> ()`
-- `shell_status_in(dir, cmd) -> int`
-- `shell_output_in(dir, cmd) -> String`
-- `glob_exists(pattern) -> bool`
-- `copy_into_dir(pattern, dest_dir) -> ()`
-- `is_file(path) -> bool` (alias of `file_exists`)
-- `is_dir(path) -> bool` (alias of `dir_exists`)
-- `ln_force(target, link) -> ()`
-- `extract_with_format(archive, dest, format) -> ()`
-- `fetch_sha256(url, filename) -> String`
-- `rpm_installed(name) -> bool`
-- `rpm_version(name) -> String`
-- `dnf_package_available(name) -> bool`
-- `dnf_install(packages:Array) -> ()`
-- `dnf_install_allow_erasing(packages:Array) -> ()`
-- `dnf_add_repo(url) -> ()`
-- `torrent(url, dest_dir [, filename, sha256]) -> String` (staged `librqbit`; optional exact-file SHA256)
-- `download_with_resume(url, dest) -> String` (pure Rust HTTP Range resume)
-- `llm_extract/llm_find_latest_version/llm_find_download_url(...) -> String` (currently TODO backend)
-
----
-
-## Missing For Safe A/B “Write Into Slot B” Composition
-
-These gaps block using recipe as the compositor for an inactive slot sysroot:
-
-- **Sysroot plumbing not implemented**:
-  - `--sysroot` / `SYSROOT` exists in the spec but is not wired in code yet.
-- **No sysroot confinement**:
-  - Filesystem helpers accept arbitrary absolute paths and can mutate host `/`.
-  - We need enforcement for `REQ-SEC-004` (no sysroot escape).
-- **No sysroot-aware install helpers**:
-  - We need install helpers that resolve destinations under `join_path(SYSROOT, PREFIX)` and track `installed_files` as sysroot-independent paths (REQ-STATE-034/035).
-- **No installed_files integration**:
-  - Today helpers don’t update `installed_files`, and there are no install helpers that can.
-- **No atomic staging/commit**:
-  - The spec requires staging + commit (REQ-ATOMIC-*), but there’s no helper or executor support for it yet.
-
----
-
-## Footguns / Quality Notes
-
-- `rm(pattern)` currently removes directories recursively if the glob matches a directory. The spec text implies “remove directories if empty”; this is more destructive than that.
-- LLM helpers exist but are TODO; `refresh_recipe()` will need them (or an alternative deterministic patch generator) to be real.
-- If you need machine-readable JSON from `recipe`, prefer `recipe --json-output <path>`: helpers like `shell()` inherit child stdout/stderr, so command output can interleave with JSON on stdout.
-
----
-
-## Minimal Next Helper Set To Unblock A/B
-
-1. Add a sysroot-aware installer surface:
-   - `install_bin/install_lib/install_to_dir` (and/or a lower-level `install_file(src, dest_rel, mode)`).
-2. Add compatibility aliases (or update spec):
-   - `run`/`run_output`/`run_status` as aliases of `shell`/`shell_output`/`shell_status`.
-3. Add `copy(pattern)` (common for “acquire from local artifacts”).
-4. Add a safe “target path join” utility that guarantees no sysroot escape when joining:
-   - `SYSROOT` + absolute-in-target path.
-
----
-
-## Traceability
-
-Primary sources:
-
-- `tools/recipe/REQUIREMENTS.md` (helpers, sysroot, state tracking)
-- `tools/recipe/OS_UPGRADES_BRAINDUMP.md` (A/B composition model)
-- `docs/ab-default-plan.md` and `architecture.md` (A/B default + A/B trial boot)
+Build work is `ctx.runtime.paths.build`; shared dependency tools are
+`ctx.runtime.paths.tools`; imported inputs are below `ctx.runtime.paths.inputs`.
+Owned target/output is `ctx.runtime.paths.target`/`.output`, both `/out`.
+Select actual files/directories in `ctx.outputs` for validated publication.
+Published generations and imported inputs are immutable. See
+[WRITING_RECIPES.md](WRITING_RECIPES.md) for the full lifecycle and examples.
