@@ -237,7 +237,10 @@ explicit reason. Guard cleanup of useful cache/product files by the reason;
 automatic success cleanup must not erase a product needed by readiness.
 
 A cleanup error after success fails the command. Failure cleanup errors are
-reported alongside the original failure. Source inputs and previous publications
+reported alongside the original failure. A completed failure-cleanup hook has its
+returned `ctx.state` and matching files checkpointed, so restart restores that
+last complete cleanup. The producer operation still fails and publishes nothing;
+cleanup/checkpoint diagnostics preserve its primary failure. Source inputs and previous publications
 remain immutable; failed work is not published. `remove` modifies the owned
 selected target, not the live host system.
 

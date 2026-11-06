@@ -49,7 +49,9 @@ instead of silently succeeding.
 Optional cleanup(ctx, reason) returns context. Reasons are manual and
 auto.phase.success or auto.phase.failure. Guard cleanup of useful products/cache
 by reason. Errors after success fail the command; errors while handling failure
-are reported with the original failure. No no-op cleanup stub is required.
+are reported with the original failure. Successful failure cleanup is checkpointed
+with its returned state and matching files; the producer still fails without
+publication. No no-op cleanup stub is required.
 .SH INPUTS AND OUTPUTS
 Callers import --input NAME=PATH read-only at /inputs/NAME. Defines select genuine
 recipe facts/choices; they do not grant host filesystem access. A named target

@@ -128,6 +128,9 @@ Identity includes the recipe/module/dependency closure, declared input content,
 custom defines, execution options, image and worker. Changed inputs start fresh
 state. Checkpoints become recoverable only after both files and separate
 `ctx.state` records are durable. Interrupted, unacknowledged work is discarded.
+A successful failure-cleanup hook is also checkpointed with its returned state
+and matching files, while the producer operation still fails and publishes
+nothing. Cleanup/checkpoint diagnostics preserve the original producer failure.
 A corrupt current record/snapshot fails before workload startup; retain it for
 diagnosis and choose a new state directory to start explicitly fresh.
 
@@ -183,13 +186,30 @@ UDP, proxy, listening service or native host-network fallback.
 valid destination. `git_checkout(url, exact_dest, full_commit)` requires a full
 40/64-hex commit. Redirect destinations also require explicit endpoint grants.
 Source recipes own version/URL/digest facts; Rust/TOML declares permissions.
+Canonical rootfs source policy also declares `memory_mib` and
+`preseed_memory_mib`: Fedora uses 8192 MiB and Alpine 4096 MiB. Fedora's
+3,484,483,584-byte ISO and retained valid bytes during refresh exceed the small
+2 GiB default. Direct large-ISO invocations must select suitable bounds too.
+These configured limits are not evidence of a completed full-ISO/VM run.
 
 ## Optional coordinator repair
 
 Normal execution needs no AI provider. `recipe install --autofix` explicitly
 opts into bounded coordinator-side patch/retry after an eligible build/install
 failure. Provider configuration comes from XDG `recipe/llm.toml`; select a profile
-with `--llm-profile`. The provider process is outside the worker domain.
+with `--llm-profile`. The provider process is outside the worker domain. A minimal explicit provider
+configuration is:
+
+```toml
+version = 1
+default_provider = "codex"
+
+[providers.codex]
+bin = "codex"
+```
+
+Use the chosen provider's installed CLI/configuration; there is no implicit
+provider fallback. A named profile can override provider settings.
 
 Use `--autofix-attempts` (1–8), `--autofix-cwd`, `--autofix-prompt-file` and repeated
 `--autofix-allow-path` to bound repair. Patches cannot alter readiness checks,

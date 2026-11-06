@@ -30,8 +30,10 @@ boundary; its implementation checkpoint records exact tested revisions and gaps.
   checked against custom readiness. Required missing work fails clearly.
 - Only `ctx.state` is restored. It contains bounded JSON-compatible values and
   never replaces current package facts, runtime paths or output declarations.
-- Optional cleanup receives `manual` or `auto.<phase>.<success|failure>`. Cleanup
-  failures are reported without hiding an existing primary failure.
+- Optional cleanup receives `manual` or `auto.<phase>.<success|failure>`. Successful
+  failure cleanup is checkpointed with returned state and matching files while
+  the producer still fails without publication. Cleanup/checkpoint failures are
+  reported without hiding the existing primary failure.
 - Literal modules, dependency declarations and base inheritance are resolved by
   the existing loader. Dynamic declarations and cycles fail preparation.
 

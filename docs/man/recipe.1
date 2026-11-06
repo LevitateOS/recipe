@@ -120,6 +120,9 @@ get a new invocation identity. Providers never execute inside the worker.
 .SH RECOVERY AND DIAGNOSTICS
 Checkpoints require durable matching filesystem/state records before ack.
 Interrupted unacknowledged work is discarded; previous publications remain.
+Successful failure cleanup is recoverable with its returned state and matching
+files; the producer still fails without publication. Cleanup/checkpoint errors
+preserve the original producer diagnostic.
 Corrupt current state fails before startup. Preserve it for diagnosis and choose
 an explicit new state directory to start fresh.
 .PP
