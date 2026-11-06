@@ -4,7 +4,7 @@
 //! `[domain]`, `[resources]`, `[execution]`, `[contract]`, `[storage]`,
 //! `[devices]`, `[network]`, `[audit]`, `[failure]`) so the existing parser
 //! accepts it with no Ginux-side changes: `balanced`/`ptrace-native`,
-//! `none` networking, `stderr` audit, `stop` failure policy. Every bound is
+//! explicitly granted networking, `stderr` audit, `stop` failure policy. Every bound is
 //! enforced here with an explicit error; nothing is truncated.
 
 use anyhow::{Result, bail};
@@ -29,9 +29,6 @@ const DEFAULT_ROOT_REF: &str = "oci:rocky-10.2.20260525.0-amd64-rootfs@sha256:10
 
 /// Domain init: the worker binary shipped inside `/inputs` (I01/R02).
 const WORKER_INIT: &str = "/inputs/recipe-worker";
-
-/// Placeholder resource bounds until L02 enforcement lands; valid per the
-/// domain parser (`vcpus` 1..=64, `memory_mib` 16..=1_048_576).
 
 /// Domain config for one invocation; [`DomainConfig::render`] produces the
 /// parser-accepted text.

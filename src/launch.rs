@@ -1,4 +1,4 @@
-//! Ginux subprocess launch and supervision (R06).
+//! Ginux subprocess launch, checkpoints, cancellation and diagnostics.
 //!
 //! [`run_domain`] is the R-host subprocess adapter: it spawns the configured
 //! launcher (`GINUX_BIN` or backend config), hands it the R05 domain config
@@ -34,8 +34,8 @@
 //! `workload` (worker-reported recipe failure, nonzero exit / terminating
 //! signal per the result file), `protocol` (framing violations, timeouts,
 //! missing/malformed result file, exit without `result`, contradictions
-//! between stream and result file). `storage`/`cancelled` are not produced
-//! here (R07/L03 own them).
+//! between stream and result file). Storage joins retain the last complete pair;
+//! cancellation is forwarded and reaped before returning its distinct outcome.
 
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
@@ -57,12 +57,9 @@ use crate::worker::protocol::{
     AckPayload, Direction, FramePayload, FrameReceiver, FrameSender, RequestPayload, ResultPayload,
 };
 
-/// Bound on silent worker output: one frame wait lasts at most this long
-/// before the run fails as a `protocol` timeout. Chosen symmetric with the
-/// worker's 300 s ack bound (R02): ordinary phases answer promptly, while a
-/// hung worker cannot stall the coordinator forever. L03 owns
-/// cancellation/interruption refinement; a legitimate phase silent longer
-/// than this is an R06 limit (named follow-up).
+/// Startup and complete-frame transport bound. Once the worker has started,
+/// a silent phase can run until the separate total execution deadline; the
+/// first byte of each frame starts a bounded complete-frame read.
 const FRAME_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Bound on checkpoint chatter: more than this many checkpoints in one
