@@ -76,7 +76,7 @@ fn is_acquired(ctx) {{
     if ctx.state.downloaded {{ return ready(ctx); }}
     needs_work(ctx, "fetch verified payload")
 }}
-fn is_built(ctx) {{ ready(ctx) }}
+fn is_built(ctx) {{ needs_work(ctx, "source preparation required") }}
 fn is_installed(ctx) {{
     if ctx.state.installed {{ return ready(ctx); }}
     needs_work(ctx, "install verified payload")
@@ -322,4 +322,46 @@ fn managed_download_rejects_invalid_arguments_without_network() {
         assert!(stderr.contains(diagnostic), "{stderr}");
         assert!(stderr.contains("DOWNLOAD_CACHE_PRESERVED"), "{stderr}");
     }
+}
+
+#[test]
+fn managed_download_rejects_directory_destinations_without_network() {
+    let (_dir, recipes) = create_test_env();
+    write_recipe(
+        &recipes,
+        "download-payload",
+        &format!(
+            r#"
+const RECIPE_API = 2;
+let ctx = #{{name: "download-payload", state: #{{checked: false}}}};
+fn is_acquired(ctx) {{ ready(ctx) }}
+fn is_built(ctx) {{ ready(ctx) }}
+fn is_installed(ctx) {{
+    if ctx.state.checked {{ return ready(ctx); }}
+    needs_work(ctx, "validate destinations")
+}}
+fn install(ctx) {{
+    mkdir("/work/build/cache");
+    write_file("/work/build/cache/previous", "keep verified bytes");
+    for destination in ["/work/build/cache", "/"] {{
+        let rejected = false;
+        try {{ download("https://example.invalid/payload", destination, {digest:?}); }}
+        catch (error) {{
+            if !error.to_string().contains("regular file") {{ throw error; }}
+            rejected = true;
+        }}
+        if !rejected {{ throw "directory destination accepted"; }}
+    }}
+    if read_file("/work/build/cache/previous") != "keep verified bytes" {{ throw "cache was changed"; }}
+    ctx.state.checked = true;
+    ctx
+}}
+"#,
+            digest = "0".repeat(64)
+        ),
+    );
+    let output = download_command(&recipes, None).output().unwrap();
+    assert_success(&output);
+    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(context["state"]["checked"], true);
 }

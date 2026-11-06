@@ -81,7 +81,7 @@ fn is_acquired(ctx) {{
     if ctx.state.acquired {{ return ready(ctx); }}
     needs_work(ctx, "acquire exact commit")
 }}
-fn is_built(ctx) {{ ready(ctx) }}
+fn is_built(ctx) {{ needs_work(ctx, "source preparation required") }}
 fn is_installed(ctx) {{
     if ctx.state.installed {{ return ready(ctx); }}
     needs_work(ctx, "install pinned source")
@@ -149,7 +149,7 @@ fn managed_failed_git_acquisition_keeps_staging_private() {
 const RECIPE_API = 2;
 let ctx = #{{name: "git-payload", source: join_path(RUNTIME.paths.build, "checkout")}};
 fn is_acquired(ctx) {{ needs_work(ctx, "acquire missing commit") }}
-fn is_built(ctx) {{ ready(ctx) }}
+fn is_built(ctx) {{ needs_work(ctx, "source preparation required") }}
 fn is_installed(ctx) {{ needs_work(ctx, "install requested") }}
 fn acquire(ctx) {{ git_checkout("file:///inputs/source.git", ctx.source, {missing:?}); ctx }}
 fn cleanup(ctx, reason) {{
@@ -193,7 +193,7 @@ fn managed_git_rejects_unpinned_revisions_and_unsupported_origins_before_spawn()
 const RECIPE_API = 2;
 let ctx = #{{name: "git-payload"}};
 fn is_acquired(ctx) {{ needs_work(ctx, "validate source") }}
-fn is_built(ctx) {{ ready(ctx) }}
+fn is_built(ctx) {{ needs_work(ctx, "source preparation required") }}
 fn is_installed(ctx) {{ needs_work(ctx, "install requested") }}
 fn acquire(ctx) {{ git_checkout({origin:?}, "/work/build/checkout", {commit:?}); ctx }}
 fn cleanup(ctx, reason) {{
