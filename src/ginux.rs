@@ -107,10 +107,9 @@ impl ResultRecord {
     }
 }
 
-/// The record's outcome, if a readable record exists (for error diagnostics).
-pub(crate) fn peek_outcome(path: &Path) -> Option<Outcome> {
-    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
-    Outcome::parse(value.get("outcome")?.as_str()?)
+/// The record's outcome, if a valid record exists (for error diagnostics).
+pub(crate) fn peek_outcome(path: &Path, invocation: &str) -> Option<Outcome> {
+    ResultRecord::read(path, invocation).ok().map(|record| record.outcome)
 }
 
 /// A short excerpt of the record for diagnostics.

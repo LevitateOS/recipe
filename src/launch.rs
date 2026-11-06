@@ -716,7 +716,7 @@ fn enrich_stream_error(
     let text = format!("{err:#}");
     let category = crate::failure::Category::of(&err);
     let file_note = crate::ginux::result_note(result_path);
-    if crate::ginux::peek_outcome(result_path) == Some(crate::ginux::Outcome::SupervisorError)
+    if crate::ginux::peek_outcome(result_path, invocation) == Some(crate::ginux::Outcome::SupervisorError)
         && category == Some(crate::failure::Category::Protocol)
     {
         let (category, timing) = if worker_started {

@@ -225,7 +225,7 @@ impl Retained {
         let record_path = directory.join(CURRENT);
         let current = match crate::fsx::open_regular(&record_path) {
             Ok(mut file) => {
-                if file.metadata()?.len() > MAX_STATE.min(state_budget as u64) {
+                if file.metadata()?.len() > state_budget as u64 {
                     bail!("saved state exceeds byte bound");
                 }
                 let mut bytes = Vec::new();
@@ -340,7 +340,7 @@ impl Retained {
             states,
         };
         let data = serde_json::to_vec(&record)?;
-        if data.len() as u64 > MAX_STATE || data.len() > self.state_budget {
+        if data.len() > self.state_budget {
             bail!("runtime state exceeds byte bound");
         }
         let mut history = OpenOptions::new()

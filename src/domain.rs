@@ -49,6 +49,8 @@ pub const MAX_INPUT_MODES_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Writable scratch filesystem root.
 pub const WORK: &str = "/work";
+/// The user id domain processes run as (and own the files they write).
+pub const UID: u64 = 1000;
 /// The main recipe's build directory.
 pub const BUILD: &str = "/work/build";
 /// Shared install prefix for dependency tools.
@@ -57,7 +59,7 @@ pub const TOOLS: &str = "/work/tools";
 pub const TOOL_BIN_DIRS: [&str; 4] = ["usr/bin", "usr/sbin", "bin", "sbin"];
 /// Temporary directory (`TMPDIR`).
 pub const TMP: &str = "/work/tmp";
-/// Installed-target and product tree; the only tree published outputs leave from.
+/// Installed-target and product tree. Published outputs come from it or from [`WORK`].
 pub const OUT: &str = "/out";
 /// Every writable directory the domain gets, parents first.
 pub const WRITABLE_DIRS: [&str; 5] = [WORK, BUILD, TOOLS, TMP, OUT];

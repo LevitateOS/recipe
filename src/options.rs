@@ -84,11 +84,9 @@ impl ExecutionOptions {
         }
         Ok(())
     }
+    /// Largest export archive: the stored bytes plus tar headers per object.
     pub(crate) fn archive_bound(&self) -> u64 {
-        self.storage_max_bytes
-            .unwrap_or(self.memory_mib * 1024 * 1024)
-            + self.storage_max_objects * 3072
-            + 1024
+        self.storage_byte_bound() + self.storage_max_objects * 3072 + 1024
     }
     pub(crate) fn storage_byte_bound(&self) -> u64 {
         self.storage_max_bytes

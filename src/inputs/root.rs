@@ -64,7 +64,7 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
     unpack_image(snapshot, root.path())?;
 
     super::network::install_hosts(&invocation.network, root.path())?;
-    let inputs = root.path().join("inputs");
+    let inputs = root.path().join(crate::domain::INPUTS.trim_start_matches('/'));
     std::fs::create_dir(&inputs)?;
     for (index, input) in invocation.inputs.iter().enumerate() {
         super::discover::validate_input_name(&input.name)?;
@@ -340,8 +340,8 @@ pub(crate) fn seed_target(
         let name = format!("out{suffix}");
         let mut header = tar::Header::new_ustar();
         header.set_mode(input.mode);
-        header.set_uid(1000);
-        header.set_gid(1000);
+        header.set_uid(crate::domain::UID);
+        header.set_gid(crate::domain::UID);
         header.set_mtime(0);
         match &input.kind {
             InputKind::Directory => {
@@ -363,7 +363,7 @@ pub(crate) fn seed_target(
                 archive.append_link(&mut header, name, link)?;
             }
             InputKind::File | InputKind::Hardlink(_) => {
-                let mut file = crate::fsx::open_regular(&root.join("inputs").join(&input.name))?;
+                let mut file = crate::fsx::open_regular(&root.join(crate::domain::INPUTS.trim_start_matches('/')).join(&input.name))?;
                 if file.metadata()?.len() != input.size {
                     bail!("target snapshot size changed: {}", input.name);
                 }
