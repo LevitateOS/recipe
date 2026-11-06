@@ -18,7 +18,10 @@ fn command(recipes: &Path, operation: &str) -> Command {
 fn logs(root: &Path) -> Vec<std::path::PathBuf> {
     std::fs::read_dir(root.join("retained/logs"))
         .unwrap()
-        .map(|e| e.unwrap().path())
+        .filter_map(|e| {
+            let e = e.unwrap();
+            e.file_type().unwrap().is_dir().then(|| e.path())
+        })
         .collect()
 }
 #[test]

@@ -122,3 +122,6 @@ mod managed_storage;
 
 #[path = "e2e/managed_cancellation.rs"]
 mod managed_cancellation;
+
+#[path = "e2e/managed_retention.rs"]
+mod managed_retention;

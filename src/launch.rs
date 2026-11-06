@@ -226,6 +226,7 @@ fn run_domain_inner(
         prepared.lease_fd(),
         domain_root.lease_fd(),
         run_dir.lease_fd(),
+        diagnostics.lease_fd(),
     ];
     // Killing the coordinator must not orphan the supervisor. Ginux's
     // PTRACE_O_EXITKILL then tears down the supervised tasks.

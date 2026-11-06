@@ -199,13 +199,15 @@ impl Retained {
             }
             Err(error) => return Err(error),
         };
-        Ok(Self {
+        let retained = Self {
             directory,
             current,
             allowed,
             state_budget,
             archive_bound: options.execution.archive_bound(),
-        })
+        };
+        retained.prune()?;
+        Ok(retained)
     }
 
     pub fn states(&self) -> &BTreeMap<String, Value> {
@@ -297,6 +299,7 @@ impl Retained {
         current.persist(self.directory.join("current.json"))?;
         File::open(&self.directory)?.sync_all()?;
         self.current = record;
+        self.prune()?;
         Ok(self.current.generation)
     }
 
@@ -384,4 +387,137 @@ fn copy_hash(
         output.write_all(&bytes[..read])?;
     }
     Ok((count, hex::encode(hash.finalize())))
+}
+
+// Per destination/recipe scope: retain the current and three recent input
+// identities, each with its current and previous complete filesystem generation.
+// The caller holds the existing destination lock throughout this operation.
+const RETAIN_IDENTITIES: usize = 4;
+const RETAIN_GENERATIONS: usize = 2;
+
+fn owned_record(path: &Path, identity: &str) -> Option<Record> {
+    let mut file = regular(path).ok()?;
+    if file.metadata().ok()?.len() > MAX_STATE {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    let record: Record = serde_json::from_slice(&bytes).ok()?;
+    (record.version == 1 && record.identity == identity && record.generation != 0).then_some(record)
+}
+fn generation_files(path: &Path) -> Option<Vec<PathBuf>> {
+    let entries = fs::read_dir(path)
+        .ok()?
+        .collect::<std::io::Result<Vec<_>>>()
+        .ok()?;
+    if entries.is_empty()
+        || entries.iter().any(|entry| {
+            !matches!(
+                entry.file_name().to_str(),
+                Some("files.tar" | "record.json")
+            ) || !entry.file_type().is_ok_and(|kind| kind.is_file())
+        })
+    {
+        return None;
+    }
+    Some(entries.into_iter().map(|entry| entry.path()).collect())
+}
+fn remove_generation(path: &Path) -> Result<bool> {
+    let Some(files) = generation_files(path) else {
+        return Ok(false);
+    };
+    for file in files {
+        fs::remove_file(file)?;
+    }
+    fs::remove_dir(path)?;
+    Ok(true)
+}
+impl Retained {
+    fn prune(&self) -> Result<()> {
+        let mut generations = Vec::new();
+        let current = self.current.archive.split('/').next().unwrap_or("");
+        for entry in fs::read_dir(&self.directory)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir()
+                || !entry.file_name().to_string_lossy().starts_with("g-")
+            {
+                continue;
+            }
+            if let Some(record) =
+                owned_record(&entry.path().join("record.json"), &self.current.identity)
+            {
+                generations.push((record.generation, entry.path()));
+            } else if entry.file_name() != current
+                && generation_files(&entry.path()).is_some_and(|files| {
+                    files.len() == 1 && files[0].file_name().is_some_and(|name| name == "files.tar")
+                })
+            {
+                // A crashed, never-committed pending snapshot; no current record
+                // refers to it, and the destination lock excludes active writers.
+                remove_generation(&entry.path())?;
+            }
+        }
+        generations.sort_by_key(|(generation, _)| std::cmp::Reverse(*generation));
+        let mut kept = 0;
+        for (_, path) in generations {
+            if path.file_name().is_some_and(|name| name == current) {
+                continue;
+            }
+            if kept < RETAIN_GENERATIONS - 1 {
+                kept += 1;
+            } else {
+                remove_generation(&path)?;
+            }
+        }
+        let scope = self.directory.parent().context("identity has no scope")?;
+        let mut identities = Vec::new();
+        for entry in fs::read_dir(scope)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if entry.path() == self.directory
+                || !entry.file_type()?.is_dir()
+                || name.len() != 64
+                || !name.bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                continue;
+            }
+            let pointer = entry.path().join("current.json");
+            if owned_record(&pointer, name).is_some() {
+                identities.push((
+                    fs::metadata(&pointer)?.modified()?,
+                    entry.path(),
+                    name.to_owned(),
+                ));
+            }
+        }
+        identities.sort_by_key(|(time, _, _)| std::cmp::Reverse(*time));
+        for (_, path, identity) in identities.into_iter().skip(RETAIN_IDENTITIES - 1) {
+            let entries = fs::read_dir(&path)?.collect::<std::io::Result<Vec<_>>>()?;
+            // Foreign or manually added data is never recursively removed.
+            let owned = entries.iter().all(|entry| {
+                (entry.file_name() == "current.json"
+                    && entry.file_type().is_ok_and(|kind| kind.is_file()))
+                    || (entry.file_type().is_ok_and(|kind| kind.is_dir())
+                        && entry.file_name().to_string_lossy().starts_with("g-")
+                        && owned_record(&entry.path().join("record.json"), &identity).is_some()
+                        && generation_files(&entry.path()).is_some())
+            });
+            if !owned {
+                continue;
+            }
+            for entry in entries {
+                if entry.file_type()?.is_dir() {
+                    remove_generation(&entry.path())?;
+                }
+            }
+            fs::remove_file(path.join("current.json"))?;
+            fs::remove_dir(path)?;
+        }
+        File::open(&self.directory)?.sync_all()?;
+        File::open(scope)?.sync_all()?;
+        Ok(())
+    }
 }
