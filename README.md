@@ -95,7 +95,7 @@ recipe install distro-builder/recipes/recfstab.rhai \
 
 Source preparation vendors only the selected production closure, offline, with
 versions from the workspace lock. The managed recipe performs compilation.
-Canonical product preparation calls this same producer. `just tools-install`
+Canonical product preparation calls this same producer. `cargo xtask setup`
 explicitly prepares the separate QEMU/OVMF product; scenario commands consume
 existing prepared artifacts.
 
