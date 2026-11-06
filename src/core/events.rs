@@ -5,6 +5,36 @@
 
 use serde::Serialize;
 
+/// Lifecycle status a hook event reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookStatus {
+    Requested,
+    Running,
+    Success,
+    Failed,
+    Skipped,
+    Satisfied,
+    Missing,
+    Required,
+    Manual,
+}
+
+impl HookStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Requested => "requested",
+            Self::Running => "running",
+            Self::Success => "success",
+            Self::Failed => "failed",
+            Self::Skipped => "skipped",
+            Self::Satisfied => "satisfied",
+            Self::Missing => "missing",
+            Self::Required => "required",
+            Self::Manual => "manual",
+        }
+    }
+}
+
 /// Event envelope used by machine-readable hook logging.
 pub const RECIPE_HOOK_EVENT: &str = "recipe-hook";
 
@@ -20,12 +50,12 @@ pub struct RecipeHookEvent {
 
 impl RecipeHookEvent {
     /// Construct a standard recipe hook event.
-    pub fn new(recipe: &str, hook: &str, status: &str, msg: &str) -> Self {
+    pub fn new(recipe: &str, hook: &str, status: HookStatus, msg: &str) -> Self {
         Self {
             event: RECIPE_HOOK_EVENT,
             recipe: recipe.to_string(),
             hook: hook.to_string(),
-            status: status.to_string(),
+            status: status.as_str().to_string(),
             msg: msg.to_string(),
         }
     }

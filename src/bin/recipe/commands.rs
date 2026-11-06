@@ -26,7 +26,6 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
         force_install: cli.force_install,
     };
     let recipes_path = cli.recipes_path;
-    bin_support::set_machine_events(cli.machine_events);
 
     if !recipes_path.exists() {
         std::fs::create_dir_all(&recipes_path).with_context(|| {

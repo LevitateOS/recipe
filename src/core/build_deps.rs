@@ -56,7 +56,7 @@ impl<'a> BuildDepsResolver<'a> {
             output::hook_event(
                 name,
                 "dependency.prepare",
-                "requested",
+                crate::core::events::HookStatus::Requested,
                 "executing shared recipe lifecycle",
             );
             match install_with_context(
@@ -71,7 +71,7 @@ impl<'a> BuildDepsResolver<'a> {
                 Ok(_) => output::hook_event(
                     name,
                     "dependency.ready",
-                    "success",
+                    crate::core::events::HookStatus::Success,
                     "tool dependency prepared",
                 ),
                 Err(

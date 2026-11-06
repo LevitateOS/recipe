@@ -640,7 +640,7 @@ A single `recipes` module resolves `//! extends:`, imports and `deps`/`build_dep
 
 Describe phases with one table (`Phase` → check name, optionality, missing-hook rule, force implication, success/failure reasons, env scope). One phase-block function replaces the three copies, and one recipe-preparation function replaces the four preambles. `Readiness` is kept as an enum end to end, forced runs carry a reason, and the double `is_installed` verify is unified. An explicit `RecipeRole { Main, Dependency }` decides force, failure eligibility, work dirs (dependency dirs outside the main build dir), the output policy (dependencies may not write `/out`) and env guards. It replaces stack depth. Dependencies get a visited set, and a defined policy covers dependencies for remove/cleanup. Dependency tool env vars come from the dependency recipe's declared exports, not hard-coded bison/m4. `ExecutionContext` is built complete, with no call-order setup. The checkpoint payload holds only what the host reads. `has_fn` moves to break the invocation↔runner cycle.
 
-- **Solves:** 61 problems (26 hidden, 6 needless, 11 surplus, 18 special)
+- **Solves:** 62 problems (27 hidden, 6 needless, 11 surplus, 18 special)
 - **Done when:** One phase block and one preamble. No `active_recipes.len() > 1`. No BISON/M4 literals in the engine. The checkpoint sink takes `(recipe_path, state)`. No module cycle in `deps.txt`.
 - **Depends on:** X3, X9
 
@@ -705,24 +705,23 @@ Describe phases with one table (`Phase` → check name, optionality, missing-hoo
 - **C69** [surplus] `src/core/executor/private/flow.rs:352`: `if needs_install {` is always true (it already returned at `:145-152`).
 - **I19** [surplus] `src/core/executor/private/flow.rs:71-73` and `actions.rs:44-47,117-120,184-187`: the "Recipe missing ctx" branches are unreachable (`src/core/invocation.rs:212,215` already bail).
 - **I20** [surplus] `src/core/runner.rs:78` `run_cleanup` re-checks `cleanup_available`, which `flow.rs:46` and `actions.rs:97` already computed.
+- **I14** [hidden] `src/core/build_deps.rs:63,78` name a dependency's hook events by the `deps` string, while its own events use `ctx.name` (`flow.rs:76-88`).
 
 ### 12. X13: Typed events and narration; split logging
 
 Hook events become an enum (`Hook` × `Status`) emitted by the lifecycle and rendered by narration with an exhaustive `match`. Machine events get their own channel (a protocol frame kind or a dedicated fd) instead of being mixed into human lines. The machine-events flag lives only in options. `logging.rs` is reduced to the sink plumbing from X12; the log store moves to X7. In-process event-sink setters are removed from the public API, since events happen in the worker.
 
-- **Solves:** 11 problems (8 hidden, 1 needless, 2 surplus, 0 special)
+- **Solves:** 9 problems (6 hidden, 1 needless, 2 surplus, 0 special)
 - **Done when:** No hook/status string literals outside the event enum's serialization. Narration has no unreachable arms. `logging.rs` is gone or holds only the sink.
 - **Depends on:** X12, X10
 
 - **A77** [needless] `src/logging.rs:1-118` mixes hook-event re-exports, the worker sink global and the durable diagnostics directory, three concerns that change for different reasons.
 - **C18** [hidden] `src/core/events.rs:37-46,50-59` copy `RecipeHookEvent`'s five fields by hand into `json!` fallbacks.
 - **C35** [hidden] `src/core/output/logging.rs:10,17-19,74`: the global `MACHINE_EVENTS_ENABLED` is set by both the CLI (`src/bin/recipe/commands.rs:29`) and the worker (`src/worker/run.rs:256`), and it also travels in `ExecutionOptions.machine_events` (`src/options.rs:12`). The host-side set does nothing.
-- **C36** [hidden] `src/core/output/logging.rs:74-78` writes machine JSON and human lines to the same diagnostic stream, which the host copies to stderr (`src/launch.rs:486-487`), so consumers have to pick out the JSON lines.
 - **C37** [hidden] `src/core/output/narration.rs:69-132` matches hook/status strings emitted from `flow.rs`, `actions.rs`, `reporting.rs` and `build_deps.rs`, and they are deliberately untyped (`src/core/events.rs:4-5`). `actions.rs:215`'s `"manual"` status falls to the generic sentence.
 - **C76** [surplus] `src/core/events.rs:16,27`: `RecipeHookEvent.event` is always the constant `RECIPE_HOOK_EVENT`.
 - **C78** [surplus] `src/core/output/narration.rs:75-99`: the `"running"` arms for `dependency.{prepare,acquire,build,install}` and `check.is_*` are unreachable, given what `src/core/build_deps.rs:63,79` emits.
 - **H9** [hidden] `src/lib.rs:53-56` re-exports event-sink setters that act on in-process statics (`src/core/output/logging.rs:10-38`), but hook events are emitted in the worker process, so a library caller's sink never receives them.
-- **I14** [hidden] `src/core/build_deps.rs:63,78` name a dependency's hook events by the `deps` string, while its own events use `ctx.name` (`flow.rs:76-88`).
 - **J14** [hidden] `src/core/output/logging.rs:91,94` → `src/worker/run.rs:73-93`: hook events and machine JSON share the 16 MiB/32768-frame diagnostic budget with subprocess output, so a noisy build silently drops the final install event after truncation (`src/launch.rs:458-475`).
 - **C38** [hidden] `src/core/output/narration.rs:11-60` always emits ANSI colour, even into `worker.log` via the protocol sink.
 
@@ -1082,6 +1081,10 @@ Delete the obsolete design docs (`RECIPE_DEPENDENCY_MANAGEMENT.md`, `SYSTEM_VS_U
   - **Why leave:** Hardlink-preserving copy (inode map over a host walk) and export materialization (tar link records) start from different representations.
 - **J4** [special] `src/helpers/build/extract_api.rs:136-209,301-349`: `extract` writes straight into `dest`, so a bad entry mid-archive leaves earlier entries behind. The acquire helpers stage and publish atomically.
   - **Why leave:** `extract()` targets existing, recipe-owned directories by contract; atomic staging would change its semantics. Recipes clean partial work through their cleanup hooks.
+- **C36** [hidden] `src/core/output/logging.rs:74-78` writes machine JSON and human lines to the same diagnostic stream, which the host copies to stderr (`src/launch.rs:486-487`), so consumers have to pick out the JSON lines.
+  - **Why leave:** Machine JSON lines alongside human lines are the documented `--machine-events` contract that callers and tests parse; separating them is a CLI change, not an untangle.
+- **C38** [hidden] `src/core/output/narration.rs:11-60` always emits ANSI colour, even into `worker.log` via the protocol sink.
+  - **Why leave:** Always-ANSI narration is the current CLI output contract (baseline snapshots capture it byte-for-byte); terminal detection would be a deliberate output change.
 - **E41** [surplus] `src/helpers/util/string.rs:4-33` (`trim`, `starts_with`, `ends_with`, `contains`, `replace`, `split`) are pass-throughs of Rhai's own string methods.
   - **Why leave:** The string helpers are not pass-throughs: Rhai's built-in `trim`/`replace` mutate in place and return `()`, while these return new strings that recipes rely on.
 
@@ -1168,4 +1171,12 @@ Special cases: **168** at audit start.
     - Unrelated recipes no longer share a lock.
   - Still open in X7: A65/J44/J46 crash-recovery rules, A71/J36/J37/J57 one leased-pool implementation, J28 commit ordering, J30 root permissions, J33, J54, J55.
   - Checks: build clean, CLI snapshots byte-identical. Privileged suite: pending.
+- [~] **X13** Typed events and narration. Commit: `git log --grep "X13:"`.
+  - `HookStatus` enum: every `hook_event` call passes a typed status, and narration's sentence and colour tables match it exhaustively (C37). The unreachable `dependency.*` and `check.is_*` running arms are removed (C78). The coordinator's no-op `set_machine_events` call is removed; the flag only travels in `ExecutionOptions` to the worker (C35).
+  - `logging.rs` was already split by X12 and X7 (A77), and the unused in-process sinks were removed in X1 (H9).
+  - Not changed, with reasons:
+    - C36 (machine JSON shares the stream with human lines) is the documented `--machine-events` CLI contract, which tests parse.
+    - C38 (always-ANSI narration) is the current CLI output contract, captured byte-for-byte in the baseline snapshots.
+    - I14 moves to X10.
+  - Checks: build clean. Privileged suite: pending.
 

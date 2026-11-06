@@ -51,13 +51,13 @@ pub(crate) fn remove_with_context(
         .unwrap_or_else(|| "package".to_string());
 
     if !runner::has_fn(&ast, "remove") {
-        output::hook_event(&name, "remove", "missing", "required remove hook missing");
+        output::hook_event(&name, "remove", crate::core::events::HookStatus::Missing, "required remove hook missing");
         return Err(anyhow!("{} has no remove function", name));
     }
 
     output::action(&format!("Removing {}", name));
     output::sub_action("remove");
-    output::hook_event(&name, "remove", "running", "executing recipe hook");
+    output::hook_event(&name, "remove", crate::core::events::HookStatus::Running, "executing recipe hook");
 
     ctx_map = runner::run_phase(&ast, &mut scope, "remove", ctx_map).inspect_err(|e| {
         report_phase_failure(&name, "remove", e);
@@ -123,14 +123,14 @@ pub(crate) fn cleanup_with_context(
         .unwrap_or_else(|| "package".to_string());
 
     if !has_cleanup {
-        output::hook_event(&name, "cleanup", "skipped", "recipe has no cleanup hook");
+        output::hook_event(&name, "cleanup", crate::core::events::HookStatus::Skipped, "recipe has no cleanup hook");
         output::skip(&format!("{name} has no cleanup hook; nothing to clean"));
         return Ok(ctx_map);
     }
 
     output::action(&format!("Cleaning up {}", name));
     output::sub_action("cleanup");
-    output::hook_event(&name, "cleanup", "running", "executing recipe hook");
+    output::hook_event(&name, "cleanup", crate::core::events::HookStatus::Running, "executing recipe hook");
 
     ctx_map = runner::run_cleanup(&ast, &mut scope, ctx_map, reason).inspect_err(|e| {
         report_phase_failure(&name, "cleanup", e);
@@ -192,7 +192,7 @@ pub(crate) fn run_check_with_context(
         output::hook_event(
             &name,
             &format!("check.{check_name}"),
-            "missing",
+            crate::core::events::HookStatus::Missing,
             "required check function missing",
         );
         output::error(&format!(
@@ -209,13 +209,13 @@ pub(crate) fn run_check_with_context(
     output::hook_event(
         &name,
         &format!("check.{check_name}"),
-        crate::worker::protocol::Reason::Manual.as_str(),
+        crate::core::events::HookStatus::Manual,
         "manual check requested",
     );
 
     let checked_ctx = runner::verify_phase(&mut scope, check_name, &ctx_map)
         .map_err(|e| {
-            output::hook_event(&name, &format!("check.{check_name}"), "failed", &format!("{e}"));
+            output::hook_event(&name, &format!("check.{check_name}"), crate::core::events::HookStatus::Failed, &format!("{e}"));
             output::error(&format!("{name}: {check_name} check failed"));
             output::detail(&format!("  reason: {e}"));
             output::detail("  action: check that function and return ctx on success path; rerun with RECIPE_TRACE_HELPERS=1.");
@@ -226,7 +226,7 @@ pub(crate) fn run_check_with_context(
     output::hook_event(
         &name,
         &format!("check.{check_name}"),
-        "success",
+        crate::core::events::HookStatus::Success,
         "manual check complete",
     );
     Ok(checked_ctx)

@@ -85,7 +85,7 @@ pub(crate) fn install_once(
         });
 
     output::action(&format!("Preparing recipe for {}", name));
-    output::hook_event(&name, "prepare", "running", "starting recipe execution");
+    output::hook_event(&name, "prepare", crate::core::events::HookStatus::Running, "starting recipe execution");
     output::detail(&format!("Recipe: {}", recipe_path.display()));
     if let Some(base_path) = &compiled.base_path {
         output::detail(&format!("Extends base recipe: {}", base_path.display()));
@@ -145,7 +145,7 @@ pub(crate) fn install_once(
     if !needs_install {
         exec.checkpoint_reused(&mut compiled, &ctx_map)
             .map_err(InstallAttemptError::Fatal)?;
-        output::hook_event(&name, "install", "skipped", "already installed");
+        output::hook_event(&name, "install", crate::core::events::HookStatus::Skipped, "already installed");
         output::detail("All checks passed; nothing to do.");
         output::skip(&format!("{} already installed, skipping", name));
         return Ok(ctx_map);
@@ -191,13 +191,13 @@ pub(crate) fn install_once(
     };
 
     output::action(&format!("Installing {}", name));
-    output::hook_event(&name, "install", "requested", "hook execution queued");
+    output::hook_event(&name, "install", crate::core::events::HookStatus::Requested, "hook execution queued");
 
     // Execute needed phases
     if needs_acquire {
         output::sub_action("acquire");
         output::detail("Checking/refreshing source artifacts");
-        output::hook_event(&name, "acquire", "running", "executing recipe hook");
+        output::hook_event(&name, "acquire", crate::core::events::HookStatus::Running, "executing recipe hook");
         let ctx_before = ctx_map.clone();
         match runner::run_phase(&ast, &mut scope, "acquire", ctx_map) {
             Ok(new_ctx) => {
@@ -291,7 +291,7 @@ pub(crate) fn install_once(
         if still_needs_build {
             output::sub_action("build");
             output::detail("Compiling or assembling build products");
-            output::hook_event(&name, "build", "running", "executing recipe hook");
+            output::hook_event(&name, "build", crate::core::events::HookStatus::Running, "executing recipe hook");
             let ctx_before = ctx_map.clone();
             match runner::run_phase(&ast, &mut scope, "build", ctx_map) {
                 Ok(new_ctx) => {
@@ -350,7 +350,7 @@ pub(crate) fn install_once(
     if needs_install {
         output::sub_action("install");
         output::detail("Applying package files to destination");
-        output::hook_event(&name, "install", "running", "executing recipe hook");
+        output::hook_event(&name, "install", crate::core::events::HookStatus::Running, "executing recipe hook");
         let ctx_before = ctx_map.clone();
         match runner::run_phase(&ast, &mut scope, "install", ctx_map) {
             Ok(new_ctx) => {
@@ -440,7 +440,7 @@ pub(crate) fn install_once(
         }
     };
     output::success(&format!("{} installed", name));
-    output::hook_event(&name, "install", "success", "recipe completed");
+    output::hook_event(&name, "install", crate::core::events::HookStatus::Success, "recipe completed");
     Ok(ctx_map)
 }
 

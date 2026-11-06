@@ -17,7 +17,7 @@ pub(crate) fn friendly_reason(phase: &str, reason: &str, attempt: &rhai::Map) ->
 }
 
 pub(crate) fn report_phase_failure(name: &str, phase: &str, error: &Error) {
-    output::hook_event(name, phase, "failed", &format!("{error}"));
+    output::hook_event(name, phase, crate::core::events::HookStatus::Failed, &format!("{error}"));
     output::error(&format!("{name}: {phase} recipe step failed"));
     output::detail(&format!("  reason: {error}"));
     output::detail(
@@ -29,7 +29,7 @@ pub(crate) fn report_phase_failure(name: &str, phase: &str, error: &Error) {
 }
 
 pub(crate) fn report_phase_success(name: &str, phase: &str) {
-    output::hook_event(name, phase, "success", "step finished");
+    output::hook_event(name, phase, crate::core::events::HookStatus::Success, "step finished");
     output::success(&format!("{name}: {phase} step finished"));
 }
 
@@ -44,7 +44,7 @@ pub(crate) fn report_check_result(
             output::detail(&format!(
                 "{name}: {check} check says recipe still needs this step ({reason})"
             ));
-            output::hook_event(name, &format!("check.{check}"), "required", reason);
+            output::hook_event(name, &format!("check.{check}"), crate::core::events::HookStatus::Required, reason);
         } else {
             output::detail(&format!(
                 "{name}: {check} check says recipe still needs this step"
@@ -52,7 +52,7 @@ pub(crate) fn report_check_result(
             output::hook_event(
                 name,
                 &format!("check.{check}"),
-                "required",
+                crate::core::events::HookStatus::Required,
                 "check returned failure",
             );
         }
@@ -63,7 +63,7 @@ pub(crate) fn report_check_result(
         output::hook_event(
             name,
             &format!("check.{check}"),
-            "satisfied",
+            crate::core::events::HookStatus::Satisfied,
             "check returned success",
         );
     }

@@ -21,14 +21,9 @@ fn machine_events() -> bool {
 ///   {"event":"recipe-hook","recipe":"name","hook":"install","status":"running","msg":"..."}
 /// Human line example:
 ///   [install] Working on install
-pub fn hook_event(recipe: &str, hook: &str, status: &str, msg: &str) {
-    hook_event_struct(&RecipeHookEvent::new(recipe, hook, status, msg))
-}
-
-/// Emit a typed recipe hook event.
-/// This is the canonical output path used by both machine and human renderers.
-pub fn hook_event_struct(event: &RecipeHookEvent) {
-    let human = narration::format_hook_line(event);
+pub fn hook_event(recipe: &str, hook: &str, status: crate::core::events::HookStatus, msg: &str) {
+    let event = RecipeHookEvent::new(recipe, hook, status, msg);
+    let human = narration::sentence_for_event(hook, status, msg.trim());
 
     if machine_events() {
         crate::diagnostics::diag!("{}", event.as_json());

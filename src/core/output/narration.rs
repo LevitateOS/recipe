@@ -2,7 +2,7 @@
 
 use owo_colors::OwoColorize;
 
-use crate::core::events::RecipeHookEvent;
+use crate::core::events::HookStatus;
 
 /// Print an action header (blue, bold)
 /// Example: "==> Installing ripgrep"
@@ -52,31 +52,26 @@ pub fn skip(message: &str) {
     crate::diagnostics::diag!("{}", message.dimmed());
 }
 
-pub(crate) fn format_hook_line(event: &RecipeHookEvent) -> String {
-    let details = event.msg.trim();
-    sentence_for_event(&event.hook, &event.status, details)
-}
-
-fn sentence_for_event(hook: &str, status: &str, details: &str) -> String {
+pub(crate) fn sentence_for_event(hook: &str, status: HookStatus, details: &str) -> String {
     let (verb, base) = match status {
-        "requested" => (
+        HookStatus::Requested => (
             "queue",
             "To keep the flow in order, this step will queue now.".to_string(),
         ),
-        "running" => match hook {
-            "prepare" | "dependency.prepare" => (
+        HookStatus::Running => match hook {
+            "prepare" => (
                 "prepare",
                 "Before anything else moves forward, we prepare the environment now.".to_string(),
             ),
-            "acquire" | "dependency.acquire" => (
+            "acquire" => (
                 "acquire",
                 "Next, we acquire the source artifacts needed for this build.".to_string(),
             ),
-            "build" | "dependency.build" => (
+            "build" => (
                 "build",
                 "With sources in place, the package will build now.".to_string(),
             ),
-            "install" | "dependency.install" => (
+            "install" => (
                 "install",
                 "From here, the built output will install into its target location.".to_string(),
             ),
@@ -88,36 +83,32 @@ fn sentence_for_event(hook: &str, status: &str, details: &str) -> String {
                 "remove",
                 "As part of uninstall, this step will remove installed artifacts.".to_string(),
             ),
-            h if h.contains("check.is_") => (
-                "check",
-                "At this point, we check the current state for remaining work.".to_string(),
-            ),
             _ => (
                 "run",
                 "Everything is ready, so this step will run with current inputs.".to_string(),
             ),
         },
-        "success" => (
+        HookStatus::Success => (
             "complete",
             "This part is now complete, and everything here looks good.".to_string(),
         ),
-        "failed" => (
+        HookStatus::Failed => (
             "fail",
             "A required operation reported an error, so this step must fail now.".to_string(),
         ),
-        "skipped" | "satisfied" => (
+        HookStatus::Skipped | HookStatus::Satisfied => (
             "skip",
             "Since the requirement is already satisfied, this step will skip now.".to_string(),
         ),
-        "missing" => (
+        HookStatus::Missing => (
             "require",
             "Before we continue safely, this workflow does require that dependency.".to_string(),
         ),
-        "required" => (
+        HookStatus::Required => (
             "check",
             "To confirm what still needs attention, we check this again now.".to_string(),
         ),
-        _ => (
+        HookStatus::Manual => (
             "process",
             "In the expected sequence, this operation will process now.".to_string(),
         ),
@@ -136,7 +127,7 @@ fn passthrough_detail(details: &str) -> Option<&str> {
     if d.is_empty() { None } else { Some(d) }
 }
 
-fn colorize_event_sentence(status: &str, sentence: &str, verb: &str) -> String {
+fn colorize_event_sentence(status: HookStatus, sentence: &str, verb: &str) -> String {
     if let Some((start, end)) = find_word_span(sentence, verb) {
         let head = &sentence[..start];
         let token = &sentence[start..end];
@@ -151,17 +142,17 @@ fn colorize_event_sentence(status: &str, sentence: &str, verb: &str) -> String {
     }
 }
 
-fn colorize_by_status(status: &str, token: &str) -> String {
+fn colorize_by_status(status: HookStatus, token: &str) -> String {
     match status {
-        "requested" => format!("{}", token.bright_blue()),
-        "running" => format!("{}", token.cyan()),
-        "success" => format!("{}", token.green()),
-        "failed" => format!("{}", token.red()),
-        "skipped" => format!("{}", token.yellow()),
-        "satisfied" => format!("{}", token.bright_yellow()),
-        "missing" => format!("{}", token.magenta()),
-        "required" => format!("{}", token.bright_magenta()),
-        _ => format!("{}", token.dimmed()),
+        HookStatus::Requested => format!("{}", token.bright_blue()),
+        HookStatus::Running => format!("{}", token.cyan()),
+        HookStatus::Success => format!("{}", token.green()),
+        HookStatus::Failed => format!("{}", token.red()),
+        HookStatus::Skipped => format!("{}", token.yellow()),
+        HookStatus::Satisfied => format!("{}", token.bright_yellow()),
+        HookStatus::Missing => format!("{}", token.magenta()),
+        HookStatus::Required => format!("{}", token.bright_magenta()),
+        HookStatus::Manual => format!("{}", token.dimmed()),
     }
 }
 

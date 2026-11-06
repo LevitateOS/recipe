@@ -64,7 +64,7 @@ pub fn default_destination(
 #[doc(hidden)]
 pub mod bin_support {
     pub use crate::cancellation::{install_cli_handlers, signal};
-    pub use crate::core::output::{info, set_machine_events};
+    pub use crate::core::output::info;
     pub use crate::helpers::internal::hash::{FileHashes, compute_all_hashes};
     pub use crate::worker::protocol::{MAX_DIAGNOSTIC_BYTES, MAX_DIAGNOSTIC_FRAMES};
     pub use crate::domain::WORKER_ENTRY_ARG;
