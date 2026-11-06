@@ -107,3 +107,98 @@ fn cleanup(ctx, reason) {
         0o600
     );
 }
+
+#[test]
+fn managed_storage_restores_and_publishes_more_than_4096_entries() {
+    let (dir, recipes) = create_test_env();
+    let target = dir.path().join("selected-tree");
+    std::fs::create_dir(&target).unwrap();
+    for index in 0..5000 {
+        std::fs::write(target.join(format!("item-{index:04}")), index.to_string()).unwrap();
+    }
+    write_recipe(
+        &recipes,
+        "check",
+        r#"
+const RECIPE_API = 2;
+let ctx = #{name: "large-namespace"};
+fn is_installed(ctx) {
+    if read_file("/out/item-0000")!="0" || read_file("/out/item-4999")!="4999" { throw "target lost selected entries"; }
+    ctx.outputs.tree="/out"; ready(ctx)
+}
+"#,
+    );
+    let output = recipe_command(&recipes)
+        .args(["isinstalled", "check", "--recipes-path"])
+        .arg(&recipes)
+        .arg("--build-dir")
+        .arg(dir.path().join("destination"))
+        .arg("--state-dir")
+        .arg(dir.path().join("state"))
+        .arg("--input")
+        .arg(format!("target={}", target.display()))
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let published = Path::new(result["outputs"]["tree"].as_str().unwrap());
+    assert_eq!(std::fs::read_dir(published).unwrap().count(), 5000);
+    assert_eq!(
+        std::fs::read_to_string(published.join("item-4999")).unwrap(),
+        "4999"
+    );
+    assert_eq!(std::fs::read_dir(target).unwrap().count(), 5000);
+}
+
+#[test]
+fn managed_storage_publishes_actual_payload_larger_than_two_gib_under_explicit_bounds() {
+    use std::io::{Read, Seek, SeekFrom};
+    let (dir, recipes) = create_test_env();
+    write_recipe(
+        &recipes,
+        "check",
+        r##"
+const RECIPE_API = 2;
+let ctx = #{name: "large-payload", state: #{installed:false}};
+fn is_acquired(ctx) { ready(ctx) }
+fn is_built(ctx) { ready(ctx) }
+fn is_installed(ctx) {
+    if !ctx.state.installed { return needs_work(ctx,"create bounded payload"); }
+    ctx.outputs.payload="/out/large"; ready(ctx)
+}
+fn install(ctx) {
+    write_file("/work/build/payload.c", "#include <unistd.h>\n#include <fcntl.h>\n#include <stdio.h>\nint main(void){long long n=2147487744LL;int f=open(\"/out/large\",O_RDWR|O_CREAT|O_EXCL,0600);if(f<0||ftruncate(f,n)||pwrite(f,\"tailproof\",9,n-9)!=9){perror(\"bounded payload\");return 1;}return close(f)!=0;}\n");
+    exec_checked("/usr/bin/gcc",["/work/build/payload.c","-o","/work/build/payload"]);
+    exec_checked("/work/build/payload",[]);
+    ctx.state.installed=true; ctx
+}
+"##,
+    );
+    let output = recipe_command(&recipes)
+        .args(["install", "check", "--recipes-path"])
+        .arg(&recipes)
+        .arg("--build-dir")
+        .arg(dir.path().join("destination"))
+        .arg("--state-dir")
+        .arg(dir.path().join("state"))
+        .args([
+            "--no-persist-state",
+            "--memory-mib",
+            "4096",
+            "--storage-max-bytes",
+            "3221225472",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let mut file = std::fs::File::open(result["outputs"]["payload"].as_str().unwrap()).unwrap();
+    assert_eq!(file.metadata().unwrap().len(), 2147487744);
+    let mut first = [1; 16];
+    file.read_exact(&mut first).unwrap();
+    assert_eq!(first, [0; 16]);
+    file.seek(SeekFrom::End(-9)).unwrap();
+    let mut tail = [0; 9];
+    file.read_exact(&mut tail).unwrap();
+    assert_eq!(&tail, b"tailproof");
+}

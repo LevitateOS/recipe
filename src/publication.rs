@@ -81,7 +81,7 @@ pub(crate) fn publish(
             .prefix(".pending-")
             .tempdir_in(&base)?,
     );
-    let mut seen = BTreeMap::new();
+    let mut seen = BTreeMap::<String, tar::EntryType>::new();
     let mut found = HashSet::new();
     let mut directories = BTreeMap::new();
     let mut bytes = 0u64;
@@ -147,8 +147,9 @@ pub(crate) fn publish(
         }
         if !kind.is_dir()
             && seen
-                .keys()
-                .any(|name: &String| name.starts_with(&format!("{path}/")))
+                .range(format!("{path}/")..)
+                .next()
+                .is_some_and(|(name, _)| name.starts_with(&format!("{path}/")))
         {
             bail!("export replaces a parent directory");
         }
