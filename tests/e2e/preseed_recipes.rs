@@ -19,10 +19,10 @@ fn preseed_command(recipes: &Path, recipe: &str, action: &str, target: &Path) ->
 fn prepare_assets(recipes: &Path, recipe: &str) -> (PathBuf, Vec<PathBuf>) {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../distro/builder/recipes");
     std::fs::create_dir_all(recipes.join("sources")).unwrap();
-    for distro in ["alpine", "fedora"] {
+    for facts in ["alpine.rhai", "levitate-rpm-lock.rhai"] {
         std::fs::copy(
-            source.join(format!("sources/{distro}.rhai")),
-            recipes.join(format!("sources/{distro}.rhai")),
+            source.join(format!("sources/{facts}")),
+            recipes.join(format!("sources/{facts}")),
         )
         .unwrap();
     }
@@ -34,6 +34,7 @@ fn prepare_assets(recipes: &Path, recipe: &str) -> (PathBuf, Vec<PathBuf>) {
     let target = recipes.parent().unwrap().join("verified assets");
     std::fs::create_dir_all(&target).unwrap();
     let alpine = recipe.starts_with("alpine");
+    let lock = std::fs::read_to_string(recipes.join("sources/levitate-rpm-lock.rhai")).unwrap();
     let entries = if alpine {
         vec![
             (
@@ -46,20 +47,26 @@ fn prepare_assets(recipes: &Path, recipe: &str) -> (PathBuf, Vec<PathBuf>) {
             ),
         ]
     } else {
-        vec![(
-            "Fedora-Server-dvd-x86_64-43-1.6.iso",
-            "aca06983bef83da9b43144c1a2ff4c8483e4745167c17f53725c16a16742e643",
-        )]
+        // Each locked RPM: [name, NEVRA, URL, SHA256].
+        lock.lines()
+            .filter_map(|line| {
+                let row: Vec<&str> = line.trim().strip_prefix("[\"")?.split("\", \"").collect();
+                Some((row[2].rsplit('/').next()?, row[3].trim_end_matches("\"],")))
+            })
+            .collect()
     };
     let facts_path = recipes.join(if alpine {
         "sources/alpine.rhai"
     } else {
-        "sources/fedora.rhai"
+        "sources/levitate-rpm-lock.rhai"
     });
+    // The RPM set lives in the `rpms` directory of the preseed output.
+    let asset_dir = if alpine { target.clone() } else { target.join("rpms") };
+    std::fs::create_dir_all(&asset_dir).unwrap();
     let mut facts = std::fs::read_to_string(&facts_path).unwrap();
     let mut files = Vec::new();
     for (name, hash) in entries {
-        let file = target.join(name);
+        let file = asset_dir.join(name);
         let bytes = format!("verified fixture for {name}");
         std::fs::write(&file, &bytes).unwrap();
         facts = facts.replace(hash, &hex::encode(Sha256::digest(bytes.as_bytes())));
@@ -71,7 +78,7 @@ fn prepare_assets(recipes: &Path, recipe: &str) -> (PathBuf, Vec<PathBuf>) {
 
 #[test]
 fn cli_preseed_checks_reject_same_size_corruption_of_verified_assets() {
-    for recipe in ["alpine-preseed-source-assets", "fedora-preseed-iso"] {
+    for recipe in ["alpine-preseed-source-assets", "fedora-rpm-preseed"] {
         let (dir, recipes) = create_test_env();
         let (target, files) = prepare_assets(&recipes, recipe);
         for action in ["isacquired", "isbuilt", "isinstalled", "install"] {
@@ -81,14 +88,21 @@ fn cli_preseed_checks_reject_same_size_corruption_of_verified_assets() {
             );
             assert_success(&output);
             let ctx = ctx.unwrap();
-            let iso = Path::new(ctx["outputs"]["iso"].as_str().unwrap());
+            let published = if recipe.starts_with("alpine") {
+                PathBuf::from(ctx["outputs"]["iso"].as_str().unwrap())
+            } else {
+                Path::new(ctx["outputs"]["rpms"].as_str().unwrap())
+                    .join(files[0].file_name().unwrap())
+            };
             assert_eq!(
-                std::fs::read(iso).unwrap(),
+                std::fs::read(&published).unwrap(),
                 std::fs::read(&files[0]).unwrap()
             );
-            assert_ne!(iso, files[0]);
+            assert_ne!(published, files[0]);
         }
-        for file in files {
+        // The first and last asset stand for the rest of a locked RPM set.
+        let sampled = [files.first().unwrap().clone(), files.last().unwrap().clone()];
+        for file in sampled {
             let original = std::fs::read(&file).unwrap();
             let mut changed = original.clone();
             changed[0] ^= 1;
@@ -108,7 +122,7 @@ fn cli_preseed_checks_reject_same_size_corruption_of_verified_assets() {
 
 #[test]
 fn cli_preseed_explicit_inputs_handle_quoted_host_paths() {
-    for recipe in ["alpine-preseed-source-assets", "fedora-preseed-iso"] {
+    for recipe in ["alpine-preseed-source-assets", "fedora-rpm-preseed"] {
         let dir = tempfile::Builder::new()
             .prefix("recipe 'quoted' $(touch INJECTED) ")
             .tempdir()
@@ -198,7 +212,7 @@ fn cli_alpine_refresh_preserves_previous_publication_and_inputs_on_failure() {
 #[test]
 fn cli_rootfs_consumers_reject_changed_explicit_assets() {
     for (producer, consumer) in [
-        ("fedora-preseed-iso", "fedora-dvd-source-rootfs"),
+        ("fedora-rpm-preseed", "fedora-rpm-source-rootfs"),
         ("alpine-preseed-source-assets", "alpine-live-source-rootfs"),
     ] {
         let (dir, recipes) = create_test_env();
@@ -209,14 +223,13 @@ fn cli_rootfs_consumers_reject_changed_explicit_assets() {
             recipes.join(format!("{consumer}.rhai")),
         )
         .unwrap();
-        if consumer == "fedora-dvd-source-rootfs" {
-            std::fs::copy(
-                source.join("dvd-source-deps.rhai"),
-                recipes.join("dvd-source-deps.rhai"),
-            )
-            .unwrap();
-        }
-        for file in &files {
+        let fedora = consumer.starts_with("fedora");
+        let sampled = if fedora {
+            vec![files.first().unwrap().clone(), files.last().unwrap().clone()]
+        } else {
+            files.clone()
+        };
+        for file in &sampled {
             let original = std::fs::read(file).unwrap();
             let mut changed = original.clone();
             changed[0] ^= 1;
@@ -227,9 +240,13 @@ fn cli_rootfs_consumers_reject_changed_explicit_assets() {
                 .arg("--recipes-path")
                 .arg(&recipes)
                 .arg("--build-dir")
-                .arg(dir.path().join("materializer"))
-                .args(["--input", &format!("iso={}", files[0].display())]);
-            if files.len() == 2 {
+                .arg(dir.path().join("materializer"));
+            if fedora {
+                command.args(["--input", &format!("rpms={}", files[0].parent().unwrap().display())]);
+            } else {
+                command.args(["--input", &format!("iso={}", files[0].display())]);
+            }
+            if !fedora && files.len() == 2 {
                 command.args(["--input", &format!("apk_tools={}", files[1].display())]);
             }
             let (output, _) = super::kernel_recipes::invoke_kernel(command, dir.path());
