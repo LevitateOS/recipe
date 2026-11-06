@@ -224,11 +224,9 @@ default_provider = "codex"
 
 [providers.codex]
 bin = "codex"
-
-# Both provider blocks are required, even when only one is used.
-[providers.claude]
-bin = "claude"
 ```
+
+Only the `default_provider`'s block is required.
 
 Use the chosen provider's installed CLI/configuration; there is no implicit
 provider fallback. A named profile can override provider settings.

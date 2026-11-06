@@ -242,20 +242,41 @@ fn build_resolved(cfg: &LlmToml) -> Result<ResolvedLlmConfig, String> {
         .as_ref()
         .ok_or_else(|| "Missing required table [providers] in recipe/llm.toml".to_owned())?;
 
-    let codex = provider_required("codex", providers.codex.as_ref())?;
-    let claude = provider_required("claude", providers.claude.as_ref())?;
+    // Only the provider that will run must be configured.
+    let unused = ProviderToml::default();
+    let (codex, claude) = match default_provider {
+        LlmProviderId::Codex => (
+            provider_required("codex", providers.codex.as_ref())?,
+            providers.claude.as_ref().unwrap_or(&unused),
+        ),
+        LlmProviderId::Claude => (
+            providers.codex.as_ref().unwrap_or(&unused),
+            provider_required("claude", providers.claude.as_ref())?,
+        ),
+    };
+    let at_least = |name: &str, value: Option<u64>, default: u64, minimum: u64| match value {
+        None => Ok(default),
+        Some(value) if value >= minimum => Ok(value),
+        Some(value) => Err(format!(
+            "`{name} = {value}` in recipe/llm.toml is below its minimum of {minimum}"
+        )),
+    };
 
     Ok(ResolvedLlmConfig {
         default_provider,
-        timeout_secs: cfg.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS).max(1),
-        max_output_bytes: cfg
-            .max_output_bytes
-            .unwrap_or(DEFAULT_MAX_OUTPUT_BYTES)
-            .max(1024),
-        max_input_bytes: cfg
-            .max_input_bytes
-            .unwrap_or(DEFAULT_MAX_INPUT_BYTES)
-            .max(1024),
+        timeout_secs: at_least("timeout_secs", cfg.timeout_secs, DEFAULT_TIMEOUT_SECS, 1)?,
+        max_output_bytes: at_least(
+            "max_output_bytes",
+            cfg.max_output_bytes.map(|n| n as u64),
+            DEFAULT_MAX_OUTPUT_BYTES as u64,
+            1024,
+        )? as usize,
+        max_input_bytes: at_least(
+            "max_input_bytes",
+            cfg.max_input_bytes.map(|n| n as u64),
+            DEFAULT_MAX_INPUT_BYTES as u64,
+            1024,
+        )? as usize,
         codex: resolve_provider_cfg("codex", codex),
         claude: resolve_provider_cfg("claude", claude),
     })

@@ -1197,7 +1197,7 @@ Special cases: **168** at audit start.
     - the runtime map gains `runtime.host`/`runtime.operation`, and `base_recipe_dir` is noted as empty when unused (G9);
     - extends supports one level (G11);
     - the `GINUX_ROOT` default is documented (G25);
-    - the llm.toml example has both provider blocks (G27);
+    - the llm.toml example is accurate (G27): after X14 only the default provider's block is required;
     - the autofix-attempts default is documented (G21).
   - `HELPERS_AUDIT.md`/`recipe-helpers.7`: the `log` owner is corrected (G16), and `github_latest_*` "strips a leading `v`" (D5). The owner paths `helpers/acquire/http.rs` and `helpers/build/extract.rs` are accurate again after X1 (D4).
   - Still open in X15: generate the helper tables from the registry (X11), the remaining restated-contract copies (G12–G14, G19–G24, G26, G28–G33, G38–G42), D56, B80, B81, B91, E97, H11.
@@ -1230,4 +1230,8 @@ Special cases: **168** at audit start.
   - The stale check advice ("return ctx on success path") now names `ready`/`needs_work` (C33).
   - `recipe hash` prints `verify_sha256(path, "<hash>")` (B76). This is the one intended CLI snapshot difference (`hash-hello.txt`).
   - Still open in X11: per-family registration with one name per helper (D1/D10/D11/E23), readiness constructors owned by core (C10/D9), generated catalog docs (D2/D3/D6/D37), and the consistent helper policies (E5, E13–E20, E30–E37, E40, D18–D23, D25, D30, D31, D36, D40, D44, J5, J6, J9–J11, J19, J21, J22).
+- [~] **X14** One LLM interface (first part). Commit: `git log --grep "X14:"`.
+  - `llm::complete(prompt, cwd, profile)` is the only entry point: it hides provider dispatch and codex's last-message-file lifetime. Provider internals are private (E46/E47/E44). The fence-stripper copy went with `helpers/llm.rs` in X11 (E45), and the runner's autofix-specific vocabulary went with the X12 rewrite (E70).
+  - Config requires only the selected provider's block (E61). Limits below their minimum are rejected instead of silently clamped (E62).
+  - Still open in X14: the provider trait with a per-provider no-tools policy (E49), generic config merge (E59, E60, J25), XDG order (E64), the `recipe/llm.toml` string copies (E65), the cwd fallback (E63), autofix's single patch validator and prompt rules (E78–E86), generic extra context (E87), `git apply`/cwd docs (E90, E91), `build_prompt` parameters (E92), module naming (E93), `AutoFixConfig` placement (H15), E25, E94–E96, J12, J17, J18, J23, J24.
 

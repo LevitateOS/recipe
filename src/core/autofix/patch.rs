@@ -246,26 +246,8 @@ fn apply_patch(cwd: &Path, patch: &str) -> Result<()> {
 }
 
 fn run_llm(prompt: String, cwd: &Path, profile: Option<&str>) -> Result<String> {
-    let cfg = crate::llm::resolve_config_for_call(profile).map_err(anyhow::Error::msg)?;
-    let stdin = prompt.into_bytes();
-
-    let out = match cfg.default_provider {
-        crate::llm::LlmProviderId::Codex => {
-            let inv = crate::llm::providers::codex::build(&cfg, cwd, stdin)
-                .map_err(anyhow::Error::msg)?;
-            let res = crate::llm::run_call(inv.cmd, inv.call).map_err(anyhow::Error::msg)?;
-            crate::llm::providers::codex::finalize(res, inv.last_message_file.path())
-                .map_err(anyhow::Error::msg)?
-        }
-        crate::llm::LlmProviderId::Claude => {
-            let inv = crate::llm::providers::claude::build(&cfg, cwd, stdin)
-                .map_err(anyhow::Error::msg)?;
-            let res = crate::llm::run_call(inv.cmd, inv.call).map_err(anyhow::Error::msg)?;
-            crate::llm::providers::claude::finalize(res).map_err(anyhow::Error::msg)?
-        }
-    };
-
-    Ok(prompt::strip_outer_code_fence(out))
+    let reply = crate::llm::complete(prompt, cwd, profile).map_err(anyhow::Error::msg)?;
+    Ok(prompt::strip_outer_code_fence(reply))
 }
 
 pub(crate) fn run_and_apply(
