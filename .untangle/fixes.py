@@ -174,22 +174,20 @@ MOVES = {
     # X1 → later fixes that rewrite the same code anyway.
     "A43": "X3", "A79": "X7", "A83": "X4", "B68": "X4", "C69": "X10", "I19": "X10", "I20": "X10",
     "I21": "X9", "E38": "X11", "E66": "X12", "E60": "X14", "E74": "X11", "E94": "X14", "E95": "X14", "E96": "X14",
-    # X12 → X13 (narration rewrite decides styling).
-    "C38": "X13",
     # X8 → the fixes that own the export contract, publication and autofix paths.
     "A67": "X5", "A68": "X5", "J42": "X6", "E25": "X14",
     # X13 → X10 (dependency event naming lives in the lifecycle).
     "I14": "X10",
 }
 NEW_LEAVE = [
+    ("C36", "Machine JSON lines alongside human lines are the documented `--machine-events` contract that callers and tests parse; separating them is a CLI change, not an untangle."),
+    ("C38", "Always-ANSI narration is the current CLI output contract (baseline snapshots capture it byte-for-byte); terminal detection would be a deliberate output change."),
     ("A81", "`RecipeEngine::launcher()`'s `GINUX_BIN` fallback is the library default; `tests/library_backend.rs` exercises it (the audit only checked the CLI)."),
     ("E4", "Staged inputs carry only `& 0o777` modes by construction (discovery masks them), so masking input-derived modes and keeping full permissions for build-produced sources is the same rule applied to different origins."),
     ("E11", "`libc` 0.2.191 does not export `FICLONE` for this target; the literal is the Linux UAPI value."),
     ("E98", "The three directory-mode passes take modes from different sources (input manifest, export headers with mtimes, image headers with implicit-parent defaults); the shared part is only the deepest-first order."),
     ("E99", "Hardlink-preserving copy (inode map over a host walk) and export materialization (tar link records) start from different representations."),
     ("J4", "`extract()` targets existing, recipe-owned directories by contract; atomic staging would change its semantics. Recipes clean partial work through their cleanup hooks."),
-    ("C36", "Machine JSON lines alongside human lines are the documented `--machine-events` contract that callers and tests parse; separating them is a CLI change, not an untangle."),
-    ("C38", "Always-ANSI narration is the current CLI output contract (baseline snapshots capture it byte-for-byte); terminal detection would be a deliberate output change."),
     ("E41", "The string helpers are not pass-throughs: Rhai's built-in `trim`/`replace` mutate in place and return `()`, while these return new strings that recipes rely on."),
 ]
 _moved = {}

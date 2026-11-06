@@ -711,7 +711,7 @@ Describe phases with one table (`Phase` → check name, optionality, missing-hoo
 
 Hook events become an enum (`Hook` × `Status`) emitted by the lifecycle and rendered by narration with an exhaustive `match`. Machine events get their own channel (a protocol frame kind or a dedicated fd) instead of being mixed into human lines. The machine-events flag lives only in options. `logging.rs` is reduced to the sink plumbing from X12; the log store moves to X7. In-process event-sink setters are removed from the public API, since events happen in the worker.
 
-- **Solves:** 9 problems (6 hidden, 1 needless, 2 surplus, 0 special)
+- **Solves:** 8 problems (5 hidden, 1 needless, 2 surplus, 0 special)
 - **Done when:** No hook/status string literals outside the event enum's serialization. Narration has no unreachable arms. `logging.rs` is gone or holds only the sink.
 - **Depends on:** X12, X10
 
@@ -723,7 +723,6 @@ Hook events become an enum (`Hook` × `Status`) emitted by the lifecycle and ren
 - **C78** [surplus] `src/core/output/narration.rs:75-99`: the `"running"` arms for `dependency.{prepare,acquire,build,install}` and `check.is_*` are unreachable, given what `src/core/build_deps.rs:63,79` emits.
 - **H9** [hidden] `src/lib.rs:53-56` re-exports event-sink setters that act on in-process statics (`src/core/output/logging.rs:10-38`), but hook events are emitted in the worker process, so a library caller's sink never receives them.
 - **J14** [hidden] `src/core/output/logging.rs:91,94` → `src/worker/run.rs:73-93`: hook events and machine JSON share the 16 MiB/32768-frame diagnostic budget with subprocess output, so a noisy build silently drops the final install event after truncation (`src/launch.rs:458-475`).
-- **C38** [hidden] `src/core/output/narration.rs:11-60` always emits ANSI colour, even into `worker.log` via the protocol sink.
 
 ### 13. X11: Colocated helper registry with generated docs
 
@@ -1069,6 +1068,10 @@ Delete the obsolete design docs (`RECIPE_DEPENDENCY_MANAGEMENT.md`, `SYSTEM_VS_U
   - **Why leave:** The base digest is produced by Ginux's own OCI scripts. The cross-repo producer is owned upstream.
 - **H10** [hidden] `src/lib.rs:210-263`: autofix retry depends on the state identity hashing every input (`src/retained.rs:110-138`), so each patched attempt redoes acquire and build. Only a comment at `src/lib.rs:260-261` notes this.
   - **Why leave:** Redoing acquire and build after an autofix patch is correct: a patched recipe is a new identity.
+- **C36** [hidden] `src/core/output/logging.rs:74-78` writes machine JSON and human lines to the same diagnostic stream, which the host copies to stderr (`src/launch.rs:486-487`), so consumers have to pick out the JSON lines.
+  - **Why leave:** Machine JSON lines alongside human lines are the documented `--machine-events` contract that callers and tests parse; separating them is a CLI change, not an untangle.
+- **C38** [hidden] `src/core/output/narration.rs:11-60` always emits ANSI colour, even into `worker.log` via the protocol sink.
+  - **Why leave:** Always-ANSI narration is the current CLI output contract (baseline snapshots capture it byte-for-byte); terminal detection would be a deliberate output change.
 - **A81** [surplus] `src/lib.rs:130-136`: `launcher()` falls back to `GinuxLauncher::from_env()`, though the CLI always sets one (`commands.rs:236,257`).
   - **Why leave:** `RecipeEngine::launcher()`'s `GINUX_BIN` fallback is the library default; `tests/library_backend.rs` exercises it (the audit only checked the CLI).
 - **E4** [special] `src/helpers/install/filesystem.rs:276` masks input modes `& 0o777` (dropping setuid/sticky), while `:278` keeps full permissions for other sources. One helper, two permission policies.
@@ -1081,10 +1084,6 @@ Delete the obsolete design docs (`RECIPE_DEPENDENCY_MANAGEMENT.md`, `SYSTEM_VS_U
   - **Why leave:** Hardlink-preserving copy (inode map over a host walk) and export materialization (tar link records) start from different representations.
 - **J4** [special] `src/helpers/build/extract_api.rs:136-209,301-349`: `extract` writes straight into `dest`, so a bad entry mid-archive leaves earlier entries behind. The acquire helpers stage and publish atomically.
   - **Why leave:** `extract()` targets existing, recipe-owned directories by contract; atomic staging would change its semantics. Recipes clean partial work through their cleanup hooks.
-- **C36** [hidden] `src/core/output/logging.rs:74-78` writes machine JSON and human lines to the same diagnostic stream, which the host copies to stderr (`src/launch.rs:486-487`), so consumers have to pick out the JSON lines.
-  - **Why leave:** Machine JSON lines alongside human lines are the documented `--machine-events` contract that callers and tests parse; separating them is a CLI change, not an untangle.
-- **C38** [hidden] `src/core/output/narration.rs:11-60` always emits ANSI colour, even into `worker.log` via the protocol sink.
-  - **Why leave:** Always-ANSI narration is the current CLI output contract (baseline snapshots capture it byte-for-byte); terminal detection would be a deliberate output change.
 - **E41** [surplus] `src/helpers/util/string.rs:4-33` (`trim`, `starts_with`, `ends_with`, `contains`, `replace`, `split`) are pass-throughs of Rhai's own string methods.
   - **Why leave:** The string helpers are not pass-throughs: Rhai's built-in `trim`/`replace` mutate in place and return `()`, while these return new strings that recipes rely on.
 
