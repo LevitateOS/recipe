@@ -6,13 +6,21 @@ fn command_recipe(recipes: &Path, body: &str) {
         "command-options",
         &format!(
             r#"
-let ctx = #{{ name: "command-options" }};
-fn is_installed(ctx) {{ throw "run requested"; }}
-fn is_acquired(ctx) {{ ctx }}
+const RECIPE_API = 2;
+let ctx = #{{ name: "command-options", state: #{{installed: false}} }};
+fn is_installed(ctx) {{ if ctx.state.installed {{ return ready(ctx); }} needs_work(ctx, "run command scenario") }}
+fn is_acquired(ctx) {{ ready(ctx) }}
+fn is_built(ctx) {{ ready(ctx) }}
 fn install(ctx) {{
-    mkdir(BUILD_DIR);
+    mkdir(RUNTIME.paths.build);
     {body}
+    ctx.outputs.work = RUNTIME.paths.build;
+    ctx.state.installed = true;
     ctx
+}}
+fn cleanup(ctx, reason) {{
+    if is_file(join_path(RUNTIME.paths.build, "should-not-exist")) || is_file("/should-not-exist") {{ throw "failed command continued"; }}
+    log("COMMAND_FAILURE_PRESERVED"); ctx
 }}
 "#
         ),
@@ -29,13 +37,13 @@ fn cli_checked_argv_preserves_arguments_cwd_environment_and_control_input() {
         &recipes,
         r#"
     ctx.before = env("RECIPE_COMMAND_VALUE");
-    write_file(join_path(BUILD_DIR, "source payload.txt"), "literal argv payload");
-    exec_checked("cp", ["source payload.txt", "copied 'literal' $(touch INJECTED).txt"], #{cwd: BUILD_DIR});
-    exec_checked("test", ["-f", join_path(BUILD_DIR, "copied 'literal' $(touch INJECTED).txt")]);
+    write_file(join_path(RUNTIME.paths.build, "source payload.txt"), "literal argv payload");
+    exec_checked("cp", ["source payload.txt", "copied 'literal' $(touch INJECTED).txt"], #{cwd: RUNTIME.paths.build});
+    exec_checked("test", ["-f", join_path(RUNTIME.paths.build, "copied 'literal' $(touch INJECTED).txt")]);
     exec_checked("sh", ["-c", "if read -r value; then exit 41; fi; printf 'argv stdout\\n'; printf 'argv stderr\\n' >&2"]);
-    ctx.cwd = exec_output("pwd", [], #{cwd: BUILD_DIR});
+    ctx.cwd = exec_output("pwd", [], #{cwd: RUNTIME.paths.build});
     ctx.child_value = exec_output("sh", ["-c", "printf '%s' \"$RECIPE_COMMAND_VALUE\""], #{env: #{RECIPE_COMMAND_VALUE: "child-only"}});
-    ctx.status = exec("sh", ["-c", "if read -r value; then exit 41; fi; exit 19"], #{cwd: BUILD_DIR});
+    ctx.status = exec("sh", ["-c", "if read -r value; then exit 41; fi; exit 19"], #{cwd: RUNTIME.paths.build});
     ctx.after = env("RECIPE_COMMAND_VALUE");
 "#,
     );
@@ -60,23 +68,24 @@ fn cli_checked_argv_preserves_arguments_cwd_environment_and_control_input() {
     let output = child.wait_with_output().unwrap();
     assert_success(&output);
     let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(ctx["before"], "parent-value");
-    assert_eq!(ctx["after"], "parent-value");
+    assert_eq!(ctx["before"], "");
+    assert_eq!(ctx["after"], "");
     assert_eq!(ctx["child_value"], "child-only");
     assert_eq!(ctx["status"], 19);
-    assert_eq!(
-        ctx["cwd"].as_str().unwrap().trim(),
-        dir.path().join("build").to_str().unwrap()
-    );
+    assert_eq!(ctx["cwd"].as_str().unwrap().trim(), "/work/build");
     assert_eq!(
         std::fs::read_to_string(
-            dir.path()
-                .join("build/copied 'literal' $(touch INJECTED).txt")
+            Path::new(ctx["outputs"]["work"].as_str().unwrap())
+                .join("copied 'literal' $(touch INJECTED).txt")
         )
         .unwrap(),
         "literal argv payload"
     );
-    assert!(!dir.path().join("build/INJECTED").exists());
+    assert!(
+        !Path::new(ctx["outputs"]["work"].as_str().unwrap())
+            .join("INJECTED")
+            .exists()
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("argv stdout"));
     assert!(stderr.contains("argv stderr"));
@@ -84,12 +93,12 @@ fn cli_checked_argv_preserves_arguments_cwd_environment_and_control_input() {
 
 #[test]
 fn cli_checked_command_failure_stops_install_and_retains_diagnostics() {
-    let (dir, recipes) = create_test_env();
+    let (_dir, recipes) = create_test_env();
     command_recipe(
         &recipes,
         r#"
-    exec_checked("sh", ["-c", "printf 'COMMAND_FAILED_DETAIL\\n' >&2; exit 17"], #{cwd: BUILD_DIR, env: #{PRIVATE_OPTION: "must-not-appear-in-errors"}});
-    write_file(join_path(BUILD_DIR, "should-not-exist"), "unexpected install continuation");
+    exec_checked("sh", ["-c", "printf 'COMMAND_FAILED_DETAIL\\n' >&2; exit 17"], #{cwd: RUNTIME.paths.build, env: #{PRIVATE_OPTION: "must-not-appear-in-errors"}});
+    write_file(join_path(RUNTIME.paths.build, "should-not-exist"), "unexpected install continuation");
 "#,
     );
     let output = run_recipe(
@@ -98,7 +107,7 @@ fn cli_checked_command_failure_stops_install_and_retains_diagnostics() {
     );
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
-    assert!(!dir.path().join("build/should-not-exist").exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("COMMAND_FAILURE_PRESERVED"));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("COMMAND_FAILED_DETAIL"));
     assert!(stderr.contains("17"));
@@ -107,12 +116,12 @@ fn cli_checked_command_failure_stops_install_and_retains_diagnostics() {
 
 #[test]
 fn cli_captured_shell_failure_preserves_stderr_and_working_directory() {
-    let (dir, recipes) = create_test_env();
+    let (_dir, recipes) = create_test_env();
     command_recipe(
         &recipes,
         r#"
-    ctx.output = shell_output_in(BUILD_DIR, "printf 'CAPTURED_FAILURE_DETAIL\\n' >&2; exit 29");
-    write_file(join_path(BUILD_DIR, "should-not-exist"), "unexpected continuation");
+    ctx.output = shell_output_in(RUNTIME.paths.build, "printf 'CAPTURED_FAILURE_DETAIL\\n' >&2; exit 29");
+    write_file(join_path(RUNTIME.paths.build, "should-not-exist"), "unexpected continuation");
 "#,
     );
     let output = run_recipe(
@@ -120,24 +129,24 @@ fn cli_captured_shell_failure_preserves_stderr_and_working_directory() {
         &recipes,
     );
     assert!(!output.status.success());
-    assert!(!dir.path().join("build/should-not-exist").exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("COMMAND_FAILURE_PRESERVED"));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("CAPTURED_FAILURE_DETAIL"));
     assert!(stderr.contains("29"));
-    assert!(stderr.contains(dir.path().join("build").to_str().unwrap()));
+    assert!(stderr.contains("/work/build"));
 }
 
 #[test]
-fn cli_legacy_shell_helpers_preserve_status_capture_and_payloads() {
-    let (dir, recipes) = create_test_env();
+fn cli_shell_helpers_preserve_status_capture_and_payloads() {
+    let (_dir, recipes) = create_test_env();
     command_recipe(
         &recipes,
         r#"
-    shell("printf 'legacy shell diagnostic\\n'");
-    shell_in(BUILD_DIR, "printf 'shell payload' > 'legacy payload.txt'");
+    shell("printf 'shell diagnostic\\n'");
+    shell_in(RUNTIME.paths.build, "printf 'shell payload' > 'shell payload.txt'");
     ctx.status = shell_status("exit 7");
-    ctx.missing = shell_status_in(BUILD_DIR, "test -f missing");
-    ctx.payload = shell_output_in(BUILD_DIR, "cat 'legacy payload.txt'");
+    ctx.missing = shell_status_in(RUNTIME.paths.build, "test -f missing");
+    ctx.payload = shell_output_in(RUNTIME.paths.build, "cat 'shell payload.txt'");
     ctx.capture = shell_output("printf 'captured value'");
 "#,
     );
@@ -152,10 +161,13 @@ fn cli_legacy_shell_helpers_preserve_status_capture_and_payloads() {
     assert_eq!(ctx["payload"], "shell payload");
     assert_eq!(ctx["capture"], "captured value");
     assert_eq!(
-        std::fs::read_to_string(dir.path().join("build/legacy payload.txt")).unwrap(),
+        std::fs::read_to_string(
+            Path::new(ctx["outputs"]["work"].as_str().unwrap()).join("shell payload.txt")
+        )
+        .unwrap(),
         "shell payload"
     );
-    assert!(String::from_utf8_lossy(&output.stderr).contains("legacy shell diagnostic"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("shell diagnostic"));
 }
 
 #[test]
@@ -165,9 +177,12 @@ fn cli_command_option_errors_prevent_child_execution() {
         ("#{cwd: \"\"}", "cwd must not be empty"),
         ("#{env: 12}", "env must be a map"),
         ("#{env: #{TASK_VALUE: 12}}", "TASK_VALUE must be a string"),
-        ("#{directory: BUILD_DIR}", "unknown command option"),
+        (
+            "#{directory: RUNTIME.paths.build}",
+            "unknown command option",
+        ),
     ] {
-        let (dir, recipes) = create_test_env();
+        let (_dir, recipes) = create_test_env();
         command_recipe(
             &recipes,
             &format!(r#"exec_checked("sh", ["-c", "printf ran > should-not-exist"], {options});"#),
@@ -178,6 +193,6 @@ fn cli_command_option_errors_prevent_child_execution() {
         );
         assert!(!output.status.success());
         assert!(String::from_utf8_lossy(&output.stderr).contains(message));
-        assert!(!dir.path().join("should-not-exist").exists());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("COMMAND_FAILURE_PRESERVED"));
     }
 }

@@ -2,19 +2,22 @@ use super::*;
 
 #[test]
 fn cli_exec_streams_diagnostics_to_stderr_and_preserves_status_result() {
-    let (dir, recipes) = create_test_env();
+    let (_dir, recipes) = create_test_env();
     write_recipe(
         &recipes,
         "exec-status",
         r#"
-let ctx = #{ name: "exec-status" };
-fn is_installed(ctx) { throw "run requested"; }
-fn is_acquired(ctx) { ctx }
+const RECIPE_API = 2;
+let ctx = #{ name: "exec-status", state: #{installed: false} };
+fn is_installed(ctx) { if ctx.state.installed { return ready(ctx); } needs_work(ctx, "execute child") }
+fn is_acquired(ctx) { ready(ctx) }
+fn is_built(ctx) { ready(ctx) }
 fn install(ctx) {
     ctx.status = exec("sh", ["-c", "printf 'child stdout\\n'; printf 'child stderr\\n' >&2; exit 23"]);
     if ctx.status != 23 { throw "unexpected child status"; }
-    write_file(join_path(BUILD_DIR, "handled-status"), "child failure was handled explicitly");
-    ctx
+    write_file(join_path(RUNTIME.paths.build, "handled-status"), "child failure was handled explicitly");
+    ctx.outputs.work = RUNTIME.paths.build;
+    ctx.state.installed = true; ctx
 }
 
 
@@ -29,7 +32,10 @@ fn install(ctx) {
     assert!(diagnostics.contains("child stdout"));
     assert!(diagnostics.contains("child stderr"));
     assert_eq!(
-        std::fs::read_to_string(dir.path().join("build/handled-status")).unwrap(),
+        std::fs::read_to_string(
+            Path::new(ctx["outputs"]["work"].as_str().unwrap()).join("handled-status")
+        )
+        .unwrap(),
         "child failure was handled explicitly"
     );
 }
@@ -60,19 +66,45 @@ fn cli_large_asset_hash_progress_does_not_corrupt_json() {
             "verify-large",
             &format!(
                 r#"
+const RECIPE_API = 2;
 let ctx = #{{ name: "verify-large", digest: "{digest}" }};
 fn is_installed(ctx) {{
-    {helper}(join_path(RECIPE_DIR, "large.bin"), ctx.digest);
+    {helper}("/inputs/large.bin", ctx.digest);
     ctx.verified = true;
-    ctx
+    ready(ctx)
 }}
 "#
             ),
         );
-        let output = run_recipe(&["isinstalled", "verify-large"], &recipes);
+        let output = recipe_command(&recipes)
+            .args(["isinstalled", "verify-large", "--recipes-path"])
+            .arg(&recipes)
+            .arg("--input")
+            .arg(format!("large.bin={}", recipes.join("large.bin").display()))
+            .output()
+            .unwrap();
         assert_success(&output);
         let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(ctx["verified"], true);
-        assert!(String::from_utf8_lossy(&output.stderr).contains("checksum:"));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let algorithm = if helper == "verify_sha256" {
+            "sha256"
+        } else {
+            "blake3"
+        };
+        assert!(
+            stderr.contains(&format!("verifying {algorithm}")),
+            "{stderr}"
+        );
+        let diagnostics = stderr
+            .lines()
+            .find_map(|line| line.strip_prefix("recipe: diagnostics: "))
+            .expect("invocation exposes its retained diagnostic directory");
+        let raw =
+            std::fs::read_to_string(Path::new(diagnostics).join("supervisor-stderr.log")).unwrap();
+        assert!(
+            raw.contains("checksum:"),
+            "checksum progress missing from retained diagnostics"
+        );
     }
 }
