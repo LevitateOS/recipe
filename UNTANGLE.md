@@ -1155,4 +1155,17 @@ Special cases: **168** at audit start.
   - `AckPayload.generation: Option<u64>` replaces the `UNGROUNDED_GENERATION = 0` sentinel (C31/H27).
   - Still open in X3: H1 (exit-code convention), H2/H3 (worker stdout/stdin writer coupling, the suspect in the intermittent git test), I5/J50–J52, H28, A43. These are concentrated in `launch`/`worker::run` and are taken up with X6.
   - Checks: build clean, CLI snapshots byte-identical. Privileged suite: pending.
+- [~] **X7** Stores that own their layout (first part). Commit: `git log --grep "X7:"`.
+  - `logging.rs` is replaced by `src/invocation_log.rs`, which owns the log directory layout (file-name constants, with `file()` instead of a `pub directory`), a `Status` enum for `result.json`, retention (`RETAINED_INVOCATIONS`) and the staging name of the record temp file. Crash leftovers (a missing or bad record, or a staging temp file) in a leased directory of ours are now pruned by age instead of being kept forever (J43). Cancelled status uses the typed category.
+  - `retained::state_root(Option<&Path>)` is the one state-root resolver (A79/B25/H8), and `retained::default_destination` gives each recipe its own default destination under `<state>/destinations/<hash>` (H20/B72). It is exposed as `levitate_recipe::default_destination`, replacing `default_state_directory`.
+  - `RecipeEngine::with_temporary_destination()` owns a temp destination removed with the engine (B73: `--no-persist-state` no longer leaks a directory per run).
+  - Identity is an exhaustive destructure of `ExecutionOptions`, so a new field must be classified to compile (A60). It hashes the requested hosts and the byte budget, not the DNS-resolved endpoints (J53/J40/B32).
+  - One `Record::validate` serves loading and pruning (A61). The layout names `current.json`, `g-`, `files.tar` and `record.json` are constants (A62).
+  - Pruning old state, logs and scratch is best effort with a warning and never fails the new invocation (J29/J41, requirement 13).
+  - Behavior changes:
+    - Saved state from before this change is not reused: the identity changed, and X3b bumped the protocol.
+    - The default destination path changed.
+    - Unrelated recipes no longer share a lock.
+  - Still open in X7: A65/J44/J46 crash-recovery rules, A71/J36/J37/J57 one leased-pool implementation, J28 commit ordering, J30 root permissions, J33, J54, J55.
+  - Checks: build clean, CLI snapshots byte-identical. Privileged suite: pending.
 

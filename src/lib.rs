@@ -38,8 +38,8 @@ mod helpers;
 pub mod image;
 mod inputs;
 mod launch;
+mod invocation_log;
 mod llm;
-mod logging;
 mod options;
 mod process;
 mod publication;
@@ -51,9 +51,13 @@ pub use backend::GinuxLauncher;
 pub use core::executor::{DeclaredMetadata, declared_metadata};
 pub use options::ExecutionOptions;
 
-/// Default coordinator-owned runtime state directory.
-pub fn default_state_directory() -> anyhow::Result<std::path::PathBuf> {
-    retained::default_directory()
+/// The default destination (lock and saved-state scope) for `recipe` under
+/// `state_dir` (or the per-user application state).
+pub fn default_destination(
+    state_dir: Option<&std::path::Path>,
+    recipe: &std::path::Path,
+) -> anyhow::Result<std::path::PathBuf> {
+    retained::default_destination(&retained::state_root(state_dir)?, recipe)
 }
 
 /// Entry points used only by this crate's own binaries and integration tests.
@@ -114,6 +118,8 @@ pub struct RecipeEngine {
     /// Explicit launcher selection; None resolves mandatory Ginux from the
     /// environment when an operation starts.
     launcher: Option<GinuxLauncher>,
+    /// Owns `build_dir` when it is a throwaway destination; removed on drop.
+    _temporary: Option<tempfile::TempDir>,
 }
 
 impl RecipeEngine {
@@ -130,7 +136,17 @@ impl RecipeEngine {
             llm_profile: None,
             autofix: None,
             launcher: None,
+            _temporary: None,
         }
+    }
+
+    /// An engine whose destination is a fresh directory removed with the engine,
+    /// for invocations that keep no state.
+    pub fn with_temporary_destination() -> Result<Self> {
+        let temporary = tempfile::tempdir().context("cannot create a temporary destination")?;
+        let mut engine = Self::new(temporary.path().to_owned());
+        engine._temporary = Some(temporary);
+        Ok(engine)
     }
 
     /// Configure the required Ginux executable.

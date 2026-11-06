@@ -118,7 +118,10 @@ pub(crate) fn run_domain(
     state_dir: Option<&Path>,
     recipe: &Path,
 ) -> Result<LaunchReport> {
-    let diagnostics = crate::logging::InvocationLog::new(state_dir, &prepared.invocation_id)?;
+    let diagnostics = crate::invocation_log::InvocationLog::new(
+        &crate::retained::state_root(state_dir)?,
+        &prepared.invocation_id,
+    )?;
     let outcome = run_domain_inner(
         prepared,
         operation,
@@ -131,17 +134,31 @@ pub(crate) fn run_domain(
         recipe,
         &diagnostics,
     );
-    let record = match &outcome {
-        Ok(report) => serde_json::json!({"invocation": prepared.invocation_id,
-            "status": if report.result.ok { "succeeded" } else { "workload-failed" },
-            "worker": report.result, "checkpoints": report.generations,
-            "supervisor_outcome": report.result_outcome, "supervisor_code": report.result_code,
-            "log_bytes": report.log_total_bytes, "log_discarded_bytes": report.log_discarded_bytes}),
-        Err(error) => serde_json::json!({"invocation":prepared.invocation_id,
-            "status": if crate::cancellation::signal() != 0 { "cancelled" } else { "failed" },
-            "error":format!("{error:#}")}),
+    use crate::invocation_log::Status;
+    let (status, details) = match &outcome {
+        Ok(report) => (
+            if report.result.ok {
+                Status::Succeeded
+            } else {
+                Status::WorkloadFailed
+            },
+            serde_json::json!({
+                "worker": report.result, "checkpoints": report.generations,
+                "supervisor_outcome": report.result_outcome, "supervisor_code": report.result_code,
+                "log_bytes": report.log_total_bytes, "log_discarded_bytes": report.log_discarded_bytes}),
+        ),
+        Err(error) => (
+            if crate::failure::Category::of(error) == Some(crate::failure::Category::Cancelled)
+                || crate::cancellation::signal() != 0
+            {
+                Status::Cancelled
+            } else {
+                Status::Failed
+            },
+            serde_json::json!({"error": format!("{error:#}")}),
+        ),
     };
-    diagnostics.record(&record)?;
+    diagnostics.record(status, details)?;
     outcome
 }
 
@@ -155,7 +172,7 @@ fn run_domain_inner(
     destination: &Path,
     state_dir: Option<&Path>,
     recipe: &Path,
-    diagnostics: &crate::logging::InvocationLog,
+    diagnostics: &crate::invocation_log::InvocationLog,
 ) -> Result<LaunchReport> {
     let invocation = prepared.invocation_id.clone();
     let timeout = frame_timeout()?;
@@ -247,7 +264,7 @@ fn run_domain_inner(
     if restore {
         command.arg("--restore-file").arg(&restore_path);
     }
-    let mut worker_diagnostics = std::fs::File::create(diagnostics.directory.join("worker.log"))?;
+    let mut worker_diagnostics = std::fs::File::create(diagnostics.file(crate::invocation_log::WORKER_LOG))?;
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -264,7 +281,7 @@ fn run_domain_inner(
     let stdin = child.stdin.take().context(crate::failure::Category::Startup.error("launcher stdin was not piped (refusing host fallback)"))?;
     let stdout = child.stdout.take().context(crate::failure::Category::Startup.error("launcher stdout was not piped (refusing host fallback)"))?;
     let stderr = child.stderr.take().context(crate::failure::Category::Startup.error("launcher stderr was not piped (refusing host fallback)"))?;
-    let log_path = diagnostics.directory.join("supervisor-stderr.log");
+    let log_path = diagnostics.file(crate::invocation_log::SUPERVISOR_LOG);
     let drain = spawn_stderr_drain(stderr, log_path.clone());
 
     let mut worker_started = false;

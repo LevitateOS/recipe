@@ -16,10 +16,28 @@ use std::time::{Duration, Instant};
 /// A saved state is bounded by the request frame that carries it back.
 const MAX_STATE: u64 = crate::worker::protocol::MAX_FRAME_LEN as u64;
 
-pub(crate) fn default_directory() -> Result<PathBuf> {
-    Ok(dirs::state_dir()
-        .context("cannot locate application state; select --state-dir")?
-        .join("recipe"))
+/// The state root: the selected directory, or the per-user application state.
+/// Everything the coordinator keeps (saved state, logs, default destinations)
+/// lives under it.
+pub(crate) fn state_root(selected: Option<&Path>) -> Result<PathBuf> {
+    match selected {
+        Some(path) => Ok(path.to_owned()),
+        None => Ok(dirs::state_dir()
+            .context("cannot locate application state; select --state-dir")?
+            .join("recipe")),
+    }
+}
+
+/// Default destination (lock and scope key) for `recipe` when the caller names
+/// none: one per recipe, so unrelated recipes never share a lock or scope.
+pub(crate) fn default_destination(state_root: &Path, recipe: &Path) -> Result<PathBuf> {
+    let recipe = recipe
+        .canonicalize()
+        .with_context(|| format!("cannot resolve recipe {}", recipe.display()))?;
+    let digest = Sha256::digest(recipe.as_os_str().as_encoded_bytes());
+    Ok(state_root
+        .join("destinations")
+        .join(hex::encode(&digest[..16])))
 }
 
 pub(crate) fn lock_destination(destination: &Path, timeout: Duration) -> Result<File> {
@@ -68,6 +86,45 @@ struct Record {
     states: BTreeMap<String, Value>,
 }
 
+impl Record {
+    /// The one record format rule, for loading and for pruning.
+    fn validate(&self, identity: &str) -> Result<()> {
+        if self.version != 1
+            || self.identity != identity
+            || self.generation == 0
+            || self.sha256.len() != 64
+            || !self.sha256.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            bail!("saved state identity or format mismatch");
+        }
+        let valid_folder = self
+            .archive
+            .strip_suffix(&format!("/{FILES}"))
+            .is_some_and(|folder| {
+                folder.starts_with(&format!("{GENERATION_PREFIX}{}-", self.generation))
+                    && folder.len() <= 64
+                    && folder.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            });
+        if !valid_folder {
+            bail!("invalid saved archive name");
+        }
+        Ok(())
+    }
+
+    /// The generation directory name; valid after [`Self::validate`].
+    fn folder(&self) -> &str {
+        self.archive
+            .strip_suffix(&format!("/{FILES}"))
+            .expect("validated record archive")
+    }
+}
+
+// Saved-state layout under an identity directory.
+const CURRENT: &str = "current.json";
+const GENERATION_PREFIX: &str = "g-";
+const FILES: &str = "files.tar";
+const RECORD: &str = "record.json";
+
 pub(crate) struct Retained {
     directory: PathBuf,
     current: Record,
@@ -90,10 +147,7 @@ impl Retained {
         worker_digest: &str,
         options: &InvocationOptions,
     ) -> Result<Self> {
-        let root = match root {
-            Some(path) => path.to_owned(),
-            None => default_directory()?,
-        };
+        let root = state_root(root)?;
         durable_directory(&root)?;
         let root = root.canonicalize()?;
         let mut scope = Sha256::new();
@@ -121,22 +175,45 @@ impl Retained {
                 )
             })
             .collect::<Vec<_>>();
+        // Every option is either part of the identity or deliberately not:
+        // adding a field to ExecutionOptions fails to compile here until it
+        // is classified.
+        let crate::ExecutionOptions {
+            target_os,
+            target_arch,
+            jobs,
+            memory_mib,
+            storage_max_objects,
+            storage_max_bytes,
+            network_hosts,
+            network_max_bytes,
+            // Presentation, deadlines and main-recipe force flags do not change
+            // what the saved files mean.
+            machine_events: _,
+            timeout_secs: _,
+            force_acquire: _,
+            force_build: _,
+            force_install: _,
+        } = &options.execution;
+        // Requested hosts, not their resolved addresses: a DNS change must
+        // not silently discard saved state.
         let identity = hex::encode(Sha256::digest(serde_json::to_vec(&(
             &format!(
                 "recipe-state-v1-transport-v{}",
                 crate::worker::protocol::PROTOCOL_VERSION
             ),
-            &prepared.network,
+            network_hosts,
+            network_max_bytes,
             &prepared.root_reference,
             worker_digest,
             inputs,
             defines,
-            &options.execution.target_os,
-            &options.execution.target_arch,
-            options.execution.jobs,
-            options.execution.memory_mib,
-            options.execution.storage_max_objects,
-            options.execution.storage_max_bytes,
+            target_os,
+            target_arch,
+            jobs,
+            memory_mib,
+            storage_max_objects,
+            storage_max_bytes,
         ))?));
         let directory = scope.join(&identity);
         crate::fsx::private_dir(&directory, true)?;
@@ -145,7 +222,7 @@ impl Retained {
             .iter()
             .map(|input| crate::domain::input_path(&input.name))
             .collect::<HashSet<_>>();
-        let record_path = directory.join("current.json");
+        let record_path = directory.join(CURRENT);
         let current = match crate::fsx::open_regular(&record_path) {
             Ok(mut file) => {
                 if file.metadata()?.len() > MAX_STATE.min(state_budget as u64) {
@@ -155,26 +232,11 @@ impl Retained {
                 file.read_to_end(&mut bytes)?;
                 let record: Record =
                     serde_json::from_slice(&bytes).context("invalid saved state record")?;
-                if record.version != 1
-                    || record.identity != identity
-                    || record.generation == 0
-                    || record.bytes > options.execution.archive_bound()
-                    || record.sha256.len() != 64
-                    || !record.sha256.bytes().all(|b| b.is_ascii_hexdigit())
-                {
+                record.validate(&identity)?;
+                if record.bytes > options.execution.archive_bound() {
                     bail!("saved state identity or format mismatch");
                 }
-                let Some(folder) = record.archive.strip_suffix("/files.tar") else {
-                    bail!("invalid saved archive name");
-                };
-                if !folder.starts_with(&format!("g-{}-", record.generation))
-                    || folder.len() > 64
-                    || !folder
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-                {
-                    bail!("invalid saved archive name");
-                }
+                let folder = record.folder();
                 if fs::symlink_metadata(directory.join(folder))?
                     .file_type()
                     .is_symlink()
@@ -208,7 +270,7 @@ impl Retained {
             state_budget,
             archive_bound: options.execution.archive_bound(),
         };
-        retained.prune()?;
+        retained.prune_best_effort();
         Ok(retained)
     }
 
@@ -242,9 +304,9 @@ impl Retained {
             .checked_add(1)
             .context("state generation overflow")?;
         let directory = tempfile::Builder::new()
-            .prefix(&format!("g-{generation}-"))
+            .prefix(&format!("{GENERATION_PREFIX}{generation}-"))
             .tempdir_in(&self.directory)?;
-        let path = directory.path().join("files.tar");
+        let path = directory.path().join(FILES);
         if path.as_os_str().as_bytes().len() > 512 {
             bail!("state snapshot destination exceeds launcher path bound");
         }
@@ -275,7 +337,7 @@ impl Retained {
             version: 1,
             identity: self.current.identity.clone(),
             generation: pending.generation,
-            archive: format!("{folder}/files.tar"),
+            archive: format!("{folder}/{FILES}"),
             bytes,
             sha256,
             states,
@@ -288,7 +350,7 @@ impl Retained {
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(pending.directory.path().join("record.json"))?;
+            .open(pending.directory.path().join(RECORD))?;
         history.write_all(&data)?;
         history.sync_all()?;
         File::open(pending.directory.path())?.sync_all()?;
@@ -298,10 +360,10 @@ impl Retained {
         let mut current = tempfile::NamedTempFile::new_in(&self.directory)?;
         current.write_all(&data)?;
         current.as_file().sync_all()?;
-        current.persist(self.directory.join("current.json"))?;
+        current.persist(self.directory.join(CURRENT))?;
         File::open(&self.directory)?.sync_all()?;
         self.current = record;
-        self.prune()?;
+        self.prune_best_effort();
         Ok(self.current.generation)
     }
 
@@ -358,7 +420,8 @@ fn owned_record(path: &Path, identity: &str) -> Option<Record> {
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes).ok()?;
     let record: Record = serde_json::from_slice(&bytes).ok()?;
-    (record.version == 1 && record.identity == identity && record.generation != 0).then_some(record)
+    record.validate(identity).ok()?;
+    Some(record)
 }
 fn generation_files(path: &Path) -> Option<Vec<PathBuf>> {
     let entries = fs::read_dir(path)
@@ -369,7 +432,7 @@ fn generation_files(path: &Path) -> Option<Vec<PathBuf>> {
         || entries.iter().any(|entry| {
             !matches!(
                 entry.file_name().to_str(),
-                Some("files.tar" | "record.json")
+                Some(name) if name == FILES || name == RECORD
             ) || !entry.file_type().is_ok_and(|kind| kind.is_file())
         })
     {
@@ -388,23 +451,31 @@ fn remove_generation(path: &Path) -> Result<bool> {
     Ok(true)
 }
 impl Retained {
+    /// Removing old generations is housekeeping: it never fails the
+    /// invocation that triggered it (the newest pair is already durable).
+    fn prune_best_effort(&self) {
+        if let Err(error) = self.prune() {
+            crate::diagnostics::diag!("recipe: warning: cannot prune saved state: {error:#}");
+        }
+    }
+
     fn prune(&self) -> Result<()> {
         let mut generations = Vec::new();
         let current = self.current.archive.split('/').next().unwrap_or("");
         for entry in fs::read_dir(&self.directory)? {
             let entry = entry?;
             if !entry.file_type()?.is_dir()
-                || !entry.file_name().to_string_lossy().starts_with("g-")
+                || !entry.file_name().to_string_lossy().starts_with(GENERATION_PREFIX)
             {
                 continue;
             }
             if let Some(record) =
-                owned_record(&entry.path().join("record.json"), &self.current.identity)
+                owned_record(&entry.path().join(RECORD), &self.current.identity)
             {
                 generations.push((record.generation, entry.path()));
             } else if entry.file_name() != current
                 && generation_files(&entry.path()).is_some_and(|files| {
-                    files.len() == 1 && files[0].file_name().is_some_and(|name| name == "files.tar")
+                    files.len() == 1 && files[0].file_name().is_some_and(|name| name == FILES)
                 })
             {
                 // A crashed, never-committed pending snapshot; no current record
@@ -439,7 +510,7 @@ impl Retained {
             {
                 continue;
             }
-            let pointer = entry.path().join("current.json");
+            let pointer = entry.path().join(CURRENT);
             if owned_record(&pointer, name).is_some() {
                 identities.push((
                     fs::metadata(&pointer)?.modified()?,
@@ -453,11 +524,11 @@ impl Retained {
             let entries = fs::read_dir(&path)?.collect::<std::io::Result<Vec<_>>>()?;
             // Foreign or manually added data is never recursively removed.
             let owned = entries.iter().all(|entry| {
-                (entry.file_name() == "current.json"
+                (entry.file_name() == CURRENT
                     && entry.file_type().is_ok_and(|kind| kind.is_file()))
                     || (entry.file_type().is_ok_and(|kind| kind.is_dir())
-                        && entry.file_name().to_string_lossy().starts_with("g-")
-                        && owned_record(&entry.path().join("record.json"), &identity).is_some()
+                        && entry.file_name().to_string_lossy().starts_with(GENERATION_PREFIX)
+                        && owned_record(&entry.path().join(RECORD), &identity).is_some()
                         && generation_files(&entry.path()).is_some())
             });
             if !owned {
@@ -468,7 +539,7 @@ impl Retained {
                     remove_generation(&entry.path())?;
                 }
             }
-            fs::remove_file(path.join("current.json"))?;
+            fs::remove_file(path.join(CURRENT))?;
             fs::remove_dir(path)?;
         }
         File::open(&self.directory)?.sync_all()?;

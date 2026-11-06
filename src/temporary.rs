@@ -69,9 +69,11 @@ impl TemporaryDirectory {
                 Ok(()) => {}
                 // Normal Drop may finish removing an entry after read_dir.
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(error).context("cannot remove abandoned recipe scratch directory");
-                }
+                // An earlier invocation's leftovers never fail this one.
+                Err(error) => crate::diagnostics::diag!(
+                    "recipe: warning: cannot remove abandoned scratch {}: {error}",
+                    path.display()
+                ),
             }
         }
         let directory = tempfile::Builder::new()
