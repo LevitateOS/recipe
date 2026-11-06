@@ -1556,6 +1556,53 @@ Special cases: **168** at audit start.
   - Still open in X10: the phase table and single phase block (C12, C13, C19, C20, C44–C48), explicit `RecipeRole` (C24, I6–I12), complete `ExecutionContext` construction (C25–C27), a minimal checkpoint payload (A38, C40, C60, C61, I17), the readiness enum end to end (C64), declared dependency exports instead of BISON/M4 (C43), and C14, C17, C21–C23, C28–C30, C33, C41, C42, C49–C52, C54–C57, C65–C67, C69, E77, I14, I18–I20, I22–I26.
   - X3a follow-up commit (regression caught by the privileged suite): bounding the worker's ack wait by the execution deadline made it `poll()` for up to 3600 s, which Ginux refuses with EPERM, so every checkpointing test failed. The wait is now a series of polls of at most 300 s until the deadline. Archive tests 5/5 pass after the fix.
 
+### Loop 2 (after the K/L re-audit)
+
+Two fresh reviewers who had not seen this log re-audited the code at `1a6f0b4` and found 201 entries (K1–K95 engine side, L1–L106 coordinator side; 40 special cases). Most were second-order effects of fixes that had only had a first pass. Commits: `git log 65dc12b..HEAD`.
+
+- [x] **Regression found by the privileged run at `675309b`** (54 e2e failures): `restored_state_budget` measured a fake install request that carried a cleanup reason, which v7 validation rejects. Every persisted invocation failed. Fixed in `4973e79` (X3b follow-up): the worst case is measured without being validated.
+- [x] **X10 (phase table, roles)** `a76d234`.
+  - `lifecycle::Phase` owns hook/check names and order. Install is `plan()` plus one `run_phase` loop; the three copied phase blocks are gone.
+  - Every operation and dependency loads through `with_recipe` (compile → enter → setup → restore → name). `Runtime` owns its AST and the whole RUNTIME map, and validates the cleanup hook once. `runner.rs`, `state.rs`, `attempt.rs` and the Readiness adapters are deleted.
+  - `persist_state` has one home. `ExecutionContext::new` takes options, work root and saved state up front. One force rule (`ExecutionOptions::forces`). Typed `EngineError`.
+  - Protocol v8: checkpoints drop phase/reason; `FailureInfo {kind, phase, message}` with `fatal` derived. Autofix eligibility is decided from the typed phase.
+  - Fixes: K1–K7, K9–K13, K15–K17, K19–K26, K28–K36, K38, K39, K43–K46, K85 (names), L19, L40, L51–L55, L68, L71, L77, L87, L88, L103.
+  - Behavior changes:
+    - Install reports a forced phase as forced, not as a failed check (K4).
+    - `is_built` is re-checked only after acquire ran (K6).
+    - Post-install verification runs again only when a success cleanup ran (K7).
+    - remove/cleanup/check fall back to the file stem as the recipe name, like install (K11).
+    - `--define deps=…`/`ctx`/`RECIPE_API`/`build_deps` are rejected (K21).
+    - A state-restore failure is a `request` failure, not phase "startup" (L87).
+  - Not changed: K8 (verification after a success cleanup, then failure cleanup) is the behavior `api2::…bad_cleanup_cannot_pass` asserts.
+- [x] **X3/X5 names and bounds** `5483889`.
+  - `domain::valid_name` is the one id/output-name rule (L6, L7, L50 part).
+  - Named Ginux bounds (L9–L11, L38). config.rs's `MAX_PATH` is now `MAX_CONFIG_PATH` (L5 part).
+  - Stale v6/op-4/300 s docs (L1–L3). Autofix cwd docs (L44).
+  - Surplus removed: L69, L72–L76, L79, L80, L82, L84. "refusing host fallback" wording removed (L83). `--autofix-attempts 0` is rejected (L43).
+- [x] **X11/X12** `e28ec7f`.
+  - Helpers register under one name, so error labels match what recipes call (K57). `process::git()` (K64).
+  - Stale docs (K54, K56, K59). Dead LLM fields (K90).
+- [x] **X9** `acad1de`: worker module resolution and autofix base lookup go through `recipes.rs` (K47, K48, L18).
+- [x] **X11** `243bd60`: one expected-digest rule (K66) and one GitHub error mapping (K67).
+- [x] **X5** `9f4c293`: `src/ginux.rs` owns the result record (typed `Outcome`) and the GXS1/GXA1 snapshot exchange with its path bound (L4, L23).
+- [x] **X6** `bff5e91`, `814757d`, `85b45b5`.
+  - `Category::wrap`: storage, protocol and startup categories on the failures that had none (L90).
+  - The frame timeout is read once (L49). The worker request is built once (L60).
+- Leave as is (loop 2):
+  - **K8**: tested behavior, see above.
+  - **K14**: a missing check means "run the phase" in install, but asking for a missing check explicitly is an error. Both are intended.
+  - **K18**: Rhai's `return`/`exit` semantics during setup.
+  - **K37**: BISON/M4/include paths are what the LevitateOS tool recipes need. Making dependencies declare their exports is a recipe-API change outside this crate.
+  - **K41**: a dependency's phase failure is the parent's dependency failure; autofix patches only the main recipe.
+  - **L28**: the three store pruners keep different ownership and age rules (requirement 13: one rule per store). They share only "sort and skip".
+  - **L29** (`temporary`): the scratch pool lives in a shared `/tmp`, so it needs an owner and mode check that `fsx::private_dir` must not impose on publication's existing `.artifacts`.
+  - **L34**: `$CWD/.artifacts/ginux-export` is the superproject's documented output location.
+- Still open after loop 2. Most are local cleanups; the special cases among them (L89, L91, L92–L102, K61–K62, K77, K81, K84, K88, K92) are the next loop's work:
+  - K27, K40, K42, K49–K53, K55, K58, K60–K63, K65, K68–K84, K86–K89, K91–K95;
+  - L12–L17, L20–L22, L24–L27, L30–L33, L35–L37, L39, L45–L48, L56–L59, L61–L67, L70, L78, L81, L85, L86, L89, L91–L102, L104–L106.
+  The CLI-visible ones (L45, L78, L85, L86) are the X4 flag cleanup, which needs the CLI contract change in open question 5.
+
 ### Resume here
 
 - Every fix has had a first pass except **X6** (the run pipeline). The `[~]` entries above list exactly what is still open in each fix.
