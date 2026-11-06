@@ -110,7 +110,7 @@ fn cli_checked_command_failure_stops_install_and_retains_diagnostics() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("COMMAND_FAILURE_PRESERVED"));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("COMMAND_FAILED_DETAIL"));
-    assert!(stderr.contains("17"));
+    assert!(stderr.contains("exit status: 17"), "{stderr}");
     assert!(!stderr.contains("must-not-appear-in-errors"));
 }
 
@@ -132,7 +132,7 @@ fn cli_captured_shell_failure_preserves_stderr_and_working_directory() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("COMMAND_FAILURE_PRESERVED"));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("CAPTURED_FAILURE_DETAIL"));
-    assert!(stderr.contains("29"));
+    assert!(stderr.contains("exit status: 29"), "{stderr}");
     assert!(stderr.contains("/work/build"));
 }
 

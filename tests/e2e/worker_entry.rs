@@ -33,7 +33,7 @@ fn public_cli_worker_environment_never_selects_host_execution() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected argument"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected argument '--backend'"));
     assert!(!sentinel.exists());
     assert_eq!(
         std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),

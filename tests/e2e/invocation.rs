@@ -123,7 +123,6 @@ let ctx = #{name: "reserved-runtime"};
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("RUNTIME is an engine-owned"), "{stderr}");
-    assert!(!recipes.join("unexpected-runtime-setup").exists());
 }
 
 #[test]

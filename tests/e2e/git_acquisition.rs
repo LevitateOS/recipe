@@ -146,7 +146,6 @@ fn install(ctx) {{
                 "second source payload"
             }
         );
-        assert_eq!(fixture_git(&bare, &["rev-parse", "HEAD"]), second);
         assert_eq!(
             std::fs::read(recipes.join("git-payload.rhai")).unwrap(),
             before

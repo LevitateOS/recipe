@@ -987,7 +987,6 @@ fn install(ctx) {
     let output = managed_command(&recipes, "install").output().unwrap();
     assert_success(&output);
     let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(context["state"]["verified_bytes"], 131072);
     assert_eq!(
         std::fs::read(context["outputs"]["proof"].as_str().unwrap()).unwrap(),
         vec![b'x'; 131072]
@@ -1618,9 +1617,10 @@ with tarfile.open(path, 'w') as archive:
         );
         assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");
         let exports = dir.path().join(".artifacts/ginux-export");
-        if exports.exists() {
-            assert_eq!(std::fs::read_dir(exports).unwrap().count(), 0);
-        }
+        assert!(
+            !exports.exists() || std::fs::read_dir(&exports).unwrap().next().is_none(),
+            "a failed publication left outputs behind"
+        );
     }
 }
 

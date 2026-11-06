@@ -1201,4 +1201,24 @@ Special cases: **168** at audit start.
     - the autofix-attempts default is documented (G21).
   - `HELPERS_AUDIT.md`/`recipe-helpers.7`: the `log` owner is corrected (G16), and `github_latest_*` "strips a leading `v`" (D5). The owner paths `helpers/acquire/http.rs` and `helpers/build/extract.rs` are accurate again after X1 (D4).
   - Still open in X15: generate the helper tables from the registry (X11), the remaining restated-contract copies (G12–G14, G19–G24, G26, G28–G33, G38–G42), D56, B80, B81, B91, E97, H11.
+- [~] **X16 / Tests addition** (first part). Commit: `git log --grep "X16:"`.
+  - Removed assertions that cannot fail:
+    - `invocation.rs`: a host path the domain cannot write.
+    - `downloads.rs`: a recipes-dir file the worker cannot create.
+    - `managed_inputs.rs`: a literal the recipe sets itself, echoed back.
+    - `git_acquisition.rs`: the HEAD of a read-only origin.
+  - Made checks specific:
+    - The worker-entry test names the rejected flag.
+    - `--version` must contain the crate version.
+    - The not-found check drops its redundant disjunct.
+    - The exit-code checks match `exit status: N`, not any digits.
+    - The failed-publication check is one unconditional assertion.
+    - Retention checks a range rather than only an upper bound.
+    - The download fixture's thread is joined, not swallowed.
+  - Kept, with reasons:
+    - The "write is denied" catch-all and the loose-OR message checks: the denial is the behavior, and the exact errno text varies.
+    - `query.rs` state assertions: they verify the check returns the ctx with its state.
+    - The `ginux: audit` absence checks: they guard an external contract on purpose.
+  - No ignored doctests remain: the nine `ignore` examples were removed in X1 and X8. There are no unit tests.
+  - Still open in X16: the shared `ManagedCommand` builder and fixtures (F1–F8), tests reading private layouts (F26–F33), literals copied from src (F10–F25), the environment preflight (F37), timing-dependent fixtures (F39–F45), and F52 `cheat-test`.
 

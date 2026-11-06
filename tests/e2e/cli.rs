@@ -39,7 +39,7 @@ fn test_cli_version() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("recipe"));
+    assert!(stdout.contains(env!("CARGO_PKG_VERSION")), "{stdout}");
 }
 
 // =============================================================================
@@ -62,7 +62,7 @@ fn test_cli_install_nonexistent_package() {
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not found") || stderr.contains("Recipe not found"));
+    assert!(stderr.contains("not found"), "{stderr}");
 }
 
 const LIFECYCLE: &str = r#"

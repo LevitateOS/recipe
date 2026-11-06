@@ -168,10 +168,6 @@ fn managed_verified_download_checks_digest_before_publication() {
                 std::fs::read(recipes.join("download-payload.rhai")).unwrap(),
                 source
             );
-            assert!(
-                !recipes.join("payload.dat").exists(),
-                "worker wrote into host recipe inputs"
-            );
         }
     }
 }
@@ -443,8 +439,9 @@ fn managed_redirects_require_destination_grants_and_byte_budget() {
         .args(["--network-max-bytes", "512"])
         .output()
         .unwrap();
-    // The peer may observe closure as soon as the supervisor exhausts the grant.
-    let _ = server.join();
+    // The peer may observe closure as soon as the supervisor exhausts the grant;
+    // that is an I/O result inside the thread, never a panic.
+    server.join().expect("download fixture server panicked");
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("DOWNLOAD_CACHE_PRESERVED"));
 }
