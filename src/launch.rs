@@ -287,12 +287,19 @@ fn run_domain_inner(
     let drain = spawn_stderr_drain(stderr, log_path.clone());
 
     let mut worker_started = false;
-    let pump = pump_protocol(
-        &invocation,
+    let request = RequestPayload {
+        invocation_id: invocation.clone(),
         operation,
-        cleanup_reason,
         persist_state,
-        options,
+        cleanup_reason: cleanup_reason.map(str::to_owned),
+        options: options.clone(),
+        restored_states: retained
+            .as_ref()
+            .map(|state| state.states().clone())
+            .unwrap_or_default(),
+    };
+    let pump = pump_protocol(
+        request,
         stdin,
         stdout,
         &mut retained,
@@ -381,11 +388,7 @@ struct WorkerStream {
 /// `protocol` or `startup` category (see [`classify_stream_error`]); the
 /// caller enriches them with launcher/result-file state.
 fn pump_protocol(
-    invocation: &str,
-    operation: crate::worker::protocol::Operation,
-    cleanup_reason: Option<&str>,
-    persist_state: bool,
-    options: &crate::worker::protocol::InvocationOptions,
+    request: RequestPayload,
     stdin: std::process::ChildStdin,
     stdout: std::process::ChildStdout,
     retained: &mut Option<crate::retained::Retained>,
@@ -398,21 +401,12 @@ fn pump_protocol(
     let mut stdout = DeadlinePipe::new(stdout, timeout)?;
     let mut tx = FrameSender::new();
     let mut rx = FrameReceiver::new();
+    let invocation_id = request.invocation_id.clone();
+    let invocation = invocation_id.as_str();
+    let execution_deadline =
+        Instant::now() + Duration::from_secs(request.options.execution.timeout_secs);
 
-    tx.send(
-        &mut stdin,
-        &FramePayload::Request(RequestPayload {
-            invocation_id: invocation.to_string(),
-            operation,
-            persist_state,
-            cleanup_reason: cleanup_reason.map(str::to_owned),
-            options: options.clone(),
-            restored_states: retained
-                .as_ref()
-                .map(|state| state.states().clone())
-                .unwrap_or_default(),
-        }),
-    )
+    tx.send(&mut stdin, &FramePayload::Request(request))
     .map_err(|err| classify_stream_error(invocation, "send request", err, true))?;
     stdin
         .flush()
@@ -421,7 +415,6 @@ fn pump_protocol(
     let mut checkpoints: u64 = 0;
     let mut generations = Vec::new();
     let mut diagnostic_budget = crate::worker::protocol::DiagnosticBudget::default();
-    let execution_deadline = Instant::now() + Duration::from_secs(options.execution.timeout_secs);
     let result = loop {
         if Instant::now() >= execution_deadline {
             bail!(crate::failure::Category::Deadline.error("supervised execution deadline expired"));
