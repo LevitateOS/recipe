@@ -1764,6 +1764,12 @@ Two fresh reviewers, told to report only problems worth fixing (at most 40 each)
     - N6, N10, N11, N17, N20, N21, N24, N32, N34–N36, N38–N41.
   - **CLI**: N22 and N36 belong to the X4 flag cleanup.
 
+### Verification (final)
+
+- Privileged suite at `a76d234` (lifecycle rewrite) and at `de5d2a7` (HEAD): **e2e 135/135, library_backend 1/1, image_producer 1/1**. That is the baseline's 134 plus the hardlink regression test added in X8. The intermittent git failure from the X1 run did not recur in the X8, `a76d234` or HEAD runs.
+- CLI snapshots differ from the baseline only in the three intended files listed below.
+- `cargo build --all-targets`: no warnings. `deps.py`: no module cycles.
+
 ### Resume here
 
 - **Special cases.** Of the 168 at audit start:
