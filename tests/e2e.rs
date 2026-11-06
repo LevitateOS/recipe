@@ -125,3 +125,6 @@ mod managed_cancellation;
 
 #[path = "e2e/managed_retention.rs"]
 mod managed_retention;
+
+#[path = "e2e/managed_autofix.rs"]
+mod managed_autofix;

@@ -376,7 +376,6 @@ fn run_operation(
             &defines,
             req.persist_state,
             search_path,
-            None,
             &mut exec,
         )
         .map_err(|err| EngineFailure::from_attempt(operation, err))?,

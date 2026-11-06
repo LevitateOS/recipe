@@ -40,6 +40,12 @@ fn validate_patch_protects_lifecycle_functions(cwd: &Path, patch: &str) -> Resul
             continue;
         }
 
+        if let Some(path) = line.strip_prefix("+++ b/") {
+            current_file = Some(path.to_owned());
+            in_hunk = false;
+            continue;
+        }
+
         if let Some((o, _n)) = parser::parse_hunk_header(line) {
             old_line = o;
             in_hunk = true;
@@ -181,6 +187,33 @@ fn validate_patch(cwd: &Path, allow_paths: &[PathBuf], patch: &str) -> Result<()
         }
     }
 
+    let paths = parser::extract_patch_paths(patch);
+    if paths.is_empty() || paths.len() > 32 {
+        bail!("autofix requires between 1 and 32 source paths");
+    }
+    for line in patch.lines() {
+        if line.starts_with("+++ ") || line.starts_with("--- ") {
+            if !(line.starts_with("+++ b/") || line.starts_with("--- a/")) {
+                bail!("autofix supports modifications of existing files with a/ and b/ headers");
+            }
+        }
+    }
+    for relative in paths {
+        if relative.chars().any(char::is_whitespace)
+            || relative.contains('"')
+            || relative.contains('\\')
+        {
+            bail!("autofix patch paths must be unquoted relative source names");
+        }
+        let path = cwd_abs.join(&relative);
+        if !std::fs::symlink_metadata(&path)?.is_file() {
+            bail!("autofix source must be an existing regular file");
+        }
+        let actual = path.canonicalize()?;
+        if !allow_abs.iter().any(|root| actual.starts_with(root)) {
+            bail!("autofix path resolves outside allowed roots: {relative}");
+        }
+    }
     validate_patch_protects_lifecycle_functions(cwd, patch)?;
 
     Ok(())
@@ -215,8 +248,8 @@ fn apply_patch(cwd: &Path, patch: &str) -> Result<()> {
     Ok(())
 }
 
-fn run_llm(prompt: String, cwd: &Path) -> Result<String> {
-    let cfg = crate::llm::resolve_config_for_call().map_err(anyhow::Error::msg)?;
+fn run_llm(prompt: String, cwd: &Path, profile: Option<&str>) -> Result<String> {
+    let cfg = crate::llm::resolve_config_for_call(profile).map_err(anyhow::Error::msg)?;
     let stdin = prompt.into_bytes();
 
     let out = match cfg.default_provider {
@@ -245,6 +278,7 @@ pub(crate) fn run_and_apply(
     defines: &[(String, String)],
     reason: &str,
     failure: &str,
+    profile: Option<&str>,
 ) -> Result<()> {
     let cwd = prompt::detect_cwd(cfg, recipe_path)?;
     let allow_paths = prompt::normalize_allow_paths(&cwd, cfg);
@@ -303,7 +337,7 @@ pub(crate) fn run_and_apply(
         extra_prompt.as_deref(),
     );
 
-    let patch = run_llm(prompt, &cwd).context("LLM invocation failed")?;
+    let patch = run_llm(prompt, &cwd, profile).context("LLM invocation failed")?;
     validate_patch(&cwd, &allow_paths, &patch)?;
     apply_patch(&cwd, &patch)?;
     Ok(())

@@ -63,109 +63,132 @@ impl TeeTarget {
 }
 
 pub(crate) fn run_call(
+    cmd: tokio::process::Command,
+    call: ResolvedCall,
+) -> Result<ProviderResult, String> {
+    let timeout = call.timeout_secs;
+    runtime().block_on(async move {
+        tokio::select! {
+            result = tokio::time::timeout(std::time::Duration::from_secs(timeout), run_inner(cmd,call)) =>
+                result.unwrap_or_else(|_|Err(format!("LLM subprocess timed out after {timeout}s"))),
+            _ = async { loop { tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                if crate::cancellation::signal()!=0 { break; } } } => Err("coordinator repair cancelled".into()),
+        }
+    })
+}
+struct ProcessGroup(u32);
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        unsafe {
+            libc::kill(-(self.0 as i32), libc::SIGKILL);
+        }
+    }
+}
+async fn run_inner(
     mut cmd: tokio::process::Command,
     call: ResolvedCall,
 ) -> Result<ProviderResult, String> {
-    runtime().block_on(async move {
-        use tokio::io::AsyncWriteExt;
+    use tokio::io::AsyncWriteExt;
 
-        cmd.current_dir(&call.cwd);
-        cmd.envs(call.env.iter());
-        cmd.stdin(std::process::Stdio::piped());
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
+    cmd.current_dir(&call.cwd);
+    cmd.envs(call.env.iter());
+    cmd.stdin(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("Failed to spawn LLM subprocess: {e}"))?;
+    if call.stdin.len() > call.max_input_bytes {
+        return Err("LLM input exceeds configured byte limit".into());
+    }
+    cmd.process_group(0).kill_on_drop(true);
+    let parent = unsafe { libc::getpid() };
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::getppid() != parent {
+                libc::_exit(125);
+            }
+            Ok(())
+        });
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn LLM subprocess: {e}"))?;
 
-        let stdin_bytes = call.stdin;
-        if stdin_bytes.len() > call.max_input_bytes {
-            return Err(format!(
-                "LLM input too large (bytes={}, max_input_bytes={})",
-                stdin_bytes.len(),
-                call.max_input_bytes
-            ));
-        }
+    let group = ProcessGroup(child.id().ok_or("provider has no PID")?);
+    let stdin_bytes = call.stdin;
+    if stdin_bytes.len() > call.max_input_bytes {
+        return Err(format!(
+            "LLM input too large (bytes={}, max_input_bytes={})",
+            stdin_bytes.len(),
+            call.max_input_bytes
+        ));
+    }
 
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "Failed to open subprocess stdin".to_owned())?;
-        let write_fut = async move {
-            stdin
-                .write_all(&stdin_bytes)
-                .await
-                .map_err(|e| format!("Failed to write to subprocess stdin: {e}"))?;
-            // Explicit close to signal EOF.
-            stdin
-                .shutdown()
-                .await
-                .map_err(|e| format!("Failed to close subprocess stdin: {e}"))?;
-            Ok::<(), String>(())
-        };
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Failed to open subprocess stdin".to_owned())?;
+    let write_fut = async move {
+        stdin
+            .write_all(&stdin_bytes)
+            .await
+            .map_err(|e| format!("Failed to write to subprocess stdin: {e}"))?;
+        // Explicit close to signal EOF.
+        stdin
+            .shutdown()
+            .await
+            .map_err(|e| format!("Failed to close subprocess stdin: {e}"))?;
+        Ok::<(), String>(())
+    };
 
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "Failed to open subprocess stdout".to_owned())?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| "Failed to open subprocess stderr".to_owned())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to open subprocess stdout".to_owned())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Failed to open subprocess stderr".to_owned())?;
 
-        // Preserve machine-readable stdout for the recipe CLI by teeing all subprocess
-        // output to stderr (shell output, LLM logs, etc).
-        let stdout_tee = call
-            .stream_stdout
-            .then(|| TeeTarget::Stderr(tokio::io::stderr()));
-        let stderr_tee = call
-            .stream_stderr
-            .then(|| TeeTarget::Stderr(tokio::io::stderr()));
-        let stdout_task = tokio::spawn(read_limited(stdout, call.max_output_bytes, stdout_tee));
-        let stderr_task = tokio::spawn(read_limited(stderr, call.max_output_bytes, stderr_tee));
+    // Preserve machine-readable stdout for the recipe CLI by teeing all subprocess
+    // output to stderr (shell output, LLM logs, etc).
+    let stdout_tee = call
+        .stream_stdout
+        .then(|| TeeTarget::Stderr(tokio::io::stderr()));
+    let stderr_tee = call
+        .stream_stderr
+        .then(|| TeeTarget::Stderr(tokio::io::stderr()));
+    let stdout_task = tokio::spawn(read_limited(stdout, call.max_output_bytes, stdout_tee));
+    let stderr_task = tokio::spawn(read_limited(stderr, call.max_output_bytes, stderr_tee));
 
-        // Write stdin first. If this fails, kill and bail.
-        if let Err(e) = write_fut.await {
-            let _ = child.kill().await;
-            return Err(e);
-        }
+    // Write stdin first. If this fails, kill and bail.
+    if let Err(e) = write_fut.await {
+        let _ = child.kill().await;
+        return Err(e);
+    }
 
-        let status = match tokio::time::timeout(
-            std::time::Duration::from_secs(call.timeout_secs),
-            child.wait(),
-        )
+    let status = child
+        .wait()
         .await
-        {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => {
-                let _ = child.kill().await;
-                return Err(format!("Failed waiting for subprocess: {e}"));
-            }
-            Err(_) => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                return Err(format!(
-                    "LLM subprocess timed out after {}s",
-                    call.timeout_secs
-                ));
-            }
-        };
+        .map_err(|e| format!("Failed waiting for subprocess: {e}"))?;
+    // A provider's exited parent cannot leave pipe-holding descendants.
+    drop(group);
 
-        let exit_code = status.code().unwrap_or(1);
+    let exit_code = status.code().unwrap_or(1);
 
-        // Await output readers; if they exceeded limits, surface that.
-        let stdout = stdout_task
-            .await
-            .map_err(|e| format!("Failed joining stdout task: {e}"))??;
-        let stderr = stderr_task
-            .await
-            .map_err(|e| format!("Failed joining stderr task: {e}"))??;
+    // Await output readers; if they exceeded limits, surface that.
+    let stdout = stdout_task
+        .await
+        .map_err(|e| format!("Failed joining stdout task: {e}"))??;
+    let stderr = stderr_task
+        .await
+        .map_err(|e| format!("Failed joining stderr task: {e}"))??;
 
-        Ok(ProviderResult {
-            stdout,
-            stderr,
-            exit_code,
-        })
+    Ok(ProviderResult {
+        stdout,
+        stderr,
+        exit_code,
     })
 }

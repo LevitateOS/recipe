@@ -83,7 +83,7 @@ fn build_extract_prompt(content: &str, task: &str) -> String {
 }
 
 fn run_provider(prompt: String) -> Result<String, Box<EvalAltResult>> {
-    let cfg = crate::llm::resolve_config_for_call().map_err(to_eval_err)?;
+    let cfg = crate::llm::resolve_config_for_call(None).map_err(to_eval_err)?;
     let cwd = current_working_dir()?;
 
     let stdin = prompt.into_bytes();

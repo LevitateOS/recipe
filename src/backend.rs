@@ -87,22 +87,14 @@ impl GinuxLauncher {
                 report.result_outcome,
             );
             if !report.result.ok {
-                let detail = report
-                    .result
-                    .failures
-                    .first()
-                    .map(|failure| {
-                        format!(
-                            "phase={} reason={}: {}",
-                            failure.phase, failure.reason, failure.message
-                        )
-                    })
-                    .unwrap_or_else(|| "worker reported failure without detail".to_string());
-                bail!(
-                    "backend workload failure: `{operation}` failed in the Ginux domain \
-                         (invocation {}): {detail}",
-                    prepared.invocation_id,
-                );
+                let failure = report.failure.as_ref();
+                let first = report.result.failures.first();
+                return Err(anyhow::Error::new(WorkloadFailure {
+                    fatal: failure.map(|failure| failure.fatal).unwrap_or(true),
+                    phase: first.map(|failure|failure.phase.clone()).unwrap_or_default(),
+                    reason: first.map(|failure|failure.reason.clone()).unwrap_or_default(),
+                    message: first.map(|failure|failure.message.clone()).unwrap_or_else(||"worker failed without detail".into()),
+                }).context(format!("backend workload failure: `{operation}` failed in the Ginux domain (invocation {})", prepared.invocation_id)));
             }
             ctx_summary_to_map(&report.result.ctx_summary).map_err(|err| {
                 anyhow!(
@@ -234,3 +226,21 @@ fn is_executable(_path: &Path, meta: &std::fs::Metadata) -> bool {
 fn is_executable(_path: &Path, _meta: &std::fs::Metadata) -> bool {
     true
 }
+
+#[derive(Debug)]
+pub(crate) struct WorkloadFailure {
+    pub fatal: bool,
+    pub phase: String,
+    pub reason: String,
+    pub message: String,
+}
+impl std::fmt::Display for WorkloadFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "phase={} reason={}: {}",
+            self.phase, self.reason, self.message
+        )
+    }
+}
+impl std::error::Error for WorkloadFailure {}

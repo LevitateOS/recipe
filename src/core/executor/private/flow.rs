@@ -38,7 +38,6 @@ pub(crate) fn install_once(
     defines: &[(String, String)],
     persist_state_enabled: bool,
     search_path: Option<&Path>,
-    autofix: Option<&crate::AutoFixConfig>,
     exec: &mut ExecutionContext<'_>,
 ) -> std::result::Result<rhai::Map, InstallAttemptError> {
     let mut compiled =
@@ -183,7 +182,6 @@ pub(crate) fn install_once(
                 search_path,
                 defines,
                 &deps,
-                autofix,
                 persist_state_enabled,
                 exec,
             )
@@ -286,7 +284,6 @@ pub(crate) fn install_once(
                     search_path,
                     defines,
                     &build_deps,
-                    autofix,
                     persist_state_enabled,
                     exec,
                 )

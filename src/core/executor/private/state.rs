@@ -27,13 +27,11 @@ pub(crate) fn resolve_deps(
     search_path: Option<&Path>,
     defines: &[(String, String)],
     dep_names: &[String],
-    autofix: Option<&crate::AutoFixConfig>,
     persist_enabled: bool,
     exec: &mut ExecutionContext<'_>,
 ) -> Result<crate::helpers::internal::cmd::EnvironmentGuard> {
     let original_path = crate::helpers::internal::cmd::environment("PATH").unwrap_or_default();
-    let resolver =
-        build_deps::BuildDepsResolver::new(engine, build_dir, search_path, defines, autofix);
+    let resolver = build_deps::BuildDepsResolver::new(engine, build_dir, search_path, defines);
     let tools_prefix = resolver.resolve_with_context(dep_names, persist_enabled, exec)?;
     let mut paths = vec![
         tools_prefix.join("usr/bin"),

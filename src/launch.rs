@@ -288,6 +288,7 @@ fn run_domain_inner(
     let log_path = diagnostics.directory.join("supervisor-stderr.log");
     let drain = spawn_stderr_drain(stderr, log_path.clone());
 
+    let mut worker_started = false;
     let pump = pump_protocol(
         &invocation,
         &prepared.operation,
@@ -299,6 +300,7 @@ fn run_domain_inner(
         &mut retained,
         &mut control,
         &mut worker_diagnostics,
+        &mut worker_started,
     );
     let mut stream = match pump {
         Ok(stream) => stream,
@@ -318,6 +320,7 @@ fn run_domain_inner(
                 exit,
                 &drained,
                 file_note.as_deref(),
+                worker_started,
             ));
         }
     };
@@ -393,6 +396,7 @@ fn pump_protocol(
     retained: &mut Option<crate::retained::Retained>,
     control: &mut Option<DeadlinePipe<UnixStream>>,
     worker_diagnostics: &mut std::fs::File,
+    worker_started: &mut bool,
 ) -> Result<WorkerStream> {
     let timeout = frame_timeout()?;
     let mut stdin = DeadlinePipe::new(stdin, timeout)?;
@@ -426,13 +430,12 @@ fn pump_protocol(
     let mut diagnostic_frames = 0usize;
     let mut diagnostic_truncated = false;
     let execution_deadline = Instant::now() + Duration::from_secs(options.execution.timeout_secs);
-    let mut started = false;
     let result = loop {
         if Instant::now() >= execution_deadline {
             bail!("backend deadline failure: supervised execution deadline expired");
         }
         stdout.begin_frame(
-            if started {
+            if *worker_started {
                 execution_deadline.saturating_duration_since(Instant::now())
             } else {
                 timeout
@@ -451,7 +454,7 @@ fn pump_protocol(
                  violation: {err} (refusing host fallback)"
                 )
             })?;
-        started = true;
+        *worker_started = true;
         match frame.payload {
             FramePayload::Diagnostic(payload) => {
                 use crate::worker::protocol::{MAX_DIAGNOSTIC_BYTES, MAX_DIAGNOSTIC_FRAMES};
@@ -757,7 +760,7 @@ fn classify_stream_error(
 
 /// Attach launcher exit, drained-log, and result-file state to a stream
 /// error. A `supervisor-error` result file underneath a broken stream
-/// reclassifies the failure as `startup` (the domain never came up); every
+/// distinguishes an unconfirmed startup from a supervisor failure after worker traffic; every
 /// other broken stream stays `protocol` and never success.
 fn enrich_stream_error(
     invocation: &str,
@@ -765,18 +768,27 @@ fn enrich_stream_error(
     exit: Option<i32>,
     drained: &DrainedLog,
     file_note: Option<&str>,
+    worker_started: bool,
 ) -> anyhow::Error {
     let text = format!("{err:#}");
     if let Some(note) = file_note
         && note.contains("\"supervisor-error\"")
         && text.starts_with("backend protocol failure")
     {
+        let category = if worker_started {
+            "supervisor"
+        } else {
+            "startup"
+        };
+        let timing = if worker_started {
+            "after worker execution started"
+        } else {
+            "before worker startup was confirmed"
+        };
         return anyhow!(
-            "backend startup failure: invocation {invocation}: worker stream broke and the \
-             supervisor reports it never started the domain: {text}; launcher exit \
-             {}; log tail: {} (refusing host fallback)",
+            "backend {category} failure: invocation {invocation}: supervisor aborted {timing}: {text}; launcher exit {}; log tail: {}",
             exit_message(exit),
-            drained.tail,
+            drained.tail
         );
     }
     anyhow!(

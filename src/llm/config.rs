@@ -286,10 +286,12 @@ fn load_config_impl() -> Result<LlmToml, String> {
     Ok(merged)
 }
 
-pub(crate) fn resolve_config_for_call() -> Result<ResolvedLlmConfig, String> {
+pub(crate) fn resolve_config_for_call(profile: Option<&str>) -> Result<ResolvedLlmConfig, String> {
     let merged = load_config_impl()?;
 
-    let selected = merged.default_profile.clone();
+    let selected = profile
+        .map(str::to_owned)
+        .or_else(|| merged.default_profile.clone());
 
     let mut effective = merged.clone();
     if let Some(name) = selected {

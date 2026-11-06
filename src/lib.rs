@@ -121,7 +121,7 @@ pub use logging::{
     make_machine_hook_event, set_event_sink, set_event_sink_handler, set_machine_events,
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 /// Configure Recipe's automatic LLM-based repair loop for failed installs.
@@ -267,16 +267,67 @@ impl RecipeEngine {
     ///
     /// Returns the final ctx map containing all recipe state.
     pub fn execute(&self, recipe_path: &Path) -> Result<rhai::Map> {
-        self.launcher()?.run(
-            "install",
-            recipe_path,
-            self.recipes_path.as_deref(),
-            self.persist_state,
-            self.invocation_options("manual")?,
-            &self.inputs,
-            &self.build_dir,
-            self.state_dir.as_deref(),
-        )
+        let attempts = self.autofix.as_ref().map(|cfg| cfg.attempts).unwrap_or(0);
+        if self.autofix.is_some() && !(1..=8).contains(&attempts) {
+            anyhow::bail!("autofix attempts must be between 1 and 8");
+        }
+        let launcher = self.launcher()?;
+        for attempt in 0..=attempts {
+            crate::cancellation::check()?;
+            let result = launcher.run(
+                "install",
+                recipe_path,
+                self.recipes_path.as_deref(),
+                self.persist_state,
+                self.invocation_options("manual")?,
+                &self.inputs,
+                &self.build_dir,
+                self.state_dir.as_deref(),
+            );
+            match result {
+                Ok(ctx) => return Ok(ctx),
+                Err(error) => {
+                    let eligible =
+                        error
+                            .downcast_ref::<backend::WorkloadFailure>()
+                            .filter(|failure| {
+                                !failure.fatal
+                                    && matches!(
+                                        failure.reason.as_str(),
+                                        "auto.build.failure" | "auto.install.failure"
+                                    )
+                            });
+                    let Some(failure) = eligible else {
+                        return Err(error);
+                    };
+                    if attempt == attempts {
+                        return Err(error);
+                    }
+                    let cfg = self
+                        .autofix
+                        .as_ref()
+                        .expect("attempts require explicit autofix");
+                    output::warning(&format!(
+                        "autofix: repairing {} failure (attempt {}/{attempts})",
+                        failure.phase,
+                        attempt + 1
+                    ));
+                    core::autofix::run_and_apply(
+                        cfg,
+                        recipe_path,
+                        self.recipes_path.as_deref(),
+                        &self.defines,
+                        &failure.reason,
+                        &failure.message,
+                        self.llm_profile.as_deref(),
+                    )
+                    .context("coordinator autofix failed")?;
+                    // The next launch rediscovers and hashes all patched inputs;
+                    // saved state from the failed identity is never translated.
+                }
+            }
+        }
+        unreachable!("bounded retry returns on success or final failure")
     }
 
     /// Remove an installed package
@@ -364,11 +415,6 @@ impl RecipeEngine {
         &self,
         cleanup_reason: &str,
     ) -> Result<worker::protocol::InvocationOptions> {
-        if self.autofix.is_some() || self.llm_profile.is_some() {
-            anyhow::bail!(
-                "managed execution does not yet support autofix or LLM profiles; no recipe code was run"
-            );
-        }
         Ok(worker::protocol::InvocationOptions {
             defines: self.defines.clone(),
             cleanup_reason: cleanup_reason.to_owned(),

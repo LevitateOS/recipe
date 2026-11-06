@@ -16,7 +16,6 @@ pub struct BuildDepsResolver<'a> {
     build_dir: &'a Path,
     recipes_path: Option<&'a Path>,
     defines: &'a [(String, String)],
-    autofix: Option<crate::AutoFixConfig>,
 }
 
 impl<'a> BuildDepsResolver<'a> {
@@ -25,14 +24,12 @@ impl<'a> BuildDepsResolver<'a> {
         build_dir: &'a Path,
         recipes_path: Option<&'a Path>,
         defines: &'a [(String, String)],
-        autofix: Option<&crate::AutoFixConfig>,
     ) -> Self {
         Self {
             engine,
             build_dir,
             recipes_path,
             defines,
-            autofix: autofix.cloned(),
         }
     }
 
@@ -76,7 +73,6 @@ impl<'a> BuildDepsResolver<'a> {
                 self.defines,
                 persist_enabled,
                 self.recipes_path,
-                self.autofix.as_ref(),
                 exec,
             ) {
                 Ok(_) => output::hook_event(
