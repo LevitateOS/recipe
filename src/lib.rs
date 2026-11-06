@@ -308,7 +308,7 @@ impl RecipeEngine {
         cleanup_reason: Option<&str>,
         recipe: &Path,
     ) -> Result<serde_json::Value> {
-        launcher.run(&backend::Invocation {
+        launcher.run(&launch::Invocation {
             operation,
             cleanup_reason,
             recipe,

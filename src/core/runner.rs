@@ -1,19 +1,8 @@
 //! Shared runtime helpers for recipe execution and dependency resolution.
 
-use super::invocation::Runtime;
+use super::invocation::{Runtime, has_fn, has_fn_arity};
 use anyhow::{Result, anyhow};
 use rhai::AST;
-
-/// Check whether an AST contains a function by name.
-pub fn has_fn(ast: &AST, name: &str) -> bool {
-    ast.iter_functions().any(|f| f.name == name)
-}
-
-/// Check whether an AST contains a function with the expected arity.
-pub fn has_fn_arity(ast: &AST, name: &str, arity: usize) -> bool {
-    ast.iter_functions()
-        .any(|f| f.name == name && f.params.len() == arity)
-}
 
 /// Execute a phase function that takes and returns `ctx`.
 pub(crate) fn run_phase(

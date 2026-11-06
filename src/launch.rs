@@ -75,6 +75,21 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 const LOG_TAIL_BYTES: usize = 4096;
 
 
+/// One executable operation, as the coordinator runs it.
+pub(crate) struct Invocation<'a> {
+    pub operation: crate::worker::protocol::Operation,
+    /// Present exactly for cleanup.
+    pub cleanup_reason: Option<&'a str>,
+    pub recipe: &'a Path,
+    pub search_path: Option<&'a Path>,
+    pub persist_state: bool,
+    pub options: crate::worker::protocol::InvocationOptions,
+    pub inputs: &'a [crate::inputs::ExtraInput],
+    /// Lock and saved-state scope key.
+    pub destination: &'a Path,
+    pub state_dir: Option<&'a Path>,
+}
+
 /// Outcome of one supervised domain run.
 #[derive(Debug)]
 pub(crate) struct LaunchReport {
@@ -109,7 +124,7 @@ pub(crate) struct LaunchReport {
 /// here evaluates recipe code on the host.
 pub(crate) fn run_domain(
     prepared: &PreparedInvocation,
-    invocation: &crate::backend::Invocation<'_>,
+    invocation: &Invocation<'_>,
     launcher: &Path,
 ) -> Result<LaunchReport> {
     let state_dir = invocation.state_dir;
@@ -148,11 +163,11 @@ pub(crate) fn run_domain(
 
 fn run_domain_inner(
     prepared: &PreparedInvocation,
-    invocation: &crate::backend::Invocation<'_>,
+    invocation: &Invocation<'_>,
     launcher: &Path,
     diagnostics: &crate::invocation_log::InvocationLog,
 ) -> Result<LaunchReport> {
-    let crate::backend::Invocation {
+    let Invocation {
         operation,
         cleanup_reason,
         recipe,

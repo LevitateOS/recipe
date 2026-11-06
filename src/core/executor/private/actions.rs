@@ -50,7 +50,7 @@ pub(crate) fn remove_with_context(
         .and_then(|v| v.clone().into_string().ok())
         .unwrap_or_else(|| "package".to_string());
 
-    if !runner::has_fn(&ast, "remove") {
+    if !crate::core::invocation::has_fn(&ast, "remove") {
         output::hook_event(&name, "remove", crate::core::events::HookStatus::Missing, "required remove hook missing");
         return Err(anyhow!("{} has no remove function", name));
     }
@@ -188,7 +188,7 @@ pub(crate) fn run_check_with_context(
         .and_then(|v| v.clone().into_string().ok())
         .unwrap_or_else(|| "package".to_string());
 
-    if !runner::has_fn(&ast, check_name) {
+    if !crate::core::invocation::has_fn(&ast, check_name) {
         output::hook_event(
             &name,
             &format!("check.{check_name}"),

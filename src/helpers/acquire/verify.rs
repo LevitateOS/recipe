@@ -19,13 +19,20 @@ use rhai::EvalAltResult;
 use std::path::Path;
 
 use super::super::internal::hash::{self, HashAlgorithm};
-use super::http;
 
 pub(super) fn is_valid_sha256(s: &str) -> bool {
     s.len() == 64 && s.as_bytes().iter().all(|b| b.is_ascii_hexdigit())
 }
 
-fn parse_sha256_from_checksum_file(content: &str, filename: &str) -> Option<String> {
+/// Reject a malformed expected digest before any work starts.
+pub(super) fn validate_sha256(sha256: &str) -> Result<(), Box<EvalAltResult>> {
+    if !is_valid_sha256(sha256) {
+        return Err("download SHA256 must contain exactly 64 hexadecimal characters".into());
+    }
+    Ok(())
+}
+
+pub(super) fn parse_sha256_from_checksum_file(content: &str, filename: &str) -> Option<String> {
     for line in content.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -89,29 +96,3 @@ pub fn verify_blake3(path: &str, expected: &str) -> Result<(), Box<EvalAltResult
     hash::verify_file_hash(Path::new(path), expected, HashAlgorithm::Blake3)
 }
 
-/// Fetch a SHA256 checksum from a remote checksum file.
-///
-/// Supported formats:
-/// - `SHA256 (filename) = <hash>`
-/// - `<hash>  filename` (sha256sum)
-///
-/// Throws if no matching checksum is found.
-pub fn fetch_sha256(url: &str, filename: &str) -> Result<String, Box<EvalAltResult>> {
-    let filename = filename.trim();
-    if filename.is_empty() {
-        return Err("filename must not be empty".into());
-    }
-    if filename.contains('\n') || filename.contains('\r') {
-        return Err("filename must not contain newlines".into());
-    }
-
-    output::detail(&format!("fetching sha256 for {} from {}", filename, url));
-    let content = http::http_get(url)?;
-    parse_sha256_from_checksum_file(&content, filename).ok_or_else(|| {
-        format!(
-            "sha256 not found for '{}' in checksum file {}",
-            filename, url
-        )
-        .into()
-    })
-}

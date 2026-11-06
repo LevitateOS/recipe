@@ -1253,4 +1253,11 @@ Special cases: **168** at audit start.
   - What discovery stages and what the worker resolves now follow the same validation (C7, I1): `deps = ["./x"]` is rejected up front with the same message on both sides. The executor no longer accepts absolute or `..` bases, which discovery never staged anyway.
   - The metadata field list is defined once (C15).
   - Still open in X9: worker module resolution from a staged manifest (B6/B8/I2/I15), recursive-extends mismatch (B9), one static AST walker and engine (B10/C58/I4/H22), input kinds as declared properties (B45), the `.git`/`target` exclusion copies (B47), named limits (B48, I16, C59), B52, B53, B74, B75, B78, C4, C6, E76, G43 (comment done in X15), I21, I27.
+- [~] **X10** Lifecycle (first part: dependency graph). Commit: `git log --grep "X10:"`.
+  - `has_fn`/`has_fn_arity` now live in `core::invocation`, which owns AST queries, so the `invocation`↔`runner` cycle is gone (C1).
+  - Two cycles found by rerunning `deps.py` are also gone:
+    - `backend`↔`launch`, introduced by X4: `Invocation` now lives in `launch`, its consumer.
+    - `acquire::{download,http,verify}`, pre-existing and hidden by the old module split: the digest rule moved into `verify` and `fetch_sha256` into `http` (D23).
+  - `deps.py` now reports **no module cycles**.
+  - Still open in X10: the phase table and single phase block (C12, C13, C19, C20, C44–C48), explicit `RecipeRole` (C24, I6–I12), complete `ExecutionContext` construction (C25–C27), a minimal checkpoint payload (A38, C40, C60, C61, I17), the readiness enum end to end (C64), declared dependency exports instead of BISON/M4 (C43), and C14, C17, C21–C23, C28–C30, C33, C41, C42, C49–C52, C54–C57, C65–C67, C69, E77, I14, I18–I20, I22–I26.
 

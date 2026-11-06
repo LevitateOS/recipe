@@ -135,7 +135,7 @@ pub(crate) fn install_once(
         if needs_acquire {
             planned.push("acquire");
         }
-        if needs_build && runner::has_fn(&ast, "build") {
+        if needs_build && crate::core::invocation::has_fn(&ast, "build") {
             planned.push("build");
         }
         planned.push("install");
@@ -254,7 +254,7 @@ pub(crate) fn install_once(
         }
     }
 
-    if needs_build && runner::has_fn(&ast, "build") {
+    if needs_build && crate::core::invocation::has_fn(&ast, "build") {
         // Re-check: does the recipe still need building after acquire ran?
         // (acquire may have updated ctx such that is_built now passes)
         let (still_needs_build, checked_ctx, post_acquire_build_reason) =
@@ -406,7 +406,7 @@ pub(crate) fn install_once(
     }
 
     // Verify installation after success cleanup before reporting completion.
-    let verified = if runner::has_fn_arity(&ast, "is_installed", 1) {
+    let verified = if crate::core::invocation::has_fn_arity(&ast, "is_installed", 1) {
         runner::verify_phase(&mut scope, "is_installed", &ctx_map)
     } else {
         Ok(ctx_map.clone())

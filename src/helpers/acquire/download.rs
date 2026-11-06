@@ -33,7 +33,7 @@ pub fn download(
     sha256: &str,
     resume: bool,
 ) -> Result<String, Box<EvalAltResult>> {
-    validate_sha256(sha256)?;
+    super::verify::validate_sha256(sha256)?;
     super::validate_http_url(url)?;
     let path = Path::new(dest);
     if path.file_name().is_none() {
@@ -52,13 +52,6 @@ pub fn download(
     } else {
         download_impl(url, dest, sha256)
     }
-}
-
-pub(super) fn validate_sha256(sha256: &str) -> Result<(), Box<EvalAltResult>> {
-    if !super::verify::is_valid_sha256(sha256) {
-        return Err("download SHA256 must contain exactly 64 hexadecimal characters".into());
-    }
-    Ok(())
 }
 
 fn download_impl(url: &str, dest: &str, sha256: &str) -> Result<String, Box<EvalAltResult>> {

@@ -145,7 +145,7 @@ pub fn github_download_release(
     dest_dir: &str,
     sha256: &str,
 ) -> Result<String, Box<EvalAltResult>> {
-    super::download::validate_sha256(sha256)?;
+    super::verify::validate_sha256(sha256)?;
     // Get latest release info
     let url = format!("{}/repos/{}/releases/latest", GITHUB_API_BASE, repo);
     let response = github_request(&url)?.call().map_err(|e| {
@@ -208,4 +208,31 @@ pub fn github_download_release(
 
     output::detail(&format!("downloaded {}", asset_name));
     Ok(dest_path.to_string_lossy().to_string())
+}
+
+/// Fetch a SHA256 checksum from a remote checksum file.
+///
+/// Supported formats:
+/// - `SHA256 (filename) = <hash>`
+/// - `<hash>  filename` (sha256sum)
+///
+/// Throws if no matching checksum is found.
+pub fn fetch_sha256(url: &str, filename: &str) -> Result<String, Box<EvalAltResult>> {
+    let filename = filename.trim();
+    if filename.is_empty() {
+        return Err("filename must not be empty".into());
+    }
+    if filename.contains('\n') || filename.contains('\r') {
+        return Err("filename must not contain newlines".into());
+    }
+
+    output::detail(&format!("fetching sha256 for {} from {}", filename, url));
+    let content = http_get(url)?;
+    super::verify::parse_sha256_from_checksum_file(&content, filename).ok_or_else(|| {
+        format!(
+            "sha256 not found for '{}' in checksum file {}",
+            filename, url
+        )
+        .into()
+    })
 }

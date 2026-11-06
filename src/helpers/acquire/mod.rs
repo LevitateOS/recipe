@@ -8,10 +8,11 @@ pub mod verify;
 pub use download::download;
 pub use git::git_checkout;
 pub use http::{
-    github_download_release, github_latest_release, github_latest_tag, http_get, parse_version,
+    fetch_sha256, github_download_release, github_latest_release, github_latest_tag, http_get,
+    parse_version,
 };
 pub use verify::{
-    fetch_sha256, verify_blake3, verify_sha256, verify_sha512,
+    verify_blake3, verify_sha256, verify_sha512,
 };
 
 use rhai::EvalAltResult;

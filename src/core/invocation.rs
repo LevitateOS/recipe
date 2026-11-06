@@ -311,7 +311,7 @@ impl<'a> Runtime<'a> {
     }
 
     pub(crate) fn check(&mut self, name: &str, ctx: &Map) -> Result<Readiness> {
-        if !super::runner::has_fn(self.ast, name) {
+        if !has_fn(self.ast, name) {
             return Ok(Readiness::NeedsWork(
                 ctx.clone(),
                 "check function is missing".into(),
@@ -389,4 +389,15 @@ fn validate_api(ast: &AST) -> Result<()> {
         bail!("Recipe must declare const RECIPE_API = 2");
     }
     Ok(())
+}
+
+/// Check whether an AST contains a function by name.
+pub(crate) fn has_fn(ast: &AST, name: &str) -> bool {
+    ast.iter_functions().any(|f| f.name == name)
+}
+
+/// Check whether an AST contains a function with the expected arity.
+pub(crate) fn has_fn_arity(ast: &AST, name: &str, arity: usize) -> bool {
+    ast.iter_functions()
+        .any(|f| f.name == name && f.params.len() == arity)
 }

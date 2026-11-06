@@ -26,7 +26,7 @@ impl GinuxLauncher {
     /// Prepare immutable inputs, execute in Ginux, and return the final context
     /// only after successful completion and validated publication. Persistence
     /// retains separate state/files pairs; there is no host execution callback.
-    pub(crate) fn run(&self, invocation: &Invocation<'_>) -> Result<serde_json::Value> {
+    pub(crate) fn run(&self, invocation: &crate::launch::Invocation<'_>) -> Result<serde_json::Value> {
         let operation = invocation.operation;
         invocation
             .options
@@ -85,21 +85,6 @@ impl GinuxLauncher {
         }
         Ok(report.result.ctx_summary)
     }
-}
-
-/// One executable operation, as the coordinator runs it.
-pub(crate) struct Invocation<'a> {
-    pub operation: crate::worker::protocol::Operation,
-    /// Present exactly for cleanup.
-    pub cleanup_reason: Option<&'a str>,
-    pub recipe: &'a Path,
-    pub search_path: Option<&'a Path>,
-    pub persist_state: bool,
-    pub options: crate::worker::protocol::InvocationOptions,
-    pub inputs: &'a [crate::inputs::ExtraInput],
-    /// Lock and saved-state scope key.
-    pub destination: &'a Path,
-    pub state_dir: Option<&'a Path>,
 }
 
 /// Resolve the Ginux launcher from `GINUX_BIN` (interfaces §2).
