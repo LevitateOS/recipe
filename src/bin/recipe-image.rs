@@ -37,6 +37,8 @@ struct Manifest {
     version: u32,
     base: Input,
     rust: Input,
+    #[serde(default)]
+    rust_additions: Vec<Input>,
     rust_components: Vec<String>,
     rpms: Vec<Input>,
 }
@@ -57,10 +59,15 @@ fn main() -> Result<()> {
     let manifest: Manifest = serde_json::from_slice(&bytes)?;
     if manifest.version != 1
         || manifest.rpms.len() > 64
+        || manifest.rust_additions.len() > 16
         || manifest.rust_components.len() > 16
         || manifest.rust_components.is_empty()
     {
         bail!("unsupported or oversized image manifest");
+    }
+    let selected_components = manifest.rust_components.iter().collect::<HashSet<_>>();
+    if selected_components.len() != manifest.rust_components.len() {
+        bail!("duplicate selected Rust components");
     }
     let parent = cli
         .output
@@ -80,7 +87,6 @@ fn main() -> Result<()> {
     let input_root = cli.input_root.canonicalize()?;
     let mut total = 0;
     let base = snapshot(&input_root, &manifest.base, scratch.path(), &mut total)?;
-    let rust = snapshot(&input_root, &manifest.rust, scratch.path(), &mut total)?;
     let mut additions = BTreeMap::new();
     let mut expanded = 0;
     for input in &manifest.rpms {
@@ -117,30 +123,32 @@ fn main() -> Result<()> {
             |path| Ok(path.starts_with("usr/").then(|| path.to_owned())),
         )?;
     }
-    let rust_file = rust.reopen()?;
     let mut components = HashSet::new();
-    collect(
-        tar::Archive::new(flate2::read::GzDecoder::new(rust_file)),
-        &mut additions,
-        scratch.path(),
-        &mut expanded,
-        |path| {
-            let parts = path.split('/').collect::<Vec<_>>();
-            if parts.len() < 3
-                || !manifest
-                    .rust_components
-                    .iter()
-                    .any(|component| component == parts[1])
-            {
-                return Ok(None);
-            }
-            components.insert(parts[1].to_owned());
-            if !matches!(parts[2], "bin" | "lib" | "libexec") {
-                return Ok(None);
-            }
-            Ok(Some(format!("usr/{}", parts[2..].join("/"))))
-        },
-    )?;
+    for input in std::iter::once(&manifest.rust).chain(&manifest.rust_additions) {
+        let rust = snapshot(&input_root, input, scratch.path(), &mut total)?;
+        let mut archive_components = HashSet::new();
+        collect(
+            tar::Archive::new(flate2::read::GzDecoder::new(rust.reopen()?)),
+            &mut additions,
+            scratch.path(),
+            &mut expanded,
+            |path| {
+                let parts = path.split('/').collect::<Vec<_>>();
+                if parts.len() < 3 || !selected_components.contains(&parts[1].to_owned()) {
+                    return Ok(None);
+                }
+                if archive_components.insert(parts[1].to_owned())
+                    && !components.insert(parts[1].to_owned())
+                {
+                    bail!("Rust component occurs in multiple inputs: {}", parts[1]);
+                }
+                if !matches!(parts[2], "bin" | "lib" | "libexec") {
+                    return Ok(None);
+                }
+                Ok(Some(format!("usr/{}", parts[2..].join("/"))))
+            },
+        )?;
+    }
     if manifest
         .rust_components
         .iter()
