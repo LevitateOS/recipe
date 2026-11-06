@@ -288,7 +288,8 @@ fn snapshot(
     Ok(copy)
 }
 fn safe_name(path: &Path) -> Result<String> {
-    Ok(image::member_path(path)?
+    Ok(image::member_path(path)
+        .map_err(|_| anyhow::anyhow!("unsafe archive path: {}", path.display()))?
         .to_str()
         .context("non-UTF-8 archive path")?
         .to_owned())

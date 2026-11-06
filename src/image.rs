@@ -38,11 +38,11 @@ pub fn member_path(path: &Path) -> Result<PathBuf> {
         match component {
             Component::CurDir => {}
             Component::Normal(name) => relative.push(name),
-            _ => bail!("unsafe image member path: {}", path.display()),
+            _ => bail!("unsafe rootfs image path: {}", path.display()),
         }
     }
     if relative.as_os_str().len() > MAX_PATH_BYTES {
-        bail!("image member path exceeds {MAX_PATH_BYTES} bytes");
+        bail!("rootfs image path exceeds {MAX_PATH_BYTES} bytes");
     }
     Ok(relative)
 }
@@ -67,30 +67,30 @@ impl Validator {
         link: Option<&Path>,
     ) -> Result<()> {
         if self.members.len() >= MAX_ENTRIES {
-            bail!("image entry limit exceeded");
+            bail!("rootfs image entry limit exceeded");
         }
         if crate::domain::RESERVED_ROOTS
             .iter()
             .any(|name| path.starts_with(name))
         {
-            bail!("image uses reserved invocation path: {}", path.display());
+            bail!("rootfs image uses reserved invocation path: {}", path.display());
         }
         if self.members.contains_key(path) {
-            bail!("duplicate image path: {}", path.display());
+            bail!("duplicate rootfs image path: {}", path.display());
         }
         let file_mode = if kind.is_file() {
             self.unpacked = self
                 .unpacked
                 .checked_add(size)
                 .filter(|total| *total <= MAX_UNPACKED_BYTES)
-                .context("image unpacked size limit exceeded")?;
+                .context("rootfs unpacked size limit exceeded")?;
             Some(installed_mode(mode))
         } else if kind.is_dir() {
             None
         } else if kind.is_symlink() {
-            let target = link.context("image symlink has no target")?;
+            let target = link.context("rootfs symlink has no target")?;
             if target.as_os_str().is_empty() || target.as_os_str().len() > MAX_PATH_BYTES {
-                bail!("invalid image symlink target: {}", path.display());
+                bail!("invalid rootfs symlink target: {}", path.display());
             }
             // Absolute targets are meaningful inside the chroot; relative ones
             // must not climb above the image root.
@@ -101,7 +101,7 @@ impl Validator {
                         Component::Normal(_) => depth += 1,
                         Component::ParentDir if depth > 0 => depth -= 1,
                         Component::ParentDir => {
-                            bail!("image symlink escapes the root: {}", path.display())
+                            bail!("rootfs symlink escapes the image root: {}", path.display())
                         }
                         _ => {}
                     }
@@ -109,18 +109,15 @@ impl Validator {
             }
             None
         } else if kind.is_hard_link() {
-            let target = member_path(link.context("image hardlink has no target")?)?;
+            let target = member_path(link.context("rootfs hardlink has no target")?)?;
             match self.members.get(&target) {
                 Some(Some(target_mode)) if *target_mode == installed_mode(mode) => {}
-                Some(Some(_)) => bail!("image hardlink target mode disagrees: {}", path.display()),
-                _ => bail!(
-                    "image hardlink target must be an earlier regular file: {}",
-                    path.display()
-                ),
+                Some(Some(_)) => bail!("rootfs hardlink target kind or mode disagrees: {}", path.display()),
+                _ => bail!("rootfs hardlink target must be a prior file: {}", path.display()),
             }
             None
         } else {
-            bail!("unsupported image entry type at {}", path.display());
+            bail!("unsupported rootfs image entry type at {}", path.display());
         };
         self.members.insert(path.to_owned(), file_mode);
         Ok(())
