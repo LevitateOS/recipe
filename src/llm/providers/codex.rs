@@ -119,6 +119,5 @@ pub(crate) fn finalize(result: ProviderResult, last_message_path: &Path) -> Resu
         return Err("codex last message file was empty".to_owned());
     }
 
-    // Return as-is (no semantic parsing), just trim trailing whitespace.
     Ok(trimmed.to_owned())
 }

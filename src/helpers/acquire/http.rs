@@ -106,8 +106,6 @@ pub fn github_latest_tag(repo: &str) -> Result<String, Box<EvalAltResult>> {
 
 /// Parse a version string (extract numeric version from string)
 pub fn parse_version(version_str: &str) -> String {
-    // Strip common prefixes like "v" or "release-"
-    // Check longer prefixes first to avoid partial matches
     let s = version_str;
     let s = s.strip_prefix("release-").unwrap_or(s);
     let s = s.strip_prefix("version-").unwrap_or(s);
@@ -136,7 +134,6 @@ pub fn github_download_release(
     sha256: &str,
 ) -> Result<String, Box<EvalAltResult>> {
     super::verify::validate_sha256(sha256)?;
-    // Get latest release info
     let url = format!("{}/repos/{}/releases/latest", GITHUB_API_BASE, repo);
     let response = github_request(&url)?.call().map_err(|e| github_error(repo, e))?;
 

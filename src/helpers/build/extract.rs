@@ -64,11 +64,6 @@ fn normalize_lexical(path: &Path) -> PathBuf {
     out
 }
 
-/// Reject `path` if it or any existing ancestor is a symlink.
-fn ensure_no_symlink_ancestors(path: &Path) -> Result<(), Box<EvalAltResult>> {
-    ensure_no_symlink_components(path, path)
-}
-
 fn ensure_no_symlink_components(dest: &Path, full_path: &Path) -> Result<(), Box<EvalAltResult>> {
     full_path.strip_prefix(dest).map_err(|_| {
         format!(
@@ -147,7 +142,6 @@ fn extract_tar<R: Read>(reader: R, dest: &Path) -> Result<(), Box<EvalAltResult>
     {
         let mut entry = entry.map_err(|e| format!("tar entry error: {}", e))?;
 
-        // Get the path and check for path traversal (clone to avoid borrow issues)
         let path = entry
             .path()
             .map_err(|e| format!("tar path error: {}", e))?
@@ -206,11 +200,8 @@ fn extract_tar<R: Read>(reader: R, dest: &Path) -> Result<(), Box<EvalAltResult>
             }
         }
 
-        // Create parent directories
+        // `full_path`'s ancestors were checked above.
         if let Some(parent) = full_path.parent() {
-            if parent.starts_with(dest) {
-                ensure_no_symlink_components(dest, parent)?;
-            }
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("cannot create directory {}: {}", parent.display(), e))?;
         }
@@ -348,13 +339,11 @@ fn extract_zip(archive_path: &Path, dest: &Path) -> Result<(), Box<EvalAltResult
             std::os::unix::fs::symlink(&target, &outpath)
                 .map_err(|e| format!("cannot create symlink {}: {}", outpath.display(), e))?;
         } else {
-            // Create parent directories
             if let Some(parent) = outpath.parent() {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| format!("cannot create directory {}: {}", parent.display(), e))?;
             }
 
-            // Extract the file
             let mut outfile = std::fs::File::create(&outpath)
                 .map_err(|e| format!("cannot create {}: {}", outpath.display(), e))?;
             std::io::copy(&mut file, &mut outfile)
@@ -423,7 +412,7 @@ pub fn extract_with_format(
     let archive_path = Path::new(archive);
     let dest_path = Path::new(dest);
 
-    ensure_no_symlink_ancestors(dest_path)?;
+    ensure_no_symlink_components(dest_path, dest_path)?;
     // Create destination directory if needed, after validating existing ancestors.
     std::fs::create_dir_all(dest_path)
         .map_err(|e| format!("cannot create destination directory: {}", e))?;
