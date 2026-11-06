@@ -541,8 +541,12 @@ fn wait_readable(timeout: Duration) -> Result<()> {
         events: libc::POLLIN,
         revents: 0,
     };
-    let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as libc::c_int;
+    // Ginux bounds a single poll; longer waits are a series of bounded polls.
+    const MAX_POLL: Duration = Duration::from_secs(300);
+    let mut remaining = timeout;
     loop {
+        let slice = remaining.min(MAX_POLL);
+        let timeout_ms = slice.as_millis() as libc::c_int;
         // Single-threaded stdin wait; EINTR retries.
         let ready = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
         if ready < 0 {
@@ -553,7 +557,11 @@ fn wait_readable(timeout: Duration) -> Result<()> {
             bail!("poll stdin: {err}");
         }
         if ready == 0 {
-            bail!("timed out after {}s", timeout.as_secs());
+            remaining = remaining.saturating_sub(slice);
+            if remaining.is_zero() {
+                bail!("timed out after {}s", timeout.as_secs());
+            }
+            continue;
         }
         if pfd.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
             bail!("stdin not readable (revents {:#x})", pfd.revents);
