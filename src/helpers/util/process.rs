@@ -66,14 +66,14 @@ fn require_command(helper: &str, cmd: &str, note: &str) -> Result<(), Box<EvalAl
         return Ok(());
     }
 
-    Err(format!("helper {helper} requires host command '{cmd}' in PATH; {note}").into())
+    Err(format!("helper {helper} requires '{cmd}' on the domain's PATH; {note}").into())
 }
 
 fn require_rpm(helper: &str) -> Result<(), Box<EvalAltResult>> {
     require_command(
         helper,
         "rpm",
-        "this helper is only usable on RPM-based hosts",
+        "the root image must provide RPM",
     )
 }
 
@@ -81,7 +81,7 @@ fn require_dnf(helper: &str) -> Result<(), Box<EvalAltResult>> {
     require_command(
         helper,
         "dnf",
-        "this helper is only usable on RPM/DNF-based hosts",
+        "the root image must provide DNF",
     )
 }
 
@@ -101,7 +101,7 @@ fn require_privilege_command(helper: &str) -> Result<PrivilegeCommand, Box<EvalA
     }
 
     Err(format!(
-        "helper {helper} requires host command 'sudo' or 'doas' in PATH; this helper requires non-interactive privilege escalation on the host"
+        "helper {helper} must run as root or find 'sudo' or 'doas' on the domain's PATH"
     )
     .into())
 }
@@ -110,7 +110,7 @@ fn require_apk(helper: &str) -> Result<(), Box<EvalAltResult>> {
     require_command(
         helper,
         "apk",
-        "this helper is only usable on Alpine/APK-based hosts",
+        "the root image must provide APK",
     )
 }
 
