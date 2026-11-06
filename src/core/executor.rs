@@ -1,7 +1,7 @@
 //! Recipe executor - install, remove, cleanup operations
 //!
 //! Executes recipes using the ctx pattern where:
-//! - `is_acquired(ctx)`, `is_built(ctx)`, `is_installed(ctx)` throw if phase needed
+//! - `is_acquired(ctx)`, `is_built(ctx)`, `is_installed(ctx)` return ready(ctx) or needs_work(ctx, reason)
 //! - `acquire(ctx)`, `build(ctx)`, `install(ctx)` return updated ctx
 //! - checkpoints send runtime state to the coordinator without source mutation
 

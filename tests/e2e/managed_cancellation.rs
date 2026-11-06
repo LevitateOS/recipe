@@ -197,3 +197,91 @@ fn install(ctx) { print("interrupt-point"); exec_checked("/usr/bin/sleep",["60"]
         .join(record["archive"].as_str().unwrap());
     assert!(snapshot.is_file());
 }
+
+#[test]
+fn managed_finalization_can_outlast_teardown_grace_within_execution_deadline() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, recipes) = create_test_env();
+    write_recipe(
+        &recipes,
+        "check",
+        r#"
+const RECIPE_API = 2;
+let ctx = #{name:"completion-deadline"};
+fn is_acquired(ctx) { ready(ctx) }
+fn is_built(ctx) { ready(ctx) }
+fn is_installed(ctx) {
+    if !is_file("/out/product") { return needs_work(ctx,"create actual product"); }
+    ctx.outputs.product="/out/product"; ready(ctx)
+}
+fn install(ctx) { write_file("/out/product","domain-produced"); ctx }
+"#,
+    );
+    // Exercise the real supervisor/worker and delay only launcher completion.
+    // Final archive export can similarly outlast error-teardown's short grace.
+    let completed = dir.path().join("completion-marker");
+    let launcher = dir.path().join("slow-completion");
+    std::fs::write(
+        &launcher,
+        "#!/bin/sh\n\"$RECIPE_TEST_REAL_GINUX\" \"$@\"\nstatus=$?\nsleep 12\nprintf complete > \"$RECIPE_TEST_COMPLETION_MARKER\"\nexit \"$status\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = command(&recipes, "install")
+        .env(
+            "RECIPE_TEST_REAL_GINUX",
+            std::env::var_os("GINUX_BIN").unwrap(),
+        )
+        .env("GINUX_BIN", launcher)
+        .env("RECIPE_TEST_COMPLETION_MARKER", &completed)
+        .args(["--timeout-secs", "30"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(std::fs::read_to_string(completed).unwrap(), "complete");
+    let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        std::fs::read(ctx["outputs"]["product"].as_str().unwrap()).unwrap(),
+        b"domain-produced"
+    );
+}
+
+#[test]
+fn managed_launcher_failure_after_worker_success_cannot_publish() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, recipes) = create_test_env();
+    write_recipe(
+        &recipes,
+        "check",
+        r#"
+const RECIPE_API = 2;
+let ctx = #{name:"launcher-status"};
+fn is_acquired(ctx) { ready(ctx) }
+fn is_built(ctx) { ready(ctx) }
+fn is_installed(ctx) {
+    if !is_file("/out/product") { return needs_work(ctx,"produce output"); }
+    ctx.outputs.product="/out/product"; ready(ctx)
+}
+fn install(ctx) { write_file("/out/product","actual domain output"); ctx }
+"#,
+    );
+    let launcher = dir.path().join("failed-launcher");
+    std::fs::write(
+        &launcher,
+        "#!/bin/sh\n\"$RECIPE_TEST_REAL_GINUX\" \"$@\" || exit \"$?\"\nexit 37\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = command(&recipes, "install")
+        .env(
+            "RECIPE_TEST_REAL_GINUX",
+            std::env::var_os("GINUX_BIN").unwrap(),
+        )
+        .env("GINUX_BIN", launcher)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("launcher exited with code 37"), "{stderr}");
+    assert!(!dir.path().join(".artifacts/ginux-export").exists());
+}

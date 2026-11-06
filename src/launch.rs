@@ -71,8 +71,8 @@ const MAX_CHECKPOINTS: u64 = 1024;
 /// retained.
 const LOG_CAP_BYTES: u64 = 16 * 1024 * 1024;
 
-/// Grace period for launcher shutdown after the stream ends before it is
-/// killed and reaped.
+/// Grace for teardown after failure/cancellation. Successful final export uses
+/// the remaining supervised execution deadline instead.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
 /// Bytes of log tail attached to failure diagnostics.
@@ -302,12 +302,9 @@ fn run_domain_inner(
     let mut stream = match pump {
         Ok(stream) => stream,
         Err(err) => {
-            if crate::cancellation::signal() != 0 {
-                unsafe {
-                    libc::kill(-(child.id() as i32), crate::cancellation::signal());
-                }
-            }
-            let exit = reap_launcher(&mut child);
+            let exit = reap_launcher(&mut child, Instant::now() + SHUTDOWN_GRACE)
+                .ok()
+                .flatten();
             let _ = worker_diagnostics.sync_all();
             let drained = join_drain(drain);
             let file_note = read_result_file_note(&result_path);
@@ -323,9 +320,12 @@ fn run_domain_inner(
     };
 
     drop(stream.stdin);
-    let exit = reap_launcher(&mut child);
+    // The worker result precedes the supervisor's final archive export. Large
+    // valid exports still belong to execution, not short error teardown.
+    let reaped = reap_launcher(&mut child, stream.execution_deadline);
     let drained = join_drain(drain);
     worker_diagnostics.sync_all()?;
+    let exit = reaped?;
 
     let record = read_result_record(&result_path, &invocation)?;
     check_agreement(&invocation, &stream.result, &record)?;
@@ -376,6 +376,7 @@ struct WorkerStream {
     checkpoints: u64,
     generations: Vec<(u64, u64)>,
     stdin: DeadlinePipe<std::process::ChildStdin>,
+    execution_deadline: Instant,
 }
 
 /// Send the request, relay checkpoint→ack, and collect the exactly-once
@@ -550,6 +551,7 @@ fn pump_protocol(
         checkpoints,
         generations,
         stdin,
+        execution_deadline,
     })
 }
 
@@ -808,34 +810,45 @@ fn exit_message(exit: Option<i32>) -> String {
 // Launcher shutdown
 // ---------------------------------------------------------------------------
 
-/// Reap the launcher: close of stdin already signaled EOF; wait for exit
-/// with a grace period, then kill and reap. Returns the exit code when the
-/// launcher exited normally.
-fn reap_launcher(child: &mut Child) -> Option<i32> {
-    let deadline = Instant::now() + SHUTDOWN_GRACE;
+/// Await actual launcher completion, including its final export. Failure and
+/// interruption use short teardown; successful work keeps its execution budget.
+fn reap_launcher(child: &mut Child, mut deadline: Instant) -> Result<Option<i32>> {
+    let mut interrupted = false;
     loop {
+        let signal = crate::cancellation::signal();
+        if signal != 0 && !interrupted {
+            unsafe {
+                libc::kill(-(child.id() as i32), signal);
+            }
+            interrupted = true;
+            deadline = deadline.min(Instant::now() + SHUTDOWN_GRACE);
+        }
         match child.try_wait() {
             Ok(Some(status)) => {
                 // A malformed launcher may leave a child holding its pipes.
                 unsafe {
                     libc::kill(-(child.id() as i32), libc::SIGKILL);
                 }
-                return status.code();
+                crate::cancellation::check()?;
+                return Ok(status.code());
             }
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    unsafe {
-                        libc::kill(-(child.id() as i32), libc::SIGKILL);
-                    }
-                    child.kill().ok();
-                    return match child.wait() {
-                        Ok(status) => status.code(),
-                        Err(_) => None,
-                    };
-                }
+            Ok(None) if Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(25));
             }
-            Err(_) => return None,
+            result => {
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGKILL);
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                crate::cancellation::check()?;
+                if let Err(error) = result {
+                    return Err(error).context("cannot reap configured launcher");
+                }
+                bail!(
+                    "backend deadline failure: supervised execution deadline expired during finalization"
+                );
+            }
         }
     }
 }
@@ -1041,8 +1054,8 @@ fn check_agreement(invocation: &str, result: &ResultPayload, record: &ResultReco
     if result.ok {
         if record.outcome == "supervisor-error" {
             bail!(
-                "backend startup failure: invocation {invocation} worker reported success but the \
-                 supervisor reports it never started the domain (refusing host fallback)"
+                "backend supervisor failure: invocation {invocation} worker reported success but the \
+                 supervisor failed during finalization (refusing publication)"
             );
         }
         if record.outcome != "exited" || record.code != Some(0) {
@@ -1061,8 +1074,8 @@ fn check_agreement(invocation: &str, result: &ResultPayload, record: &ResultReco
     }
     if record.outcome == "supervisor-error" {
         bail!(
-            "backend startup failure: invocation {invocation} worker reported failure and the \
-             supervisor reports the domain never started (refusing host fallback)"
+            "backend supervisor failure: invocation {invocation} worker reported failure and the \
+             supervisor also failed during finalization (refusing publication)"
         );
     }
     Ok(())
@@ -1079,6 +1092,12 @@ fn check_launcher_exit(
     exit: Option<i32>,
 ) -> Result<()> {
     if result.ok {
+        if exit != Some(0) {
+            bail!(
+                "backend protocol failure: invocation {invocation} worker reported success but launcher exited with {} (refusing publication)",
+                exit_message(exit),
+            );
+        }
         return Ok(());
     }
     if record.outcome == "signaled" {

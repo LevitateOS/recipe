@@ -202,7 +202,7 @@ pub(crate) fn run_check_with_context(
             "{name} is missing required check function `{check_name}(ctx)`",
         ));
         output::detail(
-            "Action: define this check function and return an updated ctx map when the check passes.",
+            "Action: define this check function and return ready(ctx) when ready, or needs_work(ctx, reason) otherwise.",
         );
         return Err(anyhow!("{} has no {} function", name, check_name));
     }
