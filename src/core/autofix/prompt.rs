@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const AUTOFIX_PROMPT: &str = r#"
 You are patching Rhai recipe files for the `recipe` package manager.
@@ -34,11 +33,8 @@ pub(super) fn strip_outer_code_fence(s: String) -> String {
 }
 
 pub(super) fn git_repo_root(from: &Path) -> Option<PathBuf> {
-    let mut command = Command::new("git");
+    let mut command = crate::process::git();
     command.args(["rev-parse", "--show-toplevel"]).current_dir(from);
-    for name in crate::process::GIT_REPOSITORY_LOCATORS {
-        command.env_remove(name);
-    }
     let out = crate::process::Run::new(command).run().ok()?;
     if !out.exit.success() {
         return None;

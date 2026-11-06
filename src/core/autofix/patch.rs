@@ -1,7 +1,6 @@
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use super::{parser, prompt};
 
@@ -227,12 +226,9 @@ fn apply_patch(cwd: &Path, patch: &str) -> Result<()> {
         patch_bytes.push(b'\n');
     }
 
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::process::git();
     cmd.current_dir(cwd)
         .args(["apply", "--whitespace=nowarn", "-"]);
-    for name in crate::process::GIT_REPOSITORY_LOCATORS {
-        cmd.env_remove(name);
-    }
     // Coordinator stdout carries the final JSON, so git output is diagnostics.
     let finished = crate::process::Run::new(cmd)
         .stdin(patch_bytes)

@@ -5,7 +5,7 @@ pub fn log(msg: &str) {
     crate::diagnostics::diag!("[recipe] {}", msg);
 }
 
-/// Log a debug message (only shown in verbose mode)
+/// Log a debug message
 pub fn debug(msg: &str) {
     crate::diagnostics::diag!("[recipe:debug] {}", msg);
 }

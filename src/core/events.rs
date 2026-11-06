@@ -1,7 +1,4 @@
-//! Canonical hook logging contract for recipe lifecycle events.
-//!
-//! String fields are intentionally used instead of enum variants to preserve
-//! forward compatibility with existing hook names.
+//! Hook events: the machine-readable lifecycle record behind `--machine-events`.
 
 use serde::Serialize;
 

@@ -1,4 +1,4 @@
-use crate::llm::provider::{LlmProviderId, ProviderResult, ResolvedCall, ResolvedLlmConfig};
+use crate::llm::provider::{ProviderResult, ResolvedCall, ResolvedLlmConfig};
 use std::path::Path;
 
 fn codex_config_path() -> Option<std::path::PathBuf> {
@@ -38,8 +38,8 @@ pub(crate) fn build(
     let mut cmd = std::process::Command::new(&cfg.codex.bin);
 
     cmd.arg("exec");
-    // Recipe LLM helpers should be pure text transforms of provided input. Disable the shell tool
-    // so Codex doesn't run its own command explorations while "extracting" from provided content.
+    // Autofix sends all context in the prompt and wants only a diff back; without the shell tool
+    // Codex cannot explore or change the checkout itself.
     cmd.args(["--disable", "shell_tool"]);
     for arg in &cfg.codex.args {
         cmd.arg(arg);
@@ -88,8 +88,6 @@ pub(crate) fn build(
     Ok(CodexInvocation {
         cmd,
         call: ResolvedCall {
-            provider: LlmProviderId::Codex,
-            prompt: "<stdin>".to_owned(),
             stdin: stdin_prompt,
             timeout_secs: cfg.timeout_secs,
             max_output_bytes: cfg.max_output_bytes,

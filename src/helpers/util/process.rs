@@ -1,6 +1,6 @@
 //! Execution utilities for recipe scripts
 //!
-//! Provides helpers for running installed packages.
+//! Running programs and package managers inside the domain.
 
 use crate::helpers::internal::cmd;
 use rhai::EvalAltResult;

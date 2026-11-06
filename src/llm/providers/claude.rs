@@ -1,4 +1,4 @@
-use crate::llm::provider::{LlmProviderId, ProviderResult, ResolvedCall, ResolvedLlmConfig};
+use crate::llm::provider::{ProviderResult, ResolvedCall, ResolvedLlmConfig};
 use std::path::Path;
 
 fn has_flag(args: &[String], flag: &str) -> bool {
@@ -48,8 +48,6 @@ pub(crate) fn build(
     Ok(ClaudeInvocation {
         cmd,
         call: ResolvedCall {
-            provider: LlmProviderId::Claude,
-            prompt: "<stdin>".to_owned(),
             stdin: stdin_prompt,
             timeout_secs: cfg.timeout_secs,
             max_output_bytes: cfg.max_output_bytes,

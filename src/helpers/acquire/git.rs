@@ -20,7 +20,7 @@ fn validate_origin(url: &str) -> Result<(), Box<EvalAltResult>> {
 }
 
 fn git(dir: Option<&Path>, args: &[&str]) -> Command {
-    let mut command = Command::new("git");
+    let mut command = crate::process::git();
     // These are HTTP low-speed bounds, not a whole-process timeout.
     command
         .args([
@@ -52,8 +52,9 @@ fn git(dir: Option<&Path>, args: &[&str]) -> Command {
         .env("GIT_NO_REPLACE_OBJECTS", "1")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null");
-    // Inherited repository locators must not redirect this command's writes.
-    for name in crate::process::GIT_REPOSITORY_LOCATORS.into_iter().chain([
+    // Inherited configuration, transport and proxy settings must not change
+    // what this command fetches or trusts.
+    for name in [
         "GIT_CONFIG_PARAMETERS",
         "GIT_CONFIG_COUNT",
         "GIT_TEMPLATE_DIR",
@@ -73,7 +74,7 @@ fn git(dir: Option<&Path>, args: &[&str]) -> Command {
         "http_proxy",
         "https_proxy",
         "all_proxy",
-    ]) {
+    ] {
         command.env_remove(name);
     }
     if let Some(dir) = dir {

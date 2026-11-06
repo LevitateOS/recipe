@@ -9,7 +9,6 @@ const DEFAULT_MAX_INPUT_BYTES: usize = 10 * 1024 * 1024;
 
 #[derive(Debug, Clone, Deserialize, Default)]
 struct LlmToml {
-    version: Option<u32>,
     default_provider: Option<String>,
     default_profile: Option<String>,
     timeout_secs: Option<u64>,
@@ -47,9 +46,6 @@ struct ProviderToml {
 
 impl LlmToml {
     fn merge(&mut self, other: LlmToml) {
-        if other.version.is_some() {
-            self.version = other.version;
-        }
         if other.default_provider.is_some() {
             self.default_provider = other.default_provider;
         }

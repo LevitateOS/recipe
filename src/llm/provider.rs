@@ -43,10 +43,6 @@ pub(crate) struct ResolvedLlmConfig {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedCall {
-    #[allow(dead_code)]
-    pub(crate) provider: LlmProviderId,
-    #[allow(dead_code)]
-    pub(crate) prompt: String,
     pub(crate) stdin: Vec<u8>,
     pub(crate) timeout_secs: u64,
     pub(crate) max_output_bytes: usize,

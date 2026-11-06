@@ -3,10 +3,11 @@
 //! This module contains all the functions available to recipe scripts.
 //! These are the public API that recipe authors use.
 //!
-//! ## Design: All Pure Functions
+//! ## Design: explicit data flow
 //!
-//! All helper functions are PURE - they take explicit inputs and return
-//! explicit outputs, with no hidden state. This makes data flow visible:
+//! Helpers take their inputs as arguments and return their results; paths
+//! come from `RUNTIME`, not from a current directory. Commands, package
+//! managers and the environment overlay are the side effects they exist for.
 //!
 //! ```rhai
 //! // EXPLICIT: you can see where archive comes from and where it goes
@@ -18,7 +19,7 @@
 //! ## Module Organization (by lifecycle phase)
 //!
 //! - **internal**: Internal utilities (NOT exposed to Rhai scripts)
-//!   - cmd, fs_utils, hash, progress, url_utils
+//!   - cmd, fs_utils, hash, progress
 //!
 //! - **acquire**: ACQUIRE phase - getting sources
 //!   - download, verify_sha256/512/blake3, http_get, git_checkout
@@ -47,6 +48,13 @@ pub mod util;
 
 use rhai::Engine;
 
+
+/// Register a fallible helper under `name`; its errors name the same function.
+macro_rules! helper {
+    ($engine:expr, $name:literal, |$($arg:ident : $ty:ty),*| $body:expr) => {
+        $engine.register_fn($name, move |$($arg: $ty),*| helper_result($name, $body))
+    };
+}
 
 /// Register all helper functions with the Rhai engine
 pub fn register_all(engine: &mut Engine) {
@@ -117,71 +125,34 @@ pub fn register_all(engine: &mut Engine) {
     });
 
     // Shell utilities (util/shell)
-    engine.register_fn("shell", |cmd: &str| {
-        helper_result("shell", util::shell(cmd))
-    });
-    engine.register_fn("shell_in", |dir: &str, cmd: &str| {
-        helper_result("shell_in", util::shell_in(dir, cmd))
-    });
+    helper!(engine, "shell", |cmd: &str| util::shell(cmd));
+    helper!(engine, "shell_in", |dir: &str, cmd: &str| util::shell_in(dir, cmd));
     engine.register_fn("shell_status", |cmd: &str| {
         util::shell_status(cmd)
     });
     engine.register_fn("shell_status_in", |dir: &str, cmd: &str| {
         util::shell_status_in(dir, cmd)
     });
-    engine.register_fn("shell_output", |cmd: &str| {
-        helper_result("shell_output", util::shell_output(cmd))
-    });
-    engine.register_fn("shell_output_in", |dir: &str, cmd: &str| {
-        helper_result("shell_output_in", util::shell_output_in(dir, cmd))
-    });
+    helper!(engine, "shell_output", |cmd: &str| util::shell_output(cmd));
+    helper!(engine, "shell_output_in", |dir: &str, cmd: &str| util::shell_output_in(dir, cmd));
 
     // I/O utilities (install/io)
-    engine.register_fn("read_file", |path: &str| {
-        helper_result("read_file", install::read_file(path))
-    });
+    helper!(engine, "read_file", |path: &str| install::read_file(path));
     engine.register_fn("read_file_or_empty", |path: &str| {
         install::read_file_or_empty(path)
     });
-    engine.register_fn("write_file", |path: &str, content: &str| {
-        helper_result("write_file", install::write_file(path, content))
-    });
-    engine.register_fn("append_file", |path: &str, content: &str| {
-        helper_result("append_file", install::append_file(path, content))
-    });
-    engine.register_fn("append_line_if_missing", |path: &str, line: &str| {
-        helper_result(
-            "append_line_if_missing",
-            install::append_line_if_missing(path, line),
-        )
-    });
+    helper!(engine, "write_file", |path: &str, content: &str| install::write_file(path, content));
+    helper!(engine, "append_file", |path: &str, content: &str| install::append_file(path, content));
+    helper!(engine, "append_line_if_missing", |path: &str, line: &str| install::append_line_if_missing(path, line));
     engine.register_fn("glob_list", |pattern: &str| {
         install::glob_list(pattern)
     });
-    engine.register_fn("glob_exists", |pattern: &str| {
-        helper_result("glob_exists", install::glob_exists(pattern))
-    });
-    engine.register_fn("copy_into_dir", |pattern: &str, dest_dir: &str| {
-        helper_result("copy_into_dir", install::copy_into_dir(pattern, dest_dir))
-    });
-    engine.register_fn("copy_file", |src: &str, dst: &str| {
-        helper_result("copy_file", install::copy_file(src, dst))
-    });
-    engine.register_fn("copy_file_reflink", |src: &str, dst: &str| {
-        helper_result("copy_file_reflink", install::copy_file_reflink(src, dst))
-    });
-    engine.register_fn("copy_tree_contents", |src_dir: &str, dst_dir: &str| {
-        helper_result(
-            "copy_tree_contents",
-            install::copy_tree_contents(src_dir, dst_dir),
-        )
-    });
-    engine.register_fn("copy_first_existing", |sources: rhai::Array, dst: &str| {
-        helper_result(
-            "copy_first_existing",
-            install::copy_first_existing(sources, dst),
-        )
-    });
+    helper!(engine, "glob_exists", |pattern: &str| install::glob_exists(pattern));
+    helper!(engine, "copy_into_dir", |pattern: &str, dest_dir: &str| install::copy_into_dir(pattern, dest_dir));
+    helper!(engine, "copy_file", |src: &str, dst: &str| install::copy_file(src, dst));
+    helper!(engine, "copy_file_reflink", |src: &str, dst: &str| install::copy_file_reflink(src, dst));
+    helper!(engine, "copy_tree_contents", |src_dir: &str, dst_dir: &str| install::copy_tree_contents(src_dir, dst_dir));
+    helper!(engine, "copy_first_existing", |sources: rhai::Array, dst: &str| install::copy_first_existing(sources, dst));
 
     // Filesystem utilities (install/filesystem)
     engine.register_fn("exists", |path: &str| {
@@ -193,97 +164,41 @@ pub fn register_all(engine: &mut Engine) {
     engine.register_fn("is_dir", |path: &str| {
         install::is_dir(path)
     });
-    engine.register_fn("mkdir", |path: &str| {
-        helper_result("mkdir", install::mkdir(path))
-    });
-    engine.register_fn("rm", |pattern: &str| {
-        helper_result("rm_files", install::rm_files(pattern))
-    });
-    engine.register_fn("mv", |src: &str, dst: &str| {
-        helper_result("move_file", install::move_file(src, dst))
-    });
-    engine.register_fn("ln", |target: &str, link: &str| {
-        helper_result("symlink", install::symlink(target, link))
-    });
-    engine.register_fn("ln_force", |target: &str, link: &str| {
-        helper_result("symlink_force", install::symlink_force(target, link))
-    });
-    engine.register_fn("chmod", |path: &str, mode: i64| {
-        helper_result("chmod_file", install::chmod_file(path, mode))
-    });
-    engine.register_fn("replace_in_file", |path: &str, from: &str, to: &str| {
-        helper_result("replace_in_file", install::replace_in_file(path, from, to))
-    });
+    helper!(engine, "mkdir", |path: &str| install::mkdir(path));
+    helper!(engine, "rm", |pattern: &str| install::rm_files(pattern));
+    helper!(engine, "mv", |src: &str, dst: &str| install::move_file(src, dst));
+    helper!(engine, "ln", |target: &str, link: &str| install::symlink(target, link));
+    helper!(engine, "ln_force", |target: &str, link: &str| install::symlink_force(target, link));
+    helper!(engine, "chmod", |path: &str, mode: i64| install::chmod_file(path, mode));
+    helper!(engine, "replace_in_file", |path: &str, from: &str, to: &str| install::replace_in_file(path, from, to));
 
     // Acquire helpers (acquire/download, acquire/verify)
     // download(url, dest, sha256[, resume]) -> path string
     // verify_sha256(path, expected) -> () (throws on mismatch)
-    engine.register_fn("download", |url: &str, dest: &str, sha256: &str| {
-        helper_result("download", acquire::download(url, dest, sha256, false))
-    });
-    engine.register_fn(
-        "download",
-        |url: &str, dest: &str, sha256: &str, resume: bool| {
-            helper_result("download", acquire::download(url, dest, sha256, resume))
-        },
-    );
-    engine.register_fn("verify_sha256", |path: &str, expected: &str| {
-        helper_result("verify_sha256", acquire::verify_sha256(path, expected))
-    });
-    engine.register_fn("verify_sha512", |path: &str, expected: &str| {
-        helper_result("verify_sha512", acquire::verify_sha512(path, expected))
-    });
-    engine.register_fn("verify_blake3", |path: &str, expected: &str| {
-        helper_result("verify_blake3", acquire::verify_blake3(path, expected))
-    });
-    engine.register_fn("fetch_sha256", |url: &str, filename: &str| {
-        helper_result("fetch_sha256", acquire::fetch_sha256(url, filename))
-    });
+    helper!(engine, "download", |url: &str, dest: &str, sha256: &str| acquire::download(url, dest, sha256, false));
+    helper!(engine, "download", |url: &str, dest: &str, sha256: &str, resume: bool| acquire::download(url, dest, sha256, resume));
+    helper!(engine, "verify_sha256", |path: &str, expected: &str| acquire::verify_sha256(path, expected));
+    helper!(engine, "verify_sha512", |path: &str, expected: &str| acquire::verify_sha512(path, expected));
+    helper!(engine, "verify_blake3", |path: &str, expected: &str| acquire::verify_blake3(path, expected));
+    helper!(engine, "fetch_sha256", |url: &str, filename: &str| acquire::fetch_sha256(url, filename));
 
     // Build helpers (build/extract)
     // extract(archive, dest) -> ()
     // extract_with_format(archive, dest, format) -> ()
-    engine.register_fn("extract", |archive: &str, dest: &str| {
-        helper_result("extract", build::extract(archive, dest))
-    });
-    engine.register_fn(
-        "extract_with_format",
-        |archive: &str, dest: &str, format: &str| {
-            helper_result(
-                "extract_with_format",
-                build::extract_with_format(archive, dest, format),
-            )
-        },
-    );
+    helper!(engine, "extract", |archive: &str, dest: &str| build::extract(archive, dest));
+    helper!(engine, "extract_with_format", |archive: &str, dest: &str, format: &str| build::extract_with_format(archive, dest, format));
 
     // Environment utilities (util/env)
     engine.register_fn("env", |name: &str| {
         util::get_env(name)
     });
-    engine.register_fn("http_get", |url: &str| {
-        helper_result("http_get", acquire::http_get(url))
-    });
-    engine.register_fn("github_latest_release", |repo: &str| {
-        helper_result(
-            "github_latest_release",
-            acquire::github_latest_release(repo),
-        )
-    });
-    engine.register_fn("github_latest_tag", |repo: &str| {
-        helper_result("github_latest_tag", acquire::github_latest_tag(repo))
-    });
+    helper!(engine, "http_get", |url: &str| acquire::http_get(url));
+    helper!(engine, "github_latest_release", |repo: &str| acquire::github_latest_release(repo));
+    helper!(engine, "github_latest_tag", |repo: &str| acquire::github_latest_tag(repo));
     engine.register_fn("parse_version", |s: &str| {
         acquire::parse_version(s)
     });
-    engine.register_fn(
-        "github_download_release",
-        |repo: &str, pattern: &str, dest: &str, sha256: &str| {
-            helper_result(
-                "github_download_release",
-                acquire::github_download_release(repo, pattern, dest, sha256),
-            )
-        },
-    );
+    helper!(engine, "github_download_release", |repo: &str, pattern: &str, dest: &str, sha256: &str| acquire::github_download_release(repo, pattern, dest, sha256));
     engine.register_fn(
         "check_disk_space",
         |path: &str, required: i64| -> Result<(), Box<rhai::EvalAltResult>> {
@@ -293,107 +208,32 @@ pub fn register_all(engine: &mut Engine) {
     );
 
     // Process execution utilities (util/process)
-    engine.register_fn("exec", |cmd: &str, args: rhai::Array| {
-        helper_result("exec", util::exec(cmd, args))
-    });
-    engine.register_fn(
-        "exec",
-        |cmd: &str, args: rhai::Array, options: rhai::Map| {
-            helper_result(
-                "exec_with_options",
-                util::exec_with_options(cmd, args, options),
-            )
-        },
-    );
-    engine.register_fn("exec_checked", |cmd: &str, args: rhai::Array| {
-        helper_result("exec_checked", util::exec_checked(cmd, args))
-    });
-    engine.register_fn(
-        "exec_checked",
-        |cmd: &str, args: rhai::Array, options: rhai::Map| {
-            helper_result(
-                "exec_checked_with_options",
-                util::exec_checked_with_options(cmd, args, options),
-            )
-        },
-    );
-    engine.register_fn("exec_output", |cmd: &str, args: rhai::Array| {
-        helper_result("exec_output", util::exec_output(cmd, args))
-    });
-    engine.register_fn(
-        "exec_output",
-        |cmd: &str, args: rhai::Array, options: rhai::Map| {
-            helper_result(
-                "exec_output_with_options",
-                util::exec_output_with_options(cmd, args, options),
-            )
-        },
-    );
+    helper!(engine, "exec", |cmd: &str, args: rhai::Array| util::exec(cmd, args));
+    helper!(engine, "exec", |cmd: &str, args: rhai::Array, options: rhai::Map| util::exec_with_options(cmd, args, options));
+    helper!(engine, "exec_checked", |cmd: &str, args: rhai::Array| util::exec_checked(cmd, args));
+    helper!(engine, "exec_checked", |cmd: &str, args: rhai::Array, options: rhai::Map| util::exec_checked_with_options(cmd, args, options));
+    helper!(engine, "exec_output", |cmd: &str, args: rhai::Array| util::exec_output(cmd, args));
+    helper!(engine, "exec_output", |cmd: &str, args: rhai::Array, options: rhai::Map| util::exec_output_with_options(cmd, args, options));
     engine.register_fn("command_exists", |name: &str| {
         util::command_exists(name)
     });
-    engine.register_fn("apk_installed", |name: &str| {
-        helper_result("apk_installed", util::apk_installed(name))
-    });
-    engine.register_fn("apk_version", |name: &str| {
-        helper_result("apk_version", util::apk_version(name))
-    });
-    engine.register_fn("apk_package_available", |name: &str| {
-        helper_result("apk_package_available", util::apk_package_available(name))
-    });
-    engine.register_fn("apk_install", |packages: rhai::Array| {
-        helper_result("apk_install", util::apk_install(packages))
-    });
-    engine.register_fn("apk_add_repo", |url: &str| {
-        helper_result("apk_add_repo", util::apk_add_repo(url))
-    });
-    engine.register_fn("apk_download", |packages: rhai::Array, dest_dir: &str| {
-        helper_result("apk_download", util::apk_download(packages, dest_dir))
-    });
-    engine.register_fn("rpm_installed", |name: &str| {
-        helper_result("rpm_installed", util::rpm_installed(name))
-    });
-    engine.register_fn("rpm_version", |name: &str| {
-        helper_result("rpm_version", util::rpm_version(name))
-    });
-    engine.register_fn("dnf_package_available", |name: &str| {
-        helper_result("dnf_package_available", util::dnf_package_available(name))
-    });
-    engine.register_fn("dnf_install", |packages: rhai::Array| {
-        helper_result("dnf_install", util::dnf_install(packages))
-    });
-    engine.register_fn("dnf_install_allow_erasing", |packages: rhai::Array| {
-        helper_result(
-            "dnf_install_allow_erasing",
-            util::dnf_install_allow_erasing(packages),
-        )
-    });
-    engine.register_fn("dnf_add_repo", |url: &str| {
-        helper_result("dnf_add_repo", util::dnf_add_repo(url))
-    });
-    engine.register_fn(
-        "dnf_download",
-        |packages: rhai::Array, dest_dir: &str, arches: rhai::Array| {
-            helper_result(
-                "dnf_download",
-                util::dnf_download(packages, dest_dir, arches),
-            )
-        },
-    );
-    engine.register_fn(
-        "dnf_download",
-        |packages: rhai::Array, dest_dir: &str, arches: rhai::Array, resolve: bool| {
-            helper_result(
-                "dnf_download_with_resolve",
-                util::dnf_download_with_resolve(packages, dest_dir, arches, resolve),
-            )
-        },
-    );
+    helper!(engine, "apk_installed", |name: &str| util::apk_installed(name));
+    helper!(engine, "apk_version", |name: &str| util::apk_version(name));
+    helper!(engine, "apk_package_available", |name: &str| util::apk_package_available(name));
+    helper!(engine, "apk_install", |packages: rhai::Array| util::apk_install(packages));
+    helper!(engine, "apk_add_repo", |url: &str| util::apk_add_repo(url));
+    helper!(engine, "apk_download", |packages: rhai::Array, dest_dir: &str| util::apk_download(packages, dest_dir));
+    helper!(engine, "rpm_installed", |name: &str| util::rpm_installed(name));
+    helper!(engine, "rpm_version", |name: &str| util::rpm_version(name));
+    helper!(engine, "dnf_package_available", |name: &str| util::dnf_package_available(name));
+    helper!(engine, "dnf_install", |packages: rhai::Array| util::dnf_install(packages));
+    helper!(engine, "dnf_install_allow_erasing", |packages: rhai::Array| util::dnf_install_allow_erasing(packages));
+    helper!(engine, "dnf_add_repo", |url: &str| util::dnf_add_repo(url));
+    helper!(engine, "dnf_download", |packages: rhai::Array, dest_dir: &str, arches: rhai::Array| util::dnf_download(packages, dest_dir, arches));
+    helper!(engine, "dnf_download", |packages: rhai::Array, dest_dir: &str, arches: rhai::Array, resolve: bool| util::dnf_download_with_resolve(packages, dest_dir, arches, resolve));
 
     // Git utilities (acquire/git)
-    engine.register_fn("git_checkout", |url: &str, dest: &str, commit: &str| {
-        helper_result("git_checkout", acquire::git_checkout(url, dest, commit))
-    });
+    helper!(engine, "git_checkout", |url: &str, dest: &str, commit: &str| acquire::git_checkout(url, dest, commit));
 }
 
 // Keep native failures catchable in Rhai, but distinguish them from a recipe's

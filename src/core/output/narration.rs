@@ -4,14 +4,12 @@ use owo_colors::OwoColorize;
 
 use crate::core::events::HookStatus;
 
-/// Print an action header (blue, bold)
-/// Example: "==> Installing ripgrep"
+/// Print an action header (bold)
 pub fn action(message: &str) {
     crate::diagnostics::diag!("{}", message.bold());
 }
 
-/// Print a sub-action (cyan arrow)
-/// Example: "  -> acquire"
+/// Print a sub-action (cyan)
 pub fn sub_action(phase: &str) {
     crate::diagnostics::diag!(
         "{}",
@@ -19,14 +17,12 @@ pub fn sub_action(phase: &str) {
     );
 }
 
-/// Print a detail line (dimmed prefix)
-/// Example: "     downloading https://..."
+/// Print a detail line (dimmed)
 pub fn detail(message: &str) {
     crate::diagnostics::diag!("{}", message.dimmed());
 }
 
 /// Print a success message (green)
-/// Example: "==> ripgrep installed"
 pub fn success(message: &str) {
     crate::diagnostics::diag!("{}", message.green());
 }
@@ -47,7 +43,6 @@ pub fn error(message: &str) {
 }
 
 /// Print a skip message (dimmed)
-/// Example: "==> ripgrep already installed, skipping"
 pub fn skip(message: &str) {
     crate::diagnostics::diag!("{}", message.dimmed());
 }

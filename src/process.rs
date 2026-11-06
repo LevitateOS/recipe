@@ -49,9 +49,18 @@ pub(crate) fn environment(name: &str) -> Option<OsString> {
         .or_else(|| std::env::var_os(name))
 }
 
+/// A `git` command that works on the repository of its working directory:
+/// inherited variables that point git elsewhere are removed.
+pub(crate) fn git() -> std::process::Command {
+    let mut command = std::process::Command::new("git");
+    for name in GIT_REPOSITORY_LOCATORS {
+        command.env_remove(name);
+    }
+    command
+}
+
 /// Variables that point git at a repository other than its working directory.
-/// Every git child this crate starts removes them.
-pub(crate) const GIT_REPOSITORY_LOCATORS: [&str; 6] = [
+const GIT_REPOSITORY_LOCATORS: [&str; 6] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
