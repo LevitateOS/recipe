@@ -1,163 +1,124 @@
-//! Worker-local invocation and dependency state. The coordinator owns the
-//! destination lock and all durable state; this module never rewrites sources.
-use crate::core::executor::CompiledRecipe;
+//! Worker-local invocation state shared by the main recipe and its
+//! dependencies. The coordinator owns the destination lock and all durable
+//! state; this module never rewrites sources.
 use anyhow::{Result, anyhow, bail};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CheckpointPoint {
-    pub phase: &'static str,
-    pub reason: &'static str,
-}
-
-/// Report a checkpoint even when recovery is disabled (acknowledgement 0).
-pub(crate) type CheckpointSink<'a> =
-    dyn FnMut(&CompiledRecipe, &rhai::Map, CheckpointPoint, bool) -> Result<()> + 'a;
+/// Reports one recovery point (a recipe identity and its ctx) to the
+/// coordinator and returns once it is acknowledged.
+pub(crate) type CheckpointSink<'a> = dyn FnMut(&Path, &rhai::Map) -> Result<()> + 'a;
 
 pub(crate) struct ExecutionContext<'a> {
     sink: &'a mut CheckpointSink<'a>,
-    work_root: Option<PathBuf>,
-    active_recipes: Vec<PathBuf>,
-    restored_states: std::collections::BTreeMap<PathBuf, rhai::Map>,
-    resumable: bool,
     options: crate::ExecutionOptions,
+    /// The main recipe's work directory; dependency work lives under it.
+    work_root: PathBuf,
+    /// Saved state was offered and checkpoints are kept for recovery.
+    resumable: bool,
+    /// Recipes being evaluated, main recipe first.
+    active: Vec<PathBuf>,
+    states: BTreeMap<PathBuf, rhai::Map>,
 }
+
 impl<'a> ExecutionContext<'a> {
-    pub(crate) fn worker(sink: &'a mut CheckpointSink<'a>) -> Self {
-        Self {
-            sink,
-            work_root: None,
-            active_recipes: Vec::new(),
-            restored_states: Default::default(),
-            resumable: false,
-            options: Default::default(),
+    pub(crate) fn new(
+        sink: &'a mut CheckpointSink<'a>,
+        options: crate::ExecutionOptions,
+        work_root: &Path,
+        saved: &BTreeMap<String, serde_json::Value>,
+        resumable: bool,
+    ) -> Result<Self> {
+        let mut states = BTreeMap::new();
+        for (path, value) in saved {
+            let state = rhai::serde::to_dynamic(value)?
+                .try_cast::<rhai::Map>()
+                .ok_or_else(|| anyhow!("saved ctx.state must be a map"))?;
+            states.insert(PathBuf::from(path), state);
         }
+        Ok(Self {
+            sink,
+            options,
+            work_root: work_root.to_path_buf(),
+            resumable,
+            active: Vec::new(),
+            states,
+        })
     }
-    pub(crate) fn set_options(&mut self, options: crate::ExecutionOptions) {
-        self.options = options;
-    }
+
+    /// Options for the recipe being evaluated: force flags apply to the main
+    /// recipe only, never to its dependencies.
     pub(crate) fn options(&self) -> crate::ExecutionOptions {
-        if self.active_recipes.len() > 1 {
+        if self.active.len() > 1 {
             self.options.for_dependency()
         } else {
             self.options.clone()
         }
     }
+
     pub(crate) fn resumable(&self) -> bool {
         self.resumable
     }
 
-    pub(crate) fn prepare_work_root(&mut self, build_dir: &Path) {
-        if self.work_root.is_none() {
-            self.work_root = Some(build_dir.to_path_buf());
-        }
-    }
-
-    pub(crate) fn work_root(&self) -> Result<&Path> {
-        self.work_root
-            .as_deref()
-            .ok_or_else(|| anyhow!("missing recipe invocation work root"))
+    pub(crate) fn work_root(&self) -> &Path {
+        &self.work_root
     }
 
     pub(crate) fn current_recipe(&self) -> Option<&Path> {
-        self.active_recipes.last().map(PathBuf::as_path)
+        self.active.last().map(PathBuf::as_path)
     }
 
-    /// Detect cycles before evaluating the next recipe. Every nested
-    /// install shares this invocation's work root and tools destination.
-    pub(crate) fn enter_recipe(&mut self, recipe: &Path, build_dir: &Path) -> Result<()> {
-        if self.active_recipes.iter().any(|active| active == recipe) {
+    /// Start evaluating `recipe`, rejecting cycles and runaway nesting.
+    pub(crate) fn enter(&mut self, recipe: &Path) -> Result<()> {
+        if self.active.iter().any(|active| active == recipe) {
             let chain = self
-                .active_recipes
+                .active
                 .iter()
+                .chain(std::iter::once(&recipe.to_path_buf()))
                 .map(|p| p.display().to_string())
-                .chain(std::iter::once(recipe.display().to_string()))
                 .collect::<Vec<_>>();
+            bail!("Circular recipe dependency detected: {}", chain.join(" -> "));
+        }
+        if self.active.len() >= crate::recipes::MAX_DEPTH {
             bail!(
-                "Circular recipe dependency detected: {}",
-                chain.join(" -> ")
+                "Recipe dependency depth exceeds {} at {}",
+                crate::recipes::MAX_DEPTH,
+                recipe.display()
             );
         }
-        if self.active_recipes.len() >= 64 {
-            bail!("Recipe dependency depth exceeds 64 at {}", recipe.display());
-        }
-        self.prepare_work_root(build_dir);
-        self.active_recipes.push(recipe.to_path_buf());
+        self.active.push(recipe.to_path_buf());
         Ok(())
     }
 
-    pub(crate) fn leave_recipe(&mut self) {
-        self.active_recipes.pop();
-        if self.active_recipes.is_empty() {
-            self.work_root = None;
-        }
+    pub(crate) fn leave(&mut self) {
+        self.active.pop();
     }
 
-    pub(crate) fn restore_states(
-        &mut self,
-        states: &std::collections::BTreeMap<String, serde_json::Value>,
-        enabled: bool,
-    ) -> Result<()> {
-        self.resumable = enabled;
-        for (path, value) in states {
-            let dynamic = rhai::serde::to_dynamic(value)?;
-            let state = dynamic
-                .try_cast::<rhai::Map>()
-                .ok_or_else(|| anyhow!("saved ctx.state must be a map"))?;
-            self.restored_states.insert(PathBuf::from(path), state);
-        }
-        Ok(())
+    pub(crate) fn saved_state(&self, recipe: &Path) -> Option<&rhai::Map> {
+        self.states.get(recipe)
     }
 
-    pub(crate) fn restore_runtime(
-        &self,
-        recipe: &Path,
-        runtime: &mut crate::core::invocation::Runtime<'_>,
-    ) -> Result<()> {
-        if let Some(state) = self.restored_states.get(recipe) {
-            runtime.restore_state(state)?;
-        }
-        Ok(())
-    }
-
-    /// A reused dependency can discover new state in its readiness check.
-    /// Save that state with the same filesystem before the parent continues.
-    pub(crate) fn checkpoint_reused(
-        &mut self,
-        compiled: &mut CompiledRecipe,
-        ctx: &rhai::Map,
-    ) -> Result<()> {
-        if self.resumable {
-            self.persist_checkpoint(
-                compiled,
-                ctx,
-                CheckpointPoint {
-                    phase: "install",
-                    reason: "check:is_installed",
-                },
-                true,
-            )?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn persist_checkpoint(
-        &mut self,
-        compiled: &mut CompiledRecipe,
-        ctx_map: &rhai::Map,
-        point: CheckpointPoint,
-        persist_enabled: bool,
-    ) -> Result<()> {
-        let result = (self.sink)(compiled, ctx_map, point, persist_enabled);
-        if result.is_ok() && self.resumable {
-            if let Some(state) = ctx_map
+    /// Report a recovery point. Every completed phase and cleanup reports one,
+    /// also without persistence, so the coordinator sees each step.
+    pub(crate) fn checkpoint(&mut self, recipe: &Path, ctx: &rhai::Map) -> Result<()> {
+        (self.sink)(recipe, ctx)?;
+        if self.resumable
+            && let Some(state) = ctx
                 .get("state")
                 .and_then(|value| value.clone().try_cast::<rhai::Map>())
-            {
-                self.restored_states
-                    .insert(compiled.recipe_path.clone(), state);
-            }
+        {
+            self.states.insert(recipe.to_path_buf(), state);
         }
-        result
+        Ok(())
+    }
+
+    /// A recipe that is already installed can still discover state in its
+    /// check. Save it, with the matching filesystem, before the parent goes on;
+    /// without persistence there is nothing to save.
+    pub(crate) fn checkpoint_reused(&mut self, recipe: &Path, ctx: &rhai::Map) -> Result<()> {
+        if self.resumable {
+            self.checkpoint(recipe, ctx)?;
+        }
+        Ok(())
     }
 }

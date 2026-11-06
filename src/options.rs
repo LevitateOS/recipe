@@ -91,6 +91,15 @@ impl ExecutionOptions {
     pub(crate) fn forced(&self) -> bool {
         self.force_acquire || self.force_build || self.force_install
     }
+    /// Forcing a phase also forces every later phase: acquire ⇒ build ⇒ install.
+    pub(crate) fn forces(&self, phase: crate::lifecycle::Phase) -> bool {
+        use crate::lifecycle::Phase;
+        match phase {
+            Phase::Acquire => self.force_acquire,
+            Phase::Build => self.force_acquire || self.force_build,
+            Phase::Install => self.forced(),
+        }
+    }
     pub(crate) fn for_dependency(&self) -> Self {
         Self {
             force_acquire: false,

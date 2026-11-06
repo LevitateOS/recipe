@@ -595,7 +595,7 @@ fn static_references(source: &str) -> Result<Vec<(String, bool)>> {
     });
     for statement in ast.statements() {
         if let Stmt::Var(declaration, _, _) = statement {
-            if matches!(declaration.0.name.as_str(), "deps" | "build_deps") {
+            if crate::recipes::DEPENDENCY_FIELDS.contains(&declaration.0.name.as_str()) {
                 match &declaration.1 {
                     Expr::Array(items, _) => {
                         for item in items {

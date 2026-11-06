@@ -383,7 +383,7 @@ impl Retained {
 }
 
 fn validate_states(states: &BTreeMap<String, Value>, allowed: &HashSet<String>) -> Result<()> {
-    if states.len() > 1024
+    if states.len() > crate::worker::protocol::MAX_RESTORED_STATES
         || states
             .iter()
             .any(|(name, value)| !allowed.contains(name) || !value.is_object())

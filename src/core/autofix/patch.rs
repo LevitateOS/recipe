@@ -135,12 +135,13 @@ fn validate_patch(cwd: &Path, allow_paths: &[PathBuf], patch: &str) -> Result<()
         }
 
         // Hard block attempts to (re)define lifecycle check functions.
-        if line.contains("fn is_installed")
-            || line.contains("fn is_built")
-            || line.contains("fn is_acquired")
+        if crate::lifecycle::CHECKS
+            .iter()
+            .any(|check| line.contains(&format!("fn {check}")))
         {
             bail!(
-                "Refusing autofix patch: must not change lifecycle check functions (is_installed/is_built/is_acquired)"
+                "Refusing autofix patch: must not change lifecycle check functions ({})",
+                crate::lifecycle::CHECKS.join("/")
             );
         }
 

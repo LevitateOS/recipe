@@ -110,7 +110,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-                .unwrap_or("manual");
+                .unwrap_or(levitate_recipe::bin_support::DEFAULT_CLEANUP_REASON);
             let ctx = engine.cleanup_with_reason(&recipe_path, cleanup_reason)?;
             emit_json(&ctx, json_output.as_deref())?;
         }

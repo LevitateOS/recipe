@@ -38,6 +38,7 @@ mod helpers;
 pub mod image;
 mod inputs;
 mod launch;
+mod lifecycle;
 mod invocation_log;
 mod llm;
 mod options;
@@ -69,6 +70,8 @@ pub mod bin_support {
     pub use crate::helpers::internal::hash::{FileHashes, compute_all_hashes};
     pub use crate::worker::protocol::{MAX_DIAGNOSTIC_BYTES, MAX_DIAGNOSTIC_FRAMES};
     pub use crate::domain::WORKER_ENTRY_ARG;
+    /// The cleanup reason when the user gives none.
+    pub const DEFAULT_CLEANUP_REASON: &str = crate::lifecycle::CleanupReason::Manual.as_str();
     pub use crate::worker::run_worker;
 }
 
@@ -242,12 +245,13 @@ impl RecipeEngine {
                 Ok(ctx) => return Ok(ctx),
                 Err(error) => error,
             };
+            // Autofix repairs failed build or install phases; acquisition
+            // failures come from inputs a patch cannot fix.
             let failure = error
                 .downcast_ref::<backend::WorkloadFailure>()
+                .map(|failure| &failure.0)
                 .filter(|failure| {
-                    !failure.fatal
-                        && worker::protocol::Reason::parse(&failure.reason)
-                            .is_some_and(worker::protocol::Reason::autofix_eligible)
+                    matches!(failure.phase, Some(lifecycle::Phase::Build | lifecycle::Phase::Install))
                 });
             let Some(failure) = failure.filter(|_| repairs < cfg.attempts) else {
                 return Err(error);
@@ -255,14 +259,14 @@ impl RecipeEngine {
             repairs += 1;
             core::output::warning(&format!(
                 "autofix: repairing {} failure (attempt {repairs}/{})",
-                failure.phase, cfg.attempts
+                failure.phase.map_or("-", lifecycle::Phase::name), cfg.attempts
             ));
             core::autofix::run_and_apply(
                 cfg,
                 recipe_path,
                 self.recipes_path.as_deref(),
                 &self.defines,
-                &failure.reason,
+                failure.reason(),
                 &failure.message,
                 self.llm_profile.as_deref(),
             )

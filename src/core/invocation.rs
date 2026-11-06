@@ -16,37 +16,24 @@ pub(crate) fn engine() -> Engine {
     engine
 }
 
-pub(crate) fn scope(
-    recipe: &Path,
-    base_dir: Option<&Path>,
-    build_dir: Option<&Path>,
-    defines: &[(String, String)],
-    options: &crate::ExecutionOptions,
-) -> PreparedScope {
+/// What the engine supplies to one recipe for one operation.
+pub(crate) struct RuntimeInputs<'x> {
+    pub recipe: &'x Path,
+    pub base_dir: Option<&'x Path>,
+    pub build_dir: &'x Path,
+    pub defines: &'x [(String, String)],
+    pub options: crate::ExecutionOptions,
+    pub operation: &'x str,
+    pub persist_state: bool,
+}
+
+/// The read-only map recipes see as `RUNTIME` and `ctx.runtime`.
+fn runtime_map(inputs: &RuntimeInputs<'_>) -> Map {
+    let text = |path: &Path| Dynamic::from(path.to_string_lossy().into_owned());
     let paths: Map = [
-        (
-            "recipe_dir".into(),
-            recipe
-                .parent()
-                .unwrap_or(Path::new("."))
-                .to_string_lossy()
-                .to_string()
-                .into(),
-        ),
-        (
-            "base_recipe_dir".into(),
-            base_dir
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default()
-                .into(),
-        ),
-        (
-            "build".into(),
-            build_dir
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default()
-                .into(),
-        ),
+        ("recipe_dir".into(), text(inputs.recipe.parent().unwrap_or(Path::new(".")))),
+        ("base_recipe_dir".into(), inputs.base_dir.map_or_else(|| "".into(), text)),
+        ("build".into(), text(inputs.build_dir)),
         ("tools".into(), crate::domain::TOOLS.into()),
         ("inputs".into(), crate::domain::INPUTS.into()),
         ("output".into(), crate::domain::OUT.into()),
@@ -54,45 +41,28 @@ pub(crate) fn scope(
         ("temp".into(), crate::domain::TMP.into()),
     ]
     .into();
-    let jobs = i64::from(options.jobs);
-    let platform: Map = [
-        ("os".into(), std::env::consts::OS.into()),
-        ("arch".into(), std::env::consts::ARCH.into()),
-    ]
-    .into();
-    let runtime: Map = [
-        ("host".into(), platform.clone().into()),
-        (
-            "target".into(),
-            Map::from([
-                ("os".into(), options.target_os.clone().into()),
-                ("arch".into(), options.target_arch.clone().into()),
-            ])
-            .into(),
-        ),
+    let options = &inputs.options;
+    let platform = |os: &str, arch: &str| -> Dynamic {
+        Map::from([("os".into(), os.into()), ("arch".into(), arch.into())]).into()
+    };
+    [
+        ("host".into(), platform(std::env::consts::OS, std::env::consts::ARCH)),
+        ("target".into(), platform(&options.target_os, &options.target_arch)),
         ("paths".into(), paths.into()),
+        ("operation".into(), inputs.operation.into()),
         (
             "options".into(),
             Map::from([
-                ("jobs".into(), jobs.into()),
+                ("jobs".into(), i64::from(options.jobs).into()),
                 ("force_acquire".into(), options.force_acquire.into()),
                 ("force_build".into(), options.force_build.into()),
                 ("force_install".into(), options.force_install.into()),
+                ("persist_state".into(), inputs.persist_state.into()),
             ])
             .into(),
         ),
     ]
-    .into();
-    PreparedScope {
-        runtime,
-        defines: defines.to_vec(),
-    }
-}
-
-/// Canonical invocation inputs are independent of recipe-specific defines.
-pub(crate) struct PreparedScope {
-    runtime: Map,
-    defines: Vec<(String, String)>,
+    .into()
 }
 
 /// The imports and global constants needed by hook calls belong to an invocation,
@@ -100,55 +70,41 @@ pub(crate) struct PreparedScope {
 /// those bindings. The low-level Rhai API is confined here and version-pinned.
 pub(crate) struct Runtime<'a> {
     engine: &'a Engine,
-    ast: &'a AST,
+    ast: AST,
+    /// The recipe defines `cleanup(ctx, reason)`.
+    cleanup: bool,
     scope: Scope<'static>,
     initialized: (GlobalRuntimeState, Caches),
     runtime: serde_json::Value,
 }
 
 impl<'a> Runtime<'a> {
-    pub(crate) fn new(
-        engine: &'a Engine,
-        ast: &'a AST,
-        prepared: PreparedScope,
-        operation: &str,
-        persist_state: bool,
-    ) -> Result<Self> {
-        validate_api(ast)?;
-        let PreparedScope {
-            mut runtime,
-            defines,
-        } = prepared;
-        let mut scope = Scope::new();
-        for (key, value) in defines {
-            if key == "RUNTIME" {
-                bail!("RUNTIME is an engine-owned invocation input");
-            }
-            scope.push_constant(key, value);
+    pub(crate) fn new(engine: &'a Engine, ast: AST, inputs: RuntimeInputs<'_>) -> Result<Self> {
+        validate_api(&ast)?;
+        // Cleanup is optional, but a present hook must take ctx and reason, so
+        // a typo cannot silently disable hygiene.
+        let cleanup = has_fn(&ast, "cleanup");
+        if cleanup && !has_fn_arity(&ast, "cleanup", 2) {
+            bail!("cleanup hook must be cleanup(ctx, reason) (found no 2-arg cleanup)");
         }
-        let expected_runtime = {
-            let paths = runtime["paths"].clone().cast::<Map>();
-            if paths["build"]
-                .clone()
-                .into_string()
-                .map_or(true, |s| s.is_empty())
+        let mut scope = Scope::new();
+        for (key, value) in inputs.defines {
+            if crate::recipes::RESERVED_NAMES.contains(&key.as_str()) {
+                bail!("--define {key} names an engine-owned recipe binding");
+            }
+            scope.push_constant(key.as_str(), value.clone());
+        }
+        for statement in ast.statements() {
+            if let Stmt::Var(declaration, _, _) = statement
+                && declaration.0.name == "RUNTIME"
             {
-                bail!("invocation is missing its engine-supplied build directory");
+                bail!("RUNTIME is an engine-owned API 2 constant; do not redeclare it");
             }
-            for statement in ast.statements() {
-                if let Stmt::Var(declaration, _, _) = statement {
-                    if declaration.0.name == "RUNTIME" {
-                        bail!("RUNTIME is an engine-owned API 2 constant; do not redeclare it");
-                    }
-                }
-            }
-            runtime.insert("operation".into(), operation.into());
-            let mut options = runtime["options"].clone().cast::<Map>();
-            options.insert("persist_state".into(), persist_state.into());
-            runtime.insert("options".into(), options.into());
+        }
+        let runtime = runtime_map(&inputs);
+        let expected_runtime =
             rhai::serde::from_dynamic::<serde_json::Value>(&runtime.clone().into())
-                .map_err(|e| anyhow!("Invalid invocation inputs: {e}"))?
-        };
+                .map_err(|e| anyhow!("Invalid invocation inputs: {e}"))?;
         let initialized = {
             let mut global = engine.new_global_runtime_state();
             global.lib.push(ast.shared_lib().clone());
@@ -213,6 +169,7 @@ impl<'a> Runtime<'a> {
         Ok(Self {
             engine,
             ast,
+            cleanup,
             scope,
             initialized,
             runtime: expected_runtime,
@@ -235,8 +192,69 @@ impl<'a> Runtime<'a> {
         Ok(())
     }
 
-    pub(crate) fn scope(&self) -> &Scope<'static> {
-        &self.scope
+    pub(crate) fn has_fn(&self, name: &str) -> bool {
+        has_fn(&self.ast, name)
+    }
+
+    /// The recipe's top-level ctx (always a map once `new` succeeds).
+    pub(crate) fn ctx(&self) -> Map {
+        self.scope
+            .iter_raw()
+            .find(|(name, _, _)| *name == "ctx")
+            .and_then(|(_, _, value)| value.read_lock::<Map>().map(|ctx| ctx.clone()))
+            .unwrap_or_default()
+    }
+
+    /// A top-level `deps`/`build_deps` declaration. Malformed declarations are
+    /// errors, not silently omitted tools.
+    pub(crate) fn dependency_names(&self, field: &str) -> Result<Vec<String>> {
+        let Some(value) = self.scope.get_value::<Dynamic>(field) else {
+            return Ok(Vec::new());
+        };
+        let values = value
+            .try_cast::<rhai::Array>()
+            .ok_or_else(|| anyhow!("{field} must be an array of recipe names"))?;
+        values
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| {
+                value
+                    .into_string()
+                    .map_err(|_| anyhow!("{field}[{index}] must be a recipe name string"))
+            })
+            .collect()
+    }
+
+    /// Run a hook, then verify it with `check` when the recipe defines that check.
+    pub(crate) fn run_hook(&mut self, hook: &str, check: Option<&str>, ctx: Map) -> Result<Map> {
+        let ctx = self
+            .call_map(hook, vec![ctx.into()], false)
+            .map_err(|e| anyhow!("{hook} failed: {e}"))?;
+        match check.filter(|check| self.has_fn(check)) {
+            Some(check) => self.verify(check, &ctx),
+            None => Ok(ctx),
+        }
+    }
+
+    /// Run a check and require it to be ready.
+    pub(crate) fn verify(&mut self, check: &str, ctx: &Map) -> Result<Map> {
+        match self.check(check, ctx)? {
+            Readiness::Ready(ctx) => Ok(ctx),
+            Readiness::NeedsWork(_, reason) => Err(anyhow!("{check} is not ready: {reason}")),
+        }
+    }
+
+    pub(crate) fn has_cleanup(&self) -> bool {
+        self.cleanup
+    }
+
+    /// Run `cleanup(ctx, reason)`; without the hook, ctx is unchanged.
+    pub(crate) fn cleanup(&mut self, ctx: Map, reason: &str) -> Result<Map> {
+        if !self.cleanup {
+            return Ok(ctx);
+        }
+        self.call_map("cleanup", vec![ctx.into(), reason.into()], false)
+            .map_err(|error| anyhow!("cleanup failed (reason={reason}): {error}"))
     }
 
     /// Checks use an isolated variable scope as before. Filesystem effects and
@@ -311,7 +329,7 @@ impl<'a> Runtime<'a> {
     }
 
     pub(crate) fn check(&mut self, name: &str, ctx: &Map) -> Result<Readiness> {
-        if !has_fn(self.ast, name) {
+        if !self.has_fn(name) {
             return Ok(Readiness::NeedsWork(
                 ctx.clone(),
                 "check function is missing".into(),
@@ -391,13 +409,11 @@ fn validate_api(ast: &AST) -> Result<()> {
     Ok(())
 }
 
-/// Check whether an AST contains a function by name.
-pub(crate) fn has_fn(ast: &AST, name: &str) -> bool {
+fn has_fn(ast: &AST, name: &str) -> bool {
     ast.iter_functions().any(|f| f.name == name)
 }
 
-/// Check whether an AST contains a function with the expected arity.
-pub(crate) fn has_fn_arity(ast: &AST, name: &str, arity: usize) -> bool {
+fn has_fn_arity(ast: &AST, name: &str, arity: usize) -> bool {
     ast.iter_functions()
         .any(|f| f.name == name && f.params.len() == arity)
 }

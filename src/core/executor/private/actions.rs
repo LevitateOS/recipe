@@ -1,233 +1,103 @@
-use crate::core::{output, runner};
-use anyhow::{Result, anyhow};
-use rhai::Engine;
+//! The single-step operations: remove, manual cleanup and a manual check.
+
+use super::context::ExecutionContext;
+use super::loaded::{EngineError, Load, with_recipe};
+use super::reporting::{report_phase_failure, report_phase_success};
+use crate::core::events::HookStatus;
+use crate::core::output;
+use anyhow::anyhow;
+use rhai::{Engine, Map};
 use std::path::Path;
 
-use super::context::{CheckpointPoint, ExecutionContext};
-use super::reporting::{report_phase_failure, report_phase_success};
-use crate::core::executor::compile_recipe;
-
-pub(crate) fn remove_with_context(
+pub(crate) fn remove(
     engine: &Engine,
-    build_dir: &Path,
-    recipe_path: &Path,
-    search_path: Option<&Path>,
-    defines: &[(String, String)],
-    persist_state_enabled: bool,
     exec: &mut ExecutionContext<'_>,
-) -> Result<rhai::Map> {
-    let recipe_path = recipe_path
-        .canonicalize()
-        .unwrap_or_else(|_| recipe_path.to_path_buf());
-
-    let mut compiled = compile_recipe(engine, &recipe_path, search_path)?;
-    let ast = compiled.ast.clone();
-
-    let scope = crate::core::invocation::scope(
-        &compiled.recipe_path,
-        compiled.base_dir.as_deref(),
-        Some(build_dir),
-        defines,
-        &exec.options(),
-    );
-
-    let mut scope = crate::core::invocation::Runtime::new(
-        engine,
-        &ast,
-        scope,
-        "remove",
-        persist_state_enabled,
-    )?;
-    exec.restore_runtime(&compiled.recipe_path, &mut scope)?;
-
-    let mut ctx_map: rhai::Map = scope
-        .scope()
-        .get_value("ctx")
-        .ok_or_else(|| anyhow!("Recipe missing ctx"))?;
-
-    let name = ctx_map
-        .get("name")
-        .and_then(|v| v.clone().into_string().ok())
-        .unwrap_or_else(|| "package".to_string());
-
-    if !crate::core::invocation::has_fn(&ast, "remove") {
-        output::hook_event(&name, "remove", crate::core::events::HookStatus::Missing, "required remove hook missing");
-        return Err(anyhow!("{} has no remove function", name));
-    }
-
-    output::action(&format!("Removing {}", name));
-    output::sub_action("remove");
-    output::hook_event(&name, "remove", crate::core::events::HookStatus::Running, "executing recipe hook");
-
-    ctx_map = runner::run_phase(&ast, &mut scope, "remove", ctx_map).inspect_err(|e| {
-        report_phase_failure(&name, "remove", e);
-    })?;
-    report_phase_success(&name, "remove");
-    exec.persist_checkpoint(
-        &mut compiled,
-        &ctx_map,
-        CheckpointPoint {
-            phase: "remove",
-            reason: "phase:remove",
-        },
-        persist_state_enabled,
-    )?;
-
-    output::success(&format!("{} removed", name));
-    Ok(ctx_map)
+    recipe: &Path,
+    load: &Load<'_>,
+) -> Result<Map, EngineError> {
+    with_recipe(engine, exec, recipe, load, |recipe, exec| {
+        let name = recipe.name.clone();
+        if !recipe.runtime.has_fn("remove") {
+            output::hook_event(&name, "remove", HookStatus::Missing, "required remove hook missing");
+            return Err(anyhow!("{name} has no remove function").into());
+        }
+        output::action(&format!("Removing {name}"));
+        output::sub_action("remove");
+        output::hook_event(&name, "remove", HookStatus::Running, "executing recipe hook");
+        let ctx = recipe.runtime.ctx();
+        let ctx = recipe
+            .runtime
+            .run_hook("remove", None, ctx)
+            .inspect_err(|e| report_phase_failure(&name, "remove", e))?;
+        report_phase_success(&name, "remove");
+        exec.checkpoint(&recipe.path, &ctx)?;
+        output::success(&format!("{name} removed"));
+        Ok(ctx)
+    })
 }
 
-pub(crate) fn cleanup_with_context(
+pub(crate) fn cleanup(
     engine: &Engine,
-    build_dir: &Path,
-    recipe_path: &Path,
-    search_path: Option<&Path>,
-    defines: &[(String, String)],
+    exec: &mut ExecutionContext<'_>,
+    recipe: &Path,
+    load: &Load<'_>,
     reason: &str,
-    persist_state_enabled: bool,
-    exec: &mut ExecutionContext<'_>,
-) -> Result<rhai::Map> {
-    let recipe_path = recipe_path
-        .canonicalize()
-        .unwrap_or_else(|_| recipe_path.to_path_buf());
-
-    let mut compiled = compile_recipe(engine, &recipe_path, search_path)?;
-    let ast = compiled.ast.clone();
-    let has_cleanup = runner::cleanup_available(&ast)?;
-
-    let scope = crate::core::invocation::scope(
-        &compiled.recipe_path,
-        compiled.base_dir.as_deref(),
-        Some(build_dir),
-        defines,
-        &exec.options(),
-    );
-
-    let mut scope = crate::core::invocation::Runtime::new(
-        engine,
-        &ast,
-        scope,
-        "cleanup",
-        persist_state_enabled,
-    )?;
-    exec.restore_runtime(&compiled.recipe_path, &mut scope)?;
-
-    let mut ctx_map: rhai::Map = scope
-        .scope()
-        .get_value("ctx")
-        .ok_or_else(|| anyhow!("Recipe missing ctx"))?;
-
-    let name = ctx_map
-        .get("name")
-        .and_then(|v| v.clone().into_string().ok())
-        .unwrap_or_else(|| "package".to_string());
-
-    if !has_cleanup {
-        output::hook_event(&name, "cleanup", crate::core::events::HookStatus::Skipped, "recipe has no cleanup hook");
-        output::skip(&format!("{name} has no cleanup hook; nothing to clean"));
-        return Ok(ctx_map);
-    }
-
-    output::action(&format!("Cleaning up {}", name));
-    output::sub_action("cleanup");
-    output::hook_event(&name, "cleanup", crate::core::events::HookStatus::Running, "executing recipe hook");
-
-    ctx_map = runner::run_cleanup(&ast, &mut scope, ctx_map, reason).inspect_err(|e| {
-        report_phase_failure(&name, "cleanup", e);
-    })?;
-    report_phase_success(&name, "cleanup");
-    exec.persist_checkpoint(
-        &mut compiled,
-        &ctx_map,
-        CheckpointPoint {
-            phase: "cleanup",
-            reason: crate::worker::protocol::Reason::Manual.as_str(),
-        },
-        persist_state_enabled,
-    )?;
-
-    output::success(&format!("{} cleaned", name));
-    Ok(ctx_map)
+) -> Result<Map, EngineError> {
+    with_recipe(engine, exec, recipe, load, |recipe, exec| {
+        let name = recipe.name.clone();
+        let ctx = recipe.runtime.ctx();
+        if !recipe.runtime.has_cleanup() {
+            output::hook_event(&name, "cleanup", HookStatus::Skipped, "recipe has no cleanup hook");
+            output::skip(&format!("{name} has no cleanup hook; nothing to clean"));
+            return Ok(ctx);
+        }
+        output::action(&format!("Cleaning up {name}"));
+        output::sub_action("cleanup");
+        output::hook_event(&name, "cleanup", HookStatus::Running, "executing recipe hook");
+        let ctx = recipe
+            .runtime
+            .cleanup(ctx, reason)
+            .inspect_err(|e| report_phase_failure(&name, "cleanup", e))?;
+        report_phase_success(&name, "cleanup");
+        exec.checkpoint(&recipe.path, &ctx)?;
+        output::success(&format!("{name} cleaned"));
+        Ok(ctx)
+    })
 }
 
-pub(crate) fn run_check_with_context(
+/// Run one check on request. Unlike install, where a missing check means the
+/// phase must run, asking for a check the recipe lacks is an error.
+pub(crate) fn check(
     engine: &Engine,
-    build_dir: &Path,
-    recipe_path: &Path,
-    search_path: Option<&Path>,
-    defines: &[(String, String)],
-    check_name: &str,
     exec: &mut ExecutionContext<'_>,
-) -> Result<rhai::Map> {
-    let recipe_path = recipe_path
-        .canonicalize()
-        .unwrap_or_else(|_| recipe_path.to_path_buf());
-
-    let compiled = compile_recipe(engine, &recipe_path, search_path)?;
-    let ast = compiled.ast.clone();
-
-    let scope = crate::core::invocation::scope(
-        &compiled.recipe_path,
-        compiled.base_dir.as_deref(),
-        Some(build_dir),
-        defines,
-        &exec.options(),
-    );
-
-    let mut scope =
-        crate::core::invocation::Runtime::new(engine, &ast, scope, check_name, exec.resumable())?;
-    exec.restore_runtime(&compiled.recipe_path, &mut scope)?;
-
-    let ctx_map: rhai::Map = scope
-        .scope()
-        .get_value("ctx")
-        .ok_or_else(|| anyhow!("Recipe missing ctx"))?;
-
-    let name = ctx_map
-        .get("name")
-        .and_then(|v| v.clone().into_string().ok())
-        .unwrap_or_else(|| "package".to_string());
-
-    if !crate::core::invocation::has_fn(&ast, check_name) {
-        output::hook_event(
-            &name,
-            &format!("check.{check_name}"),
-            crate::core::events::HookStatus::Missing,
-            "required check function missing",
-        );
-        output::error(&format!(
-            "{name} is missing required check function `{check_name}(ctx)`",
-        ));
-        output::detail(
-            "Action: define this check function and return ready(ctx) when ready, or needs_work(ctx, reason) otherwise.",
-        );
-        return Err(anyhow!("{} has no {} function", name, check_name));
-    }
-
-    output::action(&format!("Checking recipe {}", name));
-    output::sub_action(&format!("{check_name} check"));
-    output::hook_event(
-        &name,
-        &format!("check.{check_name}"),
-        crate::core::events::HookStatus::Manual,
-        "manual check requested",
-    );
-
-    let checked_ctx = runner::verify_phase(&mut scope, check_name, &ctx_map)
-        .map_err(|e| {
-            output::hook_event(&name, &format!("check.{check_name}"), crate::core::events::HookStatus::Failed, &format!("{e}"));
-            output::error(&format!("{name}: {check_name} check failed"));
+    recipe: &Path,
+    load: &Load<'_>,
+    check: &str,
+) -> Result<Map, EngineError> {
+    with_recipe(engine, exec, recipe, load, |recipe, _exec| {
+        let name = recipe.name.clone();
+        let event = format!("check.{check}");
+        if !recipe.runtime.has_fn(check) {
+            output::hook_event(&name, &event, HookStatus::Missing, "required check function missing");
+            output::error(&format!("{name} is missing required check function `{check}(ctx)`"));
+            output::detail(
+                "Action: define this check function and return ready(ctx) when ready, or needs_work(ctx, reason) otherwise.",
+            );
+            return Err(anyhow!("{name} has no {check} function").into());
+        }
+        output::action(&format!("Checking recipe {name}"));
+        output::sub_action(&format!("{check} check"));
+        output::hook_event(&name, &event, HookStatus::Manual, "manual check requested");
+        let ctx = recipe.runtime.ctx();
+        let ctx = recipe.runtime.verify(check, &ctx).map_err(|e| {
+            output::hook_event(&name, &event, HookStatus::Failed, &format!("{e}"));
+            output::error(&format!("{name}: {check} check failed"));
             output::detail(&format!("  reason: {e}"));
             output::detail("  action: check that function; it must return ready(ctx) or needs_work(ctx, reason).");
-            anyhow!("{check_name} failed: {e}")
+            anyhow!("{check} failed: {e}")
         })?;
-
-    output::success(&format!("{}: {} check complete", name, check_name));
-    output::hook_event(
-        &name,
-        &format!("check.{check_name}"),
-        crate::core::events::HookStatus::Success,
-        "manual check complete",
-    );
-    Ok(checked_ctx)
+        output::success(&format!("{name}: {check} check complete"));
+        output::hook_event(&name, &event, HookStatus::Success, "manual check complete");
+        Ok(ctx)
+    })
 }

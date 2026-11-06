@@ -1,4 +1,4 @@
-//! Worker protocol v6: per-recipe state, invocation options and diagnostics.
+//! The coordinator/worker protocol: per-recipe state, invocation options and diagnostics.
 //!
 //! Implements `docs/ginux-recipe-interfaces.md` §4 on the Recipe side. Ginux
 //! treats these frames as opaque bytes; Recipe owns their shape.
@@ -8,20 +8,20 @@
 //! Every frame is:
 //!
 //! ```text
-//! [u32 BE total-length][u32 BE version=6][u32 BE seq][u16 BE op][payload]
+//! [u32 BE total-length][u32 BE version][u32 BE seq][u16 BE op][payload]
 //! ```
 //!
 //! - `total-length` is the full frame size **including** its own 4 bytes, so
 //!   `payload.len() == total-length - HEADER_LEN` with
 //!   `HEADER_LEN == 14` (4 + 4 + 4 + 2).
-//! - `version` is always [`PROTOCOL_VERSION`] (7). Anything else is a
+//! - `version` is always [`PROTOCOL_VERSION`]. Anything else is a
 //!   `protocol` failure: the receiver aborts, never retries on the same
 //!   invocation.
 //! - `seq` numbers each direction independently starting at 1. The receiver
 //!   expects exactly the next sequence number; any gap or replay is a
 //!   `protocol` failure.
 //! - `op` selects the payload schema: 1 = request, 2 = checkpoint, 3 = ack,
-//!   4 = failure, 5 = result, 6 = diagnostic.
+//!   5 = result, 6 = diagnostic (4 is retired).
 //! - `payload` is JSON, UTF-8, and together with the header the frame is at
 //!   most [`MAX_FRAME_LEN`] (4 MiB) total.
 //!
@@ -54,7 +54,7 @@ use std::io::{Read, Write};
 use serde::{Deserialize, Serialize};
 
 /// Protocol version carried in every frame header.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// Maximum total frame size in bytes (4 MiB), header included.
 pub const MAX_FRAME_LEN: usize = 4 * 1024 * 1024;
@@ -76,8 +76,7 @@ const TRANSPORT_IO_CHUNK: usize = 4096;
 // Ops
 // ---------------------------------------------------------------------------
 
-/// Frame operation codes: 1=request, 2=checkpoint, 3=ack, 4=failure,
-/// 5=result, 6=diagnostic.
+/// Frame operation codes (4 is retired).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum Op {
@@ -125,7 +124,7 @@ impl Op {
 pub enum Direction {
     /// Host → worker: request, ack.
     HostToWorker,
-    /// Worker → host: diagnostic, checkpoint, failure, result.
+    /// Worker → host: diagnostic, checkpoint, result.
     WorkerToHost,
 }
 
@@ -170,72 +169,6 @@ impl std::fmt::Display for Operation {
     }
 }
 
-/// A lifecycle phase.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Phase {
-    Acquire,
-    Build,
-    Install,
-}
-
-/// Machine-readable reason carried by cleanup hooks, checkpoints and failures.
-///
-/// The phase variants are also the `reason` argument recipes receive in
-/// `cleanup(ctx, reason)`, so their text is part of the recipe API.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reason {
-    Succeeded(Phase),
-    Failed(Phase),
-    /// A user-requested cleanup.
-    Manual,
-    Fatal,
-    Workload,
-    Startup,
-    Protocol,
-}
-
-impl Reason {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Succeeded(Phase::Acquire) => "auto.acquire.success",
-            Self::Succeeded(Phase::Build) => "auto.build.success",
-            Self::Succeeded(Phase::Install) => "auto.install.success",
-            Self::Failed(Phase::Acquire) => "auto.acquire.failure",
-            Self::Failed(Phase::Build) => "auto.build.failure",
-            Self::Failed(Phase::Install) => "auto.install.failure",
-            Self::Manual => "manual",
-            Self::Fatal => "fatal",
-            Self::Workload => "workload",
-            Self::Startup => "startup",
-            Self::Protocol => "protocol",
-        }
-    }
-
-    pub fn parse(text: &str) -> Option<Self> {
-        [
-            Self::Succeeded(Phase::Acquire),
-            Self::Succeeded(Phase::Build),
-            Self::Succeeded(Phase::Install),
-            Self::Failed(Phase::Acquire),
-            Self::Failed(Phase::Build),
-            Self::Failed(Phase::Install),
-            Self::Manual,
-            Self::Fatal,
-            Self::Workload,
-            Self::Startup,
-            Self::Protocol,
-        ]
-        .into_iter()
-        .find(|reason| reason.as_str() == text)
-    }
-
-    /// Autofix repairs failed build or install phases; acquisition failures
-    /// come from inputs a patch cannot fix.
-    pub fn autofix_eligible(self) -> bool {
-        matches!(self, Self::Failed(Phase::Build | Phase::Install))
-    }
-}
-
 /// Largest saved state the next request can carry for these options: the
 /// frame bound minus a request with the same options and the longest id and
 /// cleanup reason the protocol allows. The worst case is measured, not sent,
@@ -257,6 +190,8 @@ pub fn restored_state_budget(options: &InvocationOptions) -> Result<usize, Proto
 
 /// Longest cleanup reason a request may carry.
 pub const MAX_CLEANUP_REASON: usize = 4096;
+/// Most saved recipe states (main recipe plus dependencies) one request carries.
+pub const MAX_RESTORED_STATES: usize = 1024;
 
 /// Op 1 (host→worker): start one invocation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -337,10 +272,6 @@ impl InvocationOptions {
 pub struct CheckpointPayload {
     /// Checkpoint sequence for the `{seq → generation}` association.
     pub seq: u64,
-    /// Engine phase that just completed (e.g. `build`).
-    pub phase: String,
-    /// Persistence-point label (e.g. `phase:build`, `cleanup:manual`).
-    pub reason: String,
     /// Canonical staged recipe identity, never a host state destination.
     pub recipe: String,
     /// Only resumable runtime state; package facts and paths are initialized anew.
@@ -357,15 +288,45 @@ pub struct AckPayload {
     pub generation: Option<u64>,
 }
 
+/// What failed ([`FailureInfo::kind`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureKind {
+    /// A phase hook or its readiness verification failed.
+    Phase,
+    /// The operation failed outside a phase: compiling or setting up the
+    /// recipe, a check, a dependency, or the remove/cleanup hook.
+    Recipe,
+    /// The worker could not run the request it was given.
+    Request,
+}
+
 /// Why an invocation failed ([`ResultPayload::failure`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FailureInfo {
-    /// True when the invocation could not run its lifecycle (not autofix-eligible).
-    pub fatal: bool,
-    /// Phase that failed (empty when the failure is not phase-scoped).
-    pub phase: String,
-    pub reason: String,
+    pub kind: FailureKind,
+    /// The failed phase; present exactly for [`FailureKind::Phase`].
+    pub phase: Option<crate::lifecycle::Phase>,
     pub message: String,
+}
+
+impl FailureInfo {
+    /// The reason text: a failed phase's cleanup reason, otherwise the kind.
+    pub fn reason(&self) -> &'static str {
+        match (self.kind, self.phase) {
+            (FailureKind::Phase, Some(phase)) => crate::lifecycle::CleanupReason::Failed(phase).as_str(),
+            (FailureKind::Recipe, _) => "recipe",
+            (FailureKind::Request, _) => "request",
+            (FailureKind::Phase, None) => "phase",
+        }
+    }
+}
+
+impl fmt::Display for FailureInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let phase = self.phase.map_or("-", crate::lifecycle::Phase::name);
+        write!(f, "phase={phase} reason={}: {}", self.reason(), self.message)
+    }
 }
 
 /// Op 5 (worker→host): final record. Sent exactly once, then the worker
@@ -654,6 +615,13 @@ fn check_result(p: &ResultPayload) -> Result<(), ProtocolError> {
             "a result carries a failure exactly when it is not ok".into(),
         ));
     }
+    if let Some(failure) = &p.failure
+        && failure.phase.is_some() != (failure.kind == FailureKind::Phase)
+    {
+        return Err(ProtocolError::PayloadInvalid(
+            "a failure names a phase exactly when a phase failed".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -664,11 +632,11 @@ fn check_request(p: &RequestPayload) -> Result<(), ProtocolError> {
         (None, operation) if operation != Operation::Cleanup => {}
         _ => {
             return Err(ProtocolError::PayloadInvalid(
-                "a cleanup reason (≤ 4096 B) comes with cleanup and only with cleanup".into(),
+                format!("a cleanup reason (≤ {MAX_CLEANUP_REASON} B) comes with cleanup and only with cleanup"),
             ));
         }
     }
-    if p.restored_states.len() > 1024 || (!p.persist_state && !p.restored_states.is_empty()) {
+    if p.restored_states.len() > MAX_RESTORED_STATES || (!p.persist_state && !p.restored_states.is_empty()) {
         return Err(ProtocolError::PayloadInvalid(
             "invalid restored state set".into(),
         ));

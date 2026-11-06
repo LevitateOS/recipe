@@ -5,6 +5,16 @@
 
 use std::path::{Component, Path, PathBuf};
 
+/// Top-level bindings that declare dependencies: `deps` (needed by every
+/// phase) and `build_deps` (needed only to build).
+pub const DEPENDENCY_FIELDS: [&str; 2] = ["deps", "build_deps"];
+
+/// Recipe bindings the engine owns or reads, which a `--define` must not shadow.
+pub const RESERVED_NAMES: [&str; 5] = ["RUNTIME", "RECIPE_API", "ctx", "deps", "build_deps"];
+
+/// Most nested recipes (main recipe plus dependency chain) one invocation enters.
+pub const MAX_DEPTH: usize = 64;
+
 /// The `//! extends: <path>` target in a recipe's leading comment block.
 pub fn parse_extends(source: &str) -> Option<String> {
     for line in source.lines() {
@@ -41,6 +51,7 @@ pub fn check_related_target(target: &str) -> Result<(), &'static str> {
 }
 
 /// Locate `target`: beside the referring recipe first, then in the search path.
+/// This is the rule for bases, modules and dependencies alike.
 pub fn find_related(target: &str, referrer: &Path, search_path: Option<&Path>) -> Option<PathBuf> {
     let target = target.trim();
     referrer

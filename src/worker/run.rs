@@ -1,37 +1,28 @@
-//! Worker entry point: run the existing engine behind protocol v6.
+//! Worker entry point: run the engine behind the coordinator protocol
+//! ([`crate::worker::protocol`]).
 //!
 //! The worker is the same `recipe` binary entered with a private argv marker (see
 //! the dispatch in `src/bin/`). It reads exactly one request frame from
-//! stdin, dispatches `install` / `remove` / `cleanup` / `<check>` through the
-//! existing engine entry points under [`ExecutionContext::worker`] (the
-//! execution seam: caller-held lock, checkpoints reported through a sink
-//! instead of rewriting recipe sources), then terminates the stream with
-//! exactly one result frame on stdout and exits 0.
+//! stdin, runs the requested operation, reporting each recovery point as a
+//! checkpoint instead of rewriting recipe sources, then terminates the stream
+//! with exactly one result frame on stdout and exits 0.
 //!
 //! Transport discipline (matches `docs/ginux-recipe-interfaces.md` §2/§4):
 //!
 //! - stdin carries request/ack frames. Stdout carries serialized diagnostic,
-//!   checkpoint, failure and result frames. Child bytes and engine narration
-//!   use the explicitly installed logging sink; startup/audit details stay on
-//!   stderr. No recipe text or child bytes are written as raw protocol output.
-//! - Every checkpoint blocks for its `ack` with a bounded 300 s wait (§4).
-//!   The host owns the `{seq → generation}` association; the worker only waits
-//!   for it and logs the generation to stderr.
-//! - The private entry invokes the shared executor directly; it never selects
-//!   a public backend. Worker environment values do not authorize host execution.
-//!
-//! Failure mapping: the engine's [`InstallAttemptError`] shape is
-//! preserved through [`install_with_context`], so an unrecoverable engine
-//! failure reports `fatal: true` while a named phase failure reports
-//! `fatal: false` with its phase and reason (`auto.<phase>.failure`). Other
-//! operations (`remove` / `cleanup` / checks) have no phase-error shape and
-//! still report `fatal: true`, as does any checkpoint/ack transport failure.
+//!   checkpoint and result frames. Child bytes and engine narration use the
+//!   installed diagnostic sink; startup/audit details stay on stderr. No
+//!   recipe text or child bytes are written as raw protocol output.
+//! - Every checkpoint blocks for its `ack`, at most for the invocation's
+//!   execution deadline. The host owns the `{seq → generation}` association;
+//!   the worker only waits for it and logs the generation to stderr.
+//! - A failed result says what failed ([`FailureKind`]): a phase (with its
+//!   name), the recipe operation outside a phase, or the request itself.
 //!
 //! The coordinator prepares immutable inputs and restores the matching filesystem.
 //! The worker initializes current facts, restores only ctx.state, and reports
 //! per-recipe state at checkpoints. It never rewrites recipe sources.
 
-use crate::worker::protocol::Reason;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -39,13 +30,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use crate::core::executor::{
-    CheckpointPoint, CompiledRecipe, ExecutionContext, InstallAttemptError, cleanup_with_context,
-    install_with_context, remove_with_context, run_check_with_context,
-};
+use crate::core::executor::{EngineError, ExecutionContext, Load};
 use crate::worker::protocol::{
-    CheckpointPayload, Direction, FailureInfo, FramePayload, FrameReceiver,
-    FrameSender, RequestPayload, ResultPayload,
+    CheckpointPayload, Direction, FailureInfo, FailureKind, FramePayload, FrameReceiver,
+    FrameSender, Operation, RequestPayload, ResultPayload,
 };
 
 struct WorkerChannel {
@@ -90,84 +78,22 @@ fn install_diagnostics(channel: &SharedChannel) -> Result<()> {
 }
 
 
-/// Recipe location and build directory inside the prepared domain.
-struct LocalConfig {
-    /// Recipe file after the private command marker (argv[2]).
-    recipe: PathBuf,
-    /// Coordinator-prepared writable build directory.
-    build_dir: PathBuf,
-    /// Module/extends search path: the prepared inputs root holding the recipe.
-    search_path: PathBuf,
+fn request_failure(message: String) -> FailureInfo {
+    FailureInfo { kind: FailureKind::Request, phase: None, message }
 }
 
-impl LocalConfig {
-    fn from_env() -> Result<Self> {
-        let recipe = PathBuf::from(crate::domain::MAIN_RECIPE);
-        if !recipe.exists() {
-            bail!("worker recipe not found: {}", recipe.display());
-        }
-        let build_dir = PathBuf::from(crate::domain::BUILD);
-        if !build_dir.is_dir() {
-            bail!(
-                "worker build directory is unavailable: {}",
-                build_dir.display()
-            );
-        }
-        let search_path = PathBuf::from(crate::domain::INPUTS);
-        Ok(Self {
-            recipe,
-            build_dir,
-            search_path,
-        })
-    }
-}
-
-/// One engine failure for the `failure` + `result` termination frames.
-/// Install preserves the engine's fatal-vs-phase shape: an unrecoverable
-/// engine failure is fatal (the invocation cannot continue and the host
-/// should not retry it as-is); a named phase failure is non-fatal and carries
-/// the phase and its reason for host retry/autofix policy.
-struct EngineFailure {
-    fatal: bool,
-    phase: String,
-    reason: &'static str,
-    message: String,
-}
-
-impl EngineFailure {
-    /// Map the structured install error faithfully: `Fatal` (unrecoverable
-    /// engine failure) vs `Phase` (named phase failure with its reason).
-    fn from_attempt(operation: &str, err: InstallAttemptError) -> Self {
-        match err {
-            InstallAttemptError::Fatal(err) => Self {
-                fatal: true,
-                phase: operation.to_string(),
-                reason: Reason::Fatal.as_str(),
-                message: format!("{err:#}"),
-            },
-            InstallAttemptError::Phase {
-                reason,
-                phase,
-                error,
-            } => Self {
-                fatal: false,
-                phase: phase.to_string(),
-                reason,
-                message: format!("{error:#}"),
-            },
-        }
-    }
-
-    /// Single-shot operations (`remove` / `cleanup` / checks) and local
-    /// worker problems have no phase-error shape: always fatal, with the
-    /// operation as phase.
-    fn workload(phase: &str, err: anyhow::Error) -> Self {
-        Self {
-            fatal: true,
-            phase: phase.to_string(),
-            reason: Reason::Workload.as_str(),
-            message: format!("{err:#}"),
-        }
+fn engine_failure(error: EngineError) -> FailureInfo {
+    match error {
+        EngineError::Recipe(error) => FailureInfo {
+            kind: FailureKind::Recipe,
+            phase: None,
+            message: format!("{error:#}"),
+        },
+        EngineError::Phase { phase, error } => FailureInfo {
+            kind: FailureKind::Phase,
+            phase: Some(phase),
+            message: format!("{error:#}"),
+        },
     }
 }
 
@@ -179,7 +105,6 @@ impl EngineFailure {
 /// nonzero; the host sees a worker exit without `result`).
 pub fn run_worker() -> Result<()> {
     let invocation_id = ensure_internal_entry()?;
-    let local = LocalConfig::from_env()?;
 
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
@@ -193,24 +118,20 @@ pub fn run_worker() -> Result<()> {
     let request = match recv_request(&mut rx, &mut input) {
         Ok(req) => req,
         Err(err) => {
-            let message = format!("bad request: {err:#}");
-            return abort(&mut tx, &mut output, Reason::Protocol.as_str(), &message);
+            let failure = request_failure(format!("bad request: {err:#}"));
+            return send_result(&mut tx, &mut output, false, Some(failure), serde_json::json!({}));
         }
     };
     if request.invocation_id != invocation_id {
-        return abort(
-            &mut tx,
-            &mut output,
-            Reason::Protocol.as_str(),
-            "request invocation id does not match worker bootstrap",
-        );
+        let failure = request_failure("request invocation id does not match worker bootstrap".into());
+        return send_result(&mut tx, &mut output, false, Some(failure), serde_json::json!({}));
     }
     crate::diagnostics::trace(&format!(
         "worker: invocation={} operation={} persist_state={} recipe={}",
         request.invocation_id,
         request.operation,
         request.persist_state,
-        local.recipe.display()
+        crate::domain::MAIN_RECIPE
     ));
 
     let channel = Arc::new(Mutex::new(WorkerChannel {
@@ -223,7 +144,7 @@ pub fn run_worker() -> Result<()> {
     install_diagnostics(&channel)?;
     crate::core::output::set_machine_events(request.options.execution.machine_events);
     crate::diagnostics::line("recipe: managed worker started");
-    let outcome = run_operation(&local, &request, &mut rx, &mut input, &channel, &mut output);
+    let outcome = run_operation(&request, &mut rx, &mut input, &channel, &mut output);
     let mut channel = channel
         .lock()
         .map_err(|_| anyhow!("worker channel poisoned"))?;
@@ -234,20 +155,7 @@ pub fn run_worker() -> Result<()> {
     let tx = &mut channel.sender;
     match outcome {
         Ok(summary) => send_result(tx, &mut output, true, None, summary),
-        Err(failure) => {
-            send_result(
-                tx,
-                &mut output,
-                false,
-                Some(FailureInfo {
-                    fatal: failure.fatal,
-                    phase: failure.phase,
-                    reason: failure.reason.to_string(),
-                    message: failure.message,
-                }),
-                serde_json::Value::Object(serde_json::Map::new()),
-            )
-        }
+        Err(failure) => send_result(tx, &mut output, false, Some(failure), serde_json::json!({})),
     }
 }
 
@@ -283,103 +191,61 @@ fn recv_request(rx: &mut FrameReceiver, input: &mut impl Read) -> Result<Request
     }
 }
 
-/// Run the requested operation through the existing engine under the
-/// worker seam, reporting every checkpoint and waiting for each ack.
-///
-/// Returns the final-ctx summary for the result frame. Engine, request, and
-/// ack problems become [`EngineFailure`] (failure + result frames, exit 0);
-/// only a broken stdout propagates as `Err` (no result sent, exit nonzero).
-#[allow(clippy::too_many_arguments)]
+/// Run the requested operation, reporting every checkpoint and waiting for
+/// its ack. Returns the final ctx for the result frame; engine, request and
+/// ack problems become a [`FailureInfo`].
 fn run_operation(
-    local: &LocalConfig,
     req: &RequestPayload,
     rx: &mut FrameReceiver,
     input: &mut impl Read,
     tx: &SharedChannel,
     output: &mut impl Write,
-) -> std::result::Result<serde_json::Value, EngineFailure> {
-    let engine = build_engine(&local.search_path);
-    let defines = req.options.defines.clone();
-    let search_path = Some(local.search_path.as_path());
-
+) -> std::result::Result<serde_json::Value, FailureInfo> {
+    let recipe = Path::new(crate::domain::MAIN_RECIPE);
+    let build_dir = Path::new(crate::domain::BUILD);
+    let search_path = Path::new(crate::domain::INPUTS);
+    if !recipe.is_file() || !build_dir.is_dir() {
+        return Err(request_failure(format!(
+            "the domain lacks {} or {}",
+            recipe.display(),
+            build_dir.display()
+        )));
+    }
+    let engine = build_engine(search_path);
     let mut checkpoint_no: u64 = 0;
-    let mut sink = |compiled: &CompiledRecipe,
-                    ctx_map: &rhai::Map,
-                    point: CheckpointPoint,
-                    _persist: bool|
-     -> Result<()> {
-        // The sink fires at every persistence point even when persist is
-        // disabled (seam contract); the host decides whether to retain the
-        // matching state/files generation. The `_persist` flag is
-        // intentionally unused here: the worker never writes sources either
-        // way.
-        report_checkpoint(
-            tx,
-            output,
-            rx,
-            input,
-            &mut checkpoint_no,
-            compiled,
-            ctx_map,
-            point,
-        )
-        .map_err(|err| anyhow!("checkpoint #{checkpoint_no}: {err:#}"))?;
-        Ok(())
+    let mut sink = |recipe: &Path, ctx: &rhai::Map| -> Result<()> {
+        report_checkpoint(tx, output, rx, input, &mut checkpoint_no, recipe, ctx)
+            .map(drop)
+            .map_err(|err| anyhow!("checkpoint #{checkpoint_no}: {err:#}"))
     };
-    let mut exec = ExecutionContext::worker(&mut sink);
-    exec.set_options(req.options.execution.clone());
-    exec.restore_states(&req.restored_states, req.persist_state)
-        .map_err(|err| EngineFailure::workload(Reason::Startup.as_str(), err))?;
-
-    use crate::worker::protocol::Operation;
-    let operation = req.operation.as_str();
+    let mut exec = ExecutionContext::new(
+        &mut sink,
+        req.options.execution.clone(),
+        build_dir,
+        &req.restored_states,
+        req.persist_state,
+    )
+    .map_err(|err| request_failure(format!("restoring saved state: {err:#}")))?;
+    let load = Load {
+        search_path: Some(search_path),
+        build_dir,
+        defines: &req.options.defines,
+        operation: req.operation.as_str(),
+    };
+    use crate::core::executor as engine_ops;
     let final_ctx = match req.operation {
-        Operation::Install => install_with_context(
-            &engine,
-            &local.build_dir,
-            &local.recipe,
-            &defines,
-            req.persist_state,
-            search_path,
-            &mut exec,
-        )
-        .map_err(|err| EngineFailure::from_attempt(operation, err))?,
-        Operation::Remove => remove_with_context(
-            &engine,
-            &local.build_dir,
-            &local.recipe,
-            search_path,
-            &defines,
-            req.persist_state,
-            &mut exec,
-        )
-        .map_err(|err| EngineFailure::workload(operation, err))?,
-        Operation::Cleanup => cleanup_with_context(
-            &engine,
-            &local.build_dir,
-            &local.recipe,
-            search_path,
-            &defines,
-            req.cleanup_reason.as_deref().unwrap_or(Reason::Manual.as_str()),
-            req.persist_state,
-            &mut exec,
-        )
-        .map_err(|err| EngineFailure::workload(operation, err))?,
+        Operation::Install => engine_ops::install(&engine, &mut exec, recipe, &load),
+        Operation::Remove => engine_ops::remove(&engine, &mut exec, recipe, &load),
+        Operation::Cleanup => match req.cleanup_reason.as_deref() {
+            Some(reason) => engine_ops::cleanup(&engine, &mut exec, recipe, &load, reason),
+            None => return Err(request_failure("cleanup request without a reason".into())),
+        },
         Operation::IsInstalled | Operation::IsBuilt | Operation::IsAcquired => {
-            run_check_with_context(
-                &engine,
-                &local.build_dir,
-                &local.recipe,
-                search_path,
-                &defines,
-                operation,
-                &mut exec,
-            )
-            .map_err(|err| EngineFailure::workload(operation, err))?
+            engine_ops::check(&engine, &mut exec, recipe, &load, req.operation.as_str())
         }
-    };
-
-    ctx_json(&final_ctx).map_err(|err| EngineFailure::workload(operation, err))
+    }
+    .map_err(engine_failure)?;
+    ctx_json(&final_ctx).map_err(|err| engine_failure(err.into()))
 }
 
 /// Resolve relative to the importing module, then the prepared recipe root.
@@ -442,22 +308,15 @@ fn build_engine(search_path: &Path) -> rhai::Engine {
     engine
 }
 
-/// Send one checkpoint for a persistence point and block for its ack.
-///
-/// The engine seam hands us the structured [`CheckpointPoint`] directly, so
-/// the frame reports the actual phase and reason verbatim — no label
-/// matching. Persistence points are unchanged: phase completions
-/// (`phase:<phase>`) and success cleanups (the actual cleanup reason).
-#[allow(clippy::too_many_arguments)]
+/// Send one checkpoint and block for its ack.
 fn report_checkpoint(
     tx: &SharedChannel,
     output: &mut impl Write,
     rx: &mut FrameReceiver,
     input: &mut impl Read,
     checkpoint_no: &mut u64,
-    compiled: &CompiledRecipe,
+    recipe: &Path,
     ctx_map: &rhai::Map,
-    point: CheckpointPoint,
 ) -> Result<Option<u64>> {
     *checkpoint_no += 1;
     let seq = *checkpoint_no;
@@ -475,10 +334,7 @@ fn report_checkpoint(
             output,
             &FramePayload::Checkpoint(CheckpointPayload {
                 seq,
-                phase: point.phase.to_string(),
-                reason: point.reason.to_string(),
-                recipe: compiled
-                    .recipe_path
+                recipe: recipe
                     .to_str()
                     .context("recipe identity is not UTF-8")?
                     .to_owned(),
@@ -503,8 +359,8 @@ fn report_checkpoint(
     Ok(generation)
 }
 
-/// Wait for the ack of checkpoint `seq` with a bounded wait (§4: 300 s), then
-/// validate it is a host→worker ack for exactly this checkpoint.
+/// Wait up to `timeout` for the ack of checkpoint `seq`, then validate it is
+/// a host→worker ack for exactly this checkpoint.
 fn wait_ack(
     rx: &mut FrameReceiver,
     input: &mut impl Read,
@@ -541,7 +397,8 @@ fn wait_readable(timeout: Duration) -> Result<()> {
         events: libc::POLLIN,
         revents: 0,
     };
-    // Ginux bounds a single poll; longer waits are a series of bounded polls.
+    // Ginux refuses (EPERM) a single poll longer than about 300 s; longer
+    // waits are a series of bounded polls.
     const MAX_POLL: Duration = Duration::from_secs(300);
     let mut remaining = timeout;
     loop {
@@ -570,24 +427,6 @@ fn wait_readable(timeout: Duration) -> Result<()> {
         // Closed/Truncated explicitly.
         return Ok(());
     }
-}
-
-/// Best-effort stream termination when the request itself is unusable:
-/// `failure` (fatal) then `result`, so the host never hangs on a silent
-/// worker. Send errors propagate (transport collapse → nonzero exit).
-fn abort(tx: &mut FrameSender, output: &mut impl Write, reason: &str, message: &str) -> Result<()> {
-    send_result(
-        tx,
-        output,
-        false,
-        Some(FailureInfo {
-            fatal: true,
-            phase: String::new(),
-            reason: reason.to_string(),
-            message: message.to_string(),
-        }),
-        serde_json::Value::Object(serde_json::Map::new()),
-    )
 }
 
 fn send_result(

@@ -69,12 +69,7 @@ impl GinuxLauncher {
                 .failure
                 .clone()
                 .expect("protocol: a failed result carries its failure");
-            return Err(anyhow::Error::new(WorkloadFailure {
-                fatal: failure.fatal,
-                phase: failure.phase,
-                reason: failure.reason,
-                message: failure.message,
-            }).context(crate::failure::Category::Workload.error(format!("`{operation}` failed in the Ginux domain (invocation {})", prepared.invocation_id))));
+            return Err(anyhow::Error::new(WorkloadFailure(failure)).context(crate::failure::Category::Workload.error(format!("`{operation}` failed in the Ginux domain (invocation {})", prepared.invocation_id))));
         }
         if !report.result.ctx_summary.is_object() {
             bail!(crate::failure::Category::Protocol.error(format!(
@@ -114,7 +109,7 @@ fn resolve_launcher() -> Result<PathBuf> {
             path.display()
         )));
     }
-    if !is_executable(&path, &meta) {
+    if !is_executable(&meta) {
         bail!(crate::failure::Category::Startup.error(format!("ginux launcher {} is not executable \
              (refusing host fallback)",
             path.display()
@@ -124,25 +119,18 @@ fn resolve_launcher() -> Result<PathBuf> {
 }
 
 /// True when the current user could exec this file (owner/group/other exec bit).
-fn is_executable(_path: &Path, meta: &std::fs::Metadata) -> bool {
+fn is_executable(meta: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
     meta.permissions().mode() & 0o111 != 0
 }
 
+/// The worker's account of a failed workload, kept typed for the autofix loop.
 #[derive(Debug)]
-pub(crate) struct WorkloadFailure {
-    pub fatal: bool,
-    pub phase: String,
-    pub reason: String,
-    pub message: String,
-}
+pub(crate) struct WorkloadFailure(pub crate::worker::protocol::FailureInfo);
+
 impl std::fmt::Display for WorkloadFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "phase={} reason={}: {}",
-            self.phase, self.reason, self.message
-        )
+        self.0.fmt(f)
     }
 }
 impl std::error::Error for WorkloadFailure {}

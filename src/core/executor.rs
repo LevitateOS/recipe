@@ -12,12 +12,9 @@ use std::path::{Path, PathBuf};
 
 mod private;
 
-pub(crate) use private::{
-    CheckpointPoint, ExecutionContext, InstallAttemptError, cleanup_with_context,
-    install_with_context, remove_with_context, run_check_with_context,
-};
+pub(crate) use private::{EngineError, ExecutionContext, Load, check, cleanup, install, remove};
 
-pub(crate) use crate::recipes::parse_extends;
+use crate::recipes::parse_extends;
 
 /// Package facts `declared_metadata` reports.
 const METADATA_FIELDS: [&str; 3] = ["name", "version", "description"];
@@ -47,7 +44,6 @@ pub(crate) struct CompiledRecipe {
     pub recipe_path: PathBuf,
     /// Optional base recipe from `//! extends:`.
     pub base_path: Option<PathBuf>,
-    pub base_dir: Option<PathBuf>,
 }
 
 /// Compile a recipe with `//! extends:` resolution.
@@ -103,22 +99,19 @@ pub(crate) fn compile_recipe(
         // Merge: child overrides base functions, top-level runs base then child
         base_ast += child_ast;
 
-        let base_dir = base_path.parent().map(|p| p.to_path_buf());
         Ok(CompiledRecipe {
             ast: base_ast,
             recipe_path,
             base_path: Some(base_path),
-            base_dir,
         })
     } else {
         let ast = engine
             .compile(&source)
-            .map_err(|e| anyhow!("Failed to compile recipe: {}", e))?;
+            .map_err(|e| anyhow!("Failed to compile recipe {}: {}", recipe_path.display(), e))?;
         Ok(CompiledRecipe {
             ast,
             recipe_path,
             base_path: None,
-            base_dir: None,
         })
     }
 }

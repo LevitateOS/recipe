@@ -1071,12 +1071,7 @@ fn check_launcher_exit(
         let detail = result
             .failure
             .as_ref()
-            .map(|failure| {
-                format!(
-                    "phase={} reason={}: {}",
-                    failure.phase, failure.reason, failure.message
-                )
-            })
+            .map(ToString::to_string)
             .unwrap_or_else(|| "worker reported failure without detail".to_string());
         bail!(crate::failure::Category::Workload.error(format!("invocation {invocation} worker exited with code {} \
              (launcher exit {}): {detail} (refusing host fallback)",

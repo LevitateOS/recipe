@@ -8,4 +8,3 @@ pub(crate) mod events;
 pub(crate) mod executor;
 pub(crate) mod invocation;
 pub(crate) mod output;
-pub(crate) mod runner;
