@@ -1247,4 +1247,5 @@ Special cases: **168** at audit start.
     - Resolving `GINUX_*`/`RECIPE_WORKER_BIN` once in a setup value (B19–B24).
     - The ginux-domain limit copies (B11, B12, B14, B15, B17).
     - Single-held network policy (B31), its field access (B33), the leak re-parse (B37/B38), getent polling (B39), and the exporter contract (J58, A67, A68).
+- X8 privileged result: **e2e 133/135** (135 = 134 baseline tests + the new hardlink test). The 2 failures were the image error-text regression fixed in the X8 follow-up commit. library_backend 1/1. image_producer failed on the same message regression and is fixed (verified unprivileged after the fix). The intermittent git test passed in this run.
 
