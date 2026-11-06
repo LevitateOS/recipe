@@ -66,14 +66,14 @@ fn git_command(recipes: &Path, source: Option<&Path>) -> Command {
 
 #[test]
 fn managed_pinned_git_selects_exact_commits_and_preserves_invalid_checkouts() {
-    for failure in ["dirty", "origin", "invalid"] {
+    for failure in ["dirty", "origin", "invalid", "config"] {
         let (dir, recipes) = create_test_env();
         let (bare, first, second) = bare_upstream(dir.path());
         write_recipe(
             &recipes,
             "git-payload",
             &format!(
-                r#"
+                r##"
 const RECIPE_API = 2;
 let ctx = #{{name: "git-payload", source: join_path(RUNTIME.paths.build, "exact checkout 'quoted'"),
     origin: "file:///inputs/source.git", state: #{{acquired: false, installed: false}}}};
@@ -96,11 +96,28 @@ fn acquire(ctx) {{
     if {failure:?} == "dirty" {{ write_file(join_path(ctx.source, "payload.txt"), "local edits"); }}
     else if {failure:?} == "origin" {{
         exec_checked("git", ["-C", ctx.source, "config", "remote.origin.url", "file:///inputs/wrong.git"]);
+    }} else if {failure:?} == "config" {{
+        let hooks = join_path(ctx.source, ".git/policy-hooks");
+        mkdir(hooks);
+        let hook = join_path(hooks, "post-checkout");
+        write_file(hook, "#!/bin/sh\nprintf unsafe > /work/build/POLICY_EXECUTED\n");
+        chmod(hook, 0o755);
+        let monitor = join_path(ctx.source, ".git/policy-monitor");
+        write_file(monitor, "#!/bin/sh\nprintf unsafe > /work/build/POLICY_EXECUTED\n");
+        chmod(monitor, 0o755);
+        exec_checked("git", ["-C", ctx.source, "config", "--local", "core.hooksPath", hooks]);
+        exec_checked("git", ["-C", ctx.source, "config", "--local", "core.fsmonitor", monitor]);
+        exec_checked("git", ["-C", ctx.source, "config", "--local", "http.https://example.invalid/.sslVerify", "false"]);
+        exec_checked("git", ["-C", ctx.source, "config", "--local", "http.https://example.invalid/.proxy", "http://127.0.0.1:9"]);
+        exec_checked("git", ["-C", ctx.source, "config", "--local", "url.ext::unexpected.insteadOf", ctx.origin]);
+        exec_checked("git", ["-C", ctx.source, "config", "--local", "include.path", "/work/build/extra.config"]);
+        write_file("/work/build/extra.config", "[http]\nsslVerify = false\n");
     }} else {{ write_file(join_path(ctx.source, ".git/HEAD"), "not a Git HEAD"); }}
     let before = read_file(join_path(ctx.source, "payload.txt"));
     let rejected = false;
     try {{ git_checkout(ctx.origin, ctx.source, {first:?}); }} catch (error) {{ rejected = true; }}
     if !rejected {{ throw "invalid checkout was accepted"; }}
+    if is_file("/work/build/POLICY_EXECUTED") {{ throw "cached Git policy executed a hook or monitor"; }}
     if read_file(join_path(ctx.source, "payload.txt")) != before {{ throw "checkout bytes were replaced"; }}
     if glob_list(join_path(dirname(ctx.source), ".recipe-git.*")).len != 0 {{ throw "Git staging leaked"; }}
     ctx.state.acquired = true;
@@ -112,7 +129,7 @@ fn install(ctx) {{
     ctx.state.installed = true;
     ctx
 }}
-"#
+"##
             ),
         );
         let before = std::fs::read(recipes.join("git-payload.rhai")).unwrap();
@@ -145,7 +162,7 @@ fn managed_failed_git_acquisition_keeps_staging_private() {
         &recipes,
         "git-payload",
         &format!(
-            r#"
+            r##"
 const RECIPE_API = 2;
 let ctx = #{{name: "git-payload", source: join_path(RUNTIME.paths.build, "checkout")}};
 fn is_acquired(ctx) {{ needs_work(ctx, "acquire missing commit") }}
@@ -160,7 +177,7 @@ fn cleanup(ctx, reason) {{
     }}
     ctx
 }}
-"#,
+"##,
             missing = "0".repeat(40)
         ),
     );
@@ -189,7 +206,7 @@ fn managed_git_rejects_unpinned_revisions_and_unsupported_origins_before_spawn()
             &recipes,
             "git-payload",
             &format!(
-                r#"
+                r##"
 const RECIPE_API = 2;
 let ctx = #{{name: "git-payload"}};
 fn is_acquired(ctx) {{ needs_work(ctx, "validate source") }}
@@ -200,7 +217,7 @@ fn cleanup(ctx, reason) {{
     if is_dir("/work/build/checkout") {{ throw "invalid arguments created a checkout"; }}
     log("GIT_INVALID_INPUT_PRESERVED"); ctx
 }}
-"#
+"##
             ),
         );
         let output = git_command(&recipes, None).output().unwrap();

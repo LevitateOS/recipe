@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::Command;
 
 fn validate_origin(url: &str) -> Result<(), Box<EvalAltResult>> {
-    if url.contains(['\0', '\n', '\r'])
+    if url.bytes().any(|byte| byte.is_ascii_control())
         || !["https://", "http://", "file://"]
             .iter()
             .any(|prefix| url.starts_with(prefix))
@@ -28,8 +28,28 @@ fn git(dir: Option<&Path>, args: &[&str]) -> Command {
             "http.lowSpeedLimit=1000",
             "-c",
             "http.lowSpeedTime=600",
+            "-c",
+            "http.sslVerify=true",
+            "-c",
+            "http.proxy=",
+            "-c",
+            "http.followRedirects=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.filemode=true",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "fetch.recurseSubmodules=false",
+            "-c",
+            "submodule.recurse=false",
         ])
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ALLOW_PROTOCOL", "file:http:https")
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null");
     // Inherited repository locators must not redirect this command's writes.
@@ -44,6 +64,21 @@ fn git(dir: Option<&Path>, args: &[&str]) -> Command {
         "GIT_CONFIG_COUNT",
         "GIT_TEMPLATE_DIR",
         "GIT_SSL_NO_VERIFY",
+        "GIT_SSL_CAINFO",
+        "GIT_SSL_CAPATH",
+        "GIT_CONFIG",
+        "GIT_EXEC_PATH",
+        "GIT_ASKPASS",
+        "GIT_PROXY_COMMAND",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "CURL_CA_BUNDLE",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
     ] {
         command.env_remove(name);
     }
@@ -64,6 +99,51 @@ fn query(dir: &Path, args: &[&str]) -> Result<String, Box<EvalAltResult>> {
         .map_err(|error| format!("invalid Git output: {error}").into())
 }
 
+// Ask Git for its own local key enumeration without processing includes. Cached
+// clones have only the configuration created by clone; reject extra settings
+// before status/fetch/checkout can activate URL-specific HTTP rules or filters.
+fn validate_config(dest: &Path) -> Result<(), Box<EvalAltResult>> {
+    for relative in ["config", "commondir", "objects/info/alternates"] {
+        match std::fs::symlink_metadata(dest.join(".git").join(relative)) {
+            Ok(metadata) if relative == "config" && metadata.is_file() => {}
+            Ok(_) => return Err("Git checkout needs standalone, unredirected configuration".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && relative != "config" => {}
+            Err(error) => return Err(format!("cannot inspect Git configuration: {error}").into()),
+        }
+    }
+    let output = cmd::checked_capture(git(
+        Some(dest),
+        &[
+            "config",
+            "--local",
+            "--no-includes",
+            "--null",
+            "--name-only",
+            "--list",
+        ],
+    ))?;
+    let keys = String::from_utf8(output.stdout)
+        .map_err(|error| format!("invalid Git configuration key: {error}"))?;
+    let mut seen = std::collections::HashSet::new();
+    for key in keys.split_terminator('\0') {
+        let normal = matches!(
+            key,
+            "core.repositoryformatversion"
+                | "core.filemode"
+                | "core.bare"
+                | "core.logallrefupdates"
+                | "remote.origin.url"
+                | "remote.origin.fetch"
+                | "extensions.objectformat"
+        ) || (key.starts_with("branch.")
+            && (key.ends_with(".remote") || key.ends_with(".merge")));
+        if !normal || key.bytes().any(|byte| byte.is_ascii_control()) || !seen.insert(key) {
+            return Err("Git checkout has unsupported or ambiguous local configuration; refusing to change it".into());
+        }
+    }
+    Ok(())
+}
+
 fn validate_checkout(dest: &Path, url: &str) -> Result<(), Box<EvalAltResult>> {
     // Do not accidentally discover a parent repository or traverse a linked .git.
     let metadata = std::fs::symlink_metadata(dest.join(".git")).map_err(|error| {
@@ -79,6 +159,7 @@ fn validate_checkout(dest: &Path, url: &str) -> Result<(), Box<EvalAltResult>> {
         )
         .into());
     }
+    validate_config(dest)?;
     query(dest, &["rev-parse", "--verify", "HEAD"])
         .map_err(|error| format!("invalid Git checkout at {}: {error}", dest.display()))?;
     let actual = query(dest, &["config", "--get", "remote.origin.url"])
@@ -174,6 +255,8 @@ fn acquire(url: &str, dest: &Path, commit: &str) -> Result<String, Box<EvalAltRe
 /// Acquire an exact destination at a full SHA-1 or SHA-256 commit ID.
 /// Cached checkouts must have the same origin and no local changes.
 /// Selection uses detached HEAD and never resets or cleans a dirty checkout.
+/// Cached configuration must retain the helper's clone settings; custom includes,
+/// filters, hooks and URL rules are rejected. Git redirects are not followed.
 pub fn git_checkout(url: &str, dest: &str, commit: &str) -> Result<String, Box<EvalAltResult>> {
     if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(
