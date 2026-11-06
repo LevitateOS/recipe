@@ -129,7 +129,7 @@ fn prune(root: &Path) -> Result<()> {
         let Some(name) = name.to_str() else {
             continue;
         };
-        if !crate::worker::protocol::valid_invocation_id(name) {
+        if !crate::domain::valid_name(name) {
             continue;
         }
         let path = entry.path();

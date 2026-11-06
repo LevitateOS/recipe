@@ -40,8 +40,6 @@
 //!   [`FramePayload`] and a `Write` (the protocol pipe).
 //! - Receiving side: keep one [`FrameReceiver`] per direction. It enforces
 //!   seq continuity starting at 1. Call [`FrameReceiver::recv`] with a `Read`.
-//! - Single-shot (datagram) use: [`encode_message`] / [`decode_message`]
-//!   with an explicit `expected_seq`.
 //! - Direction check: [`Op::direction`] plus [`Frame::check_direction`] let
 //!   the host side accept only worker→host ops and vice versa.
 //!
@@ -63,7 +61,7 @@ pub const MAX_FRAME_LEN: usize = 4 * 1024 * 1024;
 pub const HEADER_LEN: usize = 14;
 
 /// First sequence number in each direction.
-pub const FIRST_SEQ: u32 = 1;
+const FIRST_SEQ: u32 = 1;
 
 /// Keep a diagnostic frame below the configured console IO bound even when
 /// every byte requires four JSON characters. The full transport remains 4 MiB.
@@ -176,7 +174,7 @@ impl std::fmt::Display for Operation {
 /// cleanup reason).
 pub fn restored_state_budget(options: &InvocationOptions) -> Result<usize, ProtocolError> {
     let request = RequestPayload {
-        invocation_id: "x".repeat(MAX_INVOCATION_ID),
+        invocation_id: "x".repeat(crate::domain::MAX_NAME),
         operation: Operation::Install,
         persist_state: true,
         cleanup_reason: Some("x".repeat(MAX_CLEANUP_REASON)),
@@ -597,17 +595,6 @@ impl From<std::io::Error> for ProtocolError {
 // Validation
 // ---------------------------------------------------------------------------
 
-/// Longest invocation id. Ids travel in env, result records and host paths.
-pub const MAX_INVOCATION_ID: usize = 64;
-
-/// The one invocation-id rule: `[A-Za-z0-9_-]{1,64}`.
-pub fn valid_invocation_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= MAX_INVOCATION_ID
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-}
 
 fn check_result(p: &ResultPayload) -> Result<(), ProtocolError> {
     if p.ok == p.failure.is_some() {
@@ -648,10 +635,11 @@ fn check_request(p: &RequestPayload) -> Result<(), ProtocolError> {
             ));
         }
     }
-    if !valid_invocation_id(&p.invocation_id) {
+    if !crate::domain::valid_name(&p.invocation_id) {
         return Err(ProtocolError::PayloadInvalid(format!(
-            "request invocation_id {:?} must match [A-Za-z0-9_-]{{1,64}}",
-            p.invocation_id
+            "request invocation_id {:?} must match [A-Za-z0-9_-]{{1,{}}}",
+            p.invocation_id,
+            crate::domain::MAX_NAME
         )));
     }
     Ok(())
@@ -756,7 +744,7 @@ fn parse_payload(op: Op, seq: u32, json: &[u8]) -> Result<Frame, ProtocolError> 
 /// disagree. Fails with [`ProtocolError::Oversize`] when the frame would
 /// exceed [`MAX_FRAME_LEN`], or [`ProtocolError::PayloadInvalid`] when a
 /// field rule breaks.
-pub fn encode_message(seq: u32, payload: &FramePayload) -> Result<Vec<u8>, ProtocolError> {
+fn encode_message(seq: u32, payload: &FramePayload) -> Result<Vec<u8>, ProtocolError> {
     if seq == 0 {
         return Err(ProtocolError::SeqMismatch {
             expected: FIRST_SEQ,
@@ -782,7 +770,7 @@ pub fn encode_message(seq: u32, payload: &FramePayload) -> Result<Vec<u8>, Proto
 /// [`ProtocolError::TrailingBytes`]. `expected_seq` is the next sequence
 /// number for this direction (starting at [`FIRST_SEQ`]); anything else is
 /// [`ProtocolError::SeqMismatch`].
-pub fn decode_message(buf: &[u8], expected_seq: u32) -> Result<Frame, ProtocolError> {
+fn decode_message(buf: &[u8], expected_seq: u32) -> Result<Frame, ProtocolError> {
     if buf.len() < 4 {
         return Err(ProtocolError::Truncated {
             detail: format!("need 4 length bytes, buffer holds {}", buf.len()),

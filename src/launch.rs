@@ -15,8 +15,8 @@
 //!   launcher; a missing or malformed result file is a `protocol` failure,
 //!   never success).
 //! - Worker stdin/stdout are the opaque protocol pipes: the adapter sends one
-//!   `request` then one `ack` per checkpoint and receives `checkpoint`, at
-//!   most one `failure`, and exactly one `result`. Worker stderr (launcher
+//!   `request` then one `ack` per checkpoint and receives `checkpoint`s and
+//!   exactly one `result`. Worker stderr (launcher
 //!   stderr, which also carries `ginux:`-prefixed supervisor diagnostics) is
 //!   drained to a log file with a byte cap and never parsed: log bytes only
 //!   appear in human diagnostics, never as results.
@@ -27,7 +27,7 @@
 //! Before launch, the input owner snapshots and verifies the selected assembled
 //! rootfs tar, creates a fresh domain root, and copies the worker plus staged
 //! inputs into `/inputs`. The root is private to this invocation and is kept
-//! alive until the launcher is reaped. No stub-launcher environment is supplied.
+//! alive until the launcher is reaped.
 //!
 //! Every failure carries a [`crate::failure::Category`]. Storage joins retain
 //! the last complete pair; cancellation is forwarded and reaped before
@@ -180,18 +180,13 @@ fn run_domain_inner(
     let invocation = prepared.invocation_id.clone();
     let timeout = frame_timeout()?;
     let _destination_lock = crate::retained::lock_destination(destination, timeout)?;
-    let run_dir = crate::temporary::TemporaryDirectory::new().context(crate::failure::Category::Startup.error("cannot create ginux run directory (refusing host fallback)"))?;
+    let run_dir = crate::temporary::TemporaryDirectory::new().context(crate::failure::Category::Startup.error("cannot create ginux run directory"))?;
     let result_path = run_dir.path().join("result.json");
     let export_path = run_dir.path().join("export.tar");
     let config_path = prepared.config_path();
-    if !config_path.is_file() {
-        bail!(crate::failure::Category::Startup.error(format!("invocation {invocation} has no staged config.toml \
-             (refusing host fallback)"
-        )));
-    }
 
     let domain_root = crate::inputs::prepare_root(prepared).map_err(|error| {
-        anyhow::Error::new(crate::failure::Category::Startup.error(format!("cannot prepare Ginux root for invocation {invocation}: {error:#} (refusing host fallback)")))
+        anyhow::Error::new(crate::failure::Category::Startup.error(format!("cannot prepare Ginux root for invocation {invocation}: {error:#}")))
     })?;
 
     let mut retained = if persist_state {
@@ -275,15 +270,15 @@ fn run_domain_inner(
         .spawn()
         .map_err(|err| {
             anyhow::Error::new(crate::failure::Category::Startup.error(format!("cannot spawn ginux launcher {} for invocation \
-                 {invocation}: {err:#} (refusing host fallback)",
+                 {invocation}: {err:#}",
                 launcher.display(),
             )))
         })?;
 
     drop(control_server);
-    let stdin = child.stdin.take().context(crate::failure::Category::Startup.error("launcher stdin was not piped (refusing host fallback)"))?;
-    let stdout = child.stdout.take().context(crate::failure::Category::Startup.error("launcher stdout was not piped (refusing host fallback)"))?;
-    let stderr = child.stderr.take().context(crate::failure::Category::Startup.error("launcher stderr was not piped (refusing host fallback)"))?;
+    let stdin = child.stdin.take().context(crate::failure::Category::Startup.error("launcher stdin was not piped"))?;
+    let stdout = child.stdout.take().context(crate::failure::Category::Startup.error("launcher stdout was not piped"))?;
+    let stderr = child.stderr.take().context(crate::failure::Category::Startup.error("launcher stderr was not piped"))?;
     let log_path = diagnostics.file(crate::invocation_log::SUPERVISOR_LOG);
     let drain = spawn_stderr_drain(stderr, log_path.clone());
 
@@ -441,7 +436,7 @@ fn pump_protocol(
             .check_direction(Direction::WorkerToHost)
             .map_err(|err| {
                 anyhow::Error::new(crate::failure::Category::Protocol.error(format!("invocation {invocation}: worker stream direction \
-                 violation: {err} (refusing host fallback)"
+                 violation: {err}"
                 )))
             })?;
         *worker_started = true;
@@ -449,7 +444,7 @@ fn pump_protocol(
             FramePayload::Diagnostic(payload) => {
                 diagnostic_budget.accept(&payload).map_err(|violation| {
                     crate::failure::Category::Protocol
-                        .error(format!("{violation} (refusing host fallback)"))
+                        .error(violation.to_string())
                 })?;
                 if payload.truncated {
                     crate::diagnostics::line(
@@ -469,7 +464,7 @@ fn pump_protocol(
                 checkpoints += 1;
                 if checkpoints > MAX_CHECKPOINTS {
                     bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} sent more than \
-                         {MAX_CHECKPOINTS} checkpoints (refusing host fallback)"
+                         {MAX_CHECKPOINTS} checkpoints"
                     )));
                 }
                 let seq = point.seq;
@@ -504,7 +499,7 @@ fn pump_protocol(
             FramePayload::Result(payload) => break payload,
             FramePayload::Request(_) | FramePayload::Ack(_) => {
                 bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} received a host-direction \
-                     frame from the worker (refusing host fallback)"
+                     frame from the worker"
                 )));
             }
         }
@@ -568,10 +563,14 @@ fn frame_timeout() -> Result<Duration> {
             let seconds: u64 = value
                 .context("invalid RECIPE_FRAME_TIMEOUT_SECS")?
                 .parse()
-                .context("RECIPE_FRAME_TIMEOUT_SECS must be an integer from 1 to 86400")?;
-            if !(1..=86400).contains(&seconds) {
-                bail!("RECIPE_FRAME_TIMEOUT_SECS must be from 1 to 86400");
-            }
+                .ok()
+                .filter(|seconds| (1..=crate::domain::MAX_TIMEOUT_SECS).contains(seconds))
+                .with_context(|| {
+                    format!(
+                        "RECIPE_FRAME_TIMEOUT_SECS must be an integer from 1 to {}",
+                        crate::domain::MAX_TIMEOUT_SECS
+                    )
+                })?;
             Ok(Duration::from_secs(seconds))
         }
     }
@@ -707,11 +706,10 @@ fn classify_stream_error(
     }
     if before_request_delivered {
         anyhow::Error::new(crate::failure::Category::Startup.error(format!("invocation {invocation}: cannot {what} through launcher \
-             (launcher cannot serve the worker transport; refusing host fallback): {err}"
+             (launcher cannot serve the worker transport): {err}"
         )))
     } else {
-        anyhow::Error::new(crate::failure::Category::Protocol.error(format!("invocation {invocation}: cannot {what} (refusing host \
-             fallback): {err}"
+        anyhow::Error::new(crate::failure::Category::Protocol.error(format!("invocation {invocation}: cannot {what}: {err}"
         )))
     }
 }
@@ -754,7 +752,7 @@ fn enrich_stream_error(
             .into();
     }
     let detail = format!(
-        "; invocation {invocation} launcher exit {}; {}; log tail: {} (refusing host fallback)",
+        "; invocation {invocation} launcher exit {}; {}; log tail: {}",
         exit_message(exit),
         file_note.unwrap_or("no result file was produced"),
         drained.tail,
@@ -958,19 +956,19 @@ fn read_result_file_note(result_path: &Path) -> Option<String> {
 fn read_result_record(result_path: &Path, invocation: &str) -> Result<ResultRecord> {
     let text = std::fs::read_to_string(result_path).map_err(|err| {
         anyhow::Error::new(crate::failure::Category::Protocol.error(format!("invocation {invocation} produced no result file at {}: \
-             {err:#} (missing result file is never success; refusing host fallback)",
+             {err:#} (missing result file is never success)",
             result_path.display(),
         )))
     })?;
     let value: serde_json::Value = serde_json::from_str(&text).map_err(|err| {
         anyhow::Error::new(crate::failure::Category::Protocol.error(format!("invocation {invocation} result file is not valid JSON: \
-             {err:#} (malformed result file is never success; refusing host fallback)"
+             {err:#} (malformed result file is never success)"
         )))
     })?;
     let version = value.get("version").and_then(|v| v.as_u64());
     if version != Some(1) {
         bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} result file has unsupported \
-             version {version:?} (want 1; refusing host fallback)"
+             version {version:?} (want 1)"
         )));
     }
     let outcome = value
@@ -979,7 +977,7 @@ fn read_result_record(result_path: &Path, invocation: &str) -> Result<ResultReco
         .unwrap_or_default();
     if !matches!(outcome, "exited" | "signaled" | "supervisor-error") {
         bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} result file has unknown outcome \
-             {outcome:?} (want exited|signaled|supervisor-error; refusing host fallback)"
+             {outcome:?} (want exited|signaled|supervisor-error)"
         )));
     }
     let field = |name: &str| match value.get(name) {
@@ -987,11 +985,11 @@ fn read_result_record(result_path: &Path, invocation: &str) -> Result<ResultReco
         Some(serde_json::Value::Null) => Ok(None),
         Some(serde_json::Value::Number(n)) => n.as_i64().map(Some).ok_or_else(|| {
             anyhow::Error::new(crate::failure::Category::Protocol.error(format!("invocation {invocation} result file field {name:?} \
-                 is not an integer (refusing host fallback)"
+                 is not an integer"
             )))
         }),
         Some(other) => bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} result file field {name:?} is {}, \
-             want an integer or null (refusing host fallback)",
+             want an integer or null",
             json_value_kind(other),
         ))),
     };
@@ -1005,7 +1003,7 @@ fn read_result_record(result_path: &Path, invocation: &str) -> Result<ResultReco
             .transpose()
             .map_err(|_| {
                 crate::failure::Category::Protocol.error(format!(
-                    "invocation {invocation} result file field \"signal\" is negative (refusing host fallback)"
+                    "invocation {invocation} result file field \"signal\" is negative"
                 ))
             })?,
     })
@@ -1024,7 +1022,7 @@ fn check_agreement(invocation: &str, result: &ResultPayload, record: &ResultReco
         }
         if record.outcome != "exited" || record.code != Some(0) {
             bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} worker reported success but \
-                 the authoritative result is {}/{} (refusing host fallback)",
+                 the authoritative result is {}/{}",
                 record.outcome,
                 record
                     .code
@@ -1062,8 +1060,7 @@ fn check_launcher_exit(
         return Ok(());
     }
     if record.outcome == "signaled" {
-        bail!(crate::failure::Category::Workload.error(format!("invocation {invocation} worker was terminated by signal {} \
-             (refusing host fallback)",
+        bail!(crate::failure::Category::Workload.error(format!("invocation {invocation} worker was terminated by signal {}",
             record.signal.map(|s| s.to_string()).unwrap_or_default(),
         )));
     }
@@ -1074,7 +1071,7 @@ fn check_launcher_exit(
             .map(ToString::to_string)
             .unwrap_or_else(|| "worker reported failure without detail".to_string());
         bail!(crate::failure::Category::Workload.error(format!("invocation {invocation} worker exited with code {} \
-             (launcher exit {}): {detail} (refusing host fallback)",
+             (launcher exit {}): {detail}",
             record.code.unwrap_or(-1),
             exit_message(exit),
         )));

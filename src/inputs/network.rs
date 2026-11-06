@@ -7,9 +7,8 @@ use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use serde::Serialize;
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct NetworkPolicy {
     pub endpoints: Vec<String>,
     pub max_bytes: u64,
@@ -55,8 +54,11 @@ impl NetworkPolicy {
                     hosts.insert(format!("{address} {}\n", host.to_ascii_lowercase()));
                 }
             }
-            if endpoints.len() > 8 {
-                bail!("network grants resolve to more than eight endpoints; select fewer hosts");
+            if endpoints.len() > crate::domain::MAX_NETWORK_ENDPOINTS {
+                bail!(
+                    "network grants resolve to more than {} endpoints; select fewer hosts",
+                    crate::domain::MAX_NETWORK_ENDPOINTS
+                );
             }
         }
         Ok(Self {

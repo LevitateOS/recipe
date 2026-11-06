@@ -20,12 +20,8 @@
 //! their relative directory layout. Unsupported input discovery fails with an explicit error
 //! instead of silently staging the wrong bytes.
 //!
-//! Hard limits enforced (interfaces §2, no silent truncation):
-//!
-//! - invocation id ≤ 64 B, `[A-Za-z0-9_-]{1,64}`,
-//! - `root` / `init` ≤ 128 B, `args` ≤ 7 × 128 B,
-//! - `environment` ≤ 8 × 256 B, `storage` / `devices` ≤ 8 × 64 B,
-//! - normalized config text ≤ 4096 B.
+//! The domain config's hard limits (interfaces §2) live in `config`; they are
+//! enforced, never truncated.
 
 mod config;
 mod discover;

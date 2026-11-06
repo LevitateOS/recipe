@@ -114,7 +114,7 @@ pub(crate) enum Commands {
         #[arg(long, default_value_t = levitate_recipe::AutoFixConfig::default().attempts)]
         autofix_attempts: u8,
 
-        /// Working directory used for LLM invocation and patch application. Defaults to the current working directory.
+        /// Working directory used for LLM invocation and patch application. Defaults to the git repository of the current directory, else the recipe's.
         #[arg(long)]
         autofix_cwd: Option<PathBuf>,
 

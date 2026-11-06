@@ -9,11 +9,8 @@
 
 use anyhow::{Result, bail};
 
-use super::env;
-
 /// §2 hard limits (bytes/items); enforced, never truncated.
-const MAX_ID: usize = 64;
-const MAX_PATH: usize = 128;
+const MAX_CONFIG_PATH: usize = 128;
 const MAX_ARGS: usize = 7;
 const MAX_ARG: usize = 128;
 const MAX_ENV: usize = 8;
@@ -53,7 +50,6 @@ impl DomainConfig {
         options: &crate::ExecutionOptions,
         network: super::network::NetworkPolicy,
     ) -> Result<Self> {
-        validate_id(invocation_id)?;
         let root = root_reference()?;
         if env.len() > MAX_ENV {
             bail!(
@@ -131,8 +127,14 @@ impl DomainConfig {
         } else {
             out.push_str("\n[network]\nbackend = \"mediated\"\n");
             out.push_str(&format!(
-                "endpoints = {}\nmax_connections = 16\nmax_bytes = {}\n",
-                quote_list(&self.network.endpoints, 8, 64, "network endpoints")?,
+                "endpoints = {}\nmax_connections = {}\nmax_bytes = {}\n",
+                quote_list(
+                    &self.network.endpoints,
+                    crate::domain::MAX_NETWORK_ENDPOINTS,
+                    64,
+                    "network endpoints"
+                )?,
+                crate::domain::MAX_NETWORK_CONNECTIONS,
                 self.network.max_bytes
             ));
         }
@@ -160,9 +162,9 @@ fn root_reference() -> Result<String> {
             bail!("input preparation failure: GINUX_ROOT is not valid UTF-8")
         }
     };
-    if root.is_empty() || root.len() > MAX_PATH {
+    if root.is_empty() || root.len() > MAX_CONFIG_PATH {
         bail!(
-            "input preparation failure: domain root {root:?} has {} B, want 1..={MAX_PATH} B (§2)",
+            "input preparation failure: domain root {root:?} has {} B, want 1..={MAX_CONFIG_PATH} B (§2)",
             root.len(),
         );
     }
@@ -170,15 +172,6 @@ fn root_reference() -> Result<String> {
     Ok(root)
 }
 
-fn validate_id(id: &str) -> Result<()> {
-    if id.is_empty() || id.len() > MAX_ID {
-        bail!(
-            "input preparation failure: domain id {id:?} has {} B, want 1..={MAX_ID} B (§2)",
-            id.len(),
-        );
-    }
-    env::validate_invocation_id(id)
-}
 
 
 /// Mirror of the domain parser's reference rule for `root`/`storage`/`devices`.

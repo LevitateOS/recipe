@@ -165,16 +165,16 @@ fn ensure_internal_entry() -> Result<String> {
     if !std::env::args_os()
         .skip(1)
         .eq(crate::domain::WORKER_ARGS.map(std::ffi::OsString::from))
-        || std::env::var(crate::domain::ENV_WORKER).as_deref() != Ok("1")
+        || std::env::var(crate::domain::ENV_WORKER).as_deref() != Ok(crate::domain::ENV_WORKER_VALUE)
     {
         bail!(
-            "private worker entry requires coordinator bootstrap arguments; refusing host execution"
+            "private worker entry requires coordinator bootstrap arguments"
         );
     }
     let id = std::env::var(crate::domain::ENV_INVOCATION)
-        .context("private worker entry requires RECIPE_INVOCATION; refusing host execution")?;
-    if !crate::worker::protocol::valid_invocation_id(&id) {
-        bail!("private worker entry has an invalid invocation id; refusing host execution");
+        .context("private worker entry requires RECIPE_INVOCATION")?;
+    if !crate::domain::valid_name(&id) {
+        bail!("private worker entry has an invalid invocation id");
     }
     Ok(id)
 }

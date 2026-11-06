@@ -86,8 +86,9 @@ use std::path::{Path, PathBuf};
 pub struct AutoFixConfig {
     /// Maximum number of patch attempts per failing `recipe install`.
     pub attempts: u8,
-    /// Working directory used for patch application and LLM invocation. If unset, Recipe will try
-    /// to detect the git repo root and fall back to the recipe's directory.
+    /// Working directory used for patch application and LLM invocation. If unset: the git
+    /// repository containing the current directory, else the one containing the recipe, else the
+    /// recipe's directory.
     pub cwd: Option<PathBuf>,
     /// Optional extra instructions appended to the built-in autofix prompt.
     pub prompt_file: Option<PathBuf>,
@@ -230,7 +231,6 @@ impl RecipeEngine {
     pub fn execute(&self, recipe_path: &Path) -> Result<serde_json::Value> {
         let launcher = self.launcher()?;
         let install = || {
-            crate::cancellation::check()?;
             self.invoke(&launcher, worker::protocol::Operation::Install, None, recipe_path)
         };
         let Some(cfg) = &self.autofix else {

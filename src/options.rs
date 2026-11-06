@@ -62,8 +62,11 @@ impl ExecutionOptions {
         if !(1..=16).contains(&self.jobs) {
             bail!("jobs must be between 1 and 16");
         }
-        if !(1..=86400).contains(&self.timeout_secs) {
-            bail!("timeout must be between 1 and 86400 seconds");
+        if !(1..=crate::domain::MAX_TIMEOUT_SECS).contains(&self.timeout_secs) {
+            bail!(
+                "timeout must be between 1 and {} seconds",
+                crate::domain::MAX_TIMEOUT_SECS
+            );
         }
         if !(16..=1_048_576).contains(&self.memory_mib)
             || !(1..=1_000_000).contains(&self.storage_max_objects)
@@ -73,8 +76,11 @@ impl ExecutionOptions {
         {
             bail!("invalid domain memory or storage bounds");
         }
-        if self.network_hosts.len() > 8 || self.network_max_bytes == 0 {
-            bail!("network policy requires at most eight hosts and a positive byte limit");
+        if self.network_hosts.len() > crate::domain::MAX_NETWORK_ENDPOINTS || self.network_max_bytes == 0 {
+            bail!(
+                "network policy requires at most {} hosts and a positive byte limit",
+                crate::domain::MAX_NETWORK_ENDPOINTS
+            );
         }
         Ok(())
     }

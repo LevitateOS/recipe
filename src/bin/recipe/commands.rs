@@ -50,7 +50,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let autofix_cfg = if autofix {
                 Some(AutoFixConfig {
-                    attempts: autofix_attempts.max(1),
+                    attempts: autofix_attempts,
                     cwd: autofix_cwd,
                     prompt_file: autofix_prompt_file,
                     allow_paths: autofix_allow_path,

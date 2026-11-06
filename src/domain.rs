@@ -79,6 +79,28 @@ pub const WORKER_ARGS: [&str; 2] = [WORKER_ENTRY_ARG, MAIN_RECIPE];
 pub const ENV_WORKER: &str = "RECIPE_WORKER";
 /// Environment variable carrying the invocation id into the worker.
 pub const ENV_INVOCATION: &str = "RECIPE_INVOCATION";
+/// The value of [`ENV_WORKER`] in a coordinator-started worker.
+pub const ENV_WORKER_VALUE: &str = "1";
+
+/// Longest invocation id or output name.
+pub const MAX_NAME: usize = 64;
+
+/// The rule for invocation ids and output names, `[A-Za-z0-9_-]{1,64}`: they
+/// travel in the environment, result records and host paths.
+pub fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_NAME
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// Network endpoints a domain may be granted (the Ginux `[network]` limit).
+pub const MAX_NETWORK_ENDPOINTS: usize = 8;
+/// Concurrent mediated connections a domain gets.
+pub const MAX_NETWORK_CONNECTIONS: usize = 16;
+/// Longest execution or frame-stall deadline, in seconds.
+pub const MAX_TIMEOUT_SECS: u64 = 86_400;
 
 /// Domain path of a staged input.
 pub fn input_path(name: &str) -> String {

@@ -88,30 +88,27 @@ impl GinuxLauncher {
 /// `startup` failure — never a silent fallback to host execution.
 fn resolve_launcher() -> Result<PathBuf> {
     let raw = std::env::var("GINUX_BIN").with_context(|| {
-        crate::failure::Category::Startup.error("ginux backend selected but GINUX_BIN is not set \
-         (no launcher to start; refusing host fallback)")
+        crate::failure::Category::Startup.error("GINUX_BIN is not set \
+         (no launcher to start)")
     })?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        bail!(crate::failure::Category::Startup.error("ginux backend selected but GINUX_BIN is empty \
-             (no launcher to start; refusing host fallback)"));
+        bail!(crate::failure::Category::Startup.error("GINUX_BIN is empty \
+             (no launcher to start)"));
     }
     let path = PathBuf::from(trimmed);
     let meta = std::fs::metadata(&path).with_context(|| {
-        crate::failure::Category::Startup.error(format!("ginux launcher {} is missing or inaccessible \
-             (refusing host fallback)",
+        crate::failure::Category::Startup.error(format!("ginux launcher {} is missing or inaccessible",
             path.display()
         ))
     })?;
     if !meta.is_file() {
-        bail!(crate::failure::Category::Startup.error(format!("ginux launcher {} is not a file \
-             (refusing host fallback)",
+        bail!(crate::failure::Category::Startup.error(format!("ginux launcher {} is not a file",
             path.display()
         )));
     }
     if !is_executable(&meta) {
-        bail!(crate::failure::Category::Startup.error(format!("ginux launcher {} is not executable \
-             (refusing host fallback)",
+        bail!(crate::failure::Category::Startup.error(format!("ginux launcher {} is not executable",
             path.display()
         )));
     }

@@ -39,12 +39,7 @@ pub(crate) fn publish(
     }
     let mut selected = BTreeMap::new();
     for (name, value) in outputs {
-        if name.is_empty()
-            || name.len() > 64
-            || !name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-        {
+        if !crate::domain::valid_name(name) {
             bail!("invalid output name {name:?}");
         }
         let path = value.as_str().context("output paths must be strings")?;

@@ -12,7 +12,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -549,7 +548,7 @@ pub fn hash_file(host: &Path, expected: u64) -> Result<[u8; 32]> {
     let mut hasher = Sha256::new();
     let copied = std::io::copy(
         &mut Read::by_ref(&mut source).take(expected + 1),
-        &mut WriterHasher(&mut hasher),
+        &mut hasher,
     )?;
     if copied != expected {
         bail!(
@@ -558,19 +557,6 @@ pub fn hash_file(host: &Path, expected: u64) -> Result<[u8; 32]> {
         );
     }
     Ok(hasher.finalize().into())
-}
-
-struct WriterHasher<'a>(&'a mut Sha256);
-
-impl Write for WriterHasher<'_> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.update(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }
 
 /// Compile only: no module loading, top-level evaluation or native helpers on
