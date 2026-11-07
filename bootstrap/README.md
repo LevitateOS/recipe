@@ -114,3 +114,15 @@ linker configuration. Managed GNU compilation and musl static linking,
 cache reuse, and threaded execution have been verified. C cross-compilation
 needs its own target toolchain. Ordinary TLS
 uses the image's certificate trust. Test-only CA images and keys are excluded.
+
+The acquisition manifest also pins xorriso and its libburn/libisofs/libisoburn
+closure for managed Alpine ISO extraction. Their SHA256 pins were checked against
+the official Rocky 10 AppStream/BaseOS primary metadata on 2026-11-07. Rootfs
+producers preserve package metadata using [target metadata](../docs/target-metadata.md),
+rather than applying package ownership or special modes to the build host.
+
+To extend an already-produced pinned compiler image, an image manifest may omit
+`rust` and set `rust_components` to `[]`, selecting that image as `base` and
+listing the additional pinned RPMs. The same composer validates and records all
+inputs. Select the new output digest from `provenance.json` in `GINUX_ROOT`;
+previous compiler-image digest examples above do not identify the extended image.

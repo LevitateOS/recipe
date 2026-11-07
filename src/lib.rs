@@ -48,6 +48,8 @@ mod publication;
 mod recipes;
 mod retained;
 mod temporary;
+/// Target filesystem metadata carried independently of build-host privileges.
+pub mod target;
 mod worker;
 
 pub use backend::GinuxLauncher;

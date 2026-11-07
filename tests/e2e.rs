@@ -128,3 +128,6 @@ mod managed_retention;
 
 #[path = "e2e/managed_autofix.rs"]
 mod managed_autofix;
+
+#[path = "e2e/target_metadata.rs"]
+mod target_metadata;

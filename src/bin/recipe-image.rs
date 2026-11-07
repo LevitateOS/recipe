@@ -37,7 +37,8 @@ struct Input {
 struct Manifest {
     version: u32,
     base: Input,
-    rust: Input,
+    #[serde(default)]
+    rust: Option<Input>,
     #[serde(default)]
     rust_additions: Vec<Input>,
     rust_components: Vec<String>,
@@ -62,7 +63,7 @@ fn main() -> Result<()> {
         || manifest.rpms.len() > 64
         || manifest.rust_additions.len() > 16
         || manifest.rust_components.len() > 16
-        || manifest.rust_components.is_empty()
+        || (manifest.rust.is_some() || !manifest.rust_additions.is_empty()) != !manifest.rust_components.is_empty()
     {
         bail!("unsupported or oversized image manifest");
     }
@@ -125,7 +126,7 @@ fn main() -> Result<()> {
         )?;
     }
     let mut components = HashSet::new();
-    for input in std::iter::once(&manifest.rust).chain(&manifest.rust_additions) {
+    for input in manifest.rust.iter().chain(&manifest.rust_additions) {
         let rust = snapshot(&input_root, input, scratch.path(), &mut total)?;
         let mut archive_components = HashSet::new();
         collect(

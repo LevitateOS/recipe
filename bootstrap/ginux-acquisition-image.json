@@ -35,6 +35,22 @@
     {
       "path": "packages/cpio-2.15-3.el10.x86_64.rpm",
       "sha256": "ffd887348d611f779ae02cef89d7e1cae53adfe7901d31840bb9d5730915bb5a"
+    },
+    {
+      "path": "packages/libburn-1.5.6-6.el10.x86_64.rpm",
+      "sha256": "34df392d08092760346eb9c274aaf068c55fabfd7f31c2f21a85bc7eece37f39"
+    },
+    {
+      "path": "packages/libisoburn-1.5.6-6.el10.x86_64.rpm",
+      "sha256": "bd1e3f078c525f987afe95dca87283efff0d7643e278a12366abbef03866bc1a"
+    },
+    {
+      "path": "packages/libisofs-1.5.6-6.el10.x86_64.rpm",
+      "sha256": "86ef33a7d71c9b4d9a3f65c6d54a9034e1c481a1342524e715b69c170385d746"
+    },
+    {
+      "path": "packages/xorriso-1.5.6-6.el10.x86_64.rpm",
+      "sha256": "ddb440abced84dd91c5489e299937c6e2f83f161b67ba183889e6862d5cdf812"
     }
   ],
   "rust": {

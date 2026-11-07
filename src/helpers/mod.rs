@@ -42,6 +42,7 @@ pub mod internal;
 // Recipe-facing helper modules organized by lifecycle phase
 pub mod acquire;
 pub mod build;
+mod target;
 pub mod install;
 pub mod util;
 
@@ -179,6 +180,12 @@ pub fn register_all(engine: &mut Engine) {
     helper!(engine, "verify_sha512", |path: &str, expected: &str| acquire::verify_sha512(path, expected));
     helper!(engine, "verify_blake3", |path: &str, expected: &str| acquire::verify_blake3(path, expected));
     helper!(engine, "fetch_sha256", |url: &str, filename: &str| acquire::fetch_sha256(url, filename));
+
+    helper!(engine, "target_extract_tar", |archive: &str, root: &str| target::extract_tar(archive, root));
+    helper!(engine, "target_extract_rpm", |archive: &str, root: &str| target::extract_rpm(archive, root));
+    helper!(engine, "target_capture_apks", |root: &str, paths: rhai::Array| target::capture_apks(root, paths));
+    helper!(engine, "target_mode", |root: &str, path: &str, mode: i64| target::mode(root, path, mode));
+    helper!(engine, "target_finalize", |root: &str| target::finalize(root));
 
     // Build helpers (build/extract)
     // extract(archive, dest) -> ()
