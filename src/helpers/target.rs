@@ -351,8 +351,7 @@ pub fn capture_apks(root: &str, paths: rhai::Array) -> Result<(), Box<EvalAltRes
 pub fn mode(root: &str, path: &str, mode: i64) -> Result<(), Box<EvalAltResult>> {
     recipe_result((|| {
         let mode: u32 = mode.try_into()?;
-        target::set_mode(Path::new(root), Path::new(path), mode)?;
-        let full = Path::new(root).join(target::relative(Path::new(path))?);
+        let full = target::set_mode(Path::new(root), Path::new(path), mode)?;
         let grant = if full.is_dir() { 0o700 } else { 0o600 };
         fs::set_permissions(full, fs::Permissions::from_mode((mode & 0o777) | grant))?;
         Ok(())

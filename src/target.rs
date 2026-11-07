@@ -291,7 +291,7 @@ pub fn finalize(root: &Path) -> Result<()> {
 }
 
 /// Record a deliberate recipe mode change, independently of staging grants.
-pub fn set_mode(root: &Path, path: &Path, mode: u32) -> Result<()> {
+pub fn set_mode(root: &Path, path: &Path, mode: u32) -> Result<PathBuf> {
     ensure!(mode <= 0o7777, "invalid target mode");
     let path = relative(path)?;
     let resolved = resolve_member(root, &path)?;
@@ -304,7 +304,8 @@ pub fn set_mode(root: &Path, path: &Path, mode: u32) -> Result<()> {
         .unwrap_or(current(&root.join(&rel))?);
     entry.mode = mode;
     manifest.entries.insert(name, entry);
-    save(root, &manifest)
+    save(root, &manifest)?;
+    Ok(resolved)
 }
 
 /// Copy a published package/product without adopting host ownership or following

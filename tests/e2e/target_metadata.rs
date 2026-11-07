@@ -77,6 +77,7 @@ fn build(ctx) {
     }
     if trim(exec_output("id", ["-u"])) != "0" { throw "child changed worker identity"; }
     target_extract_tar("/inputs/package", "/out/rootfs");
+    target_mode("/out/rootfs", "bin/through-alias", 0o5111);
     // Package clients can leave execute-only staging inodes.
     chmod("/out/rootfs/usr/bin/helper", 0o111);
     target_finalize("/out/rootfs");
@@ -197,7 +198,7 @@ cp -aT --preserve=xattr "$2" "$3"
             .unwrap()
             .mode()
             & 0o7777,
-        0o4111
+        0o5111
     );
     let md = fs::metadata(deployed.join("usr/bin/helper")).unwrap();
     assert_eq!((md.mode() & 0o7777, md.uid(), md.gid()), (0o4750, 74, 81));
