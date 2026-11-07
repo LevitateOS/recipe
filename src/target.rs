@@ -237,6 +237,15 @@ pub fn finalize(root: &Path) -> Result<()> {
             continue;
         }
         let observed = current(item.path())?;
+        // Installation clients may leave unreadable or non-writable inodes.
+        // Grant access only to staging, after observing the authored metadata.
+        // Target permissions remain the independent package/recipe entry.
+        if observed.kind != "symlink" {
+            let grant = if observed.kind == "dir" { 0o700 } else { 0o600 };
+            let staged = fs::metadata(item.path())?.mode() & 0o777;
+            fs::set_permissions(item.path(), fs::Permissions::from_mode(staged | grant))?;
+        }
+
         let mut entry = manifest
             .entries
             .remove(&rel)

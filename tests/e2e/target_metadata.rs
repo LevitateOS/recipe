@@ -77,6 +77,8 @@ fn build(ctx) {
     }
     if trim(exec_output("id", ["-u"])) != "0" { throw "child changed worker identity"; }
     target_extract_tar("/inputs/package", "/out/rootfs");
+    // Package clients can leave execute-only staging inodes.
+    chmod("/out/rootfs/usr/bin/helper", 0o111);
     target_finalize("/out/rootfs");
     ctx
 }
