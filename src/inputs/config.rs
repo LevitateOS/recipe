@@ -1,7 +1,7 @@
-//! Domain config rendering within the §2 hard limits.
+//! Instance config rendering within the §2 hard limits.
 //!
-//! The text mirrors the `ginux-domain` normalized shape (`schema_version`,
-//! `[domain]`, `[resources]`, `[execution]`, `[contract]`, `[storage]`,
+//! The text mirrors the `ginux-instance` normalized shape (`schema_version`,
+//! `[instance]`, `[resources]`, `[execution]`, `[contract]`, `[storage]`,
 //! `[devices]`, `[network]`, `[audit]`, `[failure]`) so the existing parser
 //! accepts it with no Ginux-side changes: `balanced`/`ptrace-native`,
 //! explicitly granted networking, `stderr` audit, `stop` failure policy. Every bound is
@@ -19,15 +19,15 @@ const MAX_CONFIG: usize = 4096;
 
 /// Default immutable image reference: the pinned Rocky rootfs content,
 /// named by digest rather than by host path (host `.artifacts` paths never
-/// enter domain config). Override with `GINUX_ROOT`; the override must pass
+/// enter instance config). Override with `GINUX_ROOT`; the override must pass
 /// the same reference validation. The launcher resolves the reference.
 const DEFAULT_ROOT_REF: &str = "oci:rocky-10.2.20260525.0-amd64-rootfs@sha256:1026f8d3b36eaea1bcab8e609045991f08c70eb7645cb37f58f48faa8b40be9c";
 
 
-/// Domain config for one invocation; [`DomainConfig::render`] produces the
+/// Instance config for one invocation; [`InstanceConfig::render`] produces the
 /// parser-accepted text.
 #[derive(Debug, Clone)]
-pub struct DomainConfig {
+pub struct InstanceConfig {
     id: String,
     root: String,
     init: String,
@@ -40,7 +40,7 @@ pub struct DomainConfig {
     network: super::network::NetworkPolicy,
 }
 
-impl DomainConfig {
+impl InstanceConfig {
     /// Build the invocation config: id/root/init/args/env plus fixed
     /// profile selections. `env` is the §5 allowlisted environment; the worker
     /// init and argv come from [`crate::domain`].
@@ -92,7 +92,7 @@ impl DomainConfig {
 
     /// Render the parser-accepted config text (≤ 4096 B).
     pub fn render(&self) -> Result<String> {
-        let mut out = String::from("schema_version = 1\n\n[domain]\n");
+        let mut out = String::from("schema_version = 1\n\n[instance]\n");
         out.push_str(&format!("id = {}\n", quote(&self.id)?));
         out.push_str(&format!("root = {}\n", quote(&self.root)?));
         out.push_str(&format!("init = {}\n", quote(&self.init)?));
@@ -152,7 +152,7 @@ impl DomainConfig {
 }
 
 /// Image reference: the pin by default, `GINUX_ROOT` override when set.
-/// Mirrors the domain parser's reference rule (no leading `/`, no `..`,
+/// Mirrors the instance parser's reference rule (no leading `/`, no `..`,
 /// charset `[A-Za-z0-9_.:/@-]`), plus the §2 ≤ 128 B bound.
 fn root_reference() -> Result<String> {
     let root = match std::env::var("GINUX_ROOT") {
@@ -164,7 +164,7 @@ fn root_reference() -> Result<String> {
     };
     if root.is_empty() || root.len() > MAX_CONFIG_PATH {
         bail!(
-            "input preparation failure: domain root {root:?} has {} B, want 1..={MAX_CONFIG_PATH} B (§2)",
+            "input preparation failure: instance root {root:?} has {} B, want 1..={MAX_CONFIG_PATH} B (§2)",
             root.len(),
         );
     }
@@ -174,7 +174,7 @@ fn root_reference() -> Result<String> {
 
 
 
-/// Mirror of the domain parser's reference rule for `root`/`storage`/`devices`.
+/// Mirror of the instance parser's reference rule for `root`/`storage`/`devices`.
 fn validate_reference(value: &str) -> Result<()> {
     if value.starts_with('/')
         || value.contains("..")
@@ -183,14 +183,14 @@ fn validate_reference(value: &str) -> Result<()> {
         })
     {
         bail!(
-            "input preparation failure: domain reference {value:?} is not a reference \
+            "input preparation failure: instance reference {value:?} is not a reference \
              (no leading `/`, no `..`, charset `[A-Za-z0-9_.:/@-]`; host paths never enter config)"
         );
     }
     Ok(())
 }
 
-/// TOML basic-string quoting matching the domain parser's escapes.
+/// TOML basic-string quoting matching the instance parser's escapes.
 fn quote(value: &str) -> Result<String> {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');

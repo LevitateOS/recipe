@@ -31,7 +31,7 @@ mod root;
 
 pub(crate) use root::{prepare_root, seed_target};
 
-pub(crate) use config::DomainConfig;
+pub(crate) use config::InstanceConfig;
 
 /// Name of the staged domain config inside the staging directory.
 const CONFIG_FILE: &str = "config.toml";
@@ -96,7 +96,7 @@ pub fn prepare_invocation(
     let env = allowlisted_env(&invocation_id)?;
 
     let network = network::NetworkPolicy::resolve(options)?;
-    let config = DomainConfig::for_invocation(&invocation_id, &env, options, network.clone())?;
+    let config = InstanceConfig::for_invocation(&invocation_id, &env, options, network.clone())?;
     let config_text = config.render()?;
 
     let staging = crate::temporary::TemporaryDirectory::new()
