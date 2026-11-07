@@ -1,6 +1,6 @@
 use super::*;
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
 pub(super) fn serve_download(
@@ -25,32 +25,7 @@ fn serve_response(
     let headers = headers.to_owned();
     let body = body.as_ref().to_vec();
     let server = std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(120);
-        let (mut stream, _) = loop {
-            match listener.accept() {
-                Ok(connection) => break connection,
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::WouldBlock
-                        && Instant::now() < deadline =>
-                {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(error) => panic!("download CLI did not connect to its HTTP fixture: {error}"),
-            }
-        };
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut request = BufReader::new(&mut stream);
-        let mut line = String::new();
-        let mut received = String::new();
-        loop {
-            line.clear();
-            if request.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
-                break;
-            }
-            received.push_str(&line);
-        }
+        let (mut stream, received) = accept_request(&listener);
         write!(
             stream,
             "HTTP/1.1 {status}\r\n{headers}Connection: close\r\n\r\n"
@@ -58,6 +33,69 @@ fn serve_response(
         .unwrap();
         stream.write_all(&body).unwrap();
         received
+    });
+    (url, server)
+}
+
+fn accept_request(listener: &TcpListener) -> (TcpStream, String) {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let (mut stream, _) = loop {
+        match listener.accept() {
+            Ok(connection) => break connection,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("download CLI did not connect to its HTTP fixture: {error}"),
+        }
+    };
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut request = BufReader::new(&mut stream);
+    let mut line = String::new();
+    let mut received = String::new();
+    loop {
+        line.clear();
+        if request.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+            break;
+        }
+        received.push_str(&line);
+    }
+    (stream, received)
+}
+
+/// Serve one bounded set of normal package requests on a shared origin.
+pub(super) fn serve_files(files: Vec<(String, Vec<u8>)>) -> (String, std::thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!("http://{}/payload/", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let mut files: std::collections::BTreeMap<_, _> = files
+            .into_iter()
+            .map(|(name, body)| (format!("/payload/{name}"), body))
+            .collect();
+        while !files.is_empty() {
+            let (mut stream, request) = accept_request(&listener);
+            let path = request
+                .lines()
+                .next()
+                .unwrap()
+                .split_whitespace()
+                .nth(1)
+                .unwrap();
+            let body = files
+                .remove(path)
+                .expect("unexpected or repeated package request");
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            stream.write_all(&body).unwrap();
+        }
     });
     (url, server)
 }

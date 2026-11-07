@@ -35,23 +35,43 @@ fn prepare_assets(recipes: &Path, recipe: &str) -> (PathBuf, Vec<PathBuf>) {
     std::fs::create_dir_all(&target).unwrap();
     let alpine = recipe.starts_with("alpine");
     let lock = std::fs::read_to_string(recipes.join("sources/levitate-rpm-lock.rhai")).unwrap();
-    let entries = if alpine {
-        vec![
+    let entries: Vec<(String, String)> = if alpine {
+        // Read the trusted producer's pure facts rather than maintaining a
+        // second package list that can silently omit new required assets.
+        let engine = rhai::Engine::new();
+        let ast = engine
+            .compile_file(recipes.join("sources/alpine.rhai"))
+            .unwrap();
+        let facts: rhai::Map = engine
+            .call_fn(&mut rhai::Scope::new(), &ast, "facts", ())
+            .unwrap();
+        let mut entries = vec![
             (
-                "alpine-extended-3.23.2-x86_64.iso",
-                "8d50854936dba58e7616ac3bfa07ad67dac0347305fec1cba6d288cf5df1577d",
+                facts["iso_name"].clone().into_string().unwrap(),
+                facts["iso_sha256"].clone().into_string().unwrap(),
             ),
             (
-                "apk-tools-static-3.0.9-r0.apk",
-                "ea77b2533566e70c9566c03748199b79348010c3199ba02d97e0634cf0fa9ef7",
+                facts["apk_tools_name"].clone().into_string().unwrap(),
+                facts["apk_tools_sha256"].clone().into_string().unwrap(),
             ),
-        ]
+        ];
+        for apk in facts["extra_apks"].clone_cast::<rhai::Array>() {
+            let apk = apk.cast::<rhai::Array>();
+            entries.push((
+                format!("extra-apks/{}", apk[0].clone().into_string().unwrap()),
+                apk[1].clone().into_string().unwrap(),
+            ));
+        }
+        entries
     } else {
         // Each locked RPM: [name, NEVRA, URL, SHA256].
         lock.lines()
             .filter_map(|line| {
                 let row: Vec<&str> = line.trim().strip_prefix("[\"")?.split("\", \"").collect();
-                Some((row[2].rsplit('/').next()?, row[3].trim_end_matches("\"],")))
+                Some((
+                    row[2].rsplit('/').next()?.to_owned(),
+                    row[3].trim_end_matches("\"],").to_owned(),
+                ))
             })
             .collect()
     };
@@ -61,15 +81,20 @@ fn prepare_assets(recipes: &Path, recipe: &str) -> (PathBuf, Vec<PathBuf>) {
         "sources/levitate-rpm-lock.rhai"
     });
     // The RPM set lives in the `rpms` directory of the preseed output.
-    let asset_dir = if alpine { target.clone() } else { target.join("rpms") };
+    let asset_dir = if alpine {
+        target.clone()
+    } else {
+        target.join("rpms")
+    };
     std::fs::create_dir_all(&asset_dir).unwrap();
     let mut facts = std::fs::read_to_string(&facts_path).unwrap();
     let mut files = Vec::new();
     for (name, hash) in entries {
-        let file = asset_dir.join(name);
+        let file = asset_dir.join(&name);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         let bytes = format!("verified fixture for {name}");
         std::fs::write(&file, &bytes).unwrap();
-        facts = facts.replace(hash, &hex::encode(Sha256::digest(bytes.as_bytes())));
+        facts = facts.replace(&hash, &hex::encode(Sha256::digest(bytes.as_bytes())));
         files.push(file);
     }
     std::fs::write(facts_path, facts).unwrap();
@@ -99,9 +124,30 @@ fn cli_preseed_checks_reject_same_size_corruption_of_verified_assets() {
                 std::fs::read(&files[0]).unwrap()
             );
             assert_ne!(published, files[0]);
+            if recipe.starts_with("alpine") {
+                let extras = Path::new(ctx["outputs"]["extra_apks"].as_str().unwrap());
+                for file in files.iter().skip(2) {
+                    assert_eq!(
+                        std::fs::read(extras.join(file.file_name().unwrap())).unwrap(),
+                        std::fs::read(file).unwrap()
+                    );
+                }
+            }
         }
-        // The first and last asset stand for the rest of a locked RPM set.
-        let sampled = [files.first().unwrap().clone(), files.last().unwrap().clone()];
+        // Preserve both main Alpine checks and sample its additional package
+        // set; the first/last RPMs stand for the rest of the lock.
+        let sampled = if recipe.starts_with("alpine") {
+            vec![
+                files[0].clone(),
+                files[1].clone(),
+                files.last().unwrap().clone(),
+            ]
+        } else {
+            vec![
+                files.first().unwrap().clone(),
+                files.last().unwrap().clone(),
+            ]
+        };
         for file in sampled {
             let original = std::fs::read(&file).unwrap();
             let mut changed = original.clone();
@@ -141,8 +187,8 @@ fn cli_preseed_explicit_inputs_handle_quoted_host_paths() {
 
 #[test]
 fn cli_alpine_refresh_preserves_previous_publication_and_inputs_on_failure() {
-    use super::downloads::serve_download;
-    for failure in [None, Some("iso"), Some("apk")] {
+    use super::downloads::{serve_download, serve_files};
+    for failure in [None, Some("iso"), Some("apk"), Some("extra")] {
         let (dir, recipes) = create_test_env();
         let recipe = "alpine-preseed-source-assets";
         let (target, files) = prepare_assets(&recipes, recipe);
@@ -155,7 +201,9 @@ fn cli_alpine_refresh_preserves_previous_publication_and_inputs_on_failure() {
             dir.path(),
         );
         assert_success(&initial);
-        let prior_iso = PathBuf::from(ctx.unwrap()["outputs"]["iso"].as_str().unwrap());
+        let initial = ctx.unwrap();
+        let prior_iso = PathBuf::from(initial["outputs"]["iso"].as_str().unwrap());
+        let prior_extras = PathBuf::from(initial["outputs"]["extra_apks"].as_str().unwrap());
         let iso_bytes = if failure == Some("iso") {
             b"corrupt ISO".as_slice()
         } else {
@@ -172,6 +220,28 @@ fn cli_alpine_refresh_preserves_previous_publication_and_inputs_on_failure() {
         } else {
             None
         };
+        let extra_response = if failure.is_none() || failure == Some("extra") {
+            let last = files.len() - 1;
+            let payloads = files
+                .iter()
+                .enumerate()
+                .skip(2)
+                .map(|(index, file)| {
+                    let bytes = if failure == Some("extra") && index == last {
+                        b"corrupt extra APK".to_vec()
+                    } else {
+                        before[index].clone()
+                    };
+                    (
+                        file.file_name().unwrap().to_str().unwrap().to_owned(),
+                        bytes,
+                    )
+                })
+                .collect();
+            Some(serve_files(payloads))
+        } else {
+            None
+        };
         let path = recipes.join(format!("{recipe}.rhai"));
         let mut source = std::fs::read_to_string(&path).unwrap().replace(
             "iso_url: assets.iso_url,",
@@ -183,16 +253,28 @@ fn cli_alpine_refresh_preserves_previous_publication_and_inputs_on_failure() {
                 &format!("apk_tools_url: {url:?},"),
             );
         }
+        if let Some((url, _)) = &extra_response {
+            source = source.replace(
+                "extra_apks_url: assets.extra_apks_url,",
+                &format!("extra_apks_url: {url:?},"),
+            );
+        }
         std::fs::write(&path, &source).unwrap();
         let mut command = preseed_command(&recipes, recipe, "install", &target);
         command.args(["--force-acquire", "--force-install"]);
-        for url in std::iter::once(&iso_url).chain(apk_response.as_ref().map(|(url, _)| url)) {
+        for url in std::iter::once(&iso_url)
+            .chain(apk_response.as_ref().map(|(url, _)| url))
+            .chain(extra_response.as_ref().map(|(url, _)| url))
+        {
             let authority = url.trim_start_matches("http://").split('/').next().unwrap();
             command.args(["--network-host", authority]);
         }
         let (output, _) = super::kernel_recipes::invoke_kernel(command, dir.path());
         iso_server.join().unwrap();
         if let Some((_, server)) = apk_response {
+            server.join().unwrap();
+        }
+        if let Some((_, server)) = extra_response {
             server.join().unwrap();
         }
         if failure.is_some() {
@@ -205,6 +287,12 @@ fn cli_alpine_refresh_preserves_previous_publication_and_inputs_on_failure() {
             assert_eq!(&std::fs::read(file).unwrap(), bytes);
         }
         assert_eq!(std::fs::read(prior_iso).unwrap(), before[0]);
+        for (index, file) in files.iter().enumerate().skip(2) {
+            assert_eq!(
+                std::fs::read(prior_extras.join(file.file_name().unwrap())).unwrap(),
+                before[index]
+            );
+        }
         assert_eq!(std::fs::read_to_string(path).unwrap(), source);
     }
 }
@@ -225,7 +313,10 @@ fn cli_rootfs_consumers_reject_changed_explicit_assets() {
         .unwrap();
         let fedora = consumer.starts_with("fedora");
         let sampled = if fedora {
-            vec![files.first().unwrap().clone(), files.last().unwrap().clone()]
+            vec![
+                files.first().unwrap().clone(),
+                files.last().unwrap().clone(),
+            ]
         } else {
             files.clone()
         };
@@ -242,12 +333,19 @@ fn cli_rootfs_consumers_reject_changed_explicit_assets() {
                 .arg("--build-dir")
                 .arg(dir.path().join("materializer"));
             if fedora {
-                command.args(["--input", &format!("rpms={}", files[0].parent().unwrap().display())]);
+                command.args([
+                    "--input",
+                    &format!("rpms={}", files[0].parent().unwrap().display()),
+                ]);
             } else {
                 command.args(["--input", &format!("iso={}", files[0].display())]);
             }
-            if !fedora && files.len() == 2 {
+            if !fedora {
                 command.args(["--input", &format!("apk_tools={}", files[1].display())]);
+                command.args([
+                    "--input",
+                    &format!("extra_apks={}", files[2].parent().unwrap().display()),
+                ]);
             }
             let (output, _) = super::kernel_recipes::invoke_kernel(command, dir.path());
             assert!(!output.status.success());
