@@ -221,6 +221,20 @@ fn cli_alpine_refresh_preserves_previous_publication_and_inputs_on_failure() {
             None
         };
         let extra_response = if failure.is_none() || failure == Some("extra") {
+            // Extras are served where the preseed asks for them: under their
+            // pinned repository, below the mirror root (extra_apks_url).
+            let engine = rhai::Engine::new();
+            let ast = engine
+                .compile_file(recipes.join("sources/alpine.rhai"))
+                .unwrap();
+            let facts: rhai::Map = engine
+                .call_fn(&mut rhai::Scope::new(), &ast, "facts", ())
+                .unwrap();
+            let repositories: Vec<String> = facts["extra_apks"]
+                .clone_cast::<rhai::Array>()
+                .into_iter()
+                .map(|apk| apk.cast::<rhai::Array>()[2].clone().into_string().unwrap())
+                .collect();
             let last = files.len() - 1;
             let payloads = files
                 .iter()
@@ -233,7 +247,11 @@ fn cli_alpine_refresh_preserves_previous_publication_and_inputs_on_failure() {
                         before[index].clone()
                     };
                     (
-                        file.file_name().unwrap().to_str().unwrap().to_owned(),
+                        format!(
+                            "{}/x86_64/{}",
+                            repositories[index - 2],
+                            file.file_name().unwrap().to_str().unwrap()
+                        ),
                         bytes,
                     )
                 })
