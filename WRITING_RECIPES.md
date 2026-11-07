@@ -198,7 +198,7 @@ unverified package payloads trustworthy.
 `exec_checked(program, args[, options])` throws on nonzero exit;
 `exec_output(...)` returns checked stdout; `exec(...)` returns a status that the
 recipe handles deliberately. Arguments are an array. An optional map supports
-child-only `cwd` and `env`, without mutating the worker's global environment:
+child-only `cwd`, `env`, and integer `uid`/`gid` options, without mutating the worker's global environment:
 
 ```rhai
 exec_checked("cargo", ["build", "--release", "--locked", "--offline"], #{

@@ -189,6 +189,13 @@ fn argv_command(
     command.args(args.into_iter().map(|value| value.to_string()));
     for (key, value) in options {
         match key.as_str() {
+            "uid" | "gid" => {
+                use std::os::unix::process::CommandExt;
+                let id = value.as_int().map_err(|_| "command identity must be an integer")?;
+                let id: u32 = id.try_into().map_err(|_| "command identity must fit a UID/GID")?;
+                if id == u32::MAX { return Err("command identity must not be -1".into()); }
+                if key.as_str() == "uid" { command.uid(id); } else { command.gid(id); }
+            }
             "cwd" => {
                 let dir = value
                     .into_string()

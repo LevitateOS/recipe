@@ -72,6 +72,10 @@ fn is_built(ctx) {
     ready(ctx)
 }
 fn build(ctx) {
+    if trim(exec_output("id", ["-u"], #{uid: 1000, gid: 1000})) != "1000" {
+        throw "child virtual identity was not selected";
+    }
+    if trim(exec_output("id", ["-u"])) != "0" { throw "child changed worker identity"; }
     target_extract_tar("/inputs/package", "/out/rootfs");
     target_finalize("/out/rootfs");
     ctx

@@ -42,9 +42,9 @@ check unless the recipe explicitly handles them. Phase hooks return context.
 | `download` | `helpers/acquire/download.rs` | `download(url, dest, sha256[, resume:bool]) -> String` | Required SHA256; staged verified replacement; failure preserves valid destination. |
 | `ends_with` | ``helpers/util/string.rs`` | `ends_with(s, suffix) -> bool` |  |
 | `env` | `helpers/util/env.rs` | `env(name) -> String` | Read the explicit worker environment; empty when absent. |
-| `exec` | ``helpers/util/process.rs`` | `exec(cmd, args:Array [, options:Map]) -> int` | explicit exit status; child-only cwd/env |
-| `exec_checked` | ``helpers/util/process.rs`` | `exec_checked(cmd, args:Array [, options:Map]) -> ()` | throws on nonzero; child-only cwd/env |
-| `exec_output` | ``helpers/util/process.rs`` | `exec_output(cmd, args:Array [, options:Map]) -> String` | checked stdout capture; child-only cwd/env |
+| `exec` | ``helpers/util/process.rs`` | `exec(cmd, args:Array [, options:Map]) -> int` | explicit exit status; child-only cwd/env/uid/gid |
+| `exec_checked` | ``helpers/util/process.rs`` | `exec_checked(cmd, args:Array [, options:Map]) -> ()` | throws on nonzero; child-only cwd/env/uid/gid |
+| `exec_output` | ``helpers/util/process.rs`` | `exec_output(cmd, args:Array [, options:Map]) -> String` | checked stdout capture; child-only cwd/env/uid/gid |
 | `exists` | ``helpers/install/filesystem.rs`` | `exists(path) -> bool` |  |
 | `extract` | `helpers/build/extract.rs` | `extract(archive, dest) -> ()` | Detect archive format; validate paths and reject invalid extraction. |
 | `extract_with_format` | `helpers/build/extract.rs` | `extract_with_format(archive, dest, format) -> ()` | Explicit format; same checked extraction boundary. |

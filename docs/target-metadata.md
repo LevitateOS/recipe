@@ -69,3 +69,8 @@ The deployed-copy check uses a private mount namespace: erofs-utils 1.8.10
 `fsck.erofs --preserve --xattrs` applies capabilities before chown, which clears
 them again. This does not affect recstrap’s read-only mount/copy path; deriving
 products also uses the embedded manifest rather than extracted inode ownership.
+
+APK 3 requires a non-root virtual identity for `--usermode`. Per-command
+`uid`/`gid` options select that identity inside Ginux while package metadata
+continues to describe installed UID/GID values. No host credential changes are
+used by the configured runtime.
