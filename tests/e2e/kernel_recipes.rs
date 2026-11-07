@@ -50,8 +50,19 @@ pub(super) fn invoke_kernel(
 
 #[test]
 fn cli_kernel_readiness_preserves_release_module_and_configuration_rules() {
-    for (target, release) in [("acorn", "6.19.0-acorn"), ("levitate", "6.12.71-levitate")] {
+    // The source recipe follows kernel/metadata.rhai; the prebuilt recipe the
+    // published bundle in linux-prebuilt.rhai. They differ while a new kernel
+    // is pinned but not yet published.
+    for (target, source_release, prebuilt_release) in [
+        ("acorn", "7.3.3-acorn", "6.19.0-acorn"),
+        ("levitate", "6.12.116-levitate", "6.12.71-levitate"),
+    ] {
         for recipe in ["linux", "linux-prebuilt"] {
+            let release = if recipe == "linux" {
+                source_release
+            } else {
+                prebuilt_release
+            };
             let (dir, recipes) = create_test_env();
             copy_kernel_recipes(&recipes);
             let artifacts = dir.path().join("existing kernel");
