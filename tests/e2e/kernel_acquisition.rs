@@ -7,12 +7,12 @@ fn prebuilt_archive(fault: &str) -> Vec<u8> {
     let mut archive = tar::Builder::new(encoder);
     // These are disposable artifact trees, not bootable kernel images/modules.
     let mut files = vec![
-        ("kernel-build/include/config/kernel.release", "6.19.0-acorn"),
+        ("kernel-build/include/config/kernel.release", "7.3.3-acorn"),
         ("staging/boot/vmlinuz", "downloaded disposable image"),
     ];
     if fault != "layout" {
         files.push((
-            "staging/usr/lib/modules/6.19.0-acorn/payload.ko",
+            "staging/usr/lib/modules/7.3.3-acorn/payload.ko",
             "disposable module payload",
         ));
     }
@@ -66,7 +66,7 @@ fn cli_prebuilt_kernel_offline_acquisition_validates_before_publication() {
         let path = recipes.join("linux-prebuilt.rhai");
         // Only the fixture's declared digest changes; actual lifecycle runs.
         let source = std::fs::read_to_string(&path).unwrap().replace(
-            "04e10c6392680b75b80a09beb9036e5954b62cfabddd4cb0fe3c975c0a79e96e",
+            "c3634752d628695eba64130b0b342042a283b164d6fa16e0c871c125256aabfc",
             &expected,
         );
         std::fs::write(&path, &source).unwrap();
@@ -79,7 +79,7 @@ fn cli_prebuilt_kernel_offline_acquisition_validates_before_publication() {
         if fault == "valid" {
             assert_success(&output);
             let ctx = ctx.unwrap();
-            assert_eq!(ctx["kernel_version"], "6.19.0-acorn");
+            assert_eq!(ctx["kernel_version"], "7.3.3-acorn");
             let published = Path::new(ctx["outputs"]["kernel"].as_str().unwrap());
             assert_eq!(
                 std::fs::read_to_string(published).unwrap(),
