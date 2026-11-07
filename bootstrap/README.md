@@ -32,11 +32,11 @@ separately by Recipe, so updating Recipe does not rebuild the compiler image.
 Build and run the Ginux launcher explicitly before executing recipes.
 
 The image includes the Rust compiler, Cargo, standard library, GCC and Make.
-Rust commands currently need `LD_LIBRARY_PATH=/usr/lib`. The demonstrated offline
-Cargo workload uses explicit vendored source inputs, one build job, and
-`-C link-arg=-Wl,--threads=1` for LLD to stay within Ginux's current task bound.
-These are demonstrated compiler requirements, not evidence that every package
-or distro recipe works yet.
+The current local Ginux integration admits 32 tasks. Verified offline GNU and
+musl checks use two concurrent Cargo clients with one job each, share the locked
+target directory, and execute the compiled threaded program. The checks retain
+default linker threading. Musl selects the image's Rust linker as shown below.
+Other package and distro scenarios need their own verification.
 
 The producer bounds each input/member at 16 GiB, aggregate input/expanded data
 at 32 GiB, and archive entries at 500,000. Links cannot traverse above the image
@@ -107,9 +107,10 @@ export GINUX_ROOT=oci:recipe-compiler@sha256:c089f95c462582cc0fcc2a8b2ba86c7d2d6
 The demonstrated output SHA256 is
 `c089f95c462582cc0fcc2a8b2ba86c7d2d64c22c82efa499ce20e3704a7fe15e`;
 check `provenance.json` after producing it. A fresh output directory is required.
-For musl builds use `-C linker=/usr/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld
--C linker-flavor=ld.lld -C link-arg=--threads=1`; the GNU target retains its
-existing `-C link-arg=-Wl,--threads=1`. Both use `LD_LIBRARY_PATH=/usr/lib`.
-Actual managed musl compilation, static linking and execution were demonstrated;
-this does not claim an arbitrary C cross-compilation environment. Ordinary TLS
+For musl builds pass `--target x86_64-unknown-linux-musl` to Cargo and set
+`RUSTFLAGS="-C linker=/usr/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld -C linker-flavor=ld.lld"`
+in the command's environment options. The GNU fixture uses Cargo's default
+linker configuration. Managed GNU compilation and musl static linking,
+cache reuse, and threaded execution have been verified. C cross-compilation
+needs its own target toolchain. Ordinary TLS
 uses the image's certificate trust. Test-only CA images and keys are excluded.

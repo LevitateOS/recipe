@@ -58,8 +58,11 @@ sudo env GINUX_BIN="$GINUX_BIN" GINUX_ROOTFS="$GINUX_ROOTFS" \
 Only install commands required by a recipe in its compiler image. For example,
 a Git recipe needs Git there. An explicit Rust musl target needs its matching
 standard library/linker support. GNU and musl outputs are distinct products.
-The demonstrated native GNU Cargo invocation uses one job,
-`LD_LIBRARY_PATH=/usr/lib`, and `RUSTFLAGS=-C link-arg=-Wl,--threads=1`.
+The verified GNU and musl Cargo fixtures use one job per client and the local
+Ginux integration's 32-task bound. GNU uses its default linker configuration;
+musl selects the compiler image's `rust-lld` as described in
+[the bootstrap instructions](bootstrap/README.md). Both fixtures compile once
+across two cache clients and execute the resulting threaded program.
 
 ## Run a recipe
 
