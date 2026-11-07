@@ -307,6 +307,11 @@ fn cli_rootfs_consumers_reject_changed_explicit_assets() {
         let (_target, files) = prepare_assets(&recipes, producer);
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../distro/builder/recipes");
         std::fs::copy(
+            source.join("installed-system.rhai"),
+            recipes.join("installed-system.rhai"),
+        )
+        .unwrap();
+        std::fs::copy(
             source.join(format!("{consumer}.rhai")),
             recipes.join(format!("{consumer}.rhai")),
         )
