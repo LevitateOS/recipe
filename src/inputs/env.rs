@@ -62,12 +62,17 @@ fn validate_invocation_id(id: &str) -> Result<()> {
 /// and literals only.
 pub fn allowlisted_env(invocation_id: &str) -> Result<Vec<(String, String)>> {
     use crate::domain;
-    let mut path: Vec<String> = domain::tool_bin_dirs().collect();
-    path.extend([domain::TOOLS.into(), "/usr/bin".into(), "/bin".into()]);
     Ok(vec![
-        ("PATH".to_string(), path.join(":")),
+        ("PATH".to_string(), executable_path()),
         (domain::ENV_WORKER.to_string(), domain::ENV_WORKER_VALUE.to_string()),
         (domain::ENV_INVOCATION.to_string(), invocation_id.to_string()),
         ("TMPDIR".to_string(), domain::TMP.to_string()),
     ])
+}
+
+/// Fixed image/owned executable directories, never caller-supplied host paths.
+pub(super) fn executable_path() -> String {
+    let mut path: Vec<String> = crate::domain::tool_bin_dirs().collect();
+    path.extend([crate::domain::TOOLS.into(), "/usr/bin".into(), "/bin".into()]);
+    path.join(":")
 }
