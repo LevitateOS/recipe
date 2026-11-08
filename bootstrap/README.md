@@ -5,6 +5,12 @@ Recipe's Ginux launcher. It composes already acquired, pinned local artifacts;
 it does not download packages, interpret recipes, or run package installation
 scripts. Ordinary recipe execution consumes the resulting image.
 
+Image reproducibility does not by itself establish every distro/tool consumer.
+Use the exact launcher and matching worker from the supported source, observe
+[runtime boundaries](../docs/runtime-limits.md), and keep product/VM results
+bound to those identities. Maintained runtime delivery remains open; this guide
+does not select a fork or certify guest installer/PTY/provider operation.
+
 The manifest records the base image, compiler RPMs, Rust distribution and selected
 Rust components. Input paths are relative to `--input-root`. All inputs are copied
 and verified against SHA-256 before use. RPM payloads are converted with the host's

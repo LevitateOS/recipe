@@ -1,4 +1,4 @@
-.TH RECIPE-HELPERS 7 "2026-11-06" "Recipe" "Recipe Helpers"
+.TH RECIPE-HELPERS 7 "2026-11-08" "Recipe" "Recipe Helpers"
 .SH NAME
 recipe-helpers \- registered managed Rhai helpers
 .SH DESCRIPTION
@@ -233,6 +233,13 @@ explicit file
 \fBwrite_file(path, content) -> ()\fR
 
 .SH COMMANDS
+.PP
+Target filesystem helpers retain logical metadata separately from writable staging:
+target_extract_tar(archive, root), target_extract_rpm(archive, root),
+target_capture_apks(root, archive_directories), target_mode(root, relative_path, mode)
+and target_finalize(root). RPM extraction requires the image's rpm/rpm2archive;
+it does not run package scriptlets. Capture package metadata before policy,
+then finalize the tree after policy changes. See docs/target-metadata.md.
 exec returns a status; exec_checked and exec_output fail on nonzero exit.
 Their optional options map accepts child-only cwd and env. Shell strings need
 proper quoting and checked pipelines. Diagnostics go to stderr.
@@ -246,4 +253,5 @@ Downloads require SHA256 and replace a valid destination only after complete
 verification. Git acquisition requires an exact destination and full commit id.
 Every redirect endpoint also needs a network grant. Package facts stay in Rhai.
 .SH SEE ALSO
-recipe(1), recipe-recipe(5), HELPERS_AUDIT.md, WRITING_RECIPES.md
+recipe(1), recipe-recipe(5), HELPERS_AUDIT.md, WRITING_RECIPES.md,
+docs/runtime-limits.md

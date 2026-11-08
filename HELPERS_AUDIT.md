@@ -5,6 +5,11 @@ The executable contract is `const RECIPE_API = 2;`. This catalog follows
 its configured filesystem, task, memory and network assignments. They never
 select a native host execution path.
 
+Registration is an interface inventory, not successful execution of every
+package/tool variant. Use the actual compiler/acquisition image and preserve
+the consumer's locks and metadata checks. [Runtime limits](docs/runtime-limits.md)
+defines the supported clock, poll, resource, network and timestamp boundaries.
+
 Checks use `ready(ctx)`/`needs_work(ctx, reason)`; native helper errors fail the
 check unless the recipe explicitly handles them. Phase hooks return context.
 `RUNTIME` during setup and `ctx.runtime` during hooks provide invocation paths;
@@ -83,6 +88,11 @@ check unless the recipe explicitly handles them. Phase hooks return context.
 | `shell_status_in` | ``helpers/util/shell.rs`` | `shell_status_in(dir, cmd) -> int` |  |
 | `split` | ``helpers/util/string.rs`` | `split(s, sep) -> Array` |  |
 | `starts_with` | ``helpers/util/string.rs`` | `starts_with(s, prefix) -> bool` |  |
+| `target_capture_apks` | `helpers/target.rs` | `target_capture_apks(root, archive_directories:Array) -> ()` | Read installed APK metadata and exact selected archives before recipe policy; does not grant host ownership changes. |
+| `target_extract_rpm` | `helpers/target.rs` | `target_extract_rpm(archive, root) -> ()` | Retain verified RPM payload metadata/capabilities without package scriptlets; requires image rpm/rpm2archive. |
+| `target_extract_tar` | `helpers/target.rs` | `target_extract_tar(archive, root) -> ()` | Extract staging payload while retaining target ownership, modes, links and SCHILY xattrs. |
+| `target_finalize` | `helpers/target.rs` | `target_finalize(root) -> ()` | Resolve target accounts and bind final payload bytes to the target metadata manifest; run after recipe policy. |
+| `target_mode` | `helpers/target.rs` | `target_mode(root, relative_path, mode:int) -> ()` | Set intended target permissions independently of writable staging grants. |
 | `trim` | ``helpers/util/string.rs`` | `trim(s) -> String` |  |
 | `verify_blake3` | ``helpers/acquire/verify.rs`` | `verify_blake3(path, expected) -> ()` | explicit file |
 | `verify_sha256` | ``helpers/acquire/verify.rs`` | `verify_sha256(path, expected) -> ()` | explicit file |

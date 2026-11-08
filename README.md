@@ -106,14 +106,17 @@ another user access. No automatic privilege bridge is provided.
 For the repository's actual offline live-tool producer:
 
 ```sh
-distro-builder artifact prepare-tool-source recfstab .artifacts/recfstab-source
+cargo run --locked -p distro-builder --bin distro-builder -- \
+  --repo-root "$PWD" artifact prepare-tool-source recstrap .artifacts/recstrap-source
 recipe install distro/builder/recipes/install-tools.rhai --define BIN=recfstab \
-  --input source=.artifacts/recfstab-source \
+  --input source=.artifacts/recstrap-source \
   --build-dir .artifacts/work/recfstab --json-output .artifacts/recfstab.json
 ```
 
 Source preparation vendors only the selected production closure, offline, with
 versions from the workspace lock. The managed recipe performs compilation.
+`recfstab` is a binary of the `recstrap` package, so source preparation selects
+`recstrap` while `BIN` selects `recfstab`.
 Canonical product preparation calls this same producer. `cargo xtask setup`
 explicitly prepares the separate QEMU/OVMF product; scenario commands consume
 existing prepared artifacts.
@@ -233,10 +236,17 @@ cached repository settings that override transport or execute hooks/filters are
 rejected. HTTP download redirect destinations need explicit endpoint grants.
 Recipes own version/URL/digest facts and literal NEEDS authority. Variant TOML
 keeps recipe selection and input path bindings. The Fedora rootfs/preseed declare
-8192 MiB; Alpine declares 4096 MiB; rootfs producers declare 131072 objects.
+8192 MiB; Alpine declares 4096 MiB. Fedora rootfs declares 196608 objects and
+Alpine rootfs declares 131072; use `inspect` on the selected recipe for its limits.
 `memory_mib` bounds each process's virtual address space, not aggregate tree RAM;
 storage also has its own byte/object accounting. Jobs select eligible real CPUs,
 not a virtual topology. Numeric IP/port grants are not DNS/HTTP identities.
+Configured raw clocks expose host realtime and monotonic time; vDSO clocks remain
+observable. Configured `sysinfo` returns zeros, not a memory-usage account.
+Bounded `poll`/`ppoll` is readiness support, without general signal interruption
+or restart semantics. Archive timestamps have whole-second precision. See
+[supported runtime limits](docs/runtime-limits.md) before claiming isolation or
+Linux compatibility beyond these boundaries.
 
 ## Read authority without executing setup
 
@@ -277,6 +287,10 @@ bin = "codex"
 ```
 
 Only the `default_provider`'s block is required.
+
+This describes configuration syntax, not verified external-provider support.
+Release acceptance includes controlled patch/retry mechanics only; actual Codex,
+Claude or other provider interoperability is outside the agreed release scope.
 
 Use the chosen provider's installed CLI/configuration; there is no implicit
 provider fallback. A named profile can override provider settings.

@@ -58,14 +58,19 @@ continues to mount the completed EROFS image and copy it with GNU `cp -aT --pres
 not reconstruct distro package policy or interpret the manifest.
 
 The integration case
-`target_metadata::cli_target_metadata_survives_publication_reimport_and_erofs`
+`target_metadata::cli_target_metadata_survives_publication_reimport_and_erofs_production`
 uses real Ginux execution, checkpoint recovery, publication, reimport,
-composition, EROFS packing, and recstrap’s mount/copy deployment path. It checks non-root ownership,
+composition and EROFS packing. It checks non-root ownership,
 setuid/sticky modes, absolute symlinks, hardlinks, raw file capabilities and
 rejection of a changed privileged payload. Run it with the documented Ginux
 bootstrap privileges and a compatible launcher/image.
 
-The deployed-copy check uses a private mount namespace: erofs-utils 1.8.10
+Actual recstrap mount/copy deployment is a separate libvirt fixture consuming
+the exact produced EROFS image; see the superproject's
+`docs/ginux-contributions/prd12-deployment/README.md` for build/run commands and
+prebuilt kernel selection. The CLI case alone does not establish deployment.
+Both image identity and deployment receipts must match the claimed source.
+erofs-utils 1.8.10
 `fsck.erofs --preserve --xattrs` applies capabilities before chown, which clears
 them again. This does not affect recstrap’s read-only mount/copy path; deriving
 products also uses the embedded manifest rather than extracted inode ownership.

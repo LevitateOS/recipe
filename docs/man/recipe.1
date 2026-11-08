@@ -1,4 +1,4 @@
-.TH RECIPE 1 "2026-11-06" "Recipe" "User Commands"
+.TH RECIPE 1 "2026-11-08" "Recipe" "User Commands"
 .SH NAME
 recipe \- execute Rhai package recipes through Ginux
 .SH SYNOPSIS
@@ -7,6 +7,9 @@ recipe \- execute Rhai package recipes through Ginux
 .br
 .B recipe
 [options] list|info|hash [argument]
+.br
+.B recipe
+[options] validate|inspect|explain|diff [arguments]
 .SH DESCRIPTION
 Recipe imports explicitly selected immutable inputs, runs API 2 recipes in a
 configured Ginux domain and publishes named outputs after successful execution
@@ -26,6 +29,10 @@ RECIPE_WORKER_BIN when the worker cannot be resolved from the current CLI/PATH.
 The launcher must support configured catalog 2 and configured-network-audit=1
 and configured-denial-audit=1.
 The current native launcher needs Linux x86_64 and chroot bootstrap privileges.
+Run the whole coordinator with those privileges and the explicit launcher,
+image and matching worker selections. Wrapping only the launcher in sudo loses
+required inherited channels. Runtime delivery remains a separate prerequisite;
+the workspace's old Ginux pin does not provide this configured contract.
 Build the image explicitly with recipe-image; ordinary execution consumes it.
 See bootstrap/README.md for the pinned manifest producer.
 .SH COMMANDS
@@ -177,5 +184,13 @@ recipe isinstalled ./tool.rhai --input source=./offline-source \
 Prepared tools, image libraries and required runtime operations must be present.
 Network grants do not isolate virtual hosts sharing an allowed IP and port.
 There is no native host execution/network fallback or live-system activation.
+Raw clocks expose host realtime/monotonic time and vDSO clocks remain observable.
+Configured sysinfo returns zeros, not resource accounting. CPU selection exposes
+real eligible IDs, not virtual topology. Memory limits bound per-process address
+space rather than aggregate process-tree RAM. Bounded poll/ppoll does not promise
+general signal interruption/restart semantics. Archive timestamps have whole-second
+precision. See docs/runtime-limits.md for supported variants and errors.
+External AI-provider interoperability is outside the release acceptance;
+controlled autofix verification establishes retry mechanics only.
 .SH SEE ALSO
 recipe-recipe(5), recipe-helpers(7), README.md, WRITING_RECIPES.md

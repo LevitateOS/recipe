@@ -144,6 +144,12 @@ run their complete coordinator with the required privileges and select the
 matching `RECIPE_WORKER_BIN`; they do not run directly on the host merely because
 worker-like environment variables are present.
 
+The [runtime limits](runtime-limits.md) also apply to privileged operators.
+Running as root does not add undeclared inputs/network or lift configured
+limits. Building product tools and checking their versions does not establish
+their guest installer interaction or boot/install/A/B behavior. Those require
+the separate included-product checks in the superproject contribution queue.
+
 Preparation additionally verified actual pinned public Rocky HTTPS and GitHub
 Git acquisition on the unmodified publisher trust store, plus fresh denied-
 network acquisition. Coordinator hostname resolution becomes bounded immutable

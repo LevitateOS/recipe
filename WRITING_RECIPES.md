@@ -9,6 +9,12 @@ also apply across the dependency graph: each dependency's numeric limits take
 the stricter bound, endpoint sets intersect, and no node acquires another's
 grants. Resource and byte limits remain per instance.
 
+Read [runtime limits](docs/runtime-limits.md) when choosing grants: memory is
+per-process address space, CPU selection is real affinity, network authority is
+numeric IP:port, global/vDSO clocks remain visible and archive timestamps have
+whole-second precision. The selected image must support the actual consumer;
+neither a helper signature nor a granted catalog operation proves that it does.
+
 ## Runnable local example
 
 Save this as `hello.rhai`. With a configured Ginux launcher/image from the

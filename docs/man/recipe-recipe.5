@@ -1,4 +1,4 @@
-.TH RECIPE-RECIPE 5 "2026-11-06" "Recipe" "File Formats"
+.TH RECIPE-RECIPE 5 "2026-11-08" "Recipe" "File Formats"
 .SH NAME
 recipe-recipe \- managed API 2 Rhai recipe contract
 .SH DESCRIPTION
@@ -69,6 +69,9 @@ files/directories under assigned /out or /work using ctx.outputs. Completed
 installation and installed reuse must supply the complete declaration.
 Intermediate phases may expose a subset; every present output is checked before
 checkpointing/publication.
+Archive modification times have whole-second precision. Target ownership,
+special modes and capabilities/xattrs travel through the validated target
+metadata manifest, independently of staging privileges; see docs/target-metadata.md.
 Consumers validate required names and kinds. Successful execution plus validated,
 bounded archive publication returns absolute host output paths in final JSON.
 Hooks continue to use domain paths. Imported inputs and earlier publications
