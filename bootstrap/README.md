@@ -101,12 +101,15 @@ target/debug/recipe-image \
   --input-root .artifacts/ginux-env \
   --output .artifacts/ginux-env/prepared-image-acquisition
 export GINUX_ROOTFS="$PWD/.artifacts/ginux-env/prepared-image-acquisition/rootfs.tar"
-export GINUX_ROOT=oci:recipe-compiler@sha256:c089f95c462582cc0fcc2a8b2ba86c7d2d64c22c82efa499ce20e3704a7fe15e
+export GINUX_ROOT="oci:recipe-compiler@sha256:$(jq -er '.sha256' .artifacts/ginux-env/prepared-image-acquisition/provenance.json)"
 ```
 
-The demonstrated output SHA256 is
-`c089f95c462582cc0fcc2a8b2ba86c7d2d64c22c82efa499ce20e3704a7fe15e`;
-check `provenance.json` after producing it. A fresh output directory is required.
+The historical eight-RPM output SHA256 was
+`c089f95c462582cc0fcc2a8b2ba86c7d2d64c22c82efa499ce20e3704a7fe15e`.
+The current manifest adds four ISO-tool RPMs, so that historical digest does not
+identify its output. Use the actual `provenance.json` digest as above; changing
+the image requires verification of that new combination. A fresh output
+directory is required.
 For musl builds pass `--target x86_64-unknown-linux-musl` to Cargo and set
 `RUSTFLAGS="-C linker=/usr/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld -C linker-flavor=ld.lld"`
 in the command's environment options. The GNU fixture uses Cargo's default

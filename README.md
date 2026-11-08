@@ -285,6 +285,9 @@ no LLM helpers; the provider never runs inside the worker.
 
 ## Validation and limits
 
+[Managed integration CI](docs/ci.md) describes launcher/image pins, runtime
+privileges, catalog coverage and explicitly opted-in publication.
+
 Run focused real CLI/integration cases with the actual launcher and prepared
 image. Build a worker snapshot before a run and keep it unchanged for that run:
 

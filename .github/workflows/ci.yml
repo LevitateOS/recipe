@@ -7,6 +7,11 @@ on:
     branches: [master, main]
   workflow_dispatch:
     inputs:
+      publish_release:
+        description: 'Publish a release after validation (explicit opt-in)'
+        required: true
+        default: false
+        type: boolean
       version_bump:
         description: 'Version bump type'
         required: true
@@ -15,31 +20,105 @@ on:
         options: [patch, minor, major]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   changes:
-    uses: LevitateOS/LevitateOS/.github/workflows/detect-changes.yml@master
+    uses: LevitateOS/LevitateOS/.github/workflows/detect-changes.yml@eea341c64a065d8465727919a72bc592878ea70b
     with:
-      type: rust
+      type: any
 
   ci:
     needs: changes
-    if: needs.changes.outputs.has_changes == 'true'
-    uses: LevitateOS/LevitateOS/.github/workflows/rust-ci.yml@master
+    if: needs.changes.outputs.has_changes == 'true' || github.event_name == 'workflow_dispatch'
+    uses: LevitateOS/LevitateOS/.github/workflows/rust-ci.yml@eea341c64a065d8465727919a72bc592878ea70b
     with:
       msrv: '1.93'
 
   release:
-    needs: [changes, ci]
+    needs: [changes, ci, managed-integration]
+    permissions:
+      contents: write
     if: |
-      needs.changes.outputs.has_changes == 'true' &&
-      ((github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'chore: Bump version')) ||
-      github.event_name == 'workflow_dispatch')
-    uses: LevitateOS/LevitateOS/.github/workflows/rust-release.yml@master
+      github.event_name == 'workflow_dispatch' && inputs.publish_release
+    uses: LevitateOS/LevitateOS/.github/workflows/rust-release.yml@eea341c64a065d8465727919a72bc592878ea70b
     with:
       create-binary-artifact: true
       create-rpm-artifact: true
       binary-name: 'recipe'
+      version-bump: ${{ inputs.version_bump }}
     secrets:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  managed-integration:
+    # These pins must identify the maintained delivery source and compiler image.
+    # Missing pins fail the required job; they never silently skip acceptance.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      GINUX_REPOSITORY: ${{ vars.GINUX_REPOSITORY }}
+      GINUX_SOURCE_SHA: ${{ vars.GINUX_SOURCE_SHA }}
+      RECIPE_IMAGE_URL: ${{ vars.RECIPE_IMAGE_URL }}
+      RECIPE_IMAGE_SHA256: ${{ vars.RECIPE_IMAGE_SHA256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require exact runtime inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GINUX_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          [[ "$GINUX_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RECIPE_IMAGE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$RECIPE_IMAGE_URL" == https://* ]]
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.GINUX_REPOSITORY }}
+          ref: ${{ vars.GINUX_SOURCE_SHA }}
+          path: .artifacts/ginux-source
+          persist-credentials: false
+      - name: Host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git erofs-utils rpm2cpio rpm jq ripgrep
+          rustup component add clippy rustfmt
+          rustup target add x86_64-unknown-linux-gnu
+      - name: Build selected launcher
+        working-directory: .artifacts/ginux-source
+        run: |
+          test "$(git rev-parse HEAD)" = "$GINUX_SOURCE_SHA"
+          make build
+      - name: Obtain pinned compiler image
+        run: |
+          mkdir -p .artifacts/managed-ci
+          curl --fail --location --proto '=https' --proto-redir '=https' "$RECIPE_IMAGE_URL" -o .artifacts/managed-ci/rootfs.tar
+          echo "$RECIPE_IMAGE_SHA256  .artifacts/managed-ci/rootfs.tar" | sha256sum --check --strict
+      - name: Lint all integration targets
+        run: cargo clippy --lib --bins --test e2e --test library_backend --test image_producer -- -D warnings
+      - name: Build CLI, matching worker and all integration targets
+        run: |
+          cargo test --release --test e2e --test library_backend --test image_producer --no-run --message-format=json > .artifacts/managed-ci/build.json
+      - name: Run complete standalone managed catalogs
+        run: |
+          sudo python3 scripts/managed-integration.py \
+            --build-json .artifacts/managed-ci/build.json \
+            --ginux .artifacts/ginux-source/target/x86_64-unknown-linux-gnu/release/ginux \
+            --ginux-source "$GINUX_SOURCE_SHA" \
+            --image .artifacts/managed-ci/rootfs.tar --image-sha256 "$RECIPE_IMAGE_SHA256" \
+            --output .artifacts/managed-ci/results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: managed-integration-receipts
+          path: |
+            .artifacts/managed-ci/build.json
+            .artifacts/managed-ci/results/combination.json
+            .artifacts/managed-ci/results/identity.json
+            .artifacts/managed-ci/results/*catalog.txt
+            .artifacts/managed-ci/results/excluded-products.json
+            .artifacts/managed-ci/results/results.json
+            .artifacts/managed-ci/results/integrity.json
+            .artifacts/managed-ci/results/*/receipt.json
+            .artifacts/managed-ci/results/*/stdout.log
+            .artifacts/managed-ci/results/*/stderr.log
