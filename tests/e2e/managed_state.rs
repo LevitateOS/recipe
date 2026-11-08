@@ -707,3 +707,66 @@ fn install(ctx) {
         b"payload"
     );
 }
+
+#[test]
+fn managed_state_recovers_lost_publication_and_failed_reinstall_preserves_last_good_state() {
+    let (dir, recipes) = create_test_env();
+    let source = SOURCE.replace(
+        "fn install(ctx) {",
+        "fn install(ctx) { if ctx.state.installs == 1 { write_file(\"/out/product\", \"incomplete replacement\"); throw \"REINSTALL_FAILED\"; }",
+    );
+    write_recipe(&recipes, "check", &source);
+    let invoke = |force: bool| {
+        let mut command = retained_command(&recipes, "install");
+        command.args(["--define", "FACT=alpha"]);
+        if force {
+            command.arg("--force-install");
+        }
+        command.output().unwrap()
+    };
+    let first = invoke(false);
+    assert_success(&first);
+    let first: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    let lost = Path::new(first["outputs"]["product"].as_str().unwrap());
+    std::fs::remove_file(lost).unwrap();
+    let second = invoke(false);
+    assert_success(&second);
+    let second: serde_json::Value = serde_json::from_slice(&second.stdout).unwrap();
+    assert_eq!(second["state"]["builds"], 1);
+    assert_eq!(second["state"]["installs"], 1);
+    let valid = Path::new(second["outputs"]["product"].as_str().unwrap());
+    assert_ne!(lost, valid);
+    assert_eq!(std::fs::read(valid).unwrap(), b"alpha");
+    let pointer = walkdir::WalkDir::new(dir.path().join("state"))
+        .into_iter()
+        .map(Result::unwrap)
+        .find(|e| e.file_name() == "current.json")
+        .unwrap()
+        .into_path();
+    let before = std::fs::read(&pointer).unwrap();
+    let failed = invoke(true);
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("REINSTALL_FAILED"));
+    assert_eq!(
+        std::fs::read(&pointer).unwrap(),
+        before,
+        "failed work replaced the last good checkpoint"
+    );
+    assert_eq!(
+        std::fs::read(valid).unwrap(),
+        b"alpha",
+        "failed work replaced the last good product"
+    );
+    let recovered = invoke(false);
+    assert_success(&recovered);
+    let recovered: serde_json::Value = serde_json::from_slice(&recovered.stdout).unwrap();
+    assert_eq!(recovered["state"]["installs"], 1);
+    assert_eq!(
+        std::fs::read(recovered["outputs"]["product"].as_str().unwrap()).unwrap(),
+        b"alpha"
+    );
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+        source
+    );
+}

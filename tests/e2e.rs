@@ -15,10 +15,15 @@ fn recipe_bin() -> std::path::PathBuf {
 
 /// Create a test environment
 fn create_test_env() -> (TempDir, std::path::PathBuf) {
-    let dir = tempfile::Builder::new()
-        .prefix("recipe e2e ")
-        .tempdir()
-        .unwrap();
+    let retained = std::env::var_os("RECIPE_TEST_ARTIFACTS");
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("recipe e2e ");
+    let mut dir = match &retained {
+        Some(parent) => builder.tempdir_in(parent),
+        None => builder.tempdir(),
+    }
+    .unwrap();
+    dir.disable_cleanup(retained.is_some());
     let recipes = dir.path().join("recipes");
     std::fs::create_dir_all(&recipes).unwrap();
     (dir, recipes)

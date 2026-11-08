@@ -161,10 +161,12 @@ fn is_installed(ctx) {
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let published = Path::new(result["outputs"]["tree"].as_str().unwrap());
     assert_eq!(std::fs::read_dir(published).unwrap().count(), 5000);
-    assert_eq!(
-        std::fs::read_to_string(published.join("item-4999")).unwrap(),
-        "4999"
-    );
+    for index in 0..5000 {
+        assert_eq!(
+            std::fs::read_to_string(published.join(format!("item-{index:04}"))).unwrap(),
+            index.to_string()
+        );
+    }
     assert_eq!(std::fs::read_dir(target).unwrap().count(), 5000);
 }
 
@@ -218,6 +220,20 @@ fn install(ctx) {
     assert_eq!(first, [0; 16]);
     file.seek(SeekFrom::End(-9)).unwrap();
     let mut tail = [0; 9];
+    file.read_exact(&mut tail).unwrap();
+    assert_eq!(&tail, b"tailproof");
+    file.seek(SeekFrom::Start(0)).unwrap();
+    let mut remaining = 2147487744u64 - 9;
+    let mut chunk = vec![0; 1024 * 1024];
+    while remaining != 0 {
+        let count = remaining.min(chunk.len() as u64) as usize;
+        file.read_exact(&mut chunk[..count]).unwrap();
+        assert!(
+            chunk[..count].iter().all(|byte| *byte == 0),
+            "large payload changed before its tail"
+        );
+        remaining -= count as u64;
+    }
     file.read_exact(&mut tail).unwrap();
     assert_eq!(&tail, b"tailproof");
 }

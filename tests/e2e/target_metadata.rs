@@ -3,10 +3,11 @@ use std::fs::{self, File};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 /// Real managed extraction, checkpoint recovery, publication/import, image
-/// assembly and deployment extraction. No host chown/chmod is used to install
+/// assembly. Actual recstrap deployment runs separately in the retained PRD12
+/// libvirt fixture, using this exact image on an EROFS-zstd-capable kernel. No host chown/chmod is used to install
 /// package privileges into staging.
 #[test]
-fn cli_target_metadata_survives_publication_reimport_and_erofs() {
+fn cli_target_metadata_survives_publication_reimport_and_erofs_production() {
     let (dir, recipes) = create_test_env();
     let archive = dir.path().join("package.tar");
     let capability = hex::decode("0100000200200000000000000000000000000000").unwrap();
@@ -27,6 +28,21 @@ fn cli_target_metadata_survives_publication_reimport_and_erofs() {
             tar::EntryType::Link,
             Some("usr/bin/helper"),
             "",
+        ),
+        (
+            "usr/bin/group-helper",
+            0o2755,
+            tar::EntryType::Regular,
+            None,
+            "setgid payload\n",
+        ),
+        ("etc", 0o755, tar::EntryType::Directory, None, ""),
+        (
+            "etc/os-release",
+            0o644,
+            tar::EntryType::Regular,
+            None,
+            "ID=levitate\nREC_PACKAGES=rpm\nREC_INIT=systemd\nREC_LIBC=glibc\nREC_PRIVILEGE=sudo\nREC_DESKTOP=plasma\nREC_KERNEL_LINE=lts\n",
         ),
         ("tmp", 0o1777, tar::EntryType::Directory, None, ""),
         ("bin", 0o777, tar::EntryType::Symlink, Some("/usr/bin"), ""),
@@ -157,79 +173,86 @@ fn install(ctx) {
     assert_success(&out);
     let ctx: serde_json::Value = serde_json::from_slice(&fs::read(output_json).unwrap()).unwrap();
     let published = Path::new(ctx["outputs"]["rootfs"].as_str().unwrap());
-    let merged = dir.path().join("composed");
+    let prepared = dir.path().join("prepared");
+    fs::create_dir(&prepared).unwrap();
+    let merged = prepared.join("composed");
     levitate_recipe::target::merge_tree(published, &merged).unwrap();
+    fs::create_dir(prepared.join("overlay")).unwrap();
+    fs::write(
+        prepared.join(".prepared-product.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "product":"base-rootfs", "distro_id":"levitate", "rootfs_source_dir":"composed",
+            "overlay_dir":"overlay", "rootfs_erofs":"target.erofs", "overlay_erofs":"overlay.erofs"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let builder =
+        std::env::var_os("RECIPE_TEST_BUILDER").expect("select the actual distro-builder binary");
+    let repo = std::env::var_os("RECIPE_TEST_REPO_ROOT").expect("select the builder checkout");
+    let image = prepared.join("target.erofs");
+    let out = Command::new(builder)
+        .arg("--repo-root")
+        .arg(repo)
+        .args(["transform", "build", "product-erofs"])
+        .arg(&prepared)
+        .output()
+        .unwrap();
+    assert_success(&out);
+    // Inspect the real target tar owner as well as producing the actual image.
+    // Do not use fsck.erofs extraction as capability-preserving deployment:
+    // its chown order clears capabilities on this host's erofs-utils version.
     let stream = dir.path().join("target.tar");
     levitate_recipe::target::write_tar(&merged, File::create(&stream).unwrap()).unwrap();
-    let image = dir.path().join("target.erofs");
-    let out = Command::new("mkfs.erofs")
-        .args(["--tar=f", "-T0"])
-        .arg(&image)
-        .arg(&stream)
-        .output()
-        .unwrap();
-    assert_success(&out);
-    let deployed = dir.path().join("deployed");
-    let mount = dir.path().join("mounted");
-    fs::create_dir(&mount).unwrap();
-    fs::create_dir(&deployed).unwrap();
-    // Match recstrap's actual deployment path. fsck.erofs 1.8.10 sets
-    // capabilities before chown and consequently clears them on extraction.
-    let out = Command::new("unshare")
-        .args([
-            "--mount",
-            "--propagation",
-            "private",
-            "sh",
-            "-eu",
-            "-c",
-            r#"trap 'umount "$2"' EXIT
-mount -t erofs -o loop,ro "$1" "$2"
-cp -aT --preserve=xattr "$2" "$3"
-"#,
-            "metadata-deploy",
-        ])
-        .arg(&image)
-        .arg(&mount)
-        .arg(&deployed)
-        .output()
-        .unwrap();
-    assert_success(&out);
-    assert_eq!(
-        fs::metadata(deployed.join("usr/bin/through-alias"))
+    let mut archive = tar::Archive::new(File::open(&stream).unwrap());
+    let mut members = std::collections::BTreeMap::new();
+    for entry in archive.entries().unwrap() {
+        let mut entry = entry.unwrap();
+        let name = entry.path().unwrap().to_string_lossy().into_owned();
+        let header = entry.header().clone();
+        let link = entry.link_name().unwrap().map(|p| p.into_owned());
+        let attributes = entry
+            .pax_extensions()
             .unwrap()
-            .mode()
-            & 0o7777,
-        0o5111
+            .into_iter()
+            .flatten()
+            .map(|p| {
+                let p = p.unwrap();
+                (p.key_bytes().to_vec(), p.value_bytes().to_vec())
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        members.insert(name, (header, link, attributes));
+    }
+    for (name, mode) in [
+        ("usr/bin/helper", 0o4750),
+        ("usr/bin/group-helper", 0o2755),
+        ("usr/bin/through-alias", 0o5111),
+        ("tmp", 0o1777),
+    ] {
+        let (header, _, _) = &members[name];
+        assert_eq!(
+            (
+                header.mode().unwrap(),
+                header.uid().unwrap(),
+                header.gid().unwrap()
+            ),
+            (mode, 74, 81)
+        );
+        assert_eq!(
+            header.mtime().unwrap(),
+            0,
+            "the image producer deliberately normalizes mtimes"
+        );
+    }
+    // The deterministic tar writer chooses one of the aliases as its data member.
+    let (first, second) = (&members["usr/bin/alias"], &members["usr/bin/helper"]);
+    assert!(first.0.entry_type().is_hard_link() || second.0.entry_type().is_hard_link());
+    assert_eq!(members["bin"].1.as_deref(), Some(Path::new("/usr/bin")));
+    let attribute = b"SCHILY.xattr.security.capability".as_slice();
+    assert!(
+        first.2.get(attribute) == Some(&capability) || second.2.get(attribute) == Some(&capability)
     );
-    let md = fs::metadata(deployed.join("usr/bin/helper")).unwrap();
-    assert_eq!((md.mode() & 0o7777, md.uid(), md.gid()), (0o4750, 74, 81));
-    assert_eq!(
-        fs::metadata(deployed.join("tmp")).unwrap().mode() & 0o7777,
-        0o1777
-    );
-    assert_eq!(
-        fs::read_link(deployed.join("bin")).unwrap(),
-        Path::new("/usr/bin")
-    );
-    assert_eq!(
-        md.ino(),
-        fs::metadata(deployed.join("usr/bin/alias")).unwrap().ino()
-    );
-    let file = std::ffi::CString::new(deployed.join("usr/bin/helper").to_str().unwrap()).unwrap();
-    let name = std::ffi::CString::new("security.capability").unwrap();
-    let mut value = vec![0u8; 64];
-    let count = unsafe {
-        libc::getxattr(
-            file.as_ptr(),
-            name.as_ptr(),
-            value.as_mut_ptr().cast(),
-            value.len(),
-        )
-    };
-    assert!(count >= 0, "getxattr: {}", std::io::Error::last_os_error());
-    value.truncate(count as usize);
-    assert_eq!(value, capability);
+    println!("TARGET_METADATA_IMAGE {}", image.display());
     // Replacing a privileged payload without replacing its metadata must fail.
     fs::set_permissions(
         merged.join("usr/bin/helper"),
