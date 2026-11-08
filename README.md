@@ -5,17 +5,21 @@ coordinator imports explicit immutable inputs, retains matching state/filesystem
 checkpoints and publishes the recipe's named outputs. Recipe code and payload
 commands do not run on the coordinator host.
 
-The current contract is `const RECIPE_API = 2;`. Recipes define package facts,
-custom readiness and acquire/build/install behavior. Callers select inputs,
-resource limits, endpoint permissions and the outputs they consume.
+The executable interface is API 2 with a literal `const NEEDS = #{...};`.
+Recipes own their typed inputs/outputs, endpoint grants and resource limits.
+Callers bind declared inputs and may explicitly narrow authority. A caller cannot
+add an input, endpoint or larger limit that the named recipe did not declare.
+Restrictions must first be valid lowerings/subsets for the named recipe. They
+also cover every dependency: limits take the stricter bound, and endpoint sets
+intersect each dependency's own declaration. Limits remain per instance.
 
-The launcher must support Ginux's explicit `configured-balanced-v2` contract
-profile (configured catalog 2), configured `launch`, export, control and restore.
-Recipe renders that profile; a generic `config` parse alone does not establish
-compatibility. The LevitateOS workspace's old `tools/ginux` pin lacks this
-runtime and must not be used as a substitute for the tested integration.
-Maintained runtime delivery remains incomplete. Inputs, endpoint grants and
-resource bounds remain explicit caller options.
+The launcher must support configured catalog 2, `configured-network-audit=1`, `configured-denial-audit=1`,
+configured `launch`, export, control and restore. Recipe derives a self-contained
+`[userspace.contract]` and validates it before launch; a generic `config` parse
+alone does not establish compatibility. The LevitateOS workspace's old
+`tools/ginux` pin lacks this runtime. Maintained runtime delivery remains open in
+PRD01; local NEEDS verification uses the exact candidates recorded in the
+superproject's `docs/ginux-contributions/prd18-implementation.md`.
 
 ## Build and prepare the environment
 
@@ -99,7 +103,7 @@ For the repository's actual offline live-tool producer:
 
 ```sh
 distro-builder artifact prepare-tool-source recfstab .artifacts/recfstab-source
-recipe install distro/builder/recipes/recfstab.rhai \
+recipe install distro/builder/recipes/install-tools.rhai --define BIN=recfstab \
   --input source=.artifacts/recfstab-source \
   --build-dir .artifacts/work/recfstab --json-output .artifacts/recfstab.json
 ```
@@ -122,15 +126,22 @@ details. [HELPERS_AUDIT.md](HELPERS_AUDIT.md) lists registered helpers.
   invocations; setup runs again and current facts remain current.
 - `ctx.outputs` names files/directories under owned `/out` or `/work`. Successful
   execution, validated archive data and acknowledged matching checkpoints are
-  required for publication. Failed work cannot replace earlier publications.
-- Dependencies use the same lifecycle and shared `/work/tools`. They are not
-  separate host installers.
+  required for publication. Install/installed reuse require the complete declared
+  set; intermediate phases allow typed subsets checked before checkpointing.
+  Failed work cannot replace earlier publications.
+- Dependencies run that lifecycle in separate Ginux instances with their own
+  NEEDS. Declared products are snapshotted into the consumer; a directory output
+  named `tools` contributes to its `/work/tools`. No parent grant is lent. Manual
+  checks, remove and cleanup operate on the named recipe without preparing deps.
 - `list` and `info` inspect loader-owned declared metadata without running setup
   or helper code. Dynamic metadata is reported unavailable.
 
 ## Inputs and selected targets
 
-`--input NAME=PATH` imports a file or directory read-only at `/inputs/NAME`.
+`NEEDS.inputs` maps names to `file`, `directory`, `file?` or `directory?`.
+`--input NAME=PATH` binds one declared input read-only at `/inputs/NAME`; missing
+required, undeclared, duplicate or wrong-kind inputs fail before setup. Use
+`--input DEP::NAME=PATH` for a dependency: inputs are never implicitly inherited.
 A host path in a define grants no filesystem access. Root `.git` and `target`
 directories are omitted from ordinary source imports. Input bytes, modes, link
 identity and link targets participate in state identity. Confined relative links
@@ -168,7 +179,9 @@ filesystem generations. Pruning runs under the destination lock. Published
 products are not garbage-collected as state snapshots.
 
 Diagnostics live in `<state-root>/logs/<invocation-id>/`, outside invocation
-scratch: `worker.log`, `supervisor-stderr.log` and `result.json`. Logs are bounded;
+scratch: `worker.log`, `supervisor-stderr.log`, `authority.json` and `result.json`.
+The authority receipt saves the actual declaration, effective constraints, pinned
+endpoints, rendered config and catalog/digest used for this instance. Logs are bounded;
 active leases protect running invocations, and up to 32 recent completed
 invocations are retained. The coordinator prints the diagnostic directory.
 Private leased scratch is reclaimed after abandoned invocations; arbitrary
@@ -176,8 +189,8 @@ workspace directories are never cleanup candidates.
 
 SIGINT/SIGTERM cancel execution and await descendant teardown. Cancellation and
 deadline failure preserve the last complete checkpoint and do not publish failed
-work. `--timeout-secs` bounds the whole execution, including legitimate silent
-commands (default 3600, range 1–86400). Transport partial-frame waits are bounded
+work. `NEEDS.timeout_secs` bounds each recipe instance, including legitimate silent
+commands (default 3600, range 1–86400); `--timeout-secs` can only lower it. Transport partial-frame waits are bounded
 separately by `RECIPE_FRAME_TIMEOUT_SECS` (default 300, range 1–86400).
 
 ## Options
@@ -195,11 +208,11 @@ Run `recipe --help` and `recipe install --help` for the complete current syntax.
 | `--force-install` | Rerun installation for the main recipe. |
 | `--force-build` | Rerun build and installation for the main recipe. |
 | `--force-acquire` | Rerun acquisition, build and installation for the main recipe. |
-| `--memory-mib N` | Domain memory bound, default 2048 MiB. |
-| `--storage-max-objects N` | Writable object bound, default 16384. |
-| `--storage-max-bytes N` | Explicit writable data cap within the memory bound. |
-| `--network-host HOST:PORT` | Explicit outbound TCP authority, repeatable, at most eight. Networking otherwise stays off. |
-| `--network-max-bytes N` | Cumulative network send/receive cap, default 8 GiB. |
+| `--memory-mib N` | Lower `NEEDS.memory_mib` (default declaration 2048 MiB). |
+| `--storage-max-objects N` | Lower `NEEDS.storage_max_objects` (default declaration 16384). |
+| `--storage-max-bytes N` | Lower the declared writable-data cap within effective memory. |
+| `--network-host HOST:PORT` | Select a subset of `NEEDS.network`, repeatable; `--no-network` selects none. |
+| `--network-max-bytes N` | Lower `NEEDS.network_max_bytes` (default declaration 8 GiB). |
 | `--json-output FILE` | Final context result, separate from stderr diagnostics. |
 
 Storage accounts hardlink data once. Inputs, restored snapshots and publications
@@ -214,12 +227,34 @@ valid destination. `git_checkout(url, exact_dest, full_commit)` requires a full
 40/64-hex commit and a direct repository URL: Git redirects are disabled, and
 cached repository settings that override transport or execute hooks/filters are
 rejected. HTTP download redirect destinations need explicit endpoint grants.
-Source recipes own version/URL/digest facts; Rust/TOML declares permissions.
-Canonical rootfs source policy also declares `memory_mib` and
-`preseed_memory_mib`: Fedora uses 8192 MiB and Alpine 4096 MiB. Fedora's
-3,484,483,584-byte ISO and retained valid bytes during refresh exceed the small
-2 GiB default. Direct large-ISO invocations must select suitable bounds too.
-These configured limits are not evidence of a completed full-ISO/VM run.
+Recipes own version/URL/digest facts and literal NEEDS authority. Variant TOML
+keeps recipe selection and input path bindings. The Fedora rootfs/preseed declare
+8192 MiB; Alpine declares 4096 MiB; rootfs producers declare 131072 objects.
+`memory_mib` bounds each process's virtual address space, not aggregate tree RAM;
+storage also has its own byte/object accounting. Jobs select eligible real CPUs,
+not a virtual topology. Numeric IP/port grants are not DNS/HTTP identities.
+
+## Read authority without executing setup
+
+```sh
+recipe validate ./producer.rhai --input source=./offline-source
+recipe inspect ./producer.rhai
+recipe explain ./producer.rhai network.connect
+recipe explain /absolute/state/logs/INVOCATION network.connect
+recipe diff ./old.rhai ./new.rhai
+```
+
+These commands never run recipe setup or launch a workload. Validation also
+checks dependency declarations, their input bindings and compiled contracts.
+Inspection lists resolved authority and pinned contract digests; it cannot know
+which endpoints a future execution will use. Diff shows added/removed/changed
+typed paths, endpoints, raised/lowered limits and contract digests. Invocation
+explain reads the retained receipt and available audit observations, so later
+source edits do not rewrite the explanation. A missing/truncated observation is
+reported as unknown. Completed contexts include `runtime.contract` and `runtime.network_usage`;
+a complete bounded endpoint summary produces warnings for unused grants, while
+an absent summary never labels unobserved connections unused. Diagnostics do
+not become success/protocol evidence or grant additional authority.
 
 ## Optional coordinator repair
 
@@ -243,7 +278,7 @@ Use the chosen provider's installed CLI/configuration; there is no implicit
 provider fallback. A named profile can override provider settings.
 
 Use `--autofix-attempts` (1–8, default 2), `--autofix-cwd`, `--autofix-prompt-file` and repeated
-`--autofix-allow-path` to bound repair. Patches cannot alter readiness checks,
+`--autofix-allow-path` to bound repair. Patches cannot alter NEEDS/API/dependency authority or readiness checks,
 change disallowed paths or hide command failures. Changed recipe bytes create a
 new invocation identity; old state is not restored across a patch. Recipes have
 no LLM helpers; the provider never runs inside the worker.

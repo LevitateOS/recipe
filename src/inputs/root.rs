@@ -318,19 +318,36 @@ pub(crate) fn seed_target(
     destination: &Path,
 ) -> Result<bool> {
     use super::InputKind;
+    let mapping = |name: &str| -> Option<String> {
+        for (source, destination) in [
+            ("target", "out"),
+            (crate::domain::DEPENDENCY_TOOLS, "work/tools"),
+        ] {
+            if name == source || name.starts_with(&format!("{source}/")) {
+                return Some(format!(
+                    "{destination}{}",
+                    name.strip_prefix(source).unwrap()
+                ));
+            }
+        }
+        None
+    };
     let selected: Vec<_> = invocation
         .inputs
         .iter()
-        .filter(|input| input.name == "target" || input.name.starts_with("target/"))
+        .filter(|input| mapping(&input.name).is_some())
         .collect();
     if selected.is_empty() {
         return Ok(false);
     }
-    if !selected
-        .iter()
-        .any(|input| input.name == "target" && input.kind == InputKind::Directory)
-    {
-        bail!("target input must be a directory tree");
+    for name in ["target", crate::domain::DEPENDENCY_TOOLS] {
+        if selected.iter().any(|input| input.name == name)
+            && !selected
+                .iter()
+                .any(|input| input.name == name && input.kind == InputKind::Directory)
+        {
+            bail!("{name} input must be a directory tree");
+        }
     }
     let file = OpenOptions::new()
         .write(true)
@@ -338,8 +355,7 @@ pub(crate) fn seed_target(
         .open(destination)?;
     let mut archive = tar::Builder::new(file);
     for input in selected {
-        let suffix = input.name.strip_prefix("target").unwrap();
-        let name = format!("out{suffix}");
+        let name = mapping(&input.name).expect("selected seed input");
         let mut header = tar::Header::new_ustar();
         header.set_mode(input.mode);
         header.set_uid(crate::domain::UID);
@@ -358,10 +374,10 @@ pub(crate) fn seed_target(
                 header.set_cksum();
                 archive.append_link(&mut header, name, target)?;
             }
-            InputKind::Hardlink(target) if target == "target" || target.starts_with("target/") => {
+            InputKind::Hardlink(target) if mapping(target).is_some() => {
                 header.set_entry_type(tar::EntryType::Link);
                 header.set_size(0);
-                let link = format!("out{}", target.strip_prefix("target").unwrap());
+                let link = mapping(target).unwrap();
                 archive.append_link(&mut header, name, link)?;
             }
             InputKind::File | InputKind::Hardlink(_) => {

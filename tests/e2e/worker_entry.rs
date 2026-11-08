@@ -5,7 +5,8 @@ fn public_cli_worker_environment_never_selects_host_execution() {
     let (dir, recipes) = create_test_env();
     let sentinel = dir.path().join("host-effect");
     let source = format!(
-        "const RECIPE_API = 2; write_file({:?},\"host effect\"); let ctx=#{{name:\"guard\"}}; fn is_installed(ctx) {{ ready(ctx) }}",
+        "const RECIPE_API = 2;
+const NEEDS = #{{}}; write_file({:?},\"host effect\"); let ctx=#{{name:\"guard\"}}; fn is_installed(ctx) {{ ready(ctx) }}",
         sentinel.to_str().unwrap()
     );
     write_recipe(&recipes, "check", &source);
@@ -48,7 +49,8 @@ fn private_worker_rejects_missing_bootstrap_before_recipe_setup() {
         &recipes,
         "check",
         &format!(
-            "const RECIPE_API = 2; write_file({:?},\"unexpected setup\"); let ctx=#{{name:\"guard\"}};",
+            "const RECIPE_API = 2;
+const NEEDS = #{{}}; write_file({:?},\"unexpected setup\"); let ctx=#{{name:\"guard\"}};",
             sentinel.to_str().unwrap()
         ),
     );

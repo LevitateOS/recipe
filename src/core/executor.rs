@@ -40,6 +40,8 @@ fn resolve_base_path(
 #[derive(Debug)]
 pub(crate) struct CompiledRecipe {
     pub ast: AST,
+    pub source_ast: AST,
+    pub source_digests: std::collections::BTreeMap<PathBuf, String>,
     /// The "main" recipe file (the one the user invoked).
     pub recipe_path: PathBuf,
     /// Optional base recipe from `//! extends:`.
@@ -65,6 +67,12 @@ pub(crate) fn compile_recipe(
     let source = fs::read_to_string(&recipe_path)
         .with_context(|| format!("Failed to read recipe: {}", recipe_path.display()))?;
 
+    use sha2::{Digest, Sha256};
+    let mut source_digests = std::collections::BTreeMap::new();
+    source_digests.insert(
+        recipe_path.clone(),
+        hex::encode(Sha256::digest(source.as_bytes())),
+    );
     let extends = parse_extends(&source);
 
     if let Some(base_rel) = extends {
@@ -75,6 +83,10 @@ pub(crate) fn compile_recipe(
         let base_source = fs::read_to_string(&base_path)
             .with_context(|| format!("Failed to read base recipe: {}", base_path.display()))?;
 
+        source_digests.insert(
+            base_path.clone(),
+            hex::encode(Sha256::digest(base_source.as_bytes())),
+        );
         // Reject recursive extends
         if parse_extends(&base_source).is_some() {
             anyhow::bail!(
@@ -97,10 +109,13 @@ pub(crate) fn compile_recipe(
             .map_err(|e| anyhow!("Failed to compile recipe {}: {}", recipe_path.display(), e))?;
 
         // Merge: child overrides base functions, top-level runs base then child
+        let source_ast = child_ast.clone();
         base_ast += child_ast;
 
         Ok(CompiledRecipe {
             ast: base_ast,
+            source_ast,
+            source_digests,
             recipe_path,
             base_path: Some(base_path),
         })
@@ -109,6 +124,8 @@ pub(crate) fn compile_recipe(
             .compile(&source)
             .map_err(|e| anyhow!("Failed to compile recipe {}: {}", recipe_path.display(), e))?;
         Ok(CompiledRecipe {
+            source_ast: ast.clone(),
+            source_digests,
             ast,
             recipe_path,
             base_path: None,

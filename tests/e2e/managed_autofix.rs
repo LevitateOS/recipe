@@ -2,6 +2,7 @@
 use super::*;
 const SOURCE: &str = r#"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ product: "file" } };
 const BUILD_VALUE = "broken";
 let ctx = #{name:"outer-repair", state:#{acquired:false}};
 fn is_acquired(ctx) {
@@ -47,6 +48,10 @@ s=p.read_text()
 pathlib.Path('provider.calls').open('a').write('called\n')
 if os.environ['REPAIR_CASE']=='build':
  n=s.replace('const BUILD_VALUE = "broken";', 'const BUILD_VALUE = "fixed";')
+elif os.environ['REPAIR_CASE']=='authority-multiline':
+ n=s.replace('    network: [],', '    network: [\"127.0.0.1:9\"],')
+elif os.environ['REPAIR_CASE']=='authority':
+ n=s.replace('const NEEDS = #{ outputs: #{ product: \"file\" } };', 'const NEEDS = #{ outputs: #{ product: \"file\" }, network: [\"127.0.0.1:9\"] };')
 else:
  n=s.replace('return needs_work(ctx,"produce fixed");', 'return ready(ctx);')
 sys.stdout.write(''.join(difflib.unified_diff(s.splitlines(True),n.splitlines(True),fromfile='a/recipes/check.rhai',tofile='b/recipes/check.rhai')))
@@ -172,4 +177,37 @@ fn managed_execution_without_autofix_never_invokes_provider() {
         std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
         SOURCE
     );
+}
+
+#[test]
+fn managed_autofix_cannot_change_declared_authority() {
+    let multiline = SOURCE.replace(
+        "const NEEDS = #{ outputs: #{ product: \"file\" } };",
+        "const NEEDS = #{\n    outputs: #{ product: \"file\" },\n    network: [],\n};",
+    );
+    for (case, source) in [
+        ("authority", SOURCE),
+        ("authority-multiline", multiline.as_str()),
+    ] {
+        let (dir, recipes) = prepare(case);
+        write_recipe(&recipes, "check", source);
+        let output = invoke(&recipes, true);
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("Refusing autofix patch") && error.contains("NEEDS"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+            source
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("provider.calls"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+    }
 }

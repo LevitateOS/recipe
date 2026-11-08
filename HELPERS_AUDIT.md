@@ -100,8 +100,8 @@ Cached includes, URL rewrites, transport overrides, filters and duplicate origin
 are rejected intact. Hooks, fsmonitor, replacement objects and submodule
 recursion are disabled. URL/version/digest facts remain recipe-owned.
 
-Network helpers and external clients need explicit caller-granted endpoint
-permissions. Metadata helpers are bounded conveniences; downloading a payload
+Network helpers and external clients need recipe-declared NEEDS endpoints,
+subject to caller-only narrowing. Metadata helpers are bounded conveniences; downloading a payload
 and then trusting a digest calculated from those same unauthenticated bytes is
 not source verification. HTTP download redirect targets also need grants.
 

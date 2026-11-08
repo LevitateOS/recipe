@@ -24,6 +24,7 @@ fn write_extraction_recipe(recipes: &Path, archive_name: &str) {
         &format!(
             r#"
 const RECIPE_API = 2;
+const NEEDS = #{{ inputs: #{{ "{archive_name}": "file" }}, outputs: #{{ extracted: "directory" }} }};
 let ctx = #{{ name: "extract-archive", state: #{{installed: false}} }};
 fn is_installed(ctx) {{ if ctx.state.installed {{ return ready(ctx); }} needs_work(ctx, "extract archive") }}
 fn is_acquired(ctx) {{ ready(ctx) }}
@@ -210,6 +211,7 @@ fn cli_zip_rejects_existing_symlink_components() {
             &format!(
                 r#"
 const RECIPE_API = 2;
+const NEEDS = #{{ inputs: #{{ "payload.zip": "file" }} }};
 let ctx = #{{name: "zip-boundary"}};
 fn is_acquired(ctx) {{ ready(ctx) }}
 fn is_built(ctx) {{ ready(ctx) }}

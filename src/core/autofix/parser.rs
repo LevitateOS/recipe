@@ -39,7 +39,7 @@ pub(super) fn has_parent_dir_components(path: &str) -> bool {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct ProtectedFnRange {
+pub(super) struct ProtectedRange {
     pub(super) name: &'static str,
     pub(super) start_line: usize,
     pub(super) end_line: usize,
@@ -139,10 +139,10 @@ pub(super) fn find_fn_end_line(
             continue;
         }
 
-        if b == b'{' {
+        if b == b'{' || b == b'[' {
             depth += 1;
             started = true;
-        } else if b == b'}' && started {
+        } else if (b == b'}' || b == b']') && started {
             depth -= 1;
             if depth <= 0 {
                 return Some(line);
@@ -155,7 +155,7 @@ pub(super) fn find_fn_end_line(
     None
 }
 
-pub(super) fn protected_fn_ranges(source: &str) -> Vec<ProtectedFnRange> {
+pub(super) fn protected_ranges(source: &str) -> Vec<ProtectedRange> {
     let mut out = Vec::new();
     let mut offset: usize = 0;
 
@@ -171,7 +171,7 @@ pub(super) fn protected_fn_ranges(source: &str) -> Vec<ProtectedFnRange> {
             .find(|check| *check == name)
             && let Some(end_line) = find_fn_end_line(source, offset, line_no)
         {
-            out.push(ProtectedFnRange {
+            out.push(ProtectedRange {
                 name: check,
                 start_line: line_no,
                 end_line,
@@ -181,6 +181,40 @@ pub(super) fn protected_fn_ranges(source: &str) -> Vec<ProtectedFnRange> {
         offset = offset.saturating_add(line.len().saturating_add(1));
     }
 
+    // Authority is immutable during automatic repair. Parse without evaluating
+    // setup; reuse the literal declaration boundary for multiline maps/arrays.
+    let mut engine = rhai::Engine::new();
+    engine.set_optimization_level(rhai::OptimizationLevel::None);
+    if let Ok(ast) = engine.compile(source) {
+        for statement in ast.statements() {
+            if let rhai::Stmt::Var(binding, _, _) = statement {
+                let name = match binding.0.name.as_str() {
+                    "NEEDS" => "NEEDS",
+                    "deps" => "deps",
+                    "build_deps" => "build_deps",
+                    "RECIPE_API" => "RECIPE_API",
+                    _ => continue,
+                };
+                let start_line = binding.0.pos.line().unwrap_or(1);
+                let start_offset = source
+                    .split_inclusive('\n')
+                    .take(start_line - 1)
+                    .map(str::len)
+                    .sum();
+                let end_line = if name == "RECIPE_API" {
+                    start_line
+                } else {
+                    find_fn_end_line(source, start_offset, start_line)
+                        .unwrap_or(source.lines().count())
+                };
+                out.push(ProtectedRange {
+                    name,
+                    start_line,
+                    end_line,
+                });
+            }
+        }
+    }
     out
 }
 

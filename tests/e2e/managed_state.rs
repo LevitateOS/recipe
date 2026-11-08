@@ -23,6 +23,7 @@ fn retained_command(recipes: &Path, operation: &str) -> Command {
 
 const SOURCE: &str = r#"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ product: "file" } };
 let ctx = #{name: "retained-probe", version: FACT, state: #{builds: 0, installs: 0}};
 fn is_acquired(ctx) { ready(ctx) }
 fn is_built(ctx) {
@@ -136,6 +137,7 @@ fn managed_state_recovers_before_and_after_checkpoint_acknowledgement() {
         let source = format!(
             r#"
 const RECIPE_API = 2;
+const NEEDS = #{{ outputs: #{{ product: "file" }} }};
 const PAUSE = "{pause}";
 let ctx = #{{name: "interrupted", state: #{{acquires: 0, builds: 0}}}};
 fn is_acquired(ctx) {{
@@ -294,23 +296,25 @@ fn managed_state_restores_dependencies_and_saves_reused_check_state() {
     let (dir, recipes) = create_test_env();
     let dependency = r#"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ tools: "directory" } };
 let ctx = #{name: "helper", state: #{installs: 0, checks: 0}};
 fn is_acquired(ctx) { ready(ctx) }
 fn is_installed(ctx) {
     if is_file("/work/tools/helper") {
         if ctx.state.installs != 1 { throw "dependency files/state mismatch"; }
         ctx.state.checks += 1;
-        return ready(ctx);
+        ctx.outputs.tools = RUNTIME.paths.tools; return ready(ctx);
     }
     needs_work(ctx, "helper missing")
 }
 fn install(ctx) {
     if ctx.state.installs != 0 { throw "stale dependency state"; }
-    write_file("/work/tools/helper", "helper"); ctx.state.installs += 1; ctx
+    write_file("/work/tools/helper", "helper"); ctx.state.installs += 1; ctx.outputs.tools=RUNTIME.paths.tools; ctx
 }
 "#;
     let parent = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let deps = ["helper"];
 let ctx = #{name: "parent", state: #{runs: 0}};
 fn is_acquired(ctx) { ready(ctx) }
@@ -331,17 +335,36 @@ fn install(ctx) {
         let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(ctx["state"]["runs"], run);
     }
-    let current = walkdir::WalkDir::new(dir.path().join("state"))
+    let records = walkdir::WalkDir::new(dir.path().join("state"))
         .into_iter()
         .map(Result::unwrap)
-        .find(|entry| entry.file_name() == "current.json")
+        .filter(|entry| entry.file_name() == "current.json")
+        .map(|entry| {
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(entry.path()).unwrap())
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        records.len(),
+        2,
+        "dependency and parent retain separate state/files pairs"
+    );
+    let dependency_state = records
+        .iter()
+        .map(|record| &record["states"]["/inputs/main.rhai"])
+        .find(|state| state.get("checks").is_some())
         .unwrap();
-    let record: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(current.path()).unwrap()).unwrap();
-    assert_eq!(record["states"]["/inputs/helper.rhai"]["installs"], 1);
-    // The post-install check and two reused checks all persist their discoveries.
-    assert_eq!(record["states"]["/inputs/helper.rhai"]["checks"], 3);
-    assert_eq!(record["states"]["/inputs/main.rhai"]["runs"], 3);
+    assert_eq!(dependency_state["installs"], 1);
+    assert_eq!(
+        dependency_state["checks"], 3,
+        "post-install and two reused checks persist their discoveries"
+    );
+    let parent_state = records
+        .iter()
+        .map(|record| &record["states"]["/inputs/main.rhai"])
+        .find(|state| state.get("runs").is_some())
+        .unwrap();
+    assert_eq!(parent_state["runs"], 3);
     for (name, source) in [("helper", dependency), ("check", parent)] {
         assert_eq!(
             std::fs::read_to_string(recipes.join(format!("{name}.rhai"))).unwrap(),
@@ -405,7 +428,12 @@ fn managed_state_disable_and_current_api_requirement_are_explicit() {
 fn managed_state_invalidates_changed_source_and_declared_input_bytes() {
     let (dir, recipes) = create_test_env();
     let asset = dir.path().join("asset");
-    let source = SOURCE.replace("version: FACT", "version: read_file(\"/inputs/asset\")");
+    let source = SOURCE
+        .replace("version: FACT", "version: read_file(\"/inputs/asset\")")
+        .replace(
+            "const NEEDS = #{ outputs:",
+            "const NEEDS = #{ inputs: #{ asset: \"file\" }, outputs:",
+        );
     write_recipe(&recipes, "check", &source);
     for (bytes, edit_source) in [("alpha", false), ("beta", false), ("beta", true)] {
         std::fs::write(&asset, bytes).unwrap();
@@ -477,6 +505,7 @@ fn managed_state_rejects_nonserializable_values_with_the_field_path() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "bad-state"};
 fn helper() {}
 fn is_installed(ctx) { ctx.state.child = #{callback: Fn("helper")}; ready(ctx) }
@@ -501,6 +530,7 @@ fn managed_options_force_phases_without_invalidating_saved_installation() {
     let (dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ product: "file" } };
 let deps = ["helper"];
 let ctx = #{name: "options", state: #{acquires: 0, builds: 0, installs: 0}};
 fn is_acquired(ctx) { if is_file("/work/source") { ready(ctx) } else { needs_work(ctx, "source") } }
@@ -519,13 +549,14 @@ fn install(ctx) {
 "#;
     let dependency = r#"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ tools: "directory" } };
 let ctx = #{name: "helper", state: #{installs: 0}};
 fn is_acquired(ctx) { ready(ctx) }
-fn is_installed(ctx) { if is_file("/work/tools/helper") { ready(ctx) } else { needs_work(ctx, "helper") } }
+fn is_installed(ctx) { if is_file("/work/tools/helper") { ctx.outputs.tools=RUNTIME.paths.tools; ready(ctx) } else { needs_work(ctx, "helper") } }
 fn install(ctx) {
     if ctx.state.installs != 0 { throw "parent force leaked into dependency"; }
     if RUNTIME.options.force_acquire || RUNTIME.options.force_build || RUNTIME.options.force_install { throw "dependency force flags"; }
-    write_file("/work/tools/helper", "helper"); ctx.state.installs += 1; ctx
+    write_file("/work/tools/helper", "helper"); ctx.state.installs += 1; ctx.outputs.tools=RUNTIME.paths.tools; ctx
 }
 "#;
     write_recipe(&recipes, "check", source);
@@ -562,7 +593,7 @@ fn install(ctx) {
             .map(Result::unwrap)
             .filter(|entry| entry.file_name() == "current.json")
             .count(),
-        2
+        4
     );
     assert_eq!(
         std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
@@ -628,6 +659,7 @@ fn managed_state_restores_and_publishes_links_without_rebuilding() {
         "check",
         r#"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ rootfs: "directory" } };
 let ctx = #{name: "retained-links", state: #{installs: 0}};
 fn is_acquired(ctx) { ready(ctx) }
 fn is_built(ctx) { ready(ctx) }

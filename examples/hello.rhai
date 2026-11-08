@@ -1,4 +1,5 @@
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ program: "file" } };
 let ctx = #{
     name: "hello",
     version: "1.0",

@@ -14,11 +14,13 @@ fn cli_transitive_dependencies_compile_tools_through_the_shared_lifecycle() {
         "leaf",
         r##"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ tools: "directory" } };
 let ctx = #{name: "leaf", source: "", state: #{builds: 0}, built: join_path(RUNTIME.paths.build, "leaf"),
             installed: join_path(RUNTIME.paths.tools, "bin/leaf")};
 fn is_installed(ctx) {
     if !is_file(ctx.installed) { return needs_work(ctx, "leaf tool absent"); }
     if ctx.state.builds != 1 { throw "dependency files and state disagree"; }
+    ctx.outputs = #{ tools: ctx.runtime.paths.tools };
     ready(ctx)
 }
 fn is_built(ctx) {
@@ -38,7 +40,7 @@ fn build(ctx) {
     if ctx.discovered != "leaf checks carried context" { throw "lost leaf check context"; }
     exec_checked("cc", [ctx.source, "-o", ctx.built]); ctx.state.builds += 1; ctx
 }
-fn install(ctx) { mkdir(dirname(ctx.installed)); copy_file(ctx.built, ctx.installed); chmod(ctx.installed, 0o755); ctx }
+fn install(ctx) { mkdir(dirname(ctx.installed)); copy_file(ctx.built, ctx.installed); chmod(ctx.installed, 0o755); ctx.outputs = #{ tools: ctx.runtime.paths.tools }; ctx }
 "##,
     );
     write_recipe(
@@ -46,11 +48,13 @@ fn install(ctx) { mkdir(dirname(ctx.installed)); copy_file(ctx.built, ctx.instal
         "middle-base",
         r##"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ tools: "directory" } };
 import "dep-helpers.rhai" as helper;
 let ctx = #{name: "middle", source: join_path(RUNTIME.paths.build, "middle.c"),
             built: join_path(RUNTIME.paths.build, "middle"), installed: join_path(RUNTIME.paths.tools, "bin/middle")};
 fn is_installed(ctx) {
     if !is_file(ctx.installed) { return needs_work(ctx, "middle absent"); }
+    ctx.outputs = #{ tools: ctx.runtime.paths.tools };
     ready(ctx)
 }
 fn is_built(ctx) {
@@ -69,20 +73,21 @@ fn build(ctx) {
     if exec_output("leaf", []) != ctx.discovered { throw "transitive leaf unavailable"; }
     exec_checked("cc", [ctx.source, "-o", ctx.built]); ctx
 }
-fn install(ctx) { mkdir(dirname(ctx.installed)); copy_file(ctx.built, ctx.installed); chmod(ctx.installed, 0o755); ctx }
+fn install(ctx) { mkdir(dirname(ctx.installed)); copy_file(ctx.built, ctx.installed); chmod(ctx.installed, 0o755); ctx.outputs = #{ tools: ctx.runtime.paths.tools }; ctx }
 fn cleanup(ctx, reason) { append_file(join_path(ctx.runtime.paths.build, "cleanup-reasons"), reason + "\n"); log("DEP_CLEANUP " + reason); ctx }
 "##,
     );
     write_recipe(
         &recipes,
         "middle",
-        "//! extends: middle-base.rhai\nlet build_deps = [\"leaf\"];\n",
+        "//! extends: middle-base.rhai\nconst NEEDS = #{ outputs: #{ tools: \"directory\" } };\nlet build_deps = [\"leaf\"];\n",
     );
     write_recipe(
         &recipes,
         "parent",
         r##"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let deps = ["middle", "leaf"];
 let ctx = #{name: "parent", state: #{runs: 0}};
 fn is_installed(ctx) {
@@ -104,7 +109,7 @@ fn install(ctx) {
     assert_eq!(ctx["state"]["leaf"], "real leaf\n");
     assert_eq!(ctx["state"]["middle"], "middle built with leaf\n");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("leaf already installed"), "{stderr}");
+    assert_eq!(stderr.matches("leaf installed").count(), 1, "{stderr}");
     assert!(stderr.contains("auto.build.success"), "{stderr}");
     let output = run_recipe(&["install", "parent", "--force-install"], &recipes);
     assert_success(&output);
@@ -121,6 +126,7 @@ fn write_graph_node(recipes: &Path, name: &str, declaration: &str) {
         &format!(
             r##"
 const RECIPE_API = 2;
+const NEEDS = #{{}};
 {declaration}
 let ctx = #{{name: "{name}"}};
 fn is_installed(ctx) {{ needs_work(ctx, "node needs installation") }}
@@ -136,7 +142,7 @@ fn cli_dependency_cycles_missing_recipes_and_bad_declarations_fail_usefully() {
     for (declaration, diagnostic) in [
         (
             "let deps = [\"absent\"];",
-            "recipe/module target \"absent.rhai\"",
+            "dependency recipe \"absent\" not found",
         ),
         ("let deps = [\"a\"];", "Circular recipe dependency detected"),
         (
@@ -169,6 +175,7 @@ fn cli_dependency_check_errors_stop_before_acquisition_or_parent_installation() 
         "broken",
         r##"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "broken"};
 fn is_installed(ctx) { needs_work(ctx, "not prepared") }
 fn is_built(ctx) { missing_dependency_check_helper(ctx) }

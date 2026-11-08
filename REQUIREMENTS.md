@@ -8,14 +8,15 @@ boundary; its implementation checkpoint records exact tested revisions and gaps.
 
 ## Execution ownership
 
-- Executable recipes declare `const RECIPE_API = 2;` and run inside the configured
+- Executable recipes declare `const RECIPE_API = 2;` and literal `NEEDS` and run inside the configured
   Ginux domain. Coordinator discovery, metadata and input preparation never
   evaluate arbitrary recipe setup or helper code.
 - The coordinator selects/verifies the environment image and worker, imports
   explicit inputs, owns destination locking and durable records, and publishes
   named products. Unavailable runtime capabilities fail explicitly.
 - Recipes own package versions, source URLs/digests, build facts and lifecycle
-  behavior. Rust/TOML owns orchestration, permissions and consumer contracts.
+  behavior, typed input/output schemas, endpoint authority and limits in NEEDS.
+  Rust/TOML owns orchestration, path bindings and consumer validation.
 - External commands/helpers remain subject to the same domain assignments and
   resource bounds. There is no native host execution/network fallback.
 
@@ -39,7 +40,10 @@ boundary; its implementation checkpoint records exact tested revisions and gaps.
 
 ## Filesystem and products
 
-- Inputs are explicitly imported read-only at `/inputs/NAME`. A host path in a
+- Inputs declared as file/directory (optionally `?`) are explicitly bound
+  read-only at `/inputs/NAME`. Missing required, undeclared and wrong-kind
+  bindings fail preflight. Dependencies receive only their explicit DEP::NAME
+  bindings and run under separate declared grants. A host path in a
   define is not an import or filesystem grant.
 - `/work/build`, `/work/tools` and `/work/tmp` are owned work/tools/scratch;
   `/out` is the owned selected-target/product tree. Runtime exposes these paths.
@@ -64,7 +68,9 @@ boundary; its implementation checkpoint records exact tested revisions and gaps.
   or wrong-digest responses preserve valid previous destinations.
 - Git acquisition uses an exact destination and full 40/64-hex commit, validating
   the origin and resulting tree. Imported local repositories remain explicit.
-- Network access is off unless the caller grants bounded outbound TCP endpoints.
+- Network access is off unless NEEDS declares bounded outbound TCP endpoints;
+  callers can only narrow that set and the declared limits. Explicit ceilings
+  apply to all dependencies via numeric minima and endpoint intersections.
   Hostnames are resolved/pinned before launch; redirects require grants too.
   Domain clients share accounting/readiness/revocation. Endpoint grants do not
   isolate virtual hosts on the same allowed IP and port.
@@ -82,7 +88,10 @@ boundary; its implementation checkpoint records exact tested revisions and gaps.
   Diagnostic/scratch leases protect active invocations. Pruning recognizes only
   owned layouts and never treats published products as expendable snapshots.
 - Diagnostics and machine outcomes survive invocation scratch cleanup and are
-  bounded. Human logs are never parsed as success/protocol results.
+  bounded. Human logs are never parsed as success/protocol results. Retained declaration/
+  contract receipts and bounded audit observations support explanation; missing
+  observations stay unknown. Complete endpoint summaries support unused-grant
+  warnings without affecting authorization.
 - Cancellation and execution/transport deadlines terminate descendants, preserve
   the last complete checkpoint and never publish failed work. Silent execution
   is distinct from a stalled partial protocol frame.

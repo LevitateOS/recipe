@@ -19,9 +19,14 @@ pub(super) fn kernel_command(recipes: &Path, action: &str, recipe: &str) -> Comm
 }
 
 fn kernel_command_for_target(recipes: &Path, action: &str, recipe: &str, target: &str) -> Command {
+    let kconfig = recipes.parent().unwrap().join("config");
+    if !kconfig.exists() {
+        std::fs::write(&kconfig, "CONFIG_LOCALVERSION=\"fixture\"\n").unwrap();
+    }
     let mut command = recipe_command(recipes);
     command
         .args([action, recipe, "--no-persist-state"])
+        .args(["--input", &format!("kconfig={}", kconfig.display())])
         .args(["--define", &format!("KERNEL_TARGET={target}")])
         .arg("--recipes-path")
         .arg(recipes)
@@ -83,8 +88,7 @@ fn cli_kernel_readiness_preserves_release_module_and_configuration_rules() {
             .unwrap();
             let run = |action: &str| {
                 let mut cmd = kernel_command_for_target(&recipes, action, recipe, target);
-                cmd.args(["--input", &format!("target={}", artifacts.display())])
-                    .args(["--input", &format!("kconfig={}", kconfig.display())]);
+                cmd.args(["--input", &format!("target={}", artifacts.display())]);
                 invoke_kernel(cmd, dir.path())
             };
             for action in ["isbuilt", "isinstalled"] {

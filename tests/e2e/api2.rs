@@ -30,6 +30,7 @@ fn cli_current_readiness_errors_do_not_authorize_installation() {
     ] {
         let source = format!(
             r#"const RECIPE_API = 2;
+const NEEDS = #{{}};
 let ctx=#{{name:{name:?}}};
 fn is_installed(ctx) {{ {check} }}
 fn is_built(ctx) {{ ready(ctx) }}
@@ -68,6 +69,7 @@ fn is_installed(ctx) { ready(ctx) }
         &recipes,
         "incomplete",
         r#"const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ product: "file" } };
 let ctx=#{name:"incomplete"};
 fn is_installed(ctx) { needs_work(ctx,"complete product is missing") }
 fn is_built(ctx) { ready(ctx) }
@@ -92,6 +94,7 @@ fn cli_resource_exhaustion_runs_failure_cleanup_and_bad_cleanup_cannot_pass() {
         &recipes,
         "budget",
         r#"const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx=#{name:"budget"};
 fn is_installed(ctx) { needs_work(ctx,"not installed") }
 fn is_built(ctx) { needs_work(ctx,"not built") }
@@ -114,6 +117,7 @@ fn cleanup(ctx,reason) { log("BUDGET_CLEANUP " + reason); ctx }
         &recipes,
         "bad-cleanup",
         r#"const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx=#{name:"bad-cleanup"};
 fn is_installed(ctx) { if !is_file("/out/product") { return needs_work(ctx,"installed product missing"); } ready(ctx) }
 fn is_built(ctx) { ready(ctx) }

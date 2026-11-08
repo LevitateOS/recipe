@@ -65,6 +65,7 @@ fn cli_target_metadata_survives_publication_reimport_and_erofs() {
         "target",
         r#"
 const RECIPE_API = 2;
+const NEEDS = #{ inputs: #{ "package": "file" }, outputs: #{ rootfs: "directory" } };
 let ctx = #{name: "target-metadata"};
 fn is_acquired(ctx) { ready(ctx) }
 fn is_built(ctx) {
@@ -126,6 +127,7 @@ fn install(ctx) {
         "import",
         r#"
 const RECIPE_API = 2;
+const NEEDS = #{ inputs: #{ target: "directory" }, outputs: #{ rootfs: "directory" } };
 let ctx = #{name: "target-import"};
 fn is_built(ctx) { ready(ctx) }
 fn is_installed(ctx) {

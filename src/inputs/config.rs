@@ -37,6 +37,7 @@ pub struct InstanceConfig {
     storage_max_objects: u64,
     storage_max_bytes: Option<u64>,
     network: super::network::NetworkPolicy,
+    connect: bool,
 }
 
 impl InstanceConfig {
@@ -82,6 +83,7 @@ impl InstanceConfig {
             storage_max_objects: options.storage_max_objects,
             storage_max_bytes: options.storage_max_bytes,
             network,
+            connect: !options.network_hosts.is_empty(),
         })
     }
 
@@ -107,7 +109,7 @@ impl InstanceConfig {
         out.push_str(&format!("vcpus = {}\n", self.vcpus));
         out.push_str(&format!("memory_mib = {}\n", self.memory_mib));
         out.push_str("\n[execution]\nprofile = \"balanced\"\nbackend = \"ptrace-native\"\n");
-        out.push_str("\n[contract]\nprofile = \"configured-balanced-v2\"\n");
+        out.push_str(&crate::needs::contract::Contract::derived(self.connect).render());
         // Only domain paths cross this interface. The launcher's memory backend
         // owns these bytes; no writable host directory is assigned.
         out.push_str(&format!(

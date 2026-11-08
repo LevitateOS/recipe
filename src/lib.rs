@@ -42,6 +42,7 @@ mod invocation_log;
 mod launch;
 mod lifecycle;
 mod llm;
+pub mod needs;
 mod options;
 mod process;
 mod publication;

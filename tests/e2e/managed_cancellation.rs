@@ -32,6 +32,7 @@ fn managed_deadline_allows_silent_work_beyond_frame_timeout_and_keeps_logs() {
         "check",
         r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "silent-work"};
 fn is_installed(ctx) {
     exec_checked("/usr/bin/sleep", ["3"]);
@@ -65,6 +66,7 @@ fn managed_deadline_stops_silent_work_and_retains_failure_record() {
         "check",
         r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "execution-deadline"};
 fn is_installed(ctx) { print("deadline work started"); exec_checked("/usr/bin/sleep", ["30"]); ready(ctx) }
 "#,
@@ -98,6 +100,7 @@ fn managed_interrupt_reaps_descendants_keeps_checkpoint_and_reports_cancelled() 
         "check",
         r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "interrupt", state: #{built:false}};
 fn is_acquired(ctx) { ready(ctx) }
 fn is_built(ctx) { if ctx.state.built { return ready(ctx); } needs_work(ctx,"build") }
@@ -207,6 +210,7 @@ fn managed_finalization_can_outlast_teardown_grace_within_execution_deadline() {
         "check",
         r#"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ product: "file" } };
 let ctx = #{name:"completion-deadline"};
 fn is_acquired(ctx) { ready(ctx) }
 fn is_built(ctx) { ready(ctx) }
@@ -223,7 +227,7 @@ fn install(ctx) { write_file("/out/product","domain-produced"); ctx }
     let launcher = dir.path().join("slow-completion");
     std::fs::write(
         &launcher,
-        "#!/bin/sh\n\"$RECIPE_TEST_REAL_GINUX\" \"$@\"\nstatus=$?\nsleep 12\nprintf complete > \"$RECIPE_TEST_COMPLETION_MARKER\"\nexit \"$status\"\n",
+        "#!/bin/sh\ncase \"$1\" in instance-*) exec \"$RECIPE_TEST_REAL_GINUX\" \"$@\";; esac\n\"$RECIPE_TEST_REAL_GINUX\" \"$@\"\nstatus=$?\nsleep 12\nprintf complete > \"$RECIPE_TEST_COMPLETION_MARKER\"\nexit \"$status\"\n",
     )
     .unwrap();
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -255,6 +259,7 @@ fn managed_launcher_failure_after_worker_success_cannot_publish() {
         "check",
         r#"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ product: "file" } };
 let ctx = #{name:"launcher-status"};
 fn is_acquired(ctx) { ready(ctx) }
 fn is_built(ctx) { ready(ctx) }
@@ -268,7 +273,7 @@ fn install(ctx) { write_file("/out/product","actual domain output"); ctx }
     let launcher = dir.path().join("failed-launcher");
     std::fs::write(
         &launcher,
-        "#!/bin/sh\n\"$RECIPE_TEST_REAL_GINUX\" \"$@\" || exit \"$?\"\nexit 37\n",
+        "#!/bin/sh\ncase \"$1\" in instance-*) exec \"$RECIPE_TEST_REAL_GINUX\" \"$@\";; esac\n\"$RECIPE_TEST_REAL_GINUX\" \"$@\" || exit \"$?\"\nexit 37\n",
     )
     .unwrap();
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();

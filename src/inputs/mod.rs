@@ -35,6 +35,7 @@ pub(crate) use config::InstanceConfig;
 
 /// Name of the staged domain config inside the staging directory.
 const CONFIG_FILE: &str = "config.toml";
+pub(crate) use discover::validate_input_name;
 pub(crate) use discover::{ExtraInput, InputKind, StagedInput, discover_inputs, static_references};
 pub(crate) use env::{allowlisted_env, invocation_id};
 
@@ -56,6 +57,9 @@ pub struct PreparedInvocation {
     pub inputs: Vec<StagedInput>,
     pub(crate) root_reference: String,
     pub(crate) network: network::NetworkPolicy,
+    pub(crate) execution: crate::ExecutionOptions,
+    pub(crate) declaration: crate::needs::Declaration,
+    pub(crate) contract: crate::needs::contract::Receipt,
     staging: crate::temporary::TemporaryDirectory,
 }
 
@@ -87,15 +91,49 @@ pub fn prepare_invocation(
     search_path: Option<&Path>,
     extra_inputs: &[ExtraInput],
     options: &crate::ExecutionOptions,
+    launcher: &Path,
+    dependency_inputs: &[ExtraInput],
 ) -> Result<PreparedInvocation> {
-    let discovered = discover_inputs(recipe, search_path, extra_inputs)?;
+    let graph = crate::needs::declarations(recipe, search_path)?;
+    let declaration = graph.last().context("empty recipe graph")?.clone();
+    declaration.needs.validate_inputs(
+        &extra_inputs
+            .iter()
+            .map(|input| (input.name.clone(), input.path.clone()))
+            .collect::<Vec<_>>(),
+    )?;
+    let execution = declaration.needs.resolve(&options.narrowing, options)?;
+    let options = &execution;
+    let mut staged_inputs = extra_inputs.to_vec();
+    staged_inputs.extend_from_slice(dependency_inputs);
+    let discovered = discover_inputs(recipe, search_path, &staged_inputs)?;
 
+    for node in &graph {
+        for (path, digest) in &node.source_digests {
+            anyhow::ensure!(
+                discovered
+                    .inputs
+                    .iter()
+                    .any(
+                        |input| input.host_path.canonicalize().ok().as_ref() == Some(path)
+                            && hex::encode(input.sha256) == *digest
+                    ),
+                "recipe authority changed during input discovery: {}",
+                path.display()
+            );
+        }
+    }
     let invocation_id = invocation_id(&discovered.recipe_stem)?;
     let env = allowlisted_env(&invocation_id)?;
 
     let network = network::NetworkPolicy::resolve(options)?;
     let config = InstanceConfig::for_invocation(&invocation_id, &env, options, network.clone())?;
     let config_text = config.render()?;
+    let contract = crate::needs::contract::validate(
+        launcher,
+        &config_text,
+        !options.network_hosts.is_empty(),
+    )?;
 
     let staging = crate::temporary::TemporaryDirectory::new()
         .context("input preparation failure: cannot create staging dir")?;
@@ -128,6 +166,9 @@ pub fn prepare_invocation(
         inputs: discovered.inputs,
         root_reference: config.root_reference().to_owned(),
         network,
+        execution,
+        declaration,
+        contract,
         staging,
     })
 }

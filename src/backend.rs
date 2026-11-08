@@ -30,6 +30,144 @@ impl GinuxLauncher {
         &self,
         invocation: &crate::launch::Invocation<'_>,
     ) -> Result<serde_json::Value> {
+        invocation
+            .options
+            .validate_for(invocation.operation)
+            .context(crate::failure::Category::Startup.error("invalid invocation options"))?;
+        let graph = crate::needs::declarations(invocation.recipe, invocation.search_path)?;
+        let bindings =
+            crate::needs::bind_inputs(&graph, invocation.inputs, invocation.search_path)?;
+        // Resolve all declarations and contracts before the first dependency can
+        // execute. Parent restrictions never become dependency grants.
+        for node in &graph {
+            let mut execution = invocation.options.execution.for_dependency();
+            execution.narrowing = if node.recipe == graph.last().unwrap().recipe {
+                invocation.options.execution.narrowing.clone()
+            } else {
+                node.needs
+                    .dependency_narrowing(&invocation.options.execution.narrowing)?
+            };
+            let effective = node.needs.resolve(&execution.narrowing, &execution)?;
+            crate::needs::contract::validate(
+                &self.path,
+                &crate::needs::contract::inspection_config(&effective),
+                !effective.network_hosts.is_empty(),
+            )?;
+        }
+        let mut results = std::collections::BTreeMap::<PathBuf, serde_json::Value>::new();
+        for node in &graph {
+            let main = node.recipe == graph.last().unwrap().recipe;
+            // Manual checks, remove and cleanup operate on this recipe's own
+            // retained files. They must not install or require its producers.
+            let installing = invocation.operation == crate::worker::protocol::Operation::Install;
+            if !main && !installing {
+                continue;
+            }
+            crate::cancellation::check()?;
+            let transfer = (installing && !node.dependencies.is_empty())
+                .then(crate::temporary::TemporaryDirectory::new)
+                .transpose()?;
+            let mut internal = Vec::new();
+            if let Some(transfer) = &transfer {
+                let dependencies = transfer.path().join(crate::domain::DEPENDENCY_INPUT);
+                let tools = transfer.path().join(crate::domain::DEPENDENCY_TOOLS);
+                std::fs::create_dir(&dependencies)?;
+                std::fs::create_dir(&tools)?;
+                let mut product_inputs = Vec::new();
+                for dependency in &node.dependencies {
+                    let outputs = results
+                        .get(&dependency.recipe)
+                        .context("dependency was not prepared")?
+                        .get("outputs")
+                        .and_then(serde_json::Value::as_object)
+                        .context("dependency outputs missing")?;
+                    let destination = dependencies.join(&dependency.name);
+                    std::fs::create_dir_all(&destination)?;
+                    for (name, value) in outputs {
+                        let path = PathBuf::from(
+                            value.as_str().context("dependency output must be a path")?,
+                        );
+                        let kind = graph
+                            .iter()
+                            .find(|node| node.recipe == dependency.recipe)
+                            .unwrap()
+                            .needs
+                            .outputs[name];
+                        // The input snapshot owner preserves aliases across named
+                        // products. Copying each product here would split them.
+                        product_inputs.push(crate::inputs::ExtraInput {
+                            name: format!(
+                                "{}/{}/{name}",
+                                crate::domain::DEPENDENCY_INPUT,
+                                dependency.name
+                            ),
+                            path: path.clone(),
+                        });
+                        if kind == crate::needs::PathKind::Directory && name == "tools" {
+                            crate::target::merge_tree(&path, &tools)?;
+                        }
+                    }
+                }
+                internal.extend([
+                    crate::inputs::ExtraInput {
+                        name: crate::domain::DEPENDENCY_INPUT.into(),
+                        path: dependencies,
+                    },
+                    crate::inputs::ExtraInput {
+                        name: crate::domain::DEPENDENCY_TOOLS.into(),
+                        path: tools,
+                    },
+                ]);
+                internal.extend(product_inputs);
+            }
+            let mut execution = invocation.options.execution.clone();
+            if !main {
+                execution = execution.for_dependency();
+                execution.narrowing = node
+                    .needs
+                    .dependency_narrowing(&invocation.options.execution.narrowing)?;
+            }
+            let destination = if main {
+                invocation.destination.to_path_buf()
+            } else {
+                use sha2::{Digest, Sha256};
+                let digest =
+                    hex::encode(Sha256::digest(node.recipe.as_os_str().as_encoded_bytes()));
+                invocation.destination.join(".deps").join(&digest[..32])
+            };
+            let operation = if main {
+                invocation.operation
+            } else {
+                crate::worker::protocol::Operation::Install
+            };
+            let child = crate::launch::Invocation {
+                recipe: &node.recipe,
+                inputs: &bindings[&node.recipe],
+                destination: &destination,
+                operation,
+                cleanup_reason: if main {
+                    invocation.cleanup_reason
+                } else {
+                    None
+                },
+                options: crate::worker::protocol::InvocationOptions {
+                    defines: invocation.options.defines.clone(),
+                    execution,
+                },
+                ..*invocation
+            };
+            let result = self.run_single(&child, &internal, node)?;
+            results.insert(node.recipe.clone(), result);
+        }
+        Ok(results.remove(&graph.last().unwrap().recipe).unwrap())
+    }
+
+    fn run_single(
+        &self,
+        invocation: &crate::launch::Invocation<'_>,
+        dependency_inputs: &[crate::inputs::ExtraInput],
+        expected: &crate::needs::Declaration,
+    ) -> Result<serde_json::Value> {
         let operation = invocation.operation;
         invocation
             .options
@@ -40,6 +178,8 @@ impl GinuxLauncher {
             invocation.search_path,
             invocation.inputs,
             &invocation.options.execution,
+            &self.path,
+            dependency_inputs,
         )
         .map_err(|err| {
             anyhow::Error::new(crate::failure::Category::Startup.error(format!(
@@ -47,7 +187,21 @@ impl GinuxLauncher {
                 invocation.recipe.display(),
             )))
         })?;
-        let report = crate::launch::run_domain(&prepared, invocation, &self.path)?;
+        anyhow::ensure!(
+            prepared.declaration.source_digests == expected.source_digests
+                && prepared.declaration.needs == expected.needs
+                && prepared.declaration.dependencies == expected.dependencies,
+            "recipe authority changed since graph preflight: {}",
+            expected.recipe.display()
+        );
+        let invocation = crate::launch::Invocation {
+            options: crate::worker::protocol::InvocationOptions {
+                defines: invocation.options.defines.clone(),
+                execution: prepared.execution.clone(),
+            },
+            ..*invocation
+        };
+        let report = crate::launch::run_domain(&prepared, &invocation, &self.path)?;
         crate::diagnostics::diag!(
             "recipe: invocation {} finished in the Ginux domain: ok={} ({} checkpoint{} \
                  acked; launcher exit {}; result {})",

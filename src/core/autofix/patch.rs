@@ -5,13 +5,13 @@ use std::path::{Path, PathBuf};
 use super::{parser, prompt};
 
 fn validate_patch_protects_lifecycle_functions(cwd: &Path, patch: &str) -> Result<()> {
-    let mut protected_by_file: BTreeMap<String, Vec<parser::ProtectedFnRange>> = BTreeMap::new();
+    let mut protected_by_file: BTreeMap<String, Vec<parser::ProtectedRange>> = BTreeMap::new();
     for rel in parser::extract_patch_paths(patch) {
         let path = cwd.join(&rel);
         let Ok(src) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let ranges = parser::protected_fn_ranges(&src);
+        let ranges = parser::protected_ranges(&src);
         if !ranges.is_empty() {
             protected_by_file.insert(rel, ranges);
         }
@@ -73,7 +73,7 @@ fn validate_patch_protects_lifecycle_functions(cwd: &Path, patch: &str) -> Resul
                     for r in ranges {
                         if old_line >= r.start_line && old_line <= r.end_line {
                             bail!(
-                                "Refusing autofix patch: modifies protected lifecycle function `{}` in {}",
+                                "Refusing autofix patch: modifies protected lifecycle function or recipe declaration `{}` in {}",
                                 r.name,
                                 rel
                             );
@@ -90,7 +90,7 @@ fn validate_patch_protects_lifecycle_functions(cwd: &Path, patch: &str) -> Resul
                         // closing brace is a modification of the protected function.
                         if old_line > r.start_line && old_line <= r.end_line {
                             bail!(
-                                "Refusing autofix patch: modifies protected lifecycle function `{}` in {}",
+                                "Refusing autofix patch: modifies protected lifecycle function or recipe declaration `{}` in {}",
                                 r.name,
                                 rel
                             );
@@ -131,6 +131,17 @@ fn validate_patch(cwd: &Path, allow_paths: &[PathBuf], patch: &str) -> Result<()
         // Ignore diff headers.
         if line.starts_with("+++ ") || line.starts_with("--- ") {
             continue;
+        }
+
+        let changed = &line[1..];
+        if changed
+            .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+            .any(|token| matches!(token, "NEEDS" | "RECIPE_API" | "deps" | "build_deps"))
+            || changed.trim_start().starts_with("//! extends:")
+        {
+            bail!(
+                "Refusing autofix patch: recipe NEEDS/API/dependency authority must be edited explicitly"
+            );
         }
 
         // Hard block attempts to (re)define lifecycle check functions.

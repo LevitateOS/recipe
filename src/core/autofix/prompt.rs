@@ -7,6 +7,7 @@ You are patching Rhai recipe files for the `recipe` package manager.
 Goal: fix the failing `recipe install` by editing code/config files as needed.
 
 Hard constraints:
+- Do NOT change NEEDS, RECIPE_API, deps/build_deps or base selection. Authority changes require an explicit recipe edit.
 - Output MUST be a single unified diff suitable for `git apply` (no prose, no markdown, no code fences).
 - Do NOT change or weaken lifecycle checks:
   - Do NOT modify the lifecycle check functions: {CHECKS}.

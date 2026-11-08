@@ -181,6 +181,7 @@ impl Retained {
         // adding a field to ExecutionOptions fails to compile here until it
         // is classified.
         let crate::ExecutionOptions {
+            narrowing: _,
             target_os,
             target_arch,
             jobs,
@@ -207,6 +208,8 @@ impl Retained {
             network_hosts,
             network_max_bytes,
             &prepared.root_reference,
+            prepared.contract.catalog,
+            &prepared.contract.digest,
             worker_digest,
             inputs,
             defines,

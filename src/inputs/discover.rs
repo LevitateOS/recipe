@@ -99,13 +99,18 @@ pub fn discover_inputs(
     collector
         .visited
         .insert((recipe_canonical.clone(), MAIN_NAME.to_owned()));
-    collector.collect_related(&recipe_canonical, MAIN_NAME, &recipe_source, 0)?;
+    collector.collect_executable(&recipe_canonical, MAIN_NAME, &recipe_source, 0)?;
 
     for extra in extra_inputs {
         validate_input_name(&extra.name)?;
         let meta = std::fs::symlink_metadata(&extra.path)?;
         if meta.is_dir() {
-            let filesystem_tree = matches!(extra.name.as_str(), "rootfs" | "target");
+            let filesystem_tree = matches!(extra.name.as_str(), "rootfs" | "target")
+                || extra.name == crate::domain::DEPENDENCY_INPUT
+                || extra
+                    .name
+                    .starts_with(&format!("{}/", crate::domain::DEPENDENCY_INPUT))
+                || extra.name == crate::domain::DEPENDENCY_TOOLS;
             let mut links = HashMap::new();
             for entry in walkdir::WalkDir::new(&extra.path)
                 .follow_links(false)
@@ -336,6 +341,39 @@ impl<'a> Collector<'a> {
         Ok(())
     }
 
+    /// Stage the effective merged dependency graph. Base declarations that a
+    /// child overrides do not become extra input authority or missing files.
+    fn collect_executable(
+        &mut self,
+        canonical: &Path,
+        domain_name: &str,
+        source: &str,
+        depth: usize,
+    ) -> Result<()> {
+        self.collect_related(canonical, domain_name, source, depth)?;
+        let declaration = crate::needs::declaration(canonical, self.search_path)?;
+        for dependency in declaration.dependencies {
+            let file =
+                crate::recipes::dependency_file(&dependency.name).map_err(anyhow::Error::msg)?;
+            let name = Path::new(domain_name)
+                .parent()
+                .unwrap_or(Path::new(""))
+                .join(file);
+            let name = name.to_str().context("non-Unicode dependency path")?;
+            validate_input_name(name)?;
+            let source = read_recipe_file(&dependency.recipe)?;
+            self.note_host_dir(&dependency.recipe);
+            self.stage_kind(name, &dependency.recipe, InputKind::File)?;
+            if self
+                .visited
+                .insert((dependency.recipe.clone(), name.to_owned()))
+            {
+                self.collect_executable(&dependency.recipe, name, &source, depth + 1)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Preserve each reference's directory layout instead of flattening names.
     fn collect_related(
         &mut self,
@@ -349,7 +387,12 @@ impl<'a> Collector<'a> {
                 "input preparation failure: import/dependency nesting exceeds {MAX_IMPORT_DEPTH}"
             );
         }
-        let mut references = static_references(source)?;
+        // Imports/base setup still execute. Dependencies are selected once from
+        // the merged executable declaration by collect_executable above.
+        let mut references = static_references(source)?
+            .into_iter()
+            .filter(|(_, module)| *module)
+            .collect::<Vec<_>>();
         if let Some(base) = parse_extends(source) {
             references.push((base, false));
         }
@@ -465,7 +508,7 @@ fn reject_secret_bearing_host(host: &Path, name: &str) -> Result<()> {
 
 /// Domain-path bounds, traversal and reserved names. Source filenames may use
 /// spaces, punctuation and Unicode; they are never interpolated into commands.
-pub(super) fn validate_input_name(name: &str) -> Result<()> {
+pub(crate) fn validate_input_name(name: &str) -> Result<()> {
     if name.is_empty() || name.len() > MAX_INPUT_NAME {
         bail!(
             "input preparation failure: input name {name:?} has {} B, want 1..={MAX_INPUT_NAME} B \

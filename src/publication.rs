@@ -17,22 +17,24 @@ impl Drop for Staging {
     }
 }
 
-pub(crate) fn publish(
-    invocation: &str,
+pub(crate) fn prepare(
     archive: &Path,
-    context: &mut Value,
+    context: &Value,
     options: &crate::ExecutionOptions,
-) -> Result<()> {
+    needs: &crate::needs::Needs,
+    complete: bool,
+) -> Result<Option<Publication>> {
+    needs.validate_output_names(context, complete)?;
     let max_bytes = options.storage_byte_bound();
     let max_entries = options.storage_max_objects as usize;
     let Some(outputs) = context.get("outputs") else {
-        return Ok(());
+        return Ok(None);
     };
     let outputs = outputs
         .as_object()
         .context("named outputs must be an object")?;
     if outputs.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     if outputs.len() > 64 {
         bail!("too many named outputs");
@@ -201,6 +203,15 @@ pub(crate) fn publish(
                 if kind.is_symlink() {
                     bail!("a named output must be a regular file or directory");
                 }
+                let expected = needs.outputs[name];
+                anyhow::ensure!(
+                    match expected {
+                        crate::needs::PathKind::File => kind.is_file() || kind.is_hard_link(),
+                        crate::needs::PathKind::Directory => kind.is_dir(),
+                    },
+                    "NEEDS.outputs.{name} requires {} in completed export",
+                    expected.as_str()
+                );
                 found.insert(name.clone());
                 Some("")
             } else {
@@ -284,40 +295,60 @@ pub(crate) fn publish(
         fs::set_permissions(directory, fs::Permissions::from_mode(*mode))?;
     }
     File::open(staging.0.path())?.sync_all()?;
-    let destination = base.join(invocation);
-    let from = CString::new(staging.0.path().as_os_str().as_bytes())?;
-    let to = CString::new(destination.as_os_str().as_bytes())?;
-    // Never replace artifacts from another invocation, even under a collision.
-    if unsafe {
-        libc::renameat2(
-            libc::AT_FDCWD,
-            from.as_ptr(),
-            libc::AT_FDCWD,
-            to.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    } != 0
-    {
-        return Err(std::io::Error::last_os_error()).context("cannot publish output directory");
-    }
-    File::open(&base)?.sync_all()?;
-    let outputs = context.get_mut("outputs").unwrap().as_object_mut().unwrap();
-    for name in selected.keys() {
-        outputs.insert(
-            name.clone(),
-            Value::String(
-                destination
-                    .join(name)
-                    .to_str()
-                    .context("output destination is not UTF-8")?
-                    .to_owned(),
-            ),
-        );
-    }
-    Ok(())
+    Ok(Some(Publication {
+        base,
+        staging,
+        selected,
+    }))
 }
 
-fn validate_path(path: &str) -> Result<()> {
+pub(crate) struct Publication {
+    base: PathBuf,
+    staging: Staging,
+    selected: BTreeMap<String, String>,
+}
+impl Publication {
+    pub(crate) fn publish(self, invocation: &str, context: &mut Value) -> Result<()> {
+        let Self {
+            base,
+            staging,
+            selected,
+        } = self;
+        let destination = base.join(invocation);
+        let from = CString::new(staging.0.path().as_os_str().as_bytes())?;
+        let to = CString::new(destination.as_os_str().as_bytes())?;
+        // Never replace artifacts from another invocation, even under a collision.
+        if unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                from.as_ptr(),
+                libc::AT_FDCWD,
+                to.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error()).context("cannot publish output directory");
+        }
+        File::open(&base)?.sync_all()?;
+        let outputs = context.get_mut("outputs").unwrap().as_object_mut().unwrap();
+        for name in selected.keys() {
+            outputs.insert(
+                name.clone(),
+                Value::String(
+                    destination
+                        .join(name)
+                        .to_str()
+                        .context("output destination is not UTF-8")?
+                        .to_owned(),
+                ),
+            );
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn validate_path(path: &str) -> Result<()> {
     if path.len() > crate::domain::MAX_PATH
         || path.contains('\0')
         || path

@@ -8,6 +8,7 @@ fn cli_api2_context_supplies_fresh_paths_and_carries_state_and_named_outputs() {
         "context-tool",
         r##"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ tool: "file", transcript: "file" } };
 let ctx = #{name: "context-tool", product: join_path(RUNTIME.paths.output, "bin/context-tool"),
     runtime: #{paths: #{build: "stale source context"}}, state: #{runs: 0}, outputs: #{}};
 let captured_build_dir = || RUNTIME.paths.build;
@@ -15,6 +16,7 @@ fn is_installed(ctx) {
     ctx.state.observed_operation = ctx.runtime.operation;
     if !is_file(ctx.product) { return needs_work(ctx, "tool missing"); }
     ctx.outputs.tool = ctx.product;
+    ctx.outputs.transcript = join_path(ctx.runtime.paths.output, "tool-transcript");
     ready(ctx)
 }
 fn is_built(ctx) { ready(ctx) }
@@ -94,6 +96,7 @@ fn cli_api2_rejects_invalid_context_namespaces_and_changed_runtime() {
             &format!(
                 r##"
 const RECIPE_API = 2;
+const NEEDS = #{{}};
 let ctx = #{{name: "{name}", {declaration}}};
 fn is_installed(ctx) {{ needs_work(ctx, "exercise installation") }}
 fn is_built(ctx) {{ ready(ctx) }}
@@ -111,6 +114,7 @@ fn install(ctx) {{ {install} }}
         "reserved-runtime",
         r##"
 const RECIPE_API = 2;
+const NEEDS = #{};
 const RUNTIME = #{};
 write_file("/out/unexpected-runtime-setup", "bad");
 let ctx = #{name: "reserved-runtime"};
@@ -135,6 +139,7 @@ fn managed_current_contract_initializes_once_and_has_no_legacy_globals() {
     .unwrap();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ product: "file" } };
 import "facts.rhai" as facts;
 append_file("/work/setup", "once\n");
 let ctx = #{name: "current", state: #{}, outputs: #{}};

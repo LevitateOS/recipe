@@ -8,18 +8,20 @@ pub struct ExecutionOptions {
     pub target_os: String,
     pub target_arch: String,
     pub jobs: u16,
+    /// Optional restrictions on the authority declared by the recipe.
+    pub narrowing: crate::needs::Narrowing,
     /// Emit lifecycle JSON events through the worker diagnostic channel.
     pub machine_events: bool,
     /// Maximum supervised execution time, separate from frame transport stalls.
-    pub timeout_secs: u64,
+    pub(crate) timeout_secs: u64,
     /// Domain memory and writable filesystem bounds.
-    pub memory_mib: u64,
-    pub storage_max_objects: u64,
-    pub storage_max_bytes: Option<u64>,
+    pub(crate) memory_mib: u64,
+    pub(crate) storage_max_objects: u64,
+    pub(crate) storage_max_bytes: Option<u64>,
     /// Explicit outbound TCP hosts; empty keeps networking disabled.
-    pub network_hosts: Vec<String>,
+    pub(crate) network_hosts: Vec<String>,
     /// Cumulative transmitted and received network bytes per invocation.
-    pub network_max_bytes: u64,
+    pub(crate) network_max_bytes: u64,
     /// Rerun the main recipe's acquisition, build and installation phases.
     pub force_acquire: bool,
     /// Rerun the main recipe's build and installation phases.
@@ -33,6 +35,7 @@ impl Default for ExecutionOptions {
             target_os: std::env::consts::OS.into(),
             target_arch: std::env::consts::ARCH.into(),
             jobs: 1,
+            narrowing: crate::needs::Narrowing::default(),
             machine_events: false,
             timeout_secs: 3600,
             memory_mib: 2048,

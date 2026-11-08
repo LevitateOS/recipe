@@ -8,6 +8,7 @@ fn cli_exec_streams_diagnostics_to_stderr_and_preserves_status_result() {
         "exec-status",
         r#"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ work: "directory" } };
 let ctx = #{ name: "exec-status", state: #{installed: false} };
 fn is_installed(ctx) { if ctx.state.installed { return ready(ctx); } needs_work(ctx, "execute child") }
 fn is_acquired(ctx) { ready(ctx) }
@@ -67,6 +68,7 @@ fn cli_large_asset_hash_progress_does_not_corrupt_json() {
             &format!(
                 r#"
 const RECIPE_API = 2;
+const NEEDS = #{{ inputs: #{{ "large.bin": "file" }} }};
 let ctx = #{{ name: "verify-large", digest: "{digest}" }};
 fn is_installed(ctx) {{
     {helper}("/inputs/large.bin", ctx.digest);

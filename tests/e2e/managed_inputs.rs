@@ -22,7 +22,6 @@ fn image_command(recipes: &Path, archive: &Path, digest: &str) -> Command {
     command
         .env_remove("RECIPE_WORKER")
         .env_remove("RECIPE_INVOCATION")
-        .env("GINUX_BIN", "/bin/false")
         .env("TMPDIR", recipes.parent().unwrap())
         .env("GINUX_ROOTFS", archive)
         .env("GINUX_ROOT", format!("oci:cli-image@sha256:{digest}"))
@@ -38,7 +37,8 @@ fn image_command(recipes: &Path, archive: &Path, digest: &str) -> Command {
 
 fn guarded_recipe(recipes: &Path, sentinel: &Path) -> String {
     let source = format!(
-        "const RECIPE_API = 2;\nwrite_file({:?}, \"host recipe code ran\");\nlet ctx = #{{name: \"image-check\"}};\nfn is_installed(ctx) {{ ctx }}\n",
+        "const RECIPE_API = 2;
+const NEEDS = #{{}};\nwrite_file({:?}, \"host recipe code ran\");\nlet ctx = #{{name: \"image-check\"}};\nfn is_installed(ctx) {{ ctx }}\n",
         sentinel.to_string_lossy()
     );
     write_recipe(recipes, "check", &source);
@@ -230,6 +230,7 @@ fn managed_invocation_preserves_defines_and_cleanup_reason() {
         "check",
         r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "options", value: CUSTOM_INPUT};
 fn is_installed(ctx) { ready(ctx) }
 fn cleanup(ctx, reason) { ctx.reason = reason; ctx }
@@ -266,17 +267,19 @@ fn managed_inputs_preserve_nested_modules_and_dependency_closure() {
     .unwrap();
     std::fs::write(recipes.join("tools/helper.rhai"), r#"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ tools: "directory" } };
 let ctx = #{name: "helper"};
 fn is_acquired(ctx) { ready(ctx) }
 fn is_installed(ctx) {
-    if is_file(join_path(RUNTIME.paths.tools, "dependency-evidence")) { return ready(ctx); }
+    if is_file(join_path(RUNTIME.paths.tools, "dependency-evidence")) { ctx.outputs.tools = RUNTIME.paths.tools; return ready(ctx); }
     needs_work(ctx, "helper missing")
 }
 
-fn install(ctx) { write_file(join_path(RUNTIME.paths.tools, "dependency-evidence"), "dependency ran"); ctx }
+fn install(ctx) { write_file(join_path(RUNTIME.paths.tools, "dependency-evidence"), "dependency ran"); ctx.outputs.tools = RUNTIME.paths.tools; ctx }
 "#).unwrap();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 import "left/wrapper" as left;
 import "right/facts.rhai" as right;
 let deps = ["tools/helper"];
@@ -317,6 +320,7 @@ fn managed_declared_source_tree_preserves_empty_directories_and_confined_links()
         "check",
         r#"
 const RECIPE_API = 2;
+const NEEDS = #{ inputs: #{ "source": "directory", "config.toml": "file" } };
 let ctx = #{name: "source-input"};
 fn is_installed(ctx) {
     if !is_dir("/inputs/source/empty") { throw "empty input directory missing"; }
@@ -353,7 +357,12 @@ fn is_installed(ctx) {
     std::fs::remove_file(source.join("alias")).unwrap();
     std::os::unix::fs::symlink(source.join("nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/value"), source.join("alias")).unwrap();
     let rejected = managed_command(&recipes, "isinstalled")
-        .args(["--input", &selection])
+        .args([
+            "--input",
+            &selection,
+            "--input",
+            &format!("config.toml={}", source.join("C++ résumé.txt").display()),
+        ])
         .output()
         .unwrap();
     assert!(!rejected.status.success());
@@ -368,7 +377,12 @@ fn is_installed(ctx) {
         }
         std::os::unix::fs::symlink(target, source.join("alias")).unwrap();
         let rejected = managed_command(&recipes, "isinstalled")
-            .args(["--input", &selection])
+            .args([
+                "--input",
+                &selection,
+                "--input",
+                &format!("config.toml={}", source.join("C++ résumé.txt").display()),
+            ])
             .output()
             .unwrap();
         assert!(
@@ -397,6 +411,7 @@ fn managed_large_asset_is_streamed_and_oversized_asset_rejected() {
         &format!(
             r#"
 const RECIPE_API = 2;
+const NEEDS = #{{ inputs: #{{ "asset.iso": "file" }} }};
 let ctx = #{{name: "large-input"}};
 fn is_installed(ctx) {{
     if trim(shell_output("wc -c < /inputs/asset.iso")) != "{size}" {{ throw "asset truncated"; }}
@@ -433,6 +448,7 @@ fn managed_custom_checks_run_independently_and_return_discovered_context() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{ name: "managed-check", expected: "x86_64" };
 fn is_acquired(ctx) { ctx.observation = "custom source revision"; ready(ctx) }
 fn is_built(ctx) { ctx.observation = "custom compiler configuration"; ready(ctx) }
@@ -482,7 +498,8 @@ fn managed_not_ready_and_real_script_errors_remain_failures() {
         ),
     ] {
         let source = format!(
-            "const RECIPE_API = 2; let ctx = #{{name: \"negative-check\"}}; fn is_installed(ctx) {{ {body} }}\n"
+            "const RECIPE_API = 2;
+const NEEDS = #{{}}; let ctx = #{{name: \"negative-check\"}}; fn is_installed(ctx) {{ {body} }}\n"
         );
         write_recipe(&recipes, "check", &source);
         let output = managed_command(&recipes, "isinstalled").output().unwrap();
@@ -527,15 +544,17 @@ fn managed_check_reads_staged_base_and_imported_module() {
     let module = "fn selected_fact() { \"pinned module fact\" }\n";
     let base = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 import "facts.rhai" as facts;
 let ctx = #{name: "base"};
 fn inherited(ctx) { ctx.base_fact = facts::selected_fact(); ctx }
 fn is_installed(ctx) { ready(inherited(ctx)) }
 "#;
-    let plain_child =
-        "//! extends: base.rhai\nconst RECIPE_API = 2; let ctx = #{name: \"child\"};\n";
+    let plain_child = "//! extends: base.rhai\nconst RECIPE_API = 2;
+const NEEDS = #{}; let ctx = #{name: \"child\"};\n";
     let shared_child = r#"//! extends: base.rhai
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "child"};
 let captured_name = || ctx.name;
 fn is_installed(ctx) {
@@ -570,6 +589,7 @@ fn managed_cleanup_and_remove_return_context_after_checkpoint_ack() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "checkpoint-hooks"};
 fn cleanup(ctx, reason) { ctx.state.reason = reason; ctx.state.operation = "cleanup"; ctx }
 fn remove(ctx) { ctx.state.removed = true; ctx.state.build = ctx.runtime.paths.build; ctx.state.operation = "remove"; ctx }
@@ -598,7 +618,8 @@ fn remove(ctx) { ctx.state.removed = true; ctx.state.build = ctx.runtime.paths.b
 #[test]
 fn managed_cleanup_without_a_hook_is_a_noop() {
     let (_dir, recipes) = create_test_env();
-    let source = "const RECIPE_API = 2; let ctx = #{name: \"no-cleanup\"};\n";
+    let source = "const RECIPE_API = 2;
+const NEEDS = #{}; let ctx = #{name: \"no-cleanup\"};\n";
     write_recipe(&recipes, "check", source);
     let output = managed_command(&recipes, "cleanup").output().unwrap();
     assert_success(&output);
@@ -616,6 +637,7 @@ fn managed_lifecycle_transforms_files_and_cleanup_reads_actual_product() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "file-lifecycle", source: "/work/build/source", built: "/work/build/built", product: "/out/product", state: #{trace: ""}};
 fn is_acquired(ctx) { if !is_file(ctx.source) { return needs_work(ctx, "source missing"); } ready(ctx) }
 fn is_built(ctx) { if !is_file(ctx.built) { return needs_work(ctx, "build missing"); } ready(ctx) }
@@ -660,6 +682,7 @@ fn managed_cleanup_and_remove_mutate_domain_files() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "file-hooks", product: "/out/product"};
 write_file(ctx.product, "actual domain artifact");
 fn cleanup(ctx, reason) {
@@ -699,6 +722,7 @@ fn managed_helpers_use_the_assigned_null_device() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "null-device"};
 fn is_installed(ctx) {
     write_file("/dev/null", "discard these actual helper bytes");
@@ -727,6 +751,7 @@ fn managed_bash_child_writes_domain_files_and_keeps_logs_out_of_json() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ proof: "file" } };
 let ctx = #{name: "managed-child"};
 fn is_acquired(ctx) { ready(ctx) }
 fn is_built(ctx) {
@@ -802,6 +827,7 @@ fn managed_diagnostic_limit_drains_child_and_preserves_result() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "diagnostic-cap", state: #{child_code: -1}};
 fn is_acquired(ctx) { ready(ctx) }
 fn is_built(ctx) { if ctx.state.child_code == 0 { ready(ctx) } else { needs_work(ctx, "run child") } }
@@ -837,6 +863,7 @@ fn managed_diagnostic_frame_limit_preserves_lifecycle_result() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "diagnostic-frames", state: #{done: false}};
 fn is_acquired(ctx) { ready(ctx) }
 fn is_installed(ctx) { if ctx.state.done { ready(ctx) } else { needs_work(ctx, "run logging hook") } }
@@ -869,6 +896,7 @@ fn managed_capture_returns_stdout_and_relays_stderr_beyond_pipe_capacity() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "managed-capture"};
 fn is_installed(ctx) {
     ctx.state.short = exec_output("/usr/bin/bash", ["--noprofile", "--norc", "-c", "printf ' capture-value\\n'"]);
@@ -916,6 +944,7 @@ fn managed_capture_nonzero_exit_remains_a_fatal_custom_check_error() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "managed-capture-failure"};
 fn is_installed(ctx) {
     ctx.state.unreachable = exec_output("/usr/bin/bash", ["--noprofile", "--norc", "-c",
@@ -953,6 +982,7 @@ fn managed_large_file_lifecycle_preserves_custom_content_checks() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ proof: "file" } };
 let ctx = #{name: "managed-large-file"};
 fn expected_content() {
     let value = "x";
@@ -1003,6 +1033,7 @@ fn managed_directory_lifecycle_copies_moves_and_cleans_nested_products() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ tree: "directory" } };
 let ctx = #{name: "managed-directory", state: #{cleaned: false}};
 fn expected_content() {
     let value = "d";
@@ -1080,6 +1111,7 @@ fn managed_rename_cannot_replace_staged_recipe_source() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "managed-rename-guard"};
 fn is_installed(ctx) {
     write_file("/work/build/replacement", "replace staged recipe");
@@ -1107,6 +1139,7 @@ fn managed_owned_elf_build_executes_and_validates_its_product() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ proof: "file" } };
 let ctx = #{name: "managed-owned-elf"};
 fn is_acquired(ctx) { ready(ctx) }
 fn is_built(ctx) {
@@ -1168,6 +1201,7 @@ fn managed_owned_exec_requires_executable_permissions() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "managed-owned-permissions"};
 fn is_installed(ctx) {
     write_file("/work/build/not-executable", "ordinary data");
@@ -1195,6 +1229,7 @@ fn managed_generated_shebang_build_preserves_path_arguments_and_products() {
     let (_dir, recipes) = create_test_env();
     let source = r##"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ proof: "file" } };
 let ctx = #{name: "managed-owned-script"};
 fn is_acquired(ctx) { ready(ctx) }
 fn is_built(ctx) {
@@ -1260,6 +1295,7 @@ fn managed_shell_reopens_an_unlinked_script_after_a_libc_fork() {
     let (_dir, recipes) = create_test_env();
     let source = r##"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "managed-descriptor-script"};
 fn is_installed(ctx) {
     write_file("/work/build/fd-script", "printf '%s|%s' \"$0\" \"$1\"\nprintf fd-product > /work/build/fd-result\n");
@@ -1305,7 +1341,11 @@ fn cli_partial_launcher_frame_times_out_and_reaps_pipe_holders() {
     std::fs::write(
         &launcher,
         r#"#!/usr/bin/python3
-import os, time
+import os, sys, time
+if sys.argv[1].startswith('instance-'):
+    os.execv(os.environ['RECIPE_TEST_REAL_GINUX'], [os.environ['RECIPE_TEST_REAL_GINUX'], *sys.argv[1:]])
+with open(os.environ['RECIPE_TEST_PARTIAL_FRAME_START'], 'w') as marker:
+    marker.write(str(time.monotonic_ns()))
 os.write(1, b'\x00')
 child = os.fork()
 if child == 0:
@@ -1316,14 +1356,37 @@ else:
     )
     .unwrap();
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let start = std::time::Instant::now();
+    let frame_start = dir.path().join("partial-frame-start");
     let output = image_command(&recipes, &archive, &digest)
+        .env("RECIPE_TEST_PARTIAL_FRAME_START", &frame_start)
+        .env(
+            "RECIPE_TEST_REAL_GINUX",
+            std::env::var_os("GINUX_BIN").unwrap(),
+        )
         .env("GINUX_BIN", &launcher)
         .env("RECIPE_FRAME_TIMEOUT_SECS", "1")
         .output()
         .unwrap();
     assert!(!output.status.success() && output.stdout.is_empty());
-    assert!(start.elapsed() < std::time::Duration::from_secs(20));
+    // Time from the actual partial frame, excluding input/image preparation.
+    // Both launcher and child hold the pipe, so waiting for either 60s sleep
+    // instead of reaping it would still violate the unchanged 20s bound.
+    let frame_start: u64 = std::fs::read_to_string(frame_start)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut completed = std::mem::MaybeUninit::<libc::timespec>::uninit();
+    assert_eq!(
+        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, completed.as_mut_ptr()) },
+        0
+    );
+    let completed = unsafe { completed.assume_init() };
+    let completed = completed.tv_sec as u64 * 1_000_000_000 + completed.tv_nsec as u64;
+    let elapsed = std::time::Duration::from_nanos(completed - frame_start);
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "partial-frame teardown took {elapsed:?}"
+    );
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(
         error.contains("complete worker frame deadline expired"),
@@ -1342,10 +1405,11 @@ fn managed_coordinator_death_terminates_launcher_and_worker() {
         "check",
         r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "cancel-check"};
 fn is_installed(ctx) {
     print("managed-cancellation-ready");
-    exec_checked("/usr/bin/sleep", ["60"]);
+    while true { exec_checked("/usr/bin/sleep", ["1"]); }
     ready(ctx)
 }
 "#,
@@ -1372,7 +1436,11 @@ fn is_installed(ctx) {
         }
         tail.into_iter().collect::<Vec<_>>().join("\n")
     });
-    if let Err(error) = rx.recv_timeout(std::time::Duration::from_secs(120)) {
+    // Image preparation precedes the worker marker. This is a bootstrap
+    // allowance, separate from the unchanged five-second death/reaping bound.
+    // Hold through concurrent preparation with supported short sleeps; Ginux
+    // bounds each individual sleep request to 300 seconds.
+    if let Err(error) = rx.recv_timeout(std::time::Duration::from_secs(300)) {
         child.kill().ok();
         child.wait().ok();
         let diagnostics = reader.join().unwrap();
@@ -1401,7 +1469,8 @@ fn is_installed(ctx) {
     write_recipe(
         &recipes,
         "check",
-        "const RECIPE_API = 2; let ctx = #{name: \"quick\"}; fn is_installed(ctx) { ready(ctx) }",
+        "const RECIPE_API = 2;
+const NEEDS = #{}; let ctx = #{name: \"quick\"}; fn is_installed(ctx) { ready(ctx) }",
     );
     let output = managed_command(&recipes, "isinstalled")
         .env("TMPDIR", dir.path())
@@ -1411,6 +1480,10 @@ fn is_installed(ctx) {
     assert!(
         abandoned.iter().all(|path| path.exists()),
         "concurrent invocation removed active scratch"
+    );
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "coordinator exited before the kill control"
     );
     unsafe {
         libc::kill(pid as i32, libc::SIGKILL);
@@ -1455,6 +1528,7 @@ fn managed_publication_selects_products_and_rejects_missing_outputs() {
     let (dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ alias: "file", file: "file", tree: "directory" } };
 let ctx = #{name: "publication"};
 fn is_acquired(ctx) { ready(ctx) }
 fn is_built(ctx) { ready(ctx) }
@@ -1525,7 +1599,7 @@ fn install(ctx) {
     );
     let output = managed_command(&recipes, "install").output().unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("declared output is absent"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("NEEDS.outputs.alias is absent"));
     assert_eq!(
         std::fs::read_dir(published.parent().unwrap())
             .unwrap()
@@ -1544,6 +1618,7 @@ fn managed_publication_rejects_archive_traversal_and_link_redirects() {
     let (dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ product: "file" } };
 let ctx = #{name: "export-boundary"};
 fn is_acquired(ctx) { ready(ctx) }
 fn is_built(ctx) { ready(ctx) }
@@ -1572,7 +1647,7 @@ fn install(ctx) { write_file("/out/product", "valid"); ctx.outputs.product = "/o
                 r#"#!/usr/bin/python3
 import io, subprocess, sys, tarfile
 result = subprocess.run([{launcher:?}] + sys.argv[1:])
-if result.returncode: sys.exit(result.returncode)
+if result.returncode or sys.argv[1] != "launch": sys.exit(result.returncode)
 path = sys.argv[sys.argv.index('--export-file')+1]
 with tarfile.open(path, 'w') as archive:
     entry = tarfile.TarInfo('out/../../sentinel' if {kind:?} == 'traversal' else 'out/product')
@@ -1612,7 +1687,7 @@ with tarfile.open(path, 'w') as archive:
         assert!(!output.status.success(), "accepted {kind}");
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(
-            error.contains("cannot publish completed domain outputs"),
+            error.contains("cannot validate completed domain outputs"),
             "{error}"
         );
         assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");
@@ -1632,6 +1707,7 @@ fn managed_generated_scripts_use_owned_and_image_interpreter_chains() {
         "check",
         r##"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "interpreter-chain"};
 fn is_installed(ctx) {
     copy_file("/usr/bin/bash", "/work/tools/bash"); chmod("/work/tools/bash", 0o755);

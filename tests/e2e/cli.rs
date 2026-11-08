@@ -58,6 +58,7 @@ fn test_cli_install_nonexistent_package() {
 
 const LIFECYCLE: &str = r#"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ product: "file" } };
 let ctx = #{name:"cli-product", state:#{installs:0,cleaned:false},
     source:join_path(RUNTIME.paths.build,"source"),built:join_path(RUNTIME.paths.build,"built"),
     product:join_path(RUNTIME.paths.output,"product")};
@@ -133,12 +134,14 @@ fn test_cli_remove_no_function_and_explicit_defines() {
     write_recipe(
         &recipes,
         "noremove",
-        r#"const RECIPE_API = 2; let ctx = #{name:"no-remove"};"#,
+        r#"const RECIPE_API = 2;
+const NEEDS = #{}; let ctx = #{name:"no-remove"};"#,
     );
     let output = run_recipe(&["remove", "noremove"], &recipes);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("no remove function"));
-    let source = r#"const RECIPE_API = 2; let ctx = #{name:"remove-define"}; fn remove(ctx) { ctx.state.reason=REMOVE_REASON; ctx }"#;
+    let source = r#"const RECIPE_API = 2;
+const NEEDS = #{}; let ctx = #{name:"remove-define"}; fn remove(ctx) { ctx.state.reason=REMOVE_REASON; ctx }"#;
     write_recipe(&recipes, "defined", source);
     let output = run_recipe(
         &["remove", "defined", "--define", "REMOVE_REASON=policy"],
@@ -157,6 +160,7 @@ fn test_cli_remove_no_function_and_explicit_defines() {
 fn test_cli_inherited_recipe_preserves_base_and_publishes_child_facts() {
     let (_dir, recipes) = create_test_env();
     let base = r#"const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ product: "file" } };
 let ctx = #{name:"base",message:"base"};
 fn is_built(ctx) { ready(ctx) }
 fn is_installed(ctx) { if !is_file("/out/product") { return needs_work(ctx,"install"); } ctx.outputs.product="/out/product"; ready(ctx) }
@@ -164,7 +168,8 @@ fn install(ctx) { write_file("/out/product",ctx.message); ctx }
 "#;
     write_recipe(&recipes, "base", base);
     let child = r#"//! extends: base.rhai
-const RECIPE_API = 2; let ctx = #{name:"child",message:"child payload"};"#;
+const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ product: "file" } }; let ctx = #{name:"child",message:"child payload"};"#;
     write_recipe(&recipes, "child", child);
     let output = run_recipe(&["install", "child"], &recipes);
     assert_success(&output);

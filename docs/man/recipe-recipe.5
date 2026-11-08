@@ -2,7 +2,8 @@
 .SH NAME
 recipe-recipe \- managed API 2 Rhai recipe contract
 .SH DESCRIPTION
-Every executable recipe declares const RECIPE_API = 2 and initializes ctx with
+Every executable recipe declares const RECIPE_API = 2, its own literal const
+NEEDS map, and initializes ctx with
 current package facts. Setup executes once per invocation inside Ginux.
 Pure imported facts modules need no executable lifecycle.
 .SH RUNTIME AND STATE
@@ -16,7 +17,10 @@ ctx.state and ctx.outputs. Runtime paths are:
 /work/build, owned acquisition/build work.
 .TP
 .B paths.tools
-/work/tools, shared dependency tools.
+/work/tools, private copies of declared dependency tools.
+.TP
+.B paths.dependencies
+Immutable direct dependency products at /inputs/recipe-dependencies/DEP/OUTPUT.
 .TP
 .B paths.temp
 /work/tmp, owned scratch.
@@ -53,12 +57,18 @@ are reported with the original failure. Successful failure cleanup is checkpoint
 with its returned state and matching files; the producer still fails without
 publication. No no-op cleanup stub is required.
 .SH INPUTS AND OUTPUTS
-Callers import --input NAME=PATH read-only at /inputs/NAME. Defines select genuine
+NEEDS.inputs maps names to file, directory, file? or directory?; ? permits omission.
+Callers bind exactly declared inputs with --input NAME=PATH read-only at
+/inputs/NAME; DEP::NAME binds a dependency input. Defines select genuine
 recipe facts/choices; they do not grant host filesystem access. A named target
 input seeds /out for fresh state; retained state restores that owned target.
 Compiler-image files cannot establish installation in the selected product.
 .PP
-Select actual files/directories under assigned /out or /work using ctx.outputs.
+NEEDS.outputs maps exact product names to file or directory. Select those actual
+files/directories under assigned /out or /work using ctx.outputs. Completed
+installation and installed reuse must supply the complete declaration.
+Intermediate phases may expose a subset; every present output is checked before
+checkpointing/publication.
 Consumers validate required names and kinds. Successful execution plus validated,
 bounded archive publication returns absolute host output paths in final JSON.
 Hooks continue to use domain paths. Imported inputs and earlier publications
@@ -67,7 +77,10 @@ remain immutable across remove, cleanup and changed-input invocations.
 Downloads use download(url, exact_dest, sha256[, resume_bool]); the full SHA256 is
 required and staged bytes are checked before replacing a valid destination.
 Pinned Git uses git_checkout(url, exact_dest, full_commit), requiring a full
-40/64-hex commit. Endpoint permissions belong to the caller, off by default.
+40/64-hex commit. Endpoint grants and limits belong in literal NEEDS; caller
+flags can only narrow them. Explicit restrictions cap every dependency's own
+limits and intersect its endpoints; no grant is lent. NEEDS.network_max_bytes
+defaults to 8 GiB.
 .PP
 exec_checked and exec_output fail on nonzero; exec returns a status. Their
 argument arrays avoid shell parsing. Optional cwd/env maps affect only that
@@ -75,7 +88,10 @@ child. Shell pipelines must check every producer/extractor failure. Commands
 and helpers execute inside Ginux and require suitable image/tools support.
 .SH DEPENDENCIES AND INHERITANCE
 Literal deps and build_deps declarations select recipes from the search path.
-They use the same lifecycle, state contract and shared /work/tools.
+They use the same lifecycle in separate Ginux instances, retaining separate
+state/files pairs and their own NEEDS. No parent grant is lent. Declared products
+are immutable consumer inputs; a tools directory output contributes to its
+private /work/tools prefix.
 .PP
 The leading declaration //! extends: base.rhai compiles/merges the base first;
 child functions of the same name/arity override it. Setup runs base-first.
@@ -84,6 +100,7 @@ declarations fail preparation. Discovery never evaluates setup on the host.
 .SH EXAMPLE
 .nf
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ program: "file" } };
 let ctx = #{name: "hello", program: "/out/hello"};
 fn is_acquired(ctx) { ready(ctx) }
 fn acquire(ctx) { ctx }

@@ -7,6 +7,7 @@ fn command_recipe(recipes: &Path, body: &str) {
         &format!(
             r#"
 const RECIPE_API = 2;
+const NEEDS = #{{ outputs: #{{ work: "directory" }} }};
 let ctx = #{{ name: "command-options", state: #{{installed: false}} }};
 fn is_installed(ctx) {{ if ctx.state.installed {{ return ready(ctx); }} needs_work(ctx, "run command scenario") }}
 fn is_acquired(ctx) {{ ready(ctx) }}

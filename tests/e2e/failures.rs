@@ -19,6 +19,7 @@ fn managed_phase_failures_run_cleanup_without_publishing_or_continuing() {
             phase,
             &format!(
                 r#"const RECIPE_API = 2;
+const NEEDS = #{{}};
 let ctx=#{{name:{phase:?}}};
 fn is_installed(ctx) {{ needs_work(ctx,"install") }}
 fn is_built(ctx) {{ {built} }}
@@ -55,6 +56,7 @@ fn cleanup(ctx,reason) {{ log("CLEANED " + reason); ctx }}
 fn managed_failed_build_resumes_acquisition_and_failure_cleanup_state() {
     let (_dir, recipes) = create_test_env();
     let source = r#"const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ product: "file" } };
 let ctx=#{name:"retry",state:#{acquisitions:0}};
 fn is_acquired(ctx) { if is_file("/work/build/source") { return ready(ctx); } needs_work(ctx,"acquire") }
 fn acquire(ctx) { write_file("/work/build/source","payload"); ctx.state.acquisitions+=1; ctx }
@@ -95,6 +97,7 @@ fn managed_machine_events_report_actual_phase_order_without_corrupting_json() {
         &recipes,
         "events",
         r#"const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ product: "file" } };
 let ctx=#{name:"events"};
 fn is_acquired(ctx) { if is_file("/work/build/source") { return ready(ctx); } needs_work(ctx,"acquire") }
 fn acquire(ctx) { write_file("/work/build/source","event payload"); ctx }

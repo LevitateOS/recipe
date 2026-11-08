@@ -18,6 +18,7 @@ fn managed_storage_preserves_source_modes_links_and_restart_identity() {
         "check",
         r#"
 const RECIPE_API = 2;
+const NEEDS = #{ inputs: #{ rootfs: "directory" }, outputs: #{ rootfs: "directory", alias: "file" } };
 let ctx = #{name: "storage-snapshot", state: #{installed: false}};
 fn is_acquired(ctx) { ready(ctx) }
 fn is_built(ctx) {
@@ -137,6 +138,7 @@ fn managed_storage_restores_and_publishes_more_than_4096_entries() {
         "check",
         r#"
 const RECIPE_API = 2;
+const NEEDS = #{ inputs: #{ target: "directory" }, outputs: #{ tree: "directory" } };
 let ctx = #{name: "large-namespace"};
 fn is_installed(ctx) {
     if read_file("/out/item-0000")!="0" || read_file("/out/item-4999")!="4999" { throw "target lost selected entries"; }
@@ -175,6 +177,7 @@ fn managed_storage_publishes_actual_payload_larger_than_two_gib_under_explicit_b
         "check",
         r##"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ payload: "file" }, memory_mib: 4096, storage_max_bytes: 3221225472 };
 let ctx = #{name: "large-payload", state: #{installed:false}};
 fn is_acquired(ctx) { ready(ctx) }
 fn is_built(ctx) { ready(ctx) }

@@ -40,6 +40,7 @@ pub(crate) fn remove(
             .run_hook("remove", None, ctx)
             .inspect_err(|e| report_phase_failure(&name, "remove", e))?;
         report_phase_success(&name, "remove");
+        recipe.needs.validate_worker_outputs(&ctx, false)?;
         exec.checkpoint(&recipe.path, &ctx)?;
         output::success(&format!("{name} removed"));
         Ok(ctx)
@@ -79,6 +80,7 @@ pub(crate) fn cleanup(
             .cleanup(ctx, reason)
             .inspect_err(|e| report_phase_failure(&name, "cleanup", e))?;
         report_phase_success(&name, "cleanup");
+        recipe.needs.validate_worker_outputs(&ctx, false)?;
         exec.checkpoint(&recipe.path, &ctx)?;
         output::success(&format!("{name} cleaned"));
         Ok(ctx)
@@ -123,6 +125,9 @@ pub(crate) fn check(
             output::detail("  action: check that function; it must return ready(ctx) or needs_work(ctx, reason).");
             anyhow!("{check} failed: {e}")
         })?;
+        recipe
+            .needs
+            .validate_worker_outputs(&ctx, check == "is_installed")?;
         output::success(&format!("{name}: {check} check complete"));
         output::hook_event(&name, &event, HookStatus::Success, "manual check complete");
         Ok(ctx)

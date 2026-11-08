@@ -11,6 +11,7 @@ fn managed_retention_bounds_history_preserves_active_logs_and_published_products
         "check",
         r#"
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ product: "file" } };
 let ctx = #{name: "retention", value: FACT};
 fn is_acquired(ctx) { ready(ctx) }
 fn is_built(ctx) { if is_file("/work/build/product") { return ready(ctx); } needs_work(ctx,"build") }

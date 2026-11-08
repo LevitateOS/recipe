@@ -1,8 +1,13 @@
 # Writing Recipe recipes
 
-A recipe owns its package facts and lifecycle. Callers select immutable inputs,
-endpoint permissions and a managed execution environment. Every executable
-recipe declares `const RECIPE_API = 2;`.
+A recipe owns its package facts, lifecycle and literal NEEDS authority. Callers
+bind declared immutable inputs, may narrow grants/limits, and select the managed
+environment. Every executable recipe declares `const RECIPE_API = 2;` and its
+own `const NEEDS = #{...};`, including children that extend another recipe.
+Caller restrictions must be valid lowerings/subsets for the named recipe. They
+also apply across the dependency graph: each dependency's numeric limits take
+the stricter bound, endpoint sets intersect, and no node acquires another's
+grants. Resource and byte limits remain per instance.
 
 ## Runnable local example
 
@@ -12,6 +17,7 @@ produces a named program without downloading or compiling anything on the host.
 
 ```rhai
 const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ program: "file" } };
 let ctx = #{
     name: "hello",
     version: "1.0",
@@ -65,7 +71,8 @@ setup on a later invocation.
 | `runtime.paths.base_recipe_dir` | Staged base directory when extending a recipe; empty otherwise. |
 | `runtime.paths.inputs` | `/inputs`, containing explicitly imported inputs. |
 | `runtime.paths.build` | `/work/build`, owned build/acquisition work. |
-| `runtime.paths.tools` | `/work/tools`, shared dependency products. |
+| `runtime.paths.tools` | `/work/tools`, a private copy of declared dependency tools. |
+| `runtime.paths.dependencies` | Immutable direct dependency products at `/inputs/recipe-dependencies/DEP/OUTPUT`. |
 | `runtime.paths.temp` | `/work/tmp`, owned scratch. |
 | `runtime.paths.output` | `/out`, selectable product files/directories. |
 | `runtime.paths.target` | `/out`, the owned installed-target view. |
@@ -75,6 +82,15 @@ setup on a later invocation.
 | `runtime.options.jobs` | Requested job count. |
 | `runtime.options.force_acquire`, `.force_build`, `.force_install` | Current force selection for the main recipe. |
 | `runtime.options.persist_state` | Whether recovery is enabled. |
+
+After worker completion, the coordinator adds `runtime.contract` (catalog,
+digest and derived rules) and `runtime.network_usage` to the returned context.
+These are completion metadata in the engine-owned namespace; ordinary recipe
+facts named `contract` or `network_usage` stay intact. Each dependency has its own
+retained invocation receipt. Dependency products obey the same import bounds,
+including the `DEP/OUTPUT` path prefix. Dependency aliases must identify one
+recipe when binding inputs and cannot descend into another dependency's product
+namespace.
 
 Top-level `ctx.name`, `ctx.version`, source URLs/digests, target ABI choices and
 other package facts are initialized from the current recipe. Put only genuinely
@@ -154,7 +170,11 @@ retain coordinator ownership/private export-directory permissions. Privileged
 producers require matching consumer privileges or explicit product installation;
 a returned path or selection symlink grants no additional access.
 
-Consumers must validate required output names and kinds. Never guess a sibling
+`NEEDS.outputs` declares the exact names and file/directory kinds. Recipe checks
+the completed installation and cache reuse against that declaration before
+publication. Intermediate phases may expose a subset; every present output is
+validated before checkpointing/publication and must identify its declared kind. Consumers also
+validate the products they use. Never guess a sibling
 build path, accept stale JSON from another invocation or search for an old
 host-built executable. Deleting a published product does not modify retained
 owned files; a later successful invocation can publish a fresh generation.
@@ -186,12 +206,37 @@ the cache. Hooks, fsmonitor, replacement objects and submodule recursion are
 disabled. Local repositories must be explicit imported inputs; remote transport
 uses the invocation's mediated network grants.
 
-Callers grant endpoint authorities with repeated `--network-host HOST:PORT` or
-`RecipeEngine::with_network_hosts`. Recipes cannot add grants. Networking stays
-off by default. Every HTTP download redirect destination needs a grant; choose a direct
-publisher endpoint where possible. Network byte/connection bounds and teardown
-apply to helpers and subprocess clients alike. Metadata helpers do not make
-unverified package payloads trustworthy.
+Declare grants as literal data, without helper calls, variables or computed maps:
+
+```rhai
+const NEEDS = #{
+    inputs: #{ source: "directory", config: "file?" },
+    outputs: #{ program: "file", rootfs: "directory" },
+    network: ["publisher.example:443"],
+    memory_mib: 4096,
+    storage_max_objects: 32768,
+    timeout_secs: 3600,
+    network_max_bytes: 8589934592,
+};
+```
+
+An absent field means no inputs/outputs/network, or the existing default limit.
+Optional input kinds end in `?`; absence is allowed, a supplied path must still
+have that kind. Every endpoint, including HTTP redirect destinations, belongs
+in NEEDS. `--network-host` selects a subset and resource flags select lower
+limits; widening fails with the declaration field to edit. Network byte bounds
+and teardown apply to helpers and subprocess clients alike. The configured
+contract pins catalog 2, grants outbound connect only for nonempty effective
+network, grants no listener and denies direct MMIO/DMA/raw packets. It still
+relies on Ginux's path, descriptor, resource and numeric endpoint owners.
+
+Dependencies declare their own NEEDS and run in separate instances. Bind their
+inputs explicitly as `DEP::NAME`; no parent's input or grant is inherited. A
+`tools: "directory"` output contributes to the consumer's private tools prefix.
+Other declared products are available at `RUNTIME.paths.dependencies/DEP/OUTPUT`.
+Metadata inspection does not execute setup; invocation explanation uses retained
+authority rather than today's source. Unused endpoint warnings rely on a complete
+bounded network summary, never on absent syscall-log lines.
 
 ## Commands and extraction
 
@@ -269,3 +314,11 @@ Compile syntax before runtime, then exercise the real CLI with representative
 inputs, reuse, changed input, remove and failure paths. A successful compile is
 source evidence; a managed run proves only its observed image/recipe/workload.
 Do not rebuild kernels just to validate caller or prepared-bundle migration.
+
+Kernel producers default to the LevitateOS pin; builders select Acorn explicitly
+with `KERNEL_TARGET=acorn`. Source kernel builds require the selected compiler
+image to contain their build tools. The historical linux-deps DNF fallback has
+no declared mirror grants and is unsupported in this release; a parent kernel
+publisher grant is never borrowed for it. Kernel rebuilds are excluded from
+release acceptance, as recorded by PRD19. This limitation is separate from the
+prebuilt kernel bundle path.

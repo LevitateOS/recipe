@@ -13,7 +13,9 @@ configured Ginux domain and publishes named outputs after successful execution
 and independent archive validation. Recipe code and payload commands never run
 on the coordinator host.
 .PP
-Executable recipes declare const RECIPE_API = 2. Checks return ready(ctx) or
+Executable recipes declare const RECIPE_API = 2 and literal const NEEDS.
+NEEDS owns typed input/output names, network endpoints and upper limits; callers
+bind inputs and can only narrow authority. Checks return ready(ctx) or
 needs_work(ctx, reason); check errors fail execution. Only ctx.state is restored,
 paired with its durable filesystem snapshot. Final JSON contains published host
 paths in ctx.outputs; hooks use domain paths.
@@ -21,6 +23,8 @@ paths in ctx.outputs; hooks use domain paths.
 Set GINUX_BIN to the actual launcher executable, GINUX_ROOTFS to an assembled
 rootfs tar and GINUX_ROOT to oci:name@sha256:digest matching that tar. Set
 RECIPE_WORKER_BIN when the worker cannot be resolved from the current CLI/PATH.
+The launcher must support configured catalog 2 and configured-network-audit=1
+and configured-denial-audit=1.
 The current native launcher needs Linux x86_64 and chroot bootstrap privileges.
 Build the image explicitly with recipe-image; ordinary execution consumes it.
 See bootstrap/README.md for the pinned manifest producer.
@@ -44,6 +48,20 @@ List declared recipe metadata without evaluating setup/helper code.
 .B info RECIPE
 Show loader-owned declared/inherited metadata. Dynamic metadata is unavailable.
 .TP
+.B validate RECIPE [--input NAME=PATH]
+Check literal declarations, typed bindings, dependencies and compiled contracts
+without executing setup or launching a workload.
+.TP
+.B inspect RECIPE
+Show declared/effective authority, dependency contracts and catalog digests.
+.TP
+.B explain INVOCATION|RECIPE OPERATION
+Explain a static rule or retained invocation audit using its saved authority.
+Absent/truncated observations remain unknown. INVOCATION may be its log directory.
+.TP
+.B diff OLD NEW
+Compare typed inputs/outputs, endpoints, raised/lowered limits and digests.
+.TP
 .B hash FILE
 Compute SHA256, SHA512 and BLAKE3 for a local file.
 .SH OPTIONS
@@ -60,7 +78,9 @@ The default destination is stable under the selected state root.
 State and diagnostic root. Defaults to XDG_STATE_HOME/recipe.
 .TP
 .B --input NAME=PATH
-Import a file/tree read-only at /inputs/NAME. A named target input seeds owned
+Bind a declared typed input read-only at /inputs/NAME. Required missing,
+undeclared, duplicate and wrong-kind bindings fail before setup. Use DEP::NAME
+for a dependency input; inputs are never implicitly inherited. A named target input seeds owned
 /out on a fresh identity; retained state restores that target instead.
 .TP
 .B -d, --define KEY=VALUE
@@ -82,23 +102,29 @@ Rerun build and installation for the main recipe.
 Rerun acquisition, build and installation for the main recipe.
 .TP
 .B --timeout-secs N
-Execution deadline including silent commands; default 3600, range 1 through 86400.
+Lower NEEDS.timeout_secs for recipe execution, including silent commands.
+The declaration defaults to 3600, range 1 through 86400.
 .TP
 .B --memory-mib N
-Domain memory bound; default 2048 MiB.
+Lower NEEDS.memory_mib (default declaration 2048 MiB). Ginux bounds each
+process virtual address space, not aggregate tree RSS.
 .TP
 .B --storage-max-objects N
-Writable filesystem object bound; default 16384.
+Lower NEEDS.storage_max_objects (default declaration 16384).
 .TP
 .B --storage-max-bytes N
-Explicit writable data cap within the memory bound. Hardlink data counts once.
+Lower the declared writable data cap within effective memory. Hardlink data counts once.
 .TP
 .B --network-host HOST:PORT
-Explicit outbound TCP grant, repeatable, at most eight. Networking is off unless
-granted. Numeric endpoints are pinned before launch; redirects also need grants.
+Select a subset of NEEDS.network; repeatable, at most eight. An absent network
+declaration grants no outbound TCP. --no-network selects an empty subset. Numeric endpoints are pinned before launch; redirects also need grants.
 .TP
 .B --network-max-bytes N
-Cumulative sent/received network byte cap; default 8 GiB.
+Lower NEEDS.network_max_bytes (default declaration 8 GiB).
+.PP
+Explicit limit and network restrictions apply across the dependency graph.
+Each dependency keeps the stricter limit and intersects its own endpoints with
+the caller subset. No restriction lends another recipe an endpoint.
 .TP
 .B --no-persist-state
 Disable state/files recovery. Managed execution and output publication still run.
@@ -131,7 +157,9 @@ two complete generations each, under the destination lock. Published products
 are not state-pruning candidates. Published paths retain coordinator ownership and
 private export permissions. Privileged producers need appropriately privileged
 consumers or explicit product installation; a selection symlink grants no access. Diagnostic files live in
-state-root/logs/invocation-id: worker.log, supervisor-stderr.log and result.json.
+state-root/logs/invocation-id: worker.log, supervisor-stderr.log, authority.json
+and result.json. The receipt preserves the actual declaration, config, pinned
+endpoints and compiled contract digest; completed contexts include runtime.contract and bounded runtime.network_usage and unused-grant warnings when observation is complete.
 Up to 32 recent completed diagnostic directories remain; active leases protect
 in-flight logs/scratch. Later invocations reclaim recognized abandoned scratch.
 .PP

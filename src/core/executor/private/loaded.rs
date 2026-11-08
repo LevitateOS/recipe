@@ -31,6 +31,7 @@ pub(crate) struct Loaded<'e> {
     /// `ctx.name`, or the file stem.
     pub name: String,
     pub runtime: Runtime<'e>,
+    pub needs: crate::needs::Needs,
 }
 
 /// What [`with_recipe`] needs besides the recipe itself.
@@ -51,6 +52,10 @@ pub(crate) fn with_recipe<'e, T>(
     f: impl FnOnce(&mut Loaded<'e>, &mut ExecutionContext<'_>) -> Result<T, EngineError>,
 ) -> Result<T, EngineError> {
     let compiled = compile_recipe(engine, recipe, load.search_path)?;
+    let declaration = crate::needs::declaration(&compiled.recipe_path, load.search_path)?;
+    if declaration.source_digests != compiled.source_digests {
+        return Err(anyhow::anyhow!("worker declaration changed during compile").into());
+    }
     exec.enter(&compiled.recipe_path)?;
     let result = (|| {
         let base_dir = compiled.base_path.as_deref().and_then(Path::parent);
@@ -87,6 +92,7 @@ pub(crate) fn with_recipe<'e, T>(
             base_path: compiled.base_path.clone(),
             name,
             runtime,
+            needs: declaration.needs,
         };
         f(&mut loaded, exec)
     })();

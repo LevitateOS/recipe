@@ -50,26 +50,29 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub(crate) force_install: bool,
 
-    /// Maximum supervised execution time in seconds, including silent work.
-    #[arg(long, global = true, default_value_t = defaults().timeout_secs)]
-    pub(crate) timeout_secs: u64,
+    /// Cap NEEDS.timeout_secs across the dependency graph (including silent work).
+    #[arg(long, global = true)]
+    pub(crate) timeout_secs: Option<u64>,
 
-    /// Domain memory limit in MiB, including writable storage and metadata.
-    #[arg(long, global = true, default_value_t = defaults().memory_mib)]
-    pub(crate) memory_mib: u64,
-    /// Maximum writable filesystem objects.
-    #[arg(long, global = true, default_value_t = defaults().storage_max_objects)]
-    pub(crate) storage_max_objects: u64,
-    /// Explicit writable data byte cap (otherwise memory minus filesystem metadata).
+    /// Cap each recipe’s NEEDS.memory_mib: per-process virtual address space and storage budget.
+    #[arg(long, global = true)]
+    pub(crate) memory_mib: Option<u64>,
+    /// Cap each recipe’s NEEDS.storage_max_objects.
+    #[arg(long, global = true)]
+    pub(crate) storage_max_objects: Option<u64>,
+    /// Cap each recipe’s NEEDS.storage_max_bytes (also bounded by effective memory/metadata).
     #[arg(long, global = true)]
     pub(crate) storage_max_bytes: Option<u64>,
 
-    /// Permit outbound TCP to this HOST:PORT (repeatable); networking is off by default.
+    /// Intersect each recipe’s NEEDS.network with these HOST:PORT endpoints (repeatable).
     #[arg(long = "network-host", global = true, value_name = "HOST:PORT")]
     pub(crate) network_hosts: Vec<String>,
-    /// Bound cumulative sent and received network bytes for this invocation.
-    #[arg(long, global = true, default_value_t = defaults().network_max_bytes)]
-    pub(crate) network_max_bytes: u64,
+    /// Disable networking across the dependency graph.
+    #[arg(long, global = true, conflicts_with = "network_hosts")]
+    pub(crate) no_network: bool,
+    /// Cap cumulative sent and received network bytes in each recipe instance.
+    #[arg(long, global = true)]
+    pub(crate) network_max_bytes: Option<u64>,
 
     /// Define scope constants (KEY=VALUE), injected into Rhai scope before execution
     #[arg(short, long = "define", global = true, value_name = "KEY=VALUE")]
@@ -98,6 +101,14 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum Commands {
+    /// Validate literal needs, typed inputs, dependencies and the derived Ginux contract.
+    Validate { recipe: PathBuf },
+    /// Inspect authority without evaluating setup or starting a workload.
+    Inspect { recipe: PathBuf },
+    /// Explain a recipe or retained invocation decision without executing it.
+    Explain { subject: PathBuf, operation: String },
+    /// Compare declared authority and derived contract digests.
+    Diff { old: PathBuf, new: PathBuf },
     /// Install a package from a recipe file
     #[command(
         after_help = "Examples:\n  recipe install kitty\n  recipe install kitty.rhai\n  recipe install ./recipes/kitty.rhai\n  recipe install kitty --autofix --autofix-attempts 3\n\n<RECIPE> may be:\n  - an absolute path\n  - a relative path\n  - a recipe name resolved under --recipes-path\n  - the same name with .rhai appended under --recipes-path"

@@ -10,7 +10,14 @@ use std::path::{Component, Path, PathBuf};
 pub const DEPENDENCY_FIELDS: [&str; 2] = ["deps", "build_deps"];
 
 /// Recipe bindings the engine owns or reads, which a `--define` must not shadow.
-pub const RESERVED_NAMES: [&str; 5] = ["RUNTIME", "RECIPE_API", "ctx", "deps", "build_deps"];
+pub const RESERVED_NAMES: [&str; 6] = [
+    "RUNTIME",
+    "RECIPE_API",
+    "NEEDS",
+    "ctx",
+    "deps",
+    "build_deps",
+];
 
 /// Most nested recipes (main recipe plus dependency chain) one invocation enters.
 pub const MAX_DEPTH: usize = 64;

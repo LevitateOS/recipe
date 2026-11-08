@@ -42,6 +42,10 @@ fn runtime_map(inputs: &RuntimeInputs<'_>) -> Map {
         ("build".into(), text(inputs.build_dir)),
         ("tools".into(), crate::domain::TOOLS.into()),
         ("inputs".into(), crate::domain::INPUTS.into()),
+        (
+            "dependencies".into(),
+            crate::domain::input_path(crate::domain::DEPENDENCY_INPUT).into(),
+        ),
         ("output".into(), crate::domain::OUT.into()),
         ("target".into(), crate::domain::OUT.into()),
         ("temp".into(), crate::domain::TMP.into()),
@@ -400,7 +404,7 @@ pub(crate) enum Readiness {
 
 /// Inspect declarations without executing any recipe code. A base/child pair
 /// cannot declare an unsupported version. The selected API governs the merged AST.
-fn validate_api(ast: &AST) -> Result<()> {
+pub(crate) fn validate_api(ast: &AST) -> Result<()> {
     let mut declared = false;
     for statement in ast.statements() {
         if let Stmt::Var(declaration, flags, _) = statement {

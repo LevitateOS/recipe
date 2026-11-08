@@ -15,7 +15,8 @@ pub(crate) const WORKER_LOG: &str = "worker.log";
 /// The launcher's own stderr (never parsed).
 pub(crate) const SUPERVISOR_LOG: &str = "supervisor-stderr.log";
 /// Files an invocation directory may contain.
-const FILES: [&str; 4] = [LEASE, RESULT, WORKER_LOG, SUPERVISOR_LOG];
+pub(crate) const AUTHORITY: &str = "authority.json";
+const FILES: [&str; 5] = [LEASE, RESULT, WORKER_LOG, SUPERVISOR_LOG, AUTHORITY];
 /// Inactive invocation directories kept, including the one being created.
 const RETAINED_INVOCATIONS: usize = 32;
 /// Largest `result.json` read back while pruning.
@@ -87,6 +88,29 @@ impl InvocationLog {
     pub(crate) fn file(&self, name: &str) -> PathBuf {
         debug_assert!(FILES.contains(&name));
         self.directory.join(name)
+    }
+
+    /// Save the exact declaration, effective constraints and contract used by
+    /// this instance. It survives failure and never re-reads mutable source.
+    pub(crate) fn authority(&self, prepared: &crate::inputs::PreparedInvocation) -> Result<()> {
+        use std::io::Write;
+        let record = serde_json::json!({"version":1,"declaration":prepared.declaration,
+            "execution":prepared.execution,"contract":prepared.contract,
+            "config":std::fs::read_to_string(prepared.config_path())?,
+            "pinned_endpoints":prepared.network.endpoints, "host_endpoints":prepared.network.host_endpoints});
+        let bytes = serde_json::to_vec(&record)?;
+        anyhow::ensure!(
+            bytes.len() <= MAX_RESULT_BYTES as usize,
+            "authority receipt exceeds bound"
+        );
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(self.file(AUTHORITY))?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        std::fs::File::open(&self.directory)?.sync_all()?;
+        Ok(())
     }
 
     pub(crate) fn lease_fd(&self) -> std::os::fd::RawFd {

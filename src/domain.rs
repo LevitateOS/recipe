@@ -40,6 +40,8 @@ pub const INPUT_MODES_NAME: &str = input_modes_name!();
 /// Domain path of the input permission manifest.
 pub const INPUT_MODES: &str = concat!(inputs_root!(), "/", input_modes_name!());
 /// Input names the coordinator writes itself; callers may not stage them.
+pub const DEPENDENCY_INPUT: &str = "recipe-dependencies";
+pub const DEPENDENCY_TOOLS: &str = "recipe-tools";
 pub const RESERVED_INPUT_NAMES: [&str; 2] = [WORKER_NAME, INPUT_MODES_NAME];
 
 /// Logical input name → permission bits, written into [`INPUT_MODES`].

@@ -52,7 +52,9 @@ use std::io::{Read, Write};
 use serde::{Deserialize, Serialize};
 
 /// Protocol version carried in every frame header.
-pub const PROTOCOL_VERSION: u32 = 8;
+// NEEDS authority/options and isolated dependency preparation require a
+// matching coordinator and worker; no transport-8 grant-model fallback.
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// Maximum total frame size in bytes (4 MiB), header included.
 pub const MAX_FRAME_LEN: usize = 4 * 1024 * 1024;

@@ -12,8 +12,6 @@ pub(crate) type CheckpointSink<'a> = dyn FnMut(&Path, &rhai::Map) -> Result<()> 
 pub(crate) struct ExecutionContext<'a> {
     sink: &'a mut CheckpointSink<'a>,
     options: crate::ExecutionOptions,
-    /// The main recipe's work directory; dependency work lives under it.
-    work_root: PathBuf,
     /// Saved state was offered and checkpoints are kept for recovery.
     resumable: bool,
     /// Recipes being evaluated, main recipe first.
@@ -25,7 +23,7 @@ impl<'a> ExecutionContext<'a> {
     pub(crate) fn new(
         sink: &'a mut CheckpointSink<'a>,
         options: crate::ExecutionOptions,
-        work_root: &Path,
+        _work_root: &Path,
         saved: &BTreeMap<String, serde_json::Value>,
         resumable: bool,
     ) -> Result<Self> {
@@ -39,7 +37,6 @@ impl<'a> ExecutionContext<'a> {
         Ok(Self {
             sink,
             options,
-            work_root: work_root.to_path_buf(),
             resumable,
             active: Vec::new(),
             states,
@@ -60,15 +57,6 @@ impl<'a> ExecutionContext<'a> {
         self.resumable
     }
 
-    pub(crate) fn work_root(&self) -> &Path {
-        &self.work_root
-    }
-
-    pub(crate) fn current_recipe(&self) -> Option<&Path> {
-        self.active.last().map(PathBuf::as_path)
-    }
-
-    /// Start evaluating `recipe`, rejecting cycles and runaway nesting.
     pub(crate) fn enter(&mut self, recipe: &Path) -> Result<()> {
         if self.active.iter().any(|active| active == recipe) {
             let chain = self

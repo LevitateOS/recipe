@@ -33,6 +33,7 @@ pub(crate) fn install(
 
         let (mut ctx, phases) = plan(recipe, &exec.options())?;
         if phases.is_empty() {
+            recipe.needs.validate_worker_outputs(&ctx, true)?;
             exec.checkpoint_reused(&recipe.path, &ctx)?;
             output::hook_event(&name, "install", HookStatus::Skipped, "already installed");
             output::detail("All checks passed; nothing to do.");
@@ -83,19 +84,23 @@ pub(crate) fn install(
             ctx = run_phase(recipe, exec, phase, ctx)?;
         }
 
-        // A success cleanup may have removed what install produced.
-        if recipe.runtime.has_cleanup()
-            && recipe.runtime.has_fn(Phase::Install.check())
-            && let Err(error) = recipe.runtime.verify(Phase::Install.check(), &ctx)
-        {
-            let error = anyhow!("is_installed failed after install: {error}");
-            report_phase_failure(&name, "post-install verification", &error);
-            failure_cleanup(recipe, exec, Phase::Install, ctx);
-            return Err(EngineError::Phase {
-                phase: Phase::Install,
-                error,
-            });
+        // A success cleanup may have changed both products and rediscovered
+        // output/state values. Keep the actual verification context.
+        if recipe.runtime.has_cleanup() && recipe.runtime.has_fn(Phase::Install.check()) {
+            match recipe.runtime.verify(Phase::Install.check(), &ctx) {
+                Ok(verified) => ctx = verified,
+                Err(error) => {
+                    let error = anyhow!("is_installed failed after install: {error}");
+                    report_phase_failure(&name, "post-install verification", &error);
+                    failure_cleanup(recipe, exec, Phase::Install, ctx);
+                    return Err(EngineError::Phase {
+                        phase: Phase::Install,
+                        error,
+                    });
+                }
+            }
         }
+        recipe.needs.validate_worker_outputs(&ctx, true)?;
         output::success(&format!("{name} installed"));
         output::hook_event(&name, "install", HookStatus::Success, "recipe completed");
         Ok(ctx)
@@ -118,6 +123,7 @@ fn plan(
         ctx = match readiness {
             Readiness::Ready(ctx) | Readiness::NeedsWork(ctx, _) => ctx,
         };
+        recipe.needs.validate_worker_outputs(&ctx, false)?;
         if !(needs_work || forced) {
             break;
         }
@@ -145,6 +151,7 @@ fn still_needs_build(
     *ctx = match readiness {
         Readiness::Ready(ctx) | Readiness::NeedsWork(ctx, _) => ctx,
     };
+    recipe.needs.validate_worker_outputs(ctx, false)?;
     Ok(needs_work || forced)
 }
 
@@ -174,7 +181,12 @@ fn run_phase(
     let ctx = match recipe
         .runtime
         .run_hook(phase.name(), Some(phase.check()), ctx)
-    {
+        .and_then(|ctx| {
+            recipe
+                .needs
+                .validate_worker_outputs(&ctx, phase == Phase::Install)?;
+            Ok(ctx)
+        }) {
         Ok(ctx) => ctx,
         Err(error) => {
             report_phase_failure(&name, phase.name(), &error);
@@ -190,6 +202,9 @@ fn run_phase(
     let ctx = recipe
         .runtime
         .cleanup(ctx, CleanupReason::Succeeded(phase).as_str())?;
+    recipe
+        .needs
+        .validate_worker_outputs(&ctx, phase == Phase::Install)?;
     exec.checkpoint(&recipe.path, &ctx)?;
     Ok(ctx)
 }
@@ -208,7 +223,11 @@ fn failure_cleanup(
     let reason = CleanupReason::Failed(phase).as_str();
     match recipe.runtime.cleanup(ctx, reason) {
         Ok(cleaned) => {
-            if let Err(error) = exec.checkpoint(&recipe.path, &cleaned) {
+            if let Err(error) = recipe
+                .needs
+                .validate_worker_outputs(&cleaned, false)
+                .and_then(|()| exec.checkpoint(&recipe.path, &cleaned))
+            {
                 output::warning(&format!(
                     "failure cleanup checkpoint failed ({reason}): {error:#}"
                 ));

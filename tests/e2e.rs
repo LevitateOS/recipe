@@ -131,3 +131,6 @@ mod managed_autofix;
 
 #[path = "e2e/target_metadata.rs"]
 mod target_metadata;
+
+#[path = "e2e/needs.rs"]
+mod needs;

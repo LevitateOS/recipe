@@ -101,12 +101,18 @@ pub(super) fn serve_files(files: Vec<(String, Vec<u8>)>) -> (String, std::thread
 }
 
 fn download_recipe(recipes: &Path, url: &str, digest: &str, prefix: Option<&str>, resume: bool) {
+    let endpoints: Vec<&str> = url
+        .strip_prefix("http://")
+        .filter(|url| !url.chars().any(char::is_control))
+        .map(|url| vec![url.split('/').next().unwrap()])
+        .unwrap_or_default();
     write_recipe(
         recipes,
         "download-payload",
         &format!(
             r#"
 const RECIPE_API = 2;
+const NEEDS = #{{ outputs: #{{ product: "file" }}, network: {endpoints:?} }};
 let ctx = #{{name: "download-payload", url: {url:?}, digest: {digest:?},
     payload: join_path(RUNTIME.paths.build, "payload.dat"),
     state: #{{downloaded: false, installed: false}}}};
@@ -170,6 +176,8 @@ fn download_command(recipes: &Path, url: Option<&str>) -> Command {
             .next()
             .unwrap();
         command.args(["--network-host", authority]);
+    } else {
+        command.arg("--no-network");
     }
     command
 }
@@ -367,6 +375,7 @@ fn managed_download_rejects_directory_destinations_without_network() {
         &format!(
             r#"
 const RECIPE_API = 2;
+const NEEDS = #{{}};
 let ctx = #{{name: "download-payload", state: #{{checked: false}}}};
 fn is_acquired(ctx) {{ ready(ctx) }}
 fn is_built(ctx) {{ ready(ctx) }}
@@ -432,6 +441,28 @@ fn managed_redirects_require_destination_grants_and_byte_budget() {
         download_recipe(&recipes, &url, &digest, Some("previous payload"), false);
         let mut command = download_command(&recipes, Some(&url));
         if allowed {
+            let path = recipes.join("download-payload.rhai");
+            let original = std::fs::read_to_string(&path).unwrap();
+            let from = url
+                .strip_prefix("http://")
+                .unwrap()
+                .split('/')
+                .next()
+                .unwrap();
+            let to = target
+                .strip_prefix("http://")
+                .unwrap()
+                .split('/')
+                .next()
+                .unwrap();
+            std::fs::write(
+                path,
+                original.replace(
+                    &format!("network: [{from:?}]"),
+                    &format!("network: [{from:?}, {to:?}]"),
+                ),
+            )
+            .unwrap();
             command.args([
                 "--network-host",
                 target
@@ -497,12 +528,19 @@ fn managed_concurrent_download_cache_survives_offline_reinstall() {
         &format!("Content-Length: {}\r\n", payload.len()),
         payload,
     );
+    let endpoint = url
+        .strip_prefix("http://")
+        .unwrap()
+        .split('/')
+        .next()
+        .unwrap();
     write_recipe(
         &recipes,
         "cached",
         &format!(
             r#"
 const RECIPE_API = 2;
+const NEEDS = #{{ outputs: #{{ product: "file" }}, network: [{endpoint:?}] }};
 let ctx = #{{name: "cached-acquisition", source: join_path(RUNTIME.paths.build, "source"), digest: {digest:?}}};
 fn is_acquired(ctx) {{
     if !is_file(ctx.source) {{ return needs_work(ctx, "fetch source"); }}

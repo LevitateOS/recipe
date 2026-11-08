@@ -20,6 +20,7 @@ fn test_cli_cleanup_success() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "cleanable", state: #{cache_path: "cache", cleanup_reason: ""}};
 fn cleanup(ctx, reason) {
     ctx.state.cache_path = "";
@@ -39,6 +40,7 @@ fn test_cli_cleanup_define_injected() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "cleanup-define", state: #{cleanup_note: ""}};
 fn cleanup(ctx, reason) {
     ctx.state.cleanup_note = `${reason}:${CLEAN_TAG}`;
@@ -66,6 +68,7 @@ fn test_cli_cleanup_custom_reason() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "cleanable-custom", state: #{cleanup_reason: ""}};
 fn cleanup(ctx, reason) { ctx.state.cleanup_reason = reason; ctx }
 "#;
@@ -83,6 +86,7 @@ fn test_cli_cleanup_empty_reason_defaults_to_manual() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "cleanable-empty-reason", state: #{cleanup_reason: ""}};
 fn cleanup(ctx, reason) { ctx.state.cleanup_reason = reason; ctx }
 "#;
@@ -100,6 +104,7 @@ fn test_cli_isinstalled_success() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "installed-ok", state: #{installed: true}};
 fn is_installed(ctx) {
     if ctx.state.installed { return ready(ctx); }
@@ -117,6 +122,7 @@ fn test_cli_isinstalled_failure_when_not_installed() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "installed-fail", state: #{installed: false}};
 fn is_installed(ctx) {
     if ctx.state.installed { return ready(ctx); }
@@ -142,6 +148,7 @@ fn test_cli_isbuilt_success() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "built-ok", state: #{built: true}};
 fn is_built(ctx) { ready(ctx) }
 "#;
@@ -154,7 +161,8 @@ fn is_built(ctx) { ready(ctx) }
 #[test]
 fn test_cli_isbuilt_missing_function() {
     let (_dir, recipes) = create_test_env();
-    let source = "const RECIPE_API = 2; let ctx = #{name: \"built-missing\"};";
+    let source = "const RECIPE_API = 2;
+const NEEDS = #{}; let ctx = #{name: \"built-missing\"};";
     write_recipe(&recipes, "built-missing", source);
     let output = run_recipe(&["isbuilt", "built-missing"], &recipes);
     assert!(!output.status.success());
@@ -174,6 +182,7 @@ fn test_cli_isacquired_success() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "acquired-ok", state: #{acquired: true}};
 fn is_acquired(ctx) { ready(ctx) }
 "#;
@@ -186,7 +195,8 @@ fn is_acquired(ctx) { ready(ctx) }
 #[test]
 fn test_cli_isacquired_missing_function() {
     let (_dir, recipes) = create_test_env();
-    let source = "const RECIPE_API = 2; let ctx = #{name: \"acquired-missing\"};";
+    let source = "const RECIPE_API = 2;
+const NEEDS = #{}; let ctx = #{name: \"acquired-missing\"};";
     write_recipe(&recipes, "acquired-missing", source);
     let output = run_recipe(&["isacquired", "acquired-missing"], &recipes);
     assert!(!output.status.success());
@@ -291,6 +301,7 @@ fn test_cli_metadata_inherits_without_evaluating_setup() {
         &format!(
             r#"
 const RECIPE_API = 2;
+const NEEDS = #{{}};
 let ctx = #{{name: "base", version: "3.2.1", description: "Inherited description"}};
 write_file("{}", "must never run");
 "#,
@@ -301,6 +312,7 @@ write_file("{}", "must never run");
         &recipes,
         "child",
         r#"//! extends: base.rhai
+const NEEDS = #{};
 ctx.name = "child";
 "#,
     );
@@ -322,6 +334,7 @@ fn test_cli_metadata_reports_dynamic_values_without_execution() {
         "dynamic",
         r#"
 const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx = #{name: "dynamic", version: exec_output("definitely-unavailable", [])};
 "#,
     );
@@ -336,7 +349,8 @@ fn test_cli_metadata_rejects_malformed_declarations() {
     write_recipe(
         &recipes,
         "wrong-type",
-        "const RECIPE_API = 2; let ctx = #{name: 5};",
+        "const RECIPE_API = 2;
+const NEEDS = #{}; let ctx = #{name: 5};",
     );
     let output = run_recipe(&["info", "wrong-type"], &recipes);
     assert!(!output.status.success());

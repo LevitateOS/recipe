@@ -75,6 +75,7 @@ fn managed_pinned_git_selects_exact_commits_and_preserves_invalid_checkouts() {
             &format!(
                 r##"
 const RECIPE_API = 2;
+const NEEDS = #{{ inputs: #{{ "source.git": "directory" }}, outputs: #{{ product: "file" }} }};
 let ctx = #{{name: "git-payload", source: join_path(RUNTIME.paths.build, "exact checkout 'quoted'"),
     origin: "file:///inputs/source.git", state: #{{acquired: false, installed: false}}}};
 fn is_acquired(ctx) {{
@@ -163,6 +164,7 @@ fn managed_failed_git_acquisition_keeps_staging_private() {
         &format!(
             r##"
 const RECIPE_API = 2;
+const NEEDS = #{{ inputs: #{{ "source.git": "directory" }} }};
 let ctx = #{{name: "git-payload", source: join_path(RUNTIME.paths.build, "checkout")}};
 fn is_acquired(ctx) {{ needs_work(ctx, "acquire missing commit") }}
 fn is_built(ctx) {{ needs_work(ctx, "source preparation required") }}
@@ -207,6 +209,7 @@ fn managed_git_rejects_unpinned_revisions_and_unsupported_origins_before_spawn()
             &format!(
                 r##"
 const RECIPE_API = 2;
+const NEEDS = #{{}};
 let ctx = #{{name: "git-payload"}};
 fn is_acquired(ctx) {{ needs_work(ctx, "validate source") }}
 fn is_built(ctx) {{ needs_work(ctx, "source preparation required") }}

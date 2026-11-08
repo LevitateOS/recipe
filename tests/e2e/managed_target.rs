@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 const SOURCE: &str = r#"
 const RECIPE_API = 2;
+const NEEDS = #{ inputs: #{ target: "directory" }, outputs: #{ program: "file" } };
 let ctx = #{name: "selected-target", state: #{removed: false, observed: ""},
     program: join_path(RUNTIME.paths.target, "usr/bin/target-tool")};
 fn is_acquired(ctx) { ready(ctx) }
@@ -156,6 +157,7 @@ fn managed_target_missing_product_is_not_satisfied_by_compiler_image() {
         "check",
         r#"
 const RECIPE_API = 2;
+const NEEDS = #{ inputs: #{ target: "directory" } };
 let ctx = #{name: "target-image-boundary"};
 fn is_installed(ctx) {
     if !is_file("/usr/bin/bash") { throw "compiler-image fixture is missing bash"; }

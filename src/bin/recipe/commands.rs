@@ -10,31 +10,38 @@ use super::{
 };
 
 pub(crate) fn execute(cli: Cli) -> Result<()> {
-    let execution = levitate_recipe::ExecutionOptions {
-        target_os: cli.target_os,
-        target_arch: cli.target_arch,
-        jobs: cli.jobs,
-        machine_events: cli.machine_events,
+    let mut execution = levitate_recipe::ExecutionOptions::default();
+    execution.target_os = cli.target_os;
+    execution.target_arch = cli.target_arch;
+    execution.jobs = cli.jobs;
+    execution.machine_events = cli.machine_events;
+    execution.force_acquire = cli.force_acquire;
+    execution.force_build = cli.force_build;
+    execution.force_install = cli.force_install;
+    execution.narrowing = levitate_recipe::needs::Narrowing {
         timeout_secs: cli.timeout_secs,
         memory_mib: cli.memory_mib,
         storage_max_objects: cli.storage_max_objects,
         storage_max_bytes: cli.storage_max_bytes,
-        network_hosts: cli.network_hosts,
+        network: if cli.no_network {
+            Some(Vec::new())
+        } else if cli.network_hosts.is_empty() {
+            None
+        } else {
+            Some(cli.network_hosts)
+        },
         network_max_bytes: cli.network_max_bytes,
-        force_acquire: cli.force_acquire,
-        force_build: cli.force_build,
-        force_install: cli.force_install,
     };
-    let recipes_path = cli.recipes_path;
-
-    if !recipes_path.exists() {
-        std::fs::create_dir_all(&recipes_path).with_context(|| {
-            format!(
-                "Failed to create recipes directory: {}",
-                recipes_path.display()
-            )
-        })?;
+    if matches!(
+        &cli.command,
+        Commands::Validate { .. }
+            | Commands::Inspect { .. }
+            | Commands::Explain { .. }
+            | Commands::Diff { .. }
+    ) {
+        execution.validate()?;
     }
+    let recipes_path = cli.recipes_path;
 
     let json_output = cli.json_output;
     let engine_options = EngineOptions {
@@ -49,6 +56,64 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
     };
 
     match cli.command {
+        Commands::Validate { recipe } => {
+            let recipe = resolve_recipe_path(&recipe, &recipes_path)?;
+            let supplied = parse_inputs(&engine_options.inputs)?;
+            let authority = levitate_recipe::needs::validate(
+                &recipe,
+                Some(&recipes_path),
+                &supplied,
+                &engine_options.execution.narrowing,
+            )?;
+            emit_json(
+                &serde_json::json!({"valid":true,"authority":authority}),
+                json_output.as_deref(),
+            )?;
+        }
+        Commands::Inspect { recipe } => {
+            let recipe = resolve_recipe_path(&recipe, &recipes_path)?;
+            let authority = levitate_recipe::needs::inspect(
+                &recipe,
+                Some(&recipes_path),
+                &engine_options.execution.narrowing,
+            )?;
+            emit_json(&authority, json_output.as_deref())?;
+        }
+        Commands::Explain { subject, operation } => {
+            let path = PathBuf::from(&subject);
+            let logs = engine_options.state_dir.map(PathBuf::from).or_else(|| {
+                std::env::var_os("XDG_STATE_HOME")
+                    .map(PathBuf::from)
+                    .or_else(|| dirs::home_dir().map(|home| home.join(".local/state")))
+                    .map(|path| path.join("recipe"))
+            });
+            let recorded = if path.is_dir() {
+                Some(path)
+            } else {
+                logs.map(|root| root.join("logs").join(&subject))
+                    .filter(|path| path.is_dir())
+            };
+            let explanation = if let Some(directory) = recorded {
+                levitate_recipe::needs::explain_invocation(&directory, &operation)?
+            } else {
+                let recipe = resolve_recipe_path(&subject, &recipes_path)?;
+                levitate_recipe::needs::explain_recipe(
+                    &recipe,
+                    Some(&recipes_path),
+                    &operation,
+                    &engine_options.execution.narrowing,
+                )?
+            };
+            emit_json(&explanation, json_output.as_deref())?;
+        }
+        Commands::Diff { old, new } => {
+            let old = resolve_recipe_path(&old, &recipes_path)?;
+            let new = resolve_recipe_path(&new, &recipes_path)?;
+            emit_json(
+                &levitate_recipe::needs::diff(&old, &new, Some(&recipes_path))?,
+                json_output.as_deref(),
+            )?;
+        }
         Commands::Install {
             recipe,
             autofix,
@@ -313,4 +378,14 @@ fn show_info(recipe_path: &Path, search_path: Option<&Path>) -> Result<()> {
     );
 
     Ok(())
+}
+
+fn parse_inputs(values: &[String]) -> Result<Vec<(String, PathBuf)>> {
+    values
+        .iter()
+        .map(|value| {
+            let (name, path) = value.split_once('=').context("input requires NAME=PATH")?;
+            Ok((name.to_owned(), PathBuf::from(path)))
+        })
+        .collect()
 }

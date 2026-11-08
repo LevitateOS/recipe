@@ -132,6 +132,7 @@ pub(crate) fn run_domain(
         .map_err(|error| {
             crate::failure::Category::Storage.wrap(error, "cannot create the invocation log")
         })?;
+    diagnostics.authority(prepared)?;
     let outcome = run_domain_inner(prepared, invocation, launcher, &diagnostics);
     use crate::invocation_log::Status;
     let (status, details) = match &outcome {
@@ -156,6 +157,26 @@ pub(crate) fn run_domain(
             },
             serde_json::json!({"error": format!("{error:#}")}),
         ),
+    };
+    let mut details = details;
+    details["contract"] = serde_json::to_value(&prepared.contract)?;
+    details["network_usage"] = match &outcome {
+        Ok(report) => report
+            .result
+            .ctx_summary
+            .get("runtime")
+            .and_then(|runtime| runtime.get("network_usage"))
+            .cloned()
+            .unwrap_or_else(|| {
+                crate::needs::network_usage(
+                    &prepared.network.host_endpoints,
+                    &diagnostics.file(crate::invocation_log::SUPERVISOR_LOG),
+                    report.log_discarded_bytes,
+                )
+            }),
+        Err(_) => {
+            serde_json::json!({"status":"unobserved","reason":"invocation failed before complete log accounting","warnings":[]})
+        }
     };
     diagnostics.record(status, details)?;
     outcome
@@ -370,6 +391,45 @@ fn run_domain_inner(
     check_agreement(&invocation, &stream.result, &record)?;
     check_launcher_exit(&invocation, &stream.result, &record, exit)?;
     if stream.result.ok {
+        // Completion metadata belongs to the engine-owned runtime namespace;
+        // ordinary top-level recipe facts must never be overwritten.
+        let runtime = stream
+            .result
+            .ctx_summary
+            .get_mut("runtime")
+            .and_then(serde_json::Value::as_object_mut)
+            .context(
+                crate::failure::Category::Protocol
+                    .error("successful API-2 result is missing ctx.runtime"),
+            )?;
+        runtime.insert("contract".into(), serde_json::to_value(&prepared.contract)?);
+        let usage = crate::needs::network_usage(
+            &prepared.network.host_endpoints,
+            &diagnostics.file(crate::invocation_log::SUPERVISOR_LOG),
+            drained.discarded_bytes,
+        );
+        if let Some(warnings) = usage["warnings"].as_array() {
+            for warning in warnings {
+                if let Some(warning) = warning.as_str() {
+                    crate::diagnostics::diag!("recipe: warning: {warning}");
+                }
+            }
+        }
+        runtime.insert("network_usage".into(), usage);
+        let publication = crate::publication::prepare(
+            &export_path,
+            &stream.result.ctx_summary,
+            &options.execution,
+            &prepared.declaration.needs,
+            matches!(
+                operation,
+                crate::worker::protocol::Operation::Install
+                    | crate::worker::protocol::Operation::IsInstalled
+            ),
+        )
+        .context(
+            crate::failure::Category::Storage.error("cannot validate completed domain outputs"),
+        )?;
         if let Some(state) = retained.as_mut() {
             let runtime_state = stream
                 .result
@@ -386,15 +446,14 @@ fn run_domain_inner(
                     .wrap(error, "cannot persist final state/files pair")
             })?;
         }
-        crate::publication::publish(
-            &invocation,
-            &export_path,
-            &mut stream.result.ctx_summary,
-            &options.execution,
-        )
-        .context(
-            crate::failure::Category::Storage.error("cannot publish completed domain outputs"),
-        )?;
+        if let Some(publication) = publication {
+            publication
+                .publish(&invocation, &mut stream.result.ctx_summary)
+                .context(
+                    crate::failure::Category::Storage
+                        .error("cannot publish completed domain outputs"),
+                )?;
+        }
     }
 
     Ok(LaunchReport {

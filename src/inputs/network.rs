@@ -1,6 +1,6 @@
 //! Coordinator-owned outbound grants. Workloads receive pinned addresses and
 //! immutable hostname mappings, never a host DNS or proxy capability.
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use std::process::Command;
@@ -13,6 +13,7 @@ pub(crate) struct NetworkPolicy {
     pub endpoints: Vec<String>,
     pub max_bytes: u64,
     hosts: String,
+    pub host_endpoints: BTreeMap<String, Vec<String>>,
 }
 
 impl NetworkPolicy {
@@ -22,10 +23,13 @@ impl NetworkPolicy {
         }
         let mut endpoints = BTreeSet::new();
         let mut hosts = BTreeSet::new();
+        let mut host_endpoints = BTreeMap::new();
         for grant in &options.network_hosts {
+            let mut resolved = BTreeSet::new();
             if let Ok(endpoint) = grant.parse::<SocketAddr>() {
                 validate_endpoint(endpoint)?;
                 endpoints.insert(endpoint.to_string());
+                resolved.insert(endpoint.to_string());
             } else {
                 let (host, port) = grant
                     .rsplit_once(':')
@@ -51,9 +55,11 @@ impl NetworkPolicy {
                     let endpoint = SocketAddr::new(address, port);
                     validate_endpoint(endpoint)?;
                     endpoints.insert(endpoint.to_string());
+                    resolved.insert(endpoint.to_string());
                     hosts.insert(format!("{address} {}\n", host.to_ascii_lowercase()));
                 }
             }
+            host_endpoints.insert(grant.clone(), resolved.into_iter().collect());
             if endpoints.len() > crate::domain::MAX_NETWORK_ENDPOINTS {
                 bail!(
                     "network grants resolve to more than {} endpoints; select fewer hosts",
@@ -64,6 +70,7 @@ impl NetworkPolicy {
         Ok(Self {
             endpoints: endpoints.into_iter().collect(),
             max_bytes: options.network_max_bytes,
+            host_endpoints,
             hosts: hosts.into_iter().collect(),
         })
     }

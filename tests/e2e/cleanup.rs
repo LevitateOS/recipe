@@ -7,6 +7,7 @@ fn cli_optional_cleanup_preserves_installed_product() {
         &recipes,
         "tool",
         r#"const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ tool: "file" } };
 let ctx=#{name:"optional-cleanup"};
 fn is_installed(ctx) { if !is_file("/out/tool") { return needs_work(ctx,"install"); } ctx.outputs.tool="/out/tool"; ready(ctx) }
 fn is_built(ctx) { ready(ctx) }
@@ -45,6 +46,7 @@ fn cli_cleanup_errors_fail_success_and_keep_primary_failure() {
             name,
             &format!(
                 r#"const RECIPE_API = 2;
+const NEEDS = #{{}};
 let ctx=#{{name:{name:?},state:#{{installed:false}}}};
 fn is_installed(ctx) {{ if ctx.state.installed {{ return ready(ctx); }} needs_work(ctx,"install") }}
 fn is_built(ctx) {{ ready(ctx) }}
@@ -67,6 +69,7 @@ fn cli_malformed_cleanup_precedes_setup_and_dependency_cleanup_stops_parent() {
         &recipes,
         "malformed",
         r#"const RECIPE_API = 2;
+const NEEDS = #{};
 print("UNEXPECTED_MALFORMED_SETUP"); let ctx=#{name:"malformed"};
 fn is_installed(ctx) { needs_work(ctx,"install") }
 fn install(ctx) { log("UNEXPECTED_INSTALL"); ctx }
@@ -82,6 +85,7 @@ fn cleanup(ctx) { ctx }
         &recipes,
         "tool",
         r#"const RECIPE_API = 2;
+const NEEDS = #{};
 let ctx=#{name:"tool",state:#{installed:false}};
 fn is_installed(ctx) { if ctx.state.installed { return ready(ctx); } needs_work(ctx,"tool") }
 fn is_built(ctx) { ready(ctx) }
@@ -93,6 +97,7 @@ fn cleanup(ctx,reason) { throw "TOOL_CLEANUP_FAILED"; ctx }
         &recipes,
         "parent",
         r#"const RECIPE_API = 2;
+const NEEDS = #{};
 let deps=["tool"]; let ctx=#{name:"parent"};
 fn is_installed(ctx) { needs_work(ctx,"parent") }
 fn is_built(ctx) { ready(ctx) }
