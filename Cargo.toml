@@ -58,10 +58,20 @@ zip = "2.2"
 [package.metadata.generate-rpm]
 assets = [
     { source = "target/release/recipe", dest = "/usr/bin/recipe", mode = "0755" },
+    { source = "target/release/recipe-image", dest = "/usr/bin/recipe-image", mode = "0755" },
     { source = "README.md", dest = "/usr/share/doc/levitate-recipe/README.md", mode = "0644", doc = true },
+    { source = "WRITING_RECIPES.md", dest = "/usr/share/doc/levitate-recipe/WRITING_RECIPES.md", mode = "0644", doc = true },
+    { source = "docs/*.md", dest = "/usr/share/doc/levitate-recipe/docs/", mode = "0644", doc = true },
+    { source = "bootstrap/README.md", dest = "/usr/share/doc/levitate-recipe/bootstrap/README.md", mode = "0644", doc = true },
+    { source = "bootstrap/*.json", dest = "/usr/share/doc/levitate-recipe/bootstrap/", mode = "0644", doc = true },
+    { source = "examples/*.rhai", dest = "/usr/share/doc/levitate-recipe/examples/", mode = "0644", doc = true },
     { source = "docs/man/recipe.1", dest = "/usr/share/man/man1/recipe.1", mode = "0644", doc = true },
     { source = "docs/man/recipe-recipe.5", dest = "/usr/share/man/man5/recipe-recipe.5", mode = "0644", doc = true },
     { source = "docs/man/recipe-helpers.7", dest = "/usr/share/man/man7/recipe-helpers.7", mode = "0644", doc = true },
     { source = "LICENSE-MIT", dest = "/usr/share/licenses/levitate-recipe/LICENSE-MIT", mode = "0644" },
     { source = "LICENSE-APACHE", dest = "/usr/share/licenses/levitate-recipe/LICENSE-APACHE", mode = "0644" },
 ]
+
+[package.metadata.generate-rpm.requires]
+# rpm2archive is invoked by the image producer; ELF scanning cannot infer it.
+rpm = "*"

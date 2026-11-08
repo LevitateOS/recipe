@@ -37,9 +37,10 @@ cargo install --locked --path . --bins --root /absolute/path/to/recipe-tools
 ```
 
 This installs `recipe` (coordinator and worker) and `recipe-image` (bootstrap
-producer). The binary release archive and RPM supply the coordinator/worker;
-obtain the image producer from the corresponding source crate. The RPM also
-contains manuals/licenses and declares its actual shared-library dependencies.
+producer). The RPM supplies both binaries, the converter dependency, bootstrap
+manifests/guides, examples and manuals/licenses. It retains automatic shared-
+library requirements. The binary release archive supplies the coordinator/worker;
+use the matching RPM or source crate for the image producer.
 A locally generated unsigned candidate is not an authenticated release RPM.
 Do not disable dependency, metadata, signature or TLS checking to make a package
 install. Verify artifact digests and use ordinary publisher trust for dependencies.
@@ -71,7 +72,8 @@ contains twelve RPMs, including ISO tools. Current recorded reproduction hashes:
 | Acquisition | `ffe04d8671e45036ac77acc958fb6cfd3c24a939075dc7e6c5437b69d7f05c15` |
 
 Both were reproduced byte-for-byte on the development host and the clean Rocky
-host with different host Rust/RPM tool versions. Verify `rootfs.tar` against its
+host with Rust 1.99.1 and 1.99.0 respectively (both use RPM 4.19.1.1).
+Verify `rootfs.tar` against its
 `provenance.json`, including every selected input digest. The old eight-RPM
 `c089…` receipt does not identify either current manifest's output.
 
