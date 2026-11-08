@@ -105,5 +105,3 @@ impl Drop for TemporaryDirectory {
         crate::fsx::make_removable(self.directory.path());
     }
 }
-
-

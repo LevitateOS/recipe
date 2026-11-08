@@ -77,9 +77,12 @@ fn install_diagnostics(channel: &SharedChannel) -> Result<()> {
     }))
 }
 
-
 fn request_failure(message: String) -> FailureInfo {
-    FailureInfo { kind: FailureKind::Request, phase: None, message }
+    FailureInfo {
+        kind: FailureKind::Request,
+        phase: None,
+        message,
+    }
 }
 
 fn engine_failure(error: EngineError) -> FailureInfo {
@@ -119,12 +122,25 @@ pub fn run_worker() -> Result<()> {
         Ok(req) => req,
         Err(err) => {
             let failure = request_failure(format!("bad request: {err:#}"));
-            return send_result(&mut tx, &mut output, false, Some(failure), serde_json::json!({}));
+            return send_result(
+                &mut tx,
+                &mut output,
+                false,
+                Some(failure),
+                serde_json::json!({}),
+            );
         }
     };
     if request.invocation_id != invocation_id {
-        let failure = request_failure("request invocation id does not match worker bootstrap".into());
-        return send_result(&mut tx, &mut output, false, Some(failure), serde_json::json!({}));
+        let failure =
+            request_failure("request invocation id does not match worker bootstrap".into());
+        return send_result(
+            &mut tx,
+            &mut output,
+            false,
+            Some(failure),
+            serde_json::json!({}),
+        );
     }
     crate::diagnostics::trace(&format!(
         "worker: invocation={} operation={} persist_state={} recipe={}",
@@ -165,11 +181,10 @@ fn ensure_internal_entry() -> Result<String> {
     if !std::env::args_os()
         .skip(1)
         .eq(crate::domain::WORKER_ARGS.map(std::ffi::OsString::from))
-        || std::env::var(crate::domain::ENV_WORKER).as_deref() != Ok(crate::domain::ENV_WORKER_VALUE)
+        || std::env::var(crate::domain::ENV_WORKER).as_deref()
+            != Ok(crate::domain::ENV_WORKER_VALUE)
     {
-        bail!(
-            "private worker entry requires coordinator bootstrap arguments"
-        );
+        bail!("private worker entry requires coordinator bootstrap arguments");
     }
     let id = std::env::var(crate::domain::ENV_INVOCATION)
         .context("private worker entry requires RECIPE_INVOCATION")?;
@@ -262,7 +277,9 @@ impl PreparedModules {
         let reference = crate::recipes::module_file(path);
         source
             .map(|source| self.root.join(source))
-            .and_then(|referrer| crate::recipes::find_related(&reference, &referrer, Some(&self.root)))
+            .and_then(|referrer| {
+                crate::recipes::find_related(&reference, &referrer, Some(&self.root))
+            })
             .unwrap_or_else(|| self.root.join(reference))
     }
 }
@@ -503,4 +520,3 @@ fn state_json(state: &rhai::Dynamic) -> Result<serde_json::Value> {
     }
     Ok(value)
 }
-

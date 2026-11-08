@@ -20,7 +20,12 @@ pub(crate) fn install(
     with_recipe(engine, exec, recipe, load, |recipe, exec| {
         let name = recipe.name.clone();
         output::action(&format!("Preparing recipe for {name}"));
-        output::hook_event(&name, "prepare", HookStatus::Running, "starting recipe execution");
+        output::hook_event(
+            &name,
+            "prepare",
+            HookStatus::Running,
+            "starting recipe execution",
+        );
         output::detail(&format!("Recipe: {}", recipe.path.display()));
         if let Some(base_path) = &recipe.base_path {
             output::detail(&format!("Extends base recipe: {}", base_path.display()));
@@ -36,7 +41,11 @@ pub(crate) fn install(
         }
         output::detail(&format!(
             "Recipe flow: {}",
-            phases.iter().map(|phase| phase.name()).collect::<Vec<_>>().join(" → ")
+            phases
+                .iter()
+                .map(|phase| phase.name())
+                .collect::<Vec<_>>()
+                .join(" → ")
         ));
 
         let deps = recipe.runtime.dependency_names("deps")?;
@@ -44,10 +53,16 @@ pub(crate) fn install(
         describe_dependencies("Runtime dependencies", "deps", &deps);
         describe_dependencies("Build-time dependencies", "build_deps", &build_deps);
         // `deps` are needed by every phase; their environment lasts until install ends.
-        let _deps_environment = super::dependencies::install(engine, exec, load, recipe.base_path.as_deref(), &deps)?;
+        let _deps_environment =
+            super::dependencies::install(engine, exec, load, recipe.base_path.as_deref(), &deps)?;
 
         output::action(&format!("Installing {name}"));
-        output::hook_event(&name, "install", HookStatus::Requested, "hook execution queued");
+        output::hook_event(
+            &name,
+            "install",
+            HookStatus::Requested,
+            "hook execution queued",
+        );
         let acquires = phases.contains(&Phase::Acquire);
         for phase in phases {
             // `build_deps` are needed only while building.
@@ -55,7 +70,13 @@ pub(crate) fn install(
                 if acquires && !still_needs_build(recipe, exec, &mut ctx)? {
                     continue;
                 }
-                super::dependencies::install(engine, exec, load, recipe.base_path.as_deref(), &build_deps)?
+                super::dependencies::install(
+                    engine,
+                    exec,
+                    load,
+                    recipe.base_path.as_deref(),
+                    &build_deps,
+                )?
             } else {
                 None
             };
@@ -70,7 +91,10 @@ pub(crate) fn install(
             let error = anyhow!("is_installed failed after install: {error}");
             report_phase_failure(&name, "post-install verification", &error);
             failure_cleanup(recipe, exec, Phase::Install, ctx);
-            return Err(EngineError::Phase { phase: Phase::Install, error });
+            return Err(EngineError::Phase {
+                phase: Phase::Install,
+                error,
+            });
         }
         output::success(&format!("{name} installed"));
         output::hook_event(&name, "install", HookStatus::Success, "recipe completed");
@@ -140,9 +164,17 @@ fn run_phase(
         Phase::Build => "Compiling or assembling build products",
         Phase::Install => "Applying package files to destination",
     });
-    output::hook_event(&name, phase.name(), HookStatus::Running, "executing recipe hook");
+    output::hook_event(
+        &name,
+        phase.name(),
+        HookStatus::Running,
+        "executing recipe hook",
+    );
     let ctx_before = ctx.clone();
-    let ctx = match recipe.runtime.run_hook(phase.name(), Some(phase.check()), ctx) {
+    let ctx = match recipe
+        .runtime
+        .run_hook(phase.name(), Some(phase.check()), ctx)
+    {
         Ok(ctx) => ctx,
         Err(error) => {
             report_phase_failure(&name, phase.name(), &error);
@@ -164,7 +196,12 @@ fn run_phase(
 
 /// A completed failure cleanup is a recovery point. Its own failure is only
 /// reported: the phase error stays authoritative and nothing is published.
-fn failure_cleanup(recipe: &mut Loaded<'_>, exec: &mut ExecutionContext<'_>, phase: Phase, ctx: Map) {
+fn failure_cleanup(
+    recipe: &mut Loaded<'_>,
+    exec: &mut ExecutionContext<'_>,
+    phase: Phase,
+    ctx: Map,
+) {
     if !recipe.runtime.has_cleanup() {
         return;
     }
@@ -172,7 +209,9 @@ fn failure_cleanup(recipe: &mut Loaded<'_>, exec: &mut ExecutionContext<'_>, pha
     match recipe.runtime.cleanup(ctx, reason) {
         Ok(cleaned) => {
             if let Err(error) = exec.checkpoint(&recipe.path, &cleaned) {
-                output::warning(&format!("failure cleanup checkpoint failed ({reason}): {error:#}"));
+                output::warning(&format!(
+                    "failure cleanup checkpoint failed ({reason}): {error:#}"
+                ));
             }
         }
         Err(error) => output::warning(&format!("{error:#}")),
@@ -181,8 +220,14 @@ fn failure_cleanup(recipe: &mut Loaded<'_>, exec: &mut ExecutionContext<'_>, pha
 
 fn describe_dependencies(label: &str, field: &str, names: &[String]) {
     if names.is_empty() {
-        let kind = if field == "deps" { "runtime" } else { "build-time" };
-        output::detail(&format!("No {kind} dependency recipes declared (`{field}`)."));
+        let kind = if field == "deps" {
+            "runtime"
+        } else {
+            "build-time"
+        };
+        output::detail(&format!(
+            "No {kind} dependency recipes declared (`{field}`)."
+        ));
     } else {
         output::detail(&format!("{label}: {}", names.join(", ")));
     }

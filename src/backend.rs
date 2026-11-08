@@ -26,7 +26,10 @@ impl GinuxLauncher {
     /// Prepare immutable inputs, execute in Ginux, and return the final context
     /// only after successful completion and validated publication. Persistence
     /// retains separate state/files pairs; there is no host execution callback.
-    pub(crate) fn run(&self, invocation: &crate::launch::Invocation<'_>) -> Result<serde_json::Value> {
+    pub(crate) fn run(
+        &self,
+        invocation: &crate::launch::Invocation<'_>,
+    ) -> Result<serde_json::Value> {
         let operation = invocation.operation;
         invocation
             .options
@@ -69,7 +72,12 @@ impl GinuxLauncher {
                 .failure
                 .clone()
                 .expect("protocol: a failed result carries its failure");
-            return Err(anyhow::Error::new(WorkloadFailure(failure)).context(crate::failure::Category::Workload.error(format!("`{operation}` failed in the Ginux domain (invocation {})", prepared.invocation_id))));
+            return Err(anyhow::Error::new(WorkloadFailure(failure)).context(
+                crate::failure::Category::Workload.error(format!(
+                    "`{operation}` failed in the Ginux domain (invocation {})",
+                    prepared.invocation_id
+                )),
+            ));
         }
         if !report.result.ctx_summary.is_object() {
             bail!(crate::failure::Category::Protocol.error(format!(
@@ -88,27 +96,34 @@ impl GinuxLauncher {
 /// `startup` failure — never a silent fallback to host execution.
 fn resolve_launcher() -> Result<PathBuf> {
     let raw = std::env::var("GINUX_BIN").with_context(|| {
-        crate::failure::Category::Startup.error("GINUX_BIN is not set \
-         (no launcher to start)")
+        crate::failure::Category::Startup.error(
+            "GINUX_BIN is not set \
+         (no launcher to start)",
+        )
     })?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        bail!(crate::failure::Category::Startup.error("GINUX_BIN is empty \
-             (no launcher to start)"));
+        bail!(crate::failure::Category::Startup.error(
+            "GINUX_BIN is empty \
+             (no launcher to start)"
+        ));
     }
     let path = PathBuf::from(trimmed);
     let meta = std::fs::metadata(&path).with_context(|| {
-        crate::failure::Category::Startup.error(format!("ginux launcher {} is missing or inaccessible",
+        crate::failure::Category::Startup.error(format!(
+            "ginux launcher {} is missing or inaccessible",
             path.display()
         ))
     })?;
     if !meta.is_file() {
-        bail!(crate::failure::Category::Startup.error(format!("ginux launcher {} is not a file",
-            path.display()
-        )));
+        bail!(
+            crate::failure::Category::Startup
+                .error(format!("ginux launcher {} is not a file", path.display()))
+        );
     }
     if !is_executable(&meta) {
-        bail!(crate::failure::Category::Startup.error(format!("ginux launcher {} is not executable",
+        bail!(crate::failure::Category::Startup.error(format!(
+            "ginux launcher {} is not executable",
             path.display()
         )));
     }

@@ -375,7 +375,11 @@ fn managed_state_disable_and_current_api_requirement_are_explicit() {
         assert!(entries.iter().all(|entry| {
             entry.file_name() != "current.json" && entry.file_name() != "files.tar"
         }));
-        assert!(entries.iter().any(|entry| entry.file_name() == "result.json"));
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.file_name() == "result.json")
+        );
     }
     let legacy = "let ctx = #{name: \"legacy\"}; fn is_installed(ctx) { ctx }";
     write_recipe(&recipes, "check", legacy);

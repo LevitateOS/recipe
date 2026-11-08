@@ -104,7 +104,11 @@ pub(crate) fn build(
 pub(crate) fn finalize(result: ProviderResult, last_message_path: &Path) -> Result<String, String> {
     if !result.exit.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
-        return Err(format!("codex exited with {}: {}", result.exit, stderr.trim()));
+        return Err(format!(
+            "codex exited with {}: {}",
+            result.exit,
+            stderr.trim()
+        ));
     }
 
     let text = std::fs::read_to_string(last_message_path).map_err(|e| {

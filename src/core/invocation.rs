@@ -31,8 +31,14 @@ pub(crate) struct RuntimeInputs<'x> {
 fn runtime_map(inputs: &RuntimeInputs<'_>) -> Map {
     let text = |path: &Path| Dynamic::from(path.to_string_lossy().into_owned());
     let paths: Map = [
-        ("recipe_dir".into(), text(inputs.recipe.parent().unwrap_or(Path::new(".")))),
-        ("base_recipe_dir".into(), inputs.base_dir.map_or_else(|| "".into(), text)),
+        (
+            "recipe_dir".into(),
+            text(inputs.recipe.parent().unwrap_or(Path::new("."))),
+        ),
+        (
+            "base_recipe_dir".into(),
+            inputs.base_dir.map_or_else(|| "".into(), text),
+        ),
         ("build".into(), text(inputs.build_dir)),
         ("tools".into(), crate::domain::TOOLS.into()),
         ("inputs".into(), crate::domain::INPUTS.into()),
@@ -46,8 +52,14 @@ fn runtime_map(inputs: &RuntimeInputs<'_>) -> Map {
         Map::from([("os".into(), os.into()), ("arch".into(), arch.into())]).into()
     };
     [
-        ("host".into(), platform(std::env::consts::OS, std::env::consts::ARCH)),
-        ("target".into(), platform(&options.target_os, &options.target_arch)),
+        (
+            "host".into(),
+            platform(std::env::consts::OS, std::env::consts::ARCH),
+        ),
+        (
+            "target".into(),
+            platform(&options.target_os, &options.target_arch),
+        ),
         ("paths".into(), paths.into()),
         ("operation".into(), inputs.operation.into()),
         (

@@ -73,7 +73,10 @@ impl Validator {
             .iter()
             .any(|name| path.starts_with(name))
         {
-            bail!("rootfs image uses reserved invocation path: {}", path.display());
+            bail!(
+                "rootfs image uses reserved invocation path: {}",
+                path.display()
+            );
         }
         if self.members.contains_key(path) {
             bail!("duplicate rootfs image path: {}", path.display());
@@ -112,8 +115,14 @@ impl Validator {
             let target = member_path(link.context("rootfs hardlink has no target")?)?;
             match self.members.get(&target) {
                 Some(Some(target_mode)) if *target_mode == installed_mode(mode) => {}
-                Some(Some(_)) => bail!("rootfs hardlink target kind or mode disagrees: {}", path.display()),
-                _ => bail!("rootfs hardlink target must be a prior file: {}", path.display()),
+                Some(Some(_)) => bail!(
+                    "rootfs hardlink target kind or mode disagrees: {}",
+                    path.display()
+                ),
+                _ => bail!(
+                    "rootfs hardlink target must be a prior file: {}",
+                    path.display()
+                ),
             }
             None
         } else {

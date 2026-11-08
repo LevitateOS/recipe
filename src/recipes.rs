@@ -64,7 +64,10 @@ pub fn find_related(target: &str, referrer: &Path, search_path: Option<&Path>) -
 
 /// The file an `import "target"` names: `target.rhai`.
 pub fn module_file(target: &str) -> String {
-    Path::new(target).with_extension("rhai").to_string_lossy().into_owned()
+    Path::new(target)
+        .with_extension("rhai")
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// The recipe file a `deps`/`build_deps` entry names: `<name>.rhai`, where

@@ -103,7 +103,9 @@ impl Record {
             .is_some_and(|folder| {
                 folder.starts_with(&format!("{GENERATION_PREFIX}{}-", self.generation))
                     && folder.len() <= 64
-                    && folder.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                    && folder
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
             });
         if !valid_folder {
             bail!("invalid saved archive name");
@@ -290,7 +292,8 @@ impl Retained {
             .create_new(true)
             .mode(0o600)
             .open(path)?;
-        let (bytes, digest) = crate::fsx::copy_hashed(&mut source, &mut output, self.archive_bound)?;
+        let (bytes, digest) =
+            crate::fsx::copy_hashed(&mut source, &mut output, self.archive_bound)?;
         if bytes != self.current.bytes || digest != self.current.sha256 {
             bail!("saved filesystem snapshot digest mismatch");
         }
@@ -322,7 +325,8 @@ impl Retained {
         states.insert(recipe.to_owned(), state);
         validate_states(&states, &self.allowed)?;
         let mut archive = crate::fsx::open_regular(&pending.path)?;
-        let (bytes, sha256) = crate::fsx::copy_hashed(&mut archive, &mut std::io::sink(), self.archive_bound)?;
+        let (bytes, sha256) =
+            crate::fsx::copy_hashed(&mut archive, &mut std::io::sink(), self.archive_bound)?;
         let folder = pending
             .directory
             .path()
@@ -462,13 +466,14 @@ impl Retained {
         for entry in fs::read_dir(&self.directory)? {
             let entry = entry?;
             if !entry.file_type()?.is_dir()
-                || !entry.file_name().to_string_lossy().starts_with(GENERATION_PREFIX)
+                || !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(GENERATION_PREFIX)
             {
                 continue;
             }
-            if let Some(record) =
-                owned_record(&entry.path().join(RECORD), &self.current.identity)
-            {
+            if let Some(record) = owned_record(&entry.path().join(RECORD), &self.current.identity) {
                 generations.push((record.generation, entry.path()));
             } else if entry.file_name() != current
                 && generation_files(&entry.path()).is_some_and(|files| {
@@ -521,10 +526,12 @@ impl Retained {
             let entries = fs::read_dir(&path)?.collect::<std::io::Result<Vec<_>>>()?;
             // Foreign or manually added data is never recursively removed.
             let owned = entries.iter().all(|entry| {
-                (entry.file_name() == CURRENT
-                    && entry.file_type().is_ok_and(|kind| kind.is_file()))
+                (entry.file_name() == CURRENT && entry.file_type().is_ok_and(|kind| kind.is_file()))
                     || (entry.file_type().is_ok_and(|kind| kind.is_dir())
-                        && entry.file_name().to_string_lossy().starts_with(GENERATION_PREFIX)
+                        && entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(GENERATION_PREFIX)
                         && owned_record(&entry.path().join(RECORD), &identity).is_some()
                         && generation_files(&entry.path()).is_some())
             });

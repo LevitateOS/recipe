@@ -166,7 +166,9 @@ pub(super) fn protected_fn_ranges(source: &str) -> Vec<ProtectedFnRange> {
             continue;
         };
 
-        if let Some(check) = crate::lifecycle::CHECKS.into_iter().find(|check| *check == name)
+        if let Some(check) = crate::lifecycle::CHECKS
+            .into_iter()
+            .find(|check| *check == name)
             && let Some(end_line) = find_fn_end_line(source, offset, line_no)
         {
             out.push(ProtectedFnRange {

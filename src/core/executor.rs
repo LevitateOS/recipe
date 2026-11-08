@@ -151,18 +151,16 @@ pub fn declared_metadata(recipe: &Path, search_path: Option<&Path>) -> Result<De
             }
             Stmt::Assignment(assignment) => {
                 let binary = &assignment.1;
-                if let Expr::Dot(property, _, _) = &binary.lhs {
-                    if let (Expr::Variable(variable, _, _), Expr::Property(field, _)) =
+                if let Expr::Dot(property, _, _) = &binary.lhs
+                    && let (Expr::Variable(variable, _, _), Expr::Property(field, _)) =
                         (&property.lhs, &property.rhs)
-                    {
-                        if variable.1 == "ctx" {
-                            if assignment.0.is_op_assignment() {
-                                metadata.fields.remove(field.2.as_str());
-                                metadata.dynamic_fields.insert(field.2.to_string());
-                            } else {
-                                metadata.set(field.2.as_str(), &binary.rhs)?;
-                            }
-                        }
+                    && variable.1 == "ctx"
+                {
+                    if assignment.0.is_op_assignment() {
+                        metadata.fields.remove(field.2.as_str());
+                        metadata.dynamic_fields.insert(field.2.to_string());
+                    } else {
+                        metadata.set(field.2.as_str(), &binary.rhs)?;
                     }
                 }
             }

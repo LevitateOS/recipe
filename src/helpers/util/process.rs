@@ -70,19 +70,11 @@ fn require_command(helper: &str, cmd: &str, note: &str) -> Result<(), Box<EvalAl
 }
 
 fn require_rpm(helper: &str) -> Result<(), Box<EvalAltResult>> {
-    require_command(
-        helper,
-        "rpm",
-        "the root image must provide RPM",
-    )
+    require_command(helper, "rpm", "the root image must provide RPM")
 }
 
 fn require_dnf(helper: &str) -> Result<(), Box<EvalAltResult>> {
-    require_command(
-        helper,
-        "dnf",
-        "the root image must provide DNF",
-    )
+    require_command(helper, "dnf", "the root image must provide DNF")
 }
 
 fn running_as_root() -> bool {
@@ -100,18 +92,14 @@ fn require_privilege_command(helper: &str) -> Result<PrivilegeCommand, Box<EvalA
         return Ok(PrivilegeCommand::Doas);
     }
 
-    Err(format!(
-        "helper {helper} must run as root or find 'sudo' or 'doas' on the domain's PATH"
+    Err(
+        format!("helper {helper} must run as root or find 'sudo' or 'doas' on the domain's PATH")
+            .into(),
     )
-    .into())
 }
 
 fn require_apk(helper: &str) -> Result<(), Box<EvalAltResult>> {
-    require_command(
-        helper,
-        "apk",
-        "the root image must provide APK",
-    )
+    require_command(helper, "apk", "the root image must provide APK")
 }
 
 type ApkPolicyEntries = Vec<(String, Vec<String>)>;
@@ -191,10 +179,20 @@ fn argv_command(
         match key.as_str() {
             "uid" | "gid" => {
                 use std::os::unix::process::CommandExt;
-                let id = value.as_int().map_err(|_| "command identity must be an integer")?;
-                let id: u32 = id.try_into().map_err(|_| "command identity must fit a UID/GID")?;
-                if id == u32::MAX { return Err("command identity must not be -1".into()); }
-                if key.as_str() == "uid" { command.uid(id); } else { command.gid(id); }
+                let id = value
+                    .as_int()
+                    .map_err(|_| "command identity must be an integer")?;
+                let id: u32 = id
+                    .try_into()
+                    .map_err(|_| "command identity must fit a UID/GID")?;
+                if id == u32::MAX {
+                    return Err("command identity must not be -1".into());
+                }
+                if key.as_str() == "uid" {
+                    command.uid(id);
+                } else {
+                    command.gid(id);
+                }
             }
             "cwd" => {
                 let dir = value

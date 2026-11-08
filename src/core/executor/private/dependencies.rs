@@ -7,8 +7,8 @@
 use super::context::ExecutionContext;
 use super::flow::install as install_recipe;
 use super::loaded::{EngineError, Load};
-use crate::core::output;
 use crate::core::events::HookStatus;
+use crate::core::output;
 use anyhow::{Context, Result, anyhow};
 use rhai::Engine;
 use sha2::{Digest, Sha256};
@@ -47,7 +47,12 @@ pub(crate) fn install(
         install_recipe(engine, exec, &recipe, &dependency)
             .map_err(|(EngineError::Recipe(error) | EngineError::Phase { error, .. })| error)
             .with_context(|| format!("preparing dependency recipe '{name}'"))?;
-        output::hook_event(name, "dependency.ready", HookStatus::Success, "tool dependency prepared");
+        output::hook_event(
+            name,
+            "dependency.ready",
+            HookStatus::Success,
+            "tool dependency prepared",
+        );
     }
     Ok(Some(tools_environment()?))
 }
@@ -78,9 +83,14 @@ fn locate(
 /// `<work root>/.deps/<stem>-<digest>`: the path digest separates equal
 /// recipe names in different directories.
 fn work_dir(work_root: &Path, recipe: &Path) -> PathBuf {
-    let digest = format!("{:x}", Sha256::digest(recipe.as_os_str().as_encoded_bytes()));
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(recipe.as_os_str().as_encoded_bytes())
+    );
     let stem = recipe.file_stem().unwrap_or_default().to_string_lossy();
-    work_root.join(".deps").join(format!("{stem}-{}", &digest[..16]))
+    work_root
+        .join(".deps")
+        .join(format!("{stem}-{}", &digest[..16]))
 }
 
 /// PATH gains the tool bin dirs (once), plus the variables that the tools
@@ -93,7 +103,10 @@ fn tools_environment() -> Result<crate::process::EnvironmentGuard> {
         .filter(|dir| !current.contains(dir))
         .collect();
     path.extend(current);
-    let mut values = vec![(std::ffi::OsString::from("PATH"), std::env::join_paths(path)?)];
+    let mut values = vec![(
+        std::ffi::OsString::from("PATH"),
+        std::env::join_paths(path)?,
+    )];
     let usr = Path::new(crate::domain::TOOLS).join("usr");
     for (key, value) in [
         ("BISON_PKGDATADIR", usr.join("share/bison")),

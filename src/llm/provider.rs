@@ -17,7 +17,6 @@ impl LlmProviderId {
             )),
         }
     }
-
 }
 
 #[derive(Debug, Clone)]

@@ -92,4 +92,3 @@ pub fn verify_blake3(path: &str, expected: &str) -> Result<(), Box<EvalAltResult
     output::detail(&format!("verifying blake3 of {}", path));
     hash::verify_file_hash(Path::new(path), expected, HashAlgorithm::Blake3)
 }
-

@@ -77,7 +77,10 @@ impl<'a> ExecutionContext<'a> {
                 .chain(std::iter::once(&recipe.to_path_buf()))
                 .map(|p| p.display().to_string())
                 .collect::<Vec<_>>();
-            bail!("Circular recipe dependency detected: {}", chain.join(" -> "));
+            bail!(
+                "Circular recipe dependency detected: {}",
+                chain.join(" -> ")
+            );
         }
         if self.active.len() >= crate::recipes::MAX_DEPTH {
             bail!(

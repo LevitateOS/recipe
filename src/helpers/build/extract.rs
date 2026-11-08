@@ -322,14 +322,17 @@ fn extract_zip(archive_path: &Path, dest: &Path) -> Result<(), Box<EvalAltResult
 
         // Zip stores a symlink as a member whose mode says so and whose data
         // is the target; extract it as a link, like tar, not as a text file.
-        let is_symlink = file.unix_mode().is_some_and(|mode| mode & 0o170000 == 0o120000);
+        let is_symlink = file
+            .unix_mode()
+            .is_some_and(|mode| mode & 0o170000 == 0o120000);
         if file.is_dir() {
             std::fs::create_dir_all(&outpath)
                 .map_err(|e| format!("cannot create directory {}: {}", outpath.display(), e))?;
         } else if is_symlink {
             let mut target = String::new();
-            file.read_to_string(&mut target)
-                .map_err(|e| format!("zip symlink target error for {}: {}", outpath.display(), e))?;
+            file.read_to_string(&mut target).map_err(|e| {
+                format!("zip symlink target error for {}: {}", outpath.display(), e)
+            })?;
             let target = PathBuf::from(target);
             ensure_link_target_within_dest(dest, outpath.parent().unwrap_or(dest), &target)?;
             if let Some(parent) = outpath.parent() {
@@ -353,10 +356,13 @@ fn extract_zip(archive_path: &Path, dest: &Path) -> Result<(), Box<EvalAltResult
                 use std::os::unix::fs::PermissionsExt;
                 // Same rule as tar extraction: permission bits only, no setuid/setgid/sticky.
                 if let Some(mode) = file.unix_mode() {
-                    std::fs::set_permissions(&outpath, std::fs::Permissions::from_mode(mode & 0o777))
-                        .map_err(|e| {
-                            format!("cannot set permissions for {}: {}", outpath.display(), e)
-                        })?;
+                    std::fs::set_permissions(
+                        &outpath,
+                        std::fs::Permissions::from_mode(mode & 0o777),
+                    )
+                    .map_err(|e| {
+                        format!("cannot set permissions for {}: {}", outpath.display(), e)
+                    })?;
                 }
             }
         }
@@ -422,7 +428,8 @@ pub fn extract_with_format(
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "archive".to_string());
 
-    let progress = crate::helpers::internal::progress::Spinner::new(&format!("extracting {filename}"));
+    let progress =
+        crate::helpers::internal::progress::Spinner::new(&format!("extracting {filename}"));
 
     let requested = format.to_lowercase();
     let canonical = FORMATS

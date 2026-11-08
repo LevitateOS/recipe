@@ -76,7 +76,9 @@ impl ExecutionOptions {
         {
             bail!("invalid domain memory or storage bounds");
         }
-        if self.network_hosts.len() > crate::domain::MAX_NETWORK_ENDPOINTS || self.network_max_bytes == 0 {
+        if self.network_hosts.len() > crate::domain::MAX_NETWORK_ENDPOINTS
+            || self.network_max_bytes == 0
+        {
             bail!(
                 "network policy requires at most {} hosts and a positive byte limit",
                 crate::domain::MAX_NETWORK_ENDPOINTS

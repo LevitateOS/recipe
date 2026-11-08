@@ -91,7 +91,10 @@ fn install(ctx) { copy_file("/work/build/product", "/out/product"); ctx }
         .filter(|entry| entry.path().join("result.json").is_file())
         .count();
     // 32 retained invocations, plus at most one still holding its lease.
-    assert!((31..=33).contains(&ownedlogs), "history not bounded: {ownedlogs}");
+    assert!(
+        (31..=33).contains(&ownedlogs),
+        "history not bounded: {ownedlogs}"
+    );
     let pointers = walkdir::WalkDir::new(&state)
         .into_iter()
         .filter_map(Result::ok)

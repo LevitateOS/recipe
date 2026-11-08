@@ -31,25 +31,25 @@ mod core;
 mod diagnostics;
 mod domain;
 mod failure;
-mod ginux;
 #[doc(hidden)]
 pub mod fsx;
+mod ginux;
 mod helpers;
 #[doc(hidden)]
 pub mod image;
 mod inputs;
+mod invocation_log;
 mod launch;
 mod lifecycle;
-mod invocation_log;
 mod llm;
 mod options;
 mod process;
 mod publication;
 mod recipes;
 mod retained;
-mod temporary;
 /// Target filesystem metadata carried independently of build-host privileges.
 pub mod target;
+mod temporary;
 mod worker;
 
 pub use backend::GinuxLauncher;
@@ -70,9 +70,9 @@ pub fn default_destination(
 pub mod bin_support {
     pub use crate::cancellation::{install_cli_handlers, signal};
     pub use crate::core::output::info;
+    pub use crate::domain::WORKER_ENTRY_ARG;
     pub use crate::helpers::internal::hash::{FileHashes, compute_all_hashes};
     pub use crate::worker::protocol::{MAX_DIAGNOSTIC_BYTES, MAX_DIAGNOSTIC_FRAMES};
-    pub use crate::domain::WORKER_ENTRY_ARG;
     /// The cleanup reason when the user gives none.
     pub const DEFAULT_CLEANUP_REASON: &str = crate::lifecycle::CleanupReason::Manual.as_str();
     pub use crate::worker::run_worker;
@@ -234,7 +234,12 @@ impl RecipeEngine {
     pub fn execute(&self, recipe_path: &Path) -> Result<serde_json::Value> {
         let launcher = self.launcher()?;
         let install = || {
-            self.invoke(&launcher, worker::protocol::Operation::Install, None, recipe_path)
+            self.invoke(
+                &launcher,
+                worker::protocol::Operation::Install,
+                None,
+                recipe_path,
+            )
         };
         let Some(cfg) = &self.autofix else {
             return install();
@@ -254,7 +259,10 @@ impl RecipeEngine {
                 .downcast_ref::<backend::WorkloadFailure>()
                 .map(|failure| &failure.0)
                 .filter(|failure| {
-                    matches!(failure.phase, Some(lifecycle::Phase::Build | lifecycle::Phase::Install))
+                    matches!(
+                        failure.phase,
+                        Some(lifecycle::Phase::Build | lifecycle::Phase::Install)
+                    )
                 });
             let Some(failure) = failure.filter(|_| repairs < cfg.attempts) else {
                 return Err(error);
@@ -262,7 +270,8 @@ impl RecipeEngine {
             repairs += 1;
             core::output::warning(&format!(
                 "autofix: repairing {} failure (attempt {repairs}/{})",
-                failure.phase.map_or("-", lifecycle::Phase::name), cfg.attempts
+                failure.phase.map_or("-", lifecycle::Phase::name),
+                cfg.attempts
             ));
             core::autofix::run_and_apply(
                 cfg,
@@ -283,29 +292,58 @@ impl RecipeEngine {
     ///
     /// Returns the final ctx map after removal.
     pub fn remove(&self, recipe_path: &Path) -> Result<serde_json::Value> {
-        self.invoke(&self.launcher()?, worker::protocol::Operation::Remove, None, recipe_path)
+        self.invoke(
+            &self.launcher()?,
+            worker::protocol::Operation::Remove,
+            None,
+            recipe_path,
+        )
     }
 
     /// Clean up build artifacts with an explicit reason.
     ///
     /// Returns the final ctx map after cleanup.
-    pub fn cleanup_with_reason(&self, recipe_path: &Path, reason: &str) -> Result<serde_json::Value> {
-        self.invoke(&self.launcher()?, worker::protocol::Operation::Cleanup, Some(reason), recipe_path)
+    pub fn cleanup_with_reason(
+        &self,
+        recipe_path: &Path,
+        reason: &str,
+    ) -> Result<serde_json::Value> {
+        self.invoke(
+            &self.launcher()?,
+            worker::protocol::Operation::Cleanup,
+            Some(reason),
+            recipe_path,
+        )
     }
 
     /// Execute `is_installed(ctx)` manually.
     pub fn is_installed(&self, recipe_path: &Path) -> Result<serde_json::Value> {
-        self.invoke(&self.launcher()?, worker::protocol::Operation::IsInstalled, None, recipe_path)
+        self.invoke(
+            &self.launcher()?,
+            worker::protocol::Operation::IsInstalled,
+            None,
+            recipe_path,
+        )
     }
 
     /// Execute `is_built(ctx)` manually.
     pub fn is_built(&self, recipe_path: &Path) -> Result<serde_json::Value> {
-        self.invoke(&self.launcher()?, worker::protocol::Operation::IsBuilt, None, recipe_path)
+        self.invoke(
+            &self.launcher()?,
+            worker::protocol::Operation::IsBuilt,
+            None,
+            recipe_path,
+        )
     }
 
     /// Execute `is_acquired(ctx)` manually.
     pub fn is_acquired(&self, recipe_path: &Path) -> Result<serde_json::Value> {
-        self.invoke(&self.launcher()?, worker::protocol::Operation::IsAcquired, None, recipe_path)
+        self.invoke(
+            &self.launcher()?,
+            worker::protocol::Operation::IsAcquired,
+            None,
+            recipe_path,
+        )
     }
 
     fn invoke(

@@ -34,7 +34,9 @@ pub(super) fn strip_outer_code_fence(s: String) -> String {
 
 pub(super) fn git_repo_root(from: &Path) -> Option<PathBuf> {
     let mut command = crate::process::git();
-    command.args(["rev-parse", "--show-toplevel"]).current_dir(from);
+    command
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(from);
     let out = crate::process::Run::new(command).run().ok()?;
     if !out.exit.success() {
         return None;
@@ -144,7 +146,9 @@ pub(super) fn build_prompt(
     extra_prompt: Option<&str>,
 ) -> String {
     let mut p = String::new();
-    let checks = crate::lifecycle::CHECKS.map(|check| format!("`fn {check}`")).join(", ");
+    let checks = crate::lifecycle::CHECKS
+        .map(|check| format!("`fn {check}`"))
+        .join(", ");
     p.push_str(&AUTOFIX_PROMPT.replace("{CHECKS}", &checks));
 
     p.push_str("\nWORKING DIRECTORY:\n");

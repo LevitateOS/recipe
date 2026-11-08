@@ -85,7 +85,10 @@ fn validate_endpoint(endpoint: SocketAddr) -> Result<()> {
 /// result, avoiding pipe capacity deadlocks while the parent waits.
 fn resolve_host(host: &str) -> Result<BTreeSet<IpAddr>> {
     let mut command = Command::new("/usr/bin/getent");
-    command.args(["ahosts", host]).env_clear().env("LC_ALL", "C");
+    command
+        .args(["ahosts", host])
+        .env_clear()
+        .env("LC_ALL", "C");
     let finished = crate::process::Run::new(command)
         .keep(crate::process::Keep::Limit(64 * 1024))
         .deadline(Duration::from_secs(10))
@@ -103,7 +106,8 @@ fn resolve_host(host: &str) -> Result<BTreeSet<IpAddr>> {
     if !finished.exit.success() {
         bail!("cannot resolve network host {host}");
     }
-    let text = String::from_utf8(finished.stdout).context("hostname resolver output is not UTF-8")?;
+    let text =
+        String::from_utf8(finished.stdout).context("hostname resolver output is not UTF-8")?;
     let addresses = text
         .lines()
         .map(|line| {

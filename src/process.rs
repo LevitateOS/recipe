@@ -267,18 +267,23 @@ impl Run {
             let over_limit = Arc::clone(&over_limit);
             let keep = self.keep;
             pipe.map(|pipe| {
-                std::thread::Builder::new().spawn(move || {
-                    drain(pipe, stream, route, keep, &tail, &over_limit)
-                })
+                std::thread::Builder::new()
+                    .spawn(move || drain(pipe, stream, route, keep, &tail, &over_limit))
             })
         };
         let stdout = reader(
-            child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
+            child
+                .stdout
+                .take()
+                .map(|p| Box::new(p) as Box<dyn Read + Send>),
             Stream::Stdout,
             self.route_stdout,
         );
         let stderr = reader(
-            child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
+            child
+                .stderr
+                .take()
+                .map(|p| Box::new(p) as Box<dyn Read + Send>),
             Stream::Stderr,
             self.route_stderr,
         );
@@ -335,17 +340,22 @@ impl Run {
         // An exited leader cannot leave pipe-holding descendants in its group.
         drop(group);
 
-        let mut collect = |thread: Option<std::io::Result<std::thread::JoinHandle<std::io::Result<Vec<u8>>>>>| {
+        let mut collect = |thread: Option<
+            std::io::Result<std::thread::JoinHandle<std::io::Result<Vec<u8>>>>,
+        >| {
             match thread {
                 None => Vec::new(),
                 Some(Err(error)) => {
-                    problem.get_or_insert(format!("command output reader failed to start: {label}: {error}"));
+                    problem.get_or_insert(format!(
+                        "command output reader failed to start: {label}: {error}"
+                    ));
                     Vec::new()
                 }
                 Some(Ok(handle)) => match handle.join() {
                     Ok(Ok(bytes)) => bytes,
                     Ok(Err(error)) => {
-                        problem.get_or_insert(format!("command output read failed: {label}: {error}"));
+                        problem
+                            .get_or_insert(format!("command output read failed: {label}: {error}"));
                         Vec::new()
                     }
                     Err(_) => {

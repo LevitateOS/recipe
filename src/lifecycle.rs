@@ -38,7 +38,11 @@ impl Phase {
 }
 
 /// Every readiness check name, outermost (`is_installed`) first.
-pub const CHECKS: [&str; 3] = [Phase::Install.check(), Phase::Build.check(), Phase::Acquire.check()];
+pub const CHECKS: [&str; 3] = [
+    Phase::Install.check(),
+    Phase::Build.check(),
+    Phase::Acquire.check(),
+];
 
 /// The `reason` argument of `cleanup(ctx, reason)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

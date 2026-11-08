@@ -221,18 +221,10 @@ pub struct RequestPayload {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[derive(Default)]
 pub struct InvocationOptions {
     pub defines: Vec<(String, String)>,
     pub execution: crate::ExecutionOptions,
-}
-
-impl Default for InvocationOptions {
-    fn default() -> Self {
-        Self {
-            defines: Vec::new(),
-            execution: crate::ExecutionOptions::default(),
-        }
-    }
 }
 
 impl InvocationOptions {
@@ -323,7 +315,9 @@ impl FailureInfo {
     /// The reason text: a failed phase's cleanup reason, otherwise the kind.
     pub fn reason(&self) -> &'static str {
         match (self.kind, self.phase) {
-            (FailureKind::Phase, Some(phase)) => crate::lifecycle::CleanupReason::Failed(phase).as_str(),
+            (FailureKind::Phase, Some(phase)) => {
+                crate::lifecycle::CleanupReason::Failed(phase).as_str()
+            }
             (FailureKind::Recipe, _) => "recipe",
             (FailureKind::Request, _) => "request",
             (FailureKind::Phase, None) => "phase",
@@ -334,7 +328,12 @@ impl FailureInfo {
 impl fmt::Display for FailureInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let phase = self.phase.map_or("-", crate::lifecycle::Phase::name);
-        write!(f, "phase={phase} reason={}: {}", self.reason(), self.message)
+        write!(
+            f,
+            "phase={phase} reason={}: {}",
+            self.reason(),
+            self.message
+        )
     }
 }
 
@@ -381,7 +380,11 @@ pub struct DiagnosticBudget {
 impl DiagnosticBudget {
     /// Worker: the next payload for `bytes` (consuming what it carries), or
     /// the truncation marker once the budget is spent. `None` after truncation.
-    pub fn next(&mut self, stream: DiagnosticStream, bytes: &mut &[u8]) -> Option<DiagnosticPayload> {
+    pub fn next(
+        &mut self,
+        stream: DiagnosticStream,
+        bytes: &mut &[u8],
+    ) -> Option<DiagnosticPayload> {
         if self.truncated {
             return None;
         }
@@ -438,11 +441,9 @@ pub struct DiagnosticPayload {
 
 fn check_diagnostic(p: &DiagnosticPayload) -> Result<(), ProtocolError> {
     if p.data.len() > MAX_DIAGNOSTIC_CHUNK || p.data.is_empty() != p.truncated {
-        return Err(ProtocolError::PayloadInvalid(
-            format!(
-                "diagnostic needs 1..={MAX_DIAGNOSTIC_CHUNK} bytes, or one empty truncation marker"
-            ),
-        ));
+        return Err(ProtocolError::PayloadInvalid(format!(
+            "diagnostic needs 1..={MAX_DIAGNOSTIC_CHUNK} bytes, or one empty truncation marker"
+        )));
     }
     Ok(())
 }
@@ -606,7 +607,6 @@ impl From<std::io::Error> for ProtocolError {
 // Validation
 // ---------------------------------------------------------------------------
 
-
 fn check_result(p: &ResultPayload) -> Result<(), ProtocolError> {
     if p.ok == p.failure.is_some() {
         return Err(ProtocolError::PayloadInvalid(
@@ -629,12 +629,14 @@ fn check_request(p: &RequestPayload) -> Result<(), ProtocolError> {
         (Some(reason), Operation::Cleanup) if reason.len() <= MAX_CLEANUP_REASON => {}
         (None, operation) if operation != Operation::Cleanup => {}
         _ => {
-            return Err(ProtocolError::PayloadInvalid(
-                format!("a cleanup reason (≤ {MAX_CLEANUP_REASON} B) comes with cleanup and only with cleanup"),
-            ));
+            return Err(ProtocolError::PayloadInvalid(format!(
+                "a cleanup reason (≤ {MAX_CLEANUP_REASON} B) comes with cleanup and only with cleanup"
+            )));
         }
     }
-    if p.restored_states.len() > MAX_RESTORED_STATES || (!p.persist_state && !p.restored_states.is_empty()) {
+    if p.restored_states.len() > MAX_RESTORED_STATES
+        || (!p.persist_state && !p.restored_states.is_empty())
+    {
         return Err(ProtocolError::PayloadInvalid(
             "invalid restored state set".into(),
         ));

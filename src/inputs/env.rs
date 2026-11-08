@@ -64,8 +64,14 @@ pub fn allowlisted_env(invocation_id: &str) -> Result<Vec<(String, String)>> {
     use crate::domain;
     Ok(vec![
         ("PATH".to_string(), executable_path()),
-        (domain::ENV_WORKER.to_string(), domain::ENV_WORKER_VALUE.to_string()),
-        (domain::ENV_INVOCATION.to_string(), invocation_id.to_string()),
+        (
+            domain::ENV_WORKER.to_string(),
+            domain::ENV_WORKER_VALUE.to_string(),
+        ),
+        (
+            domain::ENV_INVOCATION.to_string(),
+            invocation_id.to_string(),
+        ),
         ("TMPDIR".to_string(), domain::TMP.to_string()),
     ])
 }
@@ -73,6 +79,10 @@ pub fn allowlisted_env(invocation_id: &str) -> Result<Vec<(String, String)>> {
 /// Fixed image/owned executable directories, never caller-supplied host paths.
 pub(super) fn executable_path() -> String {
     let mut path: Vec<String> = crate::domain::tool_bin_dirs().collect();
-    path.extend([crate::domain::TOOLS.into(), "/usr/bin".into(), "/bin".into()]);
+    path.extend([
+        crate::domain::TOOLS.into(),
+        "/usr/bin".into(),
+        "/bin".into(),
+    ]);
     path.join(":")
 }

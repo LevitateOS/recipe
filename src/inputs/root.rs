@@ -52,7 +52,8 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
         )
     })?;
     let mut snapshot = tempfile::tempfile().context("cannot snapshot the rootfs image")?;
-    let (_, actual) = crate::fsx::copy_hashed(&mut archive, &mut snapshot, crate::image::MAX_ARCHIVE_BYTES)?;
+    let (_, actual) =
+        crate::fsx::copy_hashed(&mut archive, &mut snapshot, crate::image::MAX_ARCHIVE_BYTES)?;
     if actual != digest {
         bail!("Ginux rootfs digest mismatch: expected {digest}, got {actual}");
     }
@@ -64,7 +65,9 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
     unpack_image(snapshot, root.path())?;
 
     super::network::install_hosts(&invocation.network, root.path())?;
-    let inputs = root.path().join(crate::domain::INPUTS.trim_start_matches('/'));
+    let inputs = root
+        .path()
+        .join(crate::domain::INPUTS.trim_start_matches('/'));
     std::fs::create_dir(&inputs)?;
     for (index, input) in invocation.inputs.iter().enumerate() {
         super::discover::validate_input_name(&input.name)?;
@@ -84,7 +87,8 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
             super::InputKind::Symlink(_) => continue, // Install links after all ordinary paths.
             super::InputKind::File => {}
         }
-        let mut source = crate::fsx::open_regular(&invocation.staging_dir().join(format!("input-{index}")))?;
+        let mut source =
+            crate::fsx::open_regular(&invocation.staging_dir().join(format!("input-{index}")))?;
         let mut destination = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -132,7 +136,8 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
         .write(true)
         .create_new(true)
         .open(inputs.join(crate::domain::WORKER_NAME))?;
-    root.worker_digest = crate::fsx::copy_hashed(&mut worker, &mut destination, MAX_WORKER_BYTES)?.1;
+    root.worker_digest =
+        crate::fsx::copy_hashed(&mut worker, &mut destination, MAX_WORKER_BYTES)?.1;
     destination.set_permissions(std::fs::Permissions::from_mode(0o555))?;
 
     // No shared cached tree or mutable hardlinks are handed to the domain.
@@ -209,9 +214,6 @@ fn worker_binary() -> Result<PathBuf> {
     }
     bail!("cannot locate the Recipe worker; install recipe on PATH or set RECIPE_WORKER_BIN")
 }
-
-
-
 
 fn ensure_parents(root: &Path, relative: &Path) -> Result<()> {
     let mut directory = root.to_path_buf();
@@ -363,7 +365,11 @@ pub(crate) fn seed_target(
                 archive.append_link(&mut header, name, link)?;
             }
             InputKind::File | InputKind::Hardlink(_) => {
-                let mut file = crate::fsx::open_regular(&root.join(crate::domain::INPUTS.trim_start_matches('/')).join(&input.name))?;
+                let mut file = crate::fsx::open_regular(
+                    &root
+                        .join(crate::domain::INPUTS.trim_start_matches('/'))
+                        .join(&input.name),
+                )?;
                 if file.metadata()?.len() != input.size {
                     bail!("target snapshot size changed: {}", input.name);
                 }

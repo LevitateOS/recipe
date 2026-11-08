@@ -63,7 +63,8 @@ fn main() -> Result<()> {
         || manifest.rpms.len() > 64
         || manifest.rust_additions.len() > 16
         || manifest.rust_components.len() > 16
-        || (manifest.rust.is_some() || !manifest.rust_additions.is_empty()) != !manifest.rust_components.is_empty()
+        || (manifest.rust.is_some() || !manifest.rust_additions.is_empty())
+            != !manifest.rust_components.is_empty()
     {
         bail!("unsupported or oversized image manifest");
     }
@@ -241,7 +242,8 @@ fn main() -> Result<()> {
     writer.finish()?;
     writer.into_inner()?.sync_all()?;
     let mut image = File::open(&image_path)?;
-    let (size, digest) = fsx::copy_hashed(&mut image, &mut std::io::sink(), image::MAX_ARCHIVE_BYTES)?;
+    let (size, digest) =
+        fsx::copy_hashed(&mut image, &mut std::io::sink(), image::MAX_ARCHIVE_BYTES)?;
     let record = serde_json::json!({"version":1,"image":"rootfs.tar","sha256":digest,"bytes":size,"inputs":manifest});
     let mut provenance = OpenOptions::new()
         .write(true)

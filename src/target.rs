@@ -301,7 +301,7 @@ pub fn set_mode(root: &Path, path: &Path, mode: u32) -> Result<PathBuf> {
     let mut entry = manifest
         .entries
         .remove(&name)
-        .unwrap_or(current(&root.join(&rel))?);
+        .unwrap_or(current(&root.join(rel))?);
     entry.mode = mode;
     manifest.entries.insert(name, entry);
     save(root, &manifest)?;

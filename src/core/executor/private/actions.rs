@@ -18,12 +18,22 @@ pub(crate) fn remove(
     with_recipe(engine, exec, recipe, load, |recipe, exec| {
         let name = recipe.name.clone();
         if !recipe.runtime.has_fn("remove") {
-            output::hook_event(&name, "remove", HookStatus::Missing, "required remove hook missing");
+            output::hook_event(
+                &name,
+                "remove",
+                HookStatus::Missing,
+                "required remove hook missing",
+            );
             return Err(anyhow!("{name} has no remove function").into());
         }
         output::action(&format!("Removing {name}"));
         output::sub_action("remove");
-        output::hook_event(&name, "remove", HookStatus::Running, "executing recipe hook");
+        output::hook_event(
+            &name,
+            "remove",
+            HookStatus::Running,
+            "executing recipe hook",
+        );
         let ctx = recipe.runtime.ctx();
         let ctx = recipe
             .runtime
@@ -47,13 +57,23 @@ pub(crate) fn cleanup(
         let name = recipe.name.clone();
         let ctx = recipe.runtime.ctx();
         if !recipe.runtime.has_cleanup() {
-            output::hook_event(&name, "cleanup", HookStatus::Skipped, "recipe has no cleanup hook");
+            output::hook_event(
+                &name,
+                "cleanup",
+                HookStatus::Skipped,
+                "recipe has no cleanup hook",
+            );
             output::skip(&format!("{name} has no cleanup hook; nothing to clean"));
             return Ok(ctx);
         }
         output::action(&format!("Cleaning up {name}"));
         output::sub_action("cleanup");
-        output::hook_event(&name, "cleanup", HookStatus::Running, "executing recipe hook");
+        output::hook_event(
+            &name,
+            "cleanup",
+            HookStatus::Running,
+            "executing recipe hook",
+        );
         let ctx = recipe
             .runtime
             .cleanup(ctx, reason)
@@ -78,8 +98,15 @@ pub(crate) fn check(
         let name = recipe.name.clone();
         let event = format!("check.{check}");
         if !recipe.runtime.has_fn(check) {
-            output::hook_event(&name, &event, HookStatus::Missing, "required check function missing");
-            output::error(&format!("{name} is missing required check function `{check}(ctx)`"));
+            output::hook_event(
+                &name,
+                &event,
+                HookStatus::Missing,
+                "required check function missing",
+            );
+            output::error(&format!(
+                "{name} is missing required check function `{check}(ctx)`"
+            ));
             output::detail(
                 "Action: define this check function and return ready(ctx) when ready, or needs_work(ctx, reason) otherwise.",
             );

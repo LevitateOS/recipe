@@ -74,7 +74,6 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 /// Bytes of log tail attached to failure diagnostics.
 const LOG_TAIL_BYTES: usize = 4096;
 
-
 /// One executable operation, as the coordinator runs it.
 pub(crate) struct Invocation<'a> {
     pub operation: crate::worker::protocol::Operation,
@@ -130,7 +129,9 @@ pub(crate) fn run_domain(
     let state_dir = invocation.state_dir;
     let diagnostics = crate::retained::state_root(state_dir)
         .and_then(|root| crate::invocation_log::InvocationLog::new(&root, &prepared.invocation_id))
-        .map_err(|error| crate::failure::Category::Storage.wrap(error, "cannot create the invocation log"))?;
+        .map_err(|error| {
+            crate::failure::Category::Storage.wrap(error, "cannot create the invocation log")
+        })?;
     let outcome = run_domain_inner(prepared, invocation, launcher, &diagnostics);
     use crate::invocation_log::Status;
     let (status, details) = match &outcome {
@@ -177,28 +178,38 @@ fn run_domain_inner(
         ..
     } = *invocation;
     let invocation = prepared.invocation_id.clone();
-    let timeout = frame_timeout().map_err(|error| crate::failure::Category::Startup.wrap(error, "invalid frame timeout"))?;
-    let _destination_lock = crate::retained::lock_destination(destination, timeout)
-        .map_err(|error| crate::failure::Category::Storage.wrap(error, "cannot lock the destination"))?;
-    let run_dir = crate::temporary::TemporaryDirectory::new().context(crate::failure::Category::Startup.error("cannot create ginux run directory"))?;
+    let timeout = frame_timeout()
+        .map_err(|error| crate::failure::Category::Startup.wrap(error, "invalid frame timeout"))?;
+    let _destination_lock =
+        crate::retained::lock_destination(destination, timeout).map_err(|error| {
+            crate::failure::Category::Storage.wrap(error, "cannot lock the destination")
+        })?;
+    let run_dir = crate::temporary::TemporaryDirectory::new()
+        .context(crate::failure::Category::Startup.error("cannot create ginux run directory"))?;
     let result_path = run_dir.path().join("result.json");
     let export_path = run_dir.path().join("export.tar");
     let config_path = prepared.config_path();
 
     let domain_root = crate::inputs::prepare_root(prepared).map_err(|error| {
-        anyhow::Error::new(crate::failure::Category::Startup.error(format!("cannot prepare Ginux root for invocation {invocation}: {error:#}")))
+        anyhow::Error::new(crate::failure::Category::Startup.error(format!(
+            "cannot prepare Ginux root for invocation {invocation}: {error:#}"
+        )))
     })?;
 
     let mut retained = if persist_state {
-        Some(crate::retained::Retained::open(
-            state_dir,
-            destination,
-            recipe,
-            prepared,
-            &domain_root.worker_digest,
-            options,
+        Some(
+            crate::retained::Retained::open(
+                state_dir,
+                destination,
+                recipe,
+                prepared,
+                &domain_root.worker_digest,
+                options,
+            )
+            .map_err(|error| {
+                crate::failure::Category::Storage.wrap(error, "cannot open saved state")
+            })?,
         )
-        .map_err(|error| crate::failure::Category::Storage.wrap(error, "cannot open saved state"))?)
     } else {
         None
     };
@@ -207,13 +218,17 @@ fn run_domain_inner(
         .as_ref()
         .map(|state| state.restore_input(&restore_path))
         .transpose()
-        .map_err(|error| crate::failure::Category::Storage.wrap(error, "cannot restore saved files"))?
+        .map_err(|error| {
+            crate::failure::Category::Storage.wrap(error, "cannot restore saved files")
+        })?
         .unwrap_or(false);
     if !restore {
-        restore = crate::inputs::seed_target(prepared, domain_root.path(), &restore_path)
-            .map_err(|error| {
-                crate::failure::Category::Startup.wrap(error, "cannot seed the requested target view")
-            })?;
+        restore = crate::inputs::seed_target(prepared, domain_root.path(), &restore_path).map_err(
+            |error| {
+                crate::failure::Category::Startup
+                    .wrap(error, "cannot seed the requested target view")
+            },
+        )?;
     }
     crate::cancellation::check()?;
     let (mut control, control_server) = if persist_state {
@@ -266,23 +281,34 @@ fn run_domain_inner(
     if restore {
         command.arg("--restore-file").arg(&restore_path);
     }
-    let mut worker_diagnostics = std::fs::File::create(diagnostics.file(crate::invocation_log::WORKER_LOG))?;
+    let mut worker_diagnostics =
+        std::fs::File::create(diagnostics.file(crate::invocation_log::WORKER_LOG))?;
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|err| {
-            anyhow::Error::new(crate::failure::Category::Startup.error(format!("cannot spawn ginux launcher {} for invocation \
+            anyhow::Error::new(crate::failure::Category::Startup.error(format!(
+                "cannot spawn ginux launcher {} for invocation \
                  {invocation}: {err:#}",
                 launcher.display(),
             )))
         })?;
 
     drop(control_server);
-    let stdin = child.stdin.take().context(crate::failure::Category::Startup.error("launcher stdin was not piped"))?;
-    let stdout = child.stdout.take().context(crate::failure::Category::Startup.error("launcher stdout was not piped"))?;
-    let stderr = child.stderr.take().context(crate::failure::Category::Startup.error("launcher stderr was not piped"))?;
+    let stdin = child
+        .stdin
+        .take()
+        .context(crate::failure::Category::Startup.error("launcher stdin was not piped"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .context(crate::failure::Category::Startup.error("launcher stdout was not piped"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .context(crate::failure::Category::Startup.error("launcher stderr was not piped"))?;
     let log_path = diagnostics.file(crate::invocation_log::SUPERVISOR_LOG);
     let drain = spawn_stderr_drain(stderr, log_path.clone());
 
@@ -300,8 +326,7 @@ fn run_domain_inner(
     };
     let pump = pump_protocol(
         request,
-        stdin,
-        stdout,
+        (stdin, stdout),
         &mut retained,
         &mut control,
         &mut worker_diagnostics,
@@ -312,11 +337,12 @@ fn run_domain_inner(
         Ok(stream) => stream,
         Err(err) => {
             // The stream error stays the result; teardown problems are reported beside it.
-            let exit = reap_launcher(&mut child, Instant::now() + SHUTDOWN_GRACE)
-                .unwrap_or_else(|error| {
+            let exit = reap_launcher(&mut child, Instant::now() + SHUTDOWN_GRACE).unwrap_or_else(
+                |error| {
                     crate::diagnostics::diag!("recipe: warning: {error:#}");
                     None
-                });
+                },
+            );
             if let Err(error) = worker_diagnostics.sync_all() {
                 crate::diagnostics::diag!("recipe: warning: cannot sync the worker log: {error}");
             }
@@ -350,12 +376,14 @@ fn run_domain_inner(
                 .ctx_summary
                 .get("state")
                 .filter(|value| value.is_object())
-                .context(crate::failure::Category::Protocol.error(
-                    "successful resumable recipe did not return ctx.state",
-                ))?
+                .context(
+                    crate::failure::Category::Protocol
+                        .error("successful resumable recipe did not return ctx.state"),
+                )?
                 .clone();
             state.finish(&export_path, runtime_state).map_err(|error| {
-                crate::failure::Category::Storage.wrap(error, "cannot persist final state/files pair")
+                crate::failure::Category::Storage
+                    .wrap(error, "cannot persist final state/files pair")
             })?;
         }
         crate::publication::publish(
@@ -364,7 +392,9 @@ fn run_domain_inner(
             &mut stream.result.ctx_summary,
             &options.execution,
         )
-        .context(crate::failure::Category::Storage.error("cannot publish completed domain outputs"))?;
+        .context(
+            crate::failure::Category::Storage.error("cannot publish completed domain outputs"),
+        )?;
     }
 
     Ok(LaunchReport {
@@ -394,14 +424,14 @@ struct WorkerStream {
 /// caller enriches them with launcher/result-file state.
 fn pump_protocol(
     request: RequestPayload,
-    stdin: std::process::ChildStdin,
-    stdout: std::process::ChildStdout,
+    pipes: (std::process::ChildStdin, std::process::ChildStdout),
     retained: &mut Option<crate::retained::Retained>,
     control: &mut Option<DeadlinePipe<UnixStream>>,
     worker_diagnostics: &mut std::fs::File,
     worker_started: &mut bool,
     timeout: Duration,
 ) -> Result<WorkerStream> {
+    let (stdin, stdout) = pipes;
     let mut stdin = DeadlinePipe::new(stdin, timeout)?;
     let mut stdout = DeadlinePipe::new(stdout, timeout)?;
     let mut tx = FrameSender::new();
@@ -412,7 +442,7 @@ fn pump_protocol(
         Instant::now() + Duration::from_secs(request.options.execution.timeout_secs);
 
     tx.send(&mut stdin, &FramePayload::Request(request))
-    .map_err(|err| classify_stream_error(invocation, "send request", err, true))?;
+        .map_err(|err| classify_stream_error(invocation, "send request", err, true))?;
     stdin
         .flush()
         .map_err(|err| classify_stream_error(invocation, "flush request", err, true))?;
@@ -422,7 +452,9 @@ fn pump_protocol(
     let mut diagnostic_budget = crate::worker::protocol::DiagnosticBudget::default();
     let result = loop {
         if Instant::now() >= execution_deadline {
-            bail!(crate::failure::Category::Deadline.error("supervised execution deadline expired"));
+            bail!(
+                crate::failure::Category::Deadline.error("supervised execution deadline expired")
+            );
         }
         stdout.begin_frame(
             if *worker_started {
@@ -439,7 +471,8 @@ fn pump_protocol(
         frame
             .check_direction(Direction::WorkerToHost)
             .map_err(|err| {
-                anyhow::Error::new(crate::failure::Category::Protocol.error(format!("invocation {invocation}: worker stream direction \
+                anyhow::Error::new(crate::failure::Category::Protocol.error(format!(
+                    "invocation {invocation}: worker stream direction \
                  violation: {err}"
                 )))
             })?;
@@ -447,8 +480,7 @@ fn pump_protocol(
         match frame.payload {
             FramePayload::Diagnostic(payload) => {
                 diagnostic_budget.accept(&payload).map_err(|violation| {
-                    crate::failure::Category::Protocol
-                        .error(violation.to_string())
+                    crate::failure::Category::Protocol.error(violation.to_string())
                 })?;
                 if payload.truncated {
                     crate::diagnostics::line(
@@ -467,7 +499,8 @@ fn pump_protocol(
             FramePayload::Checkpoint(point) => {
                 checkpoints += 1;
                 if checkpoints > MAX_CHECKPOINTS {
-                    bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} sent more than \
+                    bail!(crate::failure::Category::Protocol.error(format!(
+                        "invocation {invocation} sent more than \
                          {MAX_CHECKPOINTS} checkpoints"
                     )));
                 }
@@ -481,10 +514,12 @@ fn pump_protocol(
                     let control = control.as_mut().context(
                         crate::failure::Category::Startup.error("missing snapshot control socket"),
                     )?;
-                    Some(capture_checkpoint(state, control, &point, timeout).map_err(|error| {
-                        crate::failure::Category::Storage
-                            .wrap(error, format!("cannot keep checkpoint {seq}"))
-                    })?)
+                    Some(
+                        capture_checkpoint(state, control, &point, timeout).map_err(|error| {
+                            crate::failure::Category::Storage
+                                .wrap(error, format!("cannot keep checkpoint {seq}"))
+                        })?,
+                    )
                 } else {
                     None
                 };
@@ -503,7 +538,8 @@ fn pump_protocol(
             }
             FramePayload::Result(payload) => break payload,
             FramePayload::Request(_) | FramePayload::Ack(_) => {
-                bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} received a host-direction \
+                bail!(crate::failure::Category::Protocol.error(format!(
+                    "invocation {invocation} received a host-direction \
                      frame from the worker"
                 )));
             }
@@ -642,10 +678,10 @@ impl<T: AsRawFd + Read> Read for DeadlinePipe<T> {
                     continue;
                 }
                 Ok(count) => {
-                    if count != 0 {
-                        if let Some((frame, execution)) = self.frame_start.take() {
-                            self.deadline = (Instant::now() + frame).min(execution);
-                        }
+                    if count != 0
+                        && let Some((frame, execution)) = self.frame_start.take()
+                    {
+                        self.deadline = (Instant::now() + frame).min(execution);
                     }
                     return Ok(count);
                 }
@@ -692,12 +728,15 @@ fn classify_stream_error(
         return crate::cancellation::cancelled().into();
     }
     if before_request_delivered {
-        anyhow::Error::new(crate::failure::Category::Startup.error(format!("invocation {invocation}: cannot {what} through launcher \
+        anyhow::Error::new(crate::failure::Category::Startup.error(format!(
+            "invocation {invocation}: cannot {what} through launcher \
              (launcher cannot serve the worker transport): {err}"
         )))
     } else {
-        anyhow::Error::new(crate::failure::Category::Protocol.error(format!("invocation {invocation}: cannot {what}: {err}"
-        )))
+        anyhow::Error::new(
+            crate::failure::Category::Protocol
+                .error(format!("invocation {invocation}: cannot {what}: {err}")),
+        )
     }
 }
 
@@ -716,7 +755,8 @@ fn enrich_stream_error(
     let text = format!("{err:#}");
     let category = crate::failure::Category::of(&err);
     let file_note = crate::ginux::result_note(result_path);
-    if crate::ginux::peek_outcome(result_path, invocation) == Some(crate::ginux::Outcome::SupervisorError)
+    if crate::ginux::peek_outcome(result_path, invocation)
+        == Some(crate::ginux::Outcome::SupervisorError)
         && category == Some(crate::failure::Category::Protocol)
     {
         let (category, timing) = if worker_started {
@@ -741,7 +781,9 @@ fn enrich_stream_error(
     let detail = format!(
         "; invocation {invocation} launcher exit {}; {}; log tail: {}",
         exit_message(exit),
-        file_note.as_deref().unwrap_or("no result file was produced"),
+        file_note
+            .as_deref()
+            .unwrap_or("no result file was produced"),
         drained.tail,
     );
     match category {
@@ -803,7 +845,10 @@ fn reap_launcher(child: &mut Child, mut deadline: Instant) -> Result<Option<i32>
                 if let Err(error) = result {
                     return Err(error).context("cannot reap configured launcher");
                 }
-                bail!(crate::failure::Category::Deadline.error("supervised execution deadline expired during finalization"));
+                bail!(
+                    crate::failure::Category::Deadline
+                        .error("supervised execution deadline expired during finalization")
+                );
             }
         }
     }
@@ -928,12 +973,14 @@ fn join_drain(handle: Drain) -> DrainedLog {
 fn check_agreement(invocation: &str, result: &ResultPayload, record: &ResultRecord) -> Result<()> {
     if result.ok {
         if record.outcome == Outcome::SupervisorError {
-            bail!(crate::failure::Category::Supervisor.error(format!("invocation {invocation} worker reported success but the \
+            bail!(crate::failure::Category::Supervisor.error(format!(
+                "invocation {invocation} worker reported success but the \
                  supervisor failed during finalization (refusing publication)"
             )));
         }
         if record.outcome != Outcome::Exited || record.code != Some(0) {
-            bail!(crate::failure::Category::Protocol.error(format!("invocation {invocation} worker reported success but \
+            bail!(crate::failure::Category::Protocol.error(
+                format!("invocation {invocation} worker reported success but \
                  the authoritative result is {}/{}",
                 record.outcome,
                 record
@@ -941,12 +988,14 @@ fn check_agreement(invocation: &str, result: &ResultPayload, record: &ResultReco
                     .map(|c| c.to_string())
                     .or_else(|| record.signal.map(|s| format!("signal {s}")))
                     .unwrap_or_else(|| "no status".to_string()),
-            )));
+            )
+            ));
         }
         return Ok(());
     }
     if record.outcome == Outcome::SupervisorError {
-        bail!(crate::failure::Category::Supervisor.error(format!("invocation {invocation} worker reported failure and the \
+        bail!(crate::failure::Category::Supervisor.error(format!(
+            "invocation {invocation} worker reported failure and the \
              supervisor also failed during finalization (refusing publication)"
         )));
     }
@@ -972,7 +1021,8 @@ fn check_launcher_exit(
         return Ok(());
     }
     if record.outcome == Outcome::Signaled {
-        bail!(crate::failure::Category::Workload.error(format!("invocation {invocation} worker was terminated by signal {}",
+        bail!(crate::failure::Category::Workload.error(format!(
+            "invocation {invocation} worker was terminated by signal {}",
             record.signal.map(|s| s.to_string()).unwrap_or_default(),
         )));
     }
@@ -982,7 +1032,8 @@ fn check_launcher_exit(
             .as_ref()
             .map(ToString::to_string)
             .unwrap_or_else(|| "worker reported failure without detail".to_string());
-        bail!(crate::failure::Category::Workload.error(format!("invocation {invocation} worker exited with code {} \
+        bail!(crate::failure::Category::Workload.error(format!(
+            "invocation {invocation} worker exited with code {} \
              (launcher exit {}): {detail}",
             record.code.unwrap_or(-1),
             exit_message(exit),

@@ -37,6 +37,16 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
     }
 
     let json_output = cli.json_output;
+    let engine_options = EngineOptions {
+        build_dir: cli.build_dir.as_deref(),
+        state_dir: cli.state_dir.as_deref(),
+        execution,
+        recipes_path: Some(&recipes_path),
+        defines: &cli.defines,
+        inputs: &cli.inputs,
+        no_persist_state: cli.no_persist_state,
+        llm_profile: cli.llm_profile,
+    };
 
     match cli.command {
         Commands::Install {
@@ -58,54 +68,21 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             } else {
                 None
             };
-            let engine = create_engine(
-                &recipe_path,
-                cli.build_dir.as_deref(),
-                cli.state_dir.as_deref(),
-                execution.clone(),
-                Some(&recipes_path),
-                &cli.defines,
-                &cli.inputs,
-                cli.no_persist_state,
-                cli.llm_profile.clone(),
-                autofix_cfg,
-            )?;
+            let engine = create_engine(&recipe_path, &engine_options, autofix_cfg)?;
             let ctx = engine.execute(&recipe_path)?;
             emit_json(&ctx, json_output.as_deref())?;
         }
 
         Commands::Remove { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
-            let engine = create_engine(
-                &recipe_path,
-                cli.build_dir.as_deref(),
-                cli.state_dir.as_deref(),
-                execution.clone(),
-                Some(&recipes_path),
-                &cli.defines,
-                &cli.inputs,
-                cli.no_persist_state,
-                cli.llm_profile.clone(),
-                None,
-            )?;
+            let engine = create_engine(&recipe_path, &engine_options, None)?;
             let ctx = engine.remove(&recipe_path)?;
             emit_json(&ctx, json_output.as_deref())?;
         }
 
         Commands::Cleanup { recipe, reason } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
-            let engine = create_engine(
-                &recipe_path,
-                cli.build_dir.as_deref(),
-                cli.state_dir.as_deref(),
-                execution.clone(),
-                Some(&recipes_path),
-                &cli.defines,
-                &cli.inputs,
-                cli.no_persist_state,
-                cli.llm_profile.clone(),
-                None,
-            )?;
+            let engine = create_engine(&recipe_path, &engine_options, None)?;
             let cleanup_reason = reason
                 .as_deref()
                 .map(str::trim)
@@ -117,54 +94,21 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
 
         Commands::IsInstalled { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
-            let engine = create_engine(
-                &recipe_path,
-                cli.build_dir.as_deref(),
-                cli.state_dir.as_deref(),
-                execution.clone(),
-                Some(&recipes_path),
-                &cli.defines,
-                &cli.inputs,
-                cli.no_persist_state,
-                cli.llm_profile.clone(),
-                None,
-            )?;
+            let engine = create_engine(&recipe_path, &engine_options, None)?;
             let ctx = engine.is_installed(&recipe_path)?;
             emit_json(&ctx, json_output.as_deref())?;
         }
 
         Commands::IsBuilt { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
-            let engine = create_engine(
-                &recipe_path,
-                cli.build_dir.as_deref(),
-                cli.state_dir.as_deref(),
-                execution.clone(),
-                Some(&recipes_path),
-                &cli.defines,
-                &cli.inputs,
-                cli.no_persist_state,
-                cli.llm_profile.clone(),
-                None,
-            )?;
+            let engine = create_engine(&recipe_path, &engine_options, None)?;
             let ctx = engine.is_built(&recipe_path)?;
             emit_json(&ctx, json_output.as_deref())?;
         }
 
         Commands::IsAcquired { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
-            let engine = create_engine(
-                &recipe_path,
-                cli.build_dir.as_deref(),
-                cli.state_dir.as_deref(),
-                execution.clone(),
-                Some(&recipes_path),
-                &cli.defines,
-                &cli.inputs,
-                cli.no_persist_state,
-                cli.llm_profile.clone(),
-                None,
-            )?;
+            let engine = create_engine(&recipe_path, &engine_options, None)?;
             let ctx = engine.is_acquired(&recipe_path)?;
             emit_json(&ctx, json_output.as_deref())?;
         }
@@ -223,18 +167,32 @@ fn emit_json(ctx: &serde_json::Value, path: Option<&Path>) -> Result<()> {
 
 /// Configure one executable operation through mandatory Ginux. Metadata and
 /// hashing commands do not evaluate recipe code and need no execution domain.
-fn create_engine(
-    recipe: &Path,
-    build_dir: Option<&Path>,
-    state_dir: Option<&Path>,
+struct EngineOptions<'a> {
+    build_dir: Option<&'a Path>,
+    state_dir: Option<&'a Path>,
     execution: levitate_recipe::ExecutionOptions,
-    recipes_path: Option<&Path>,
-    defines: &[String],
-    inputs: &[String],
+    recipes_path: Option<&'a Path>,
+    defines: &'a [String],
+    inputs: &'a [String],
     no_persist_state: bool,
     llm_profile: Option<String>,
+}
+
+fn create_engine(
+    recipe: &Path,
+    options: &EngineOptions<'_>,
     autofix: Option<AutoFixConfig>,
 ) -> Result<RecipeEngine> {
+    let EngineOptions {
+        build_dir,
+        state_dir,
+        execution,
+        recipes_path,
+        defines,
+        inputs,
+        no_persist_state,
+        llm_profile,
+    } = options;
     execution.validate()?;
     let launcher = GinuxLauncher::from_env()?;
     let engine = match build_dir {
@@ -243,22 +201,22 @@ fn create_engine(
                 .with_context(|| format!("Failed to create build directory: {}", dir.display()))?;
             RecipeEngine::new(dir.to_path_buf())
         }
-        None if no_persist_state => RecipeEngine::with_temporary_destination()?,
-        None => RecipeEngine::new(levitate_recipe::default_destination(state_dir, recipe)?),
+        None if *no_persist_state => RecipeEngine::with_temporary_destination()?,
+        None => RecipeEngine::new(levitate_recipe::default_destination(*state_dir, recipe)?),
     };
     let mut engine = engine
         .with_launcher(launcher)
-        .with_state_persistence(!no_persist_state)
+        .with_state_persistence(!*no_persist_state)
         .with_state_dir(state_dir.map(Path::to_owned))
-        .with_execution_options(execution)
-        .with_llm_profile(llm_profile)
+        .with_execution_options(execution.clone())
+        .with_llm_profile(llm_profile.clone())
         .with_autofix(autofix);
 
     if let Some(rp) = recipes_path {
         engine = engine.with_recipes_path(rp.to_path_buf());
     }
 
-    for define in defines {
+    for define in *defines {
         if let Some((key, value)) = define.split_once('=') {
             engine.add_define(key.to_string(), value.to_string());
         } else {
@@ -266,7 +224,7 @@ fn create_engine(
         }
     }
 
-    for input in inputs {
+    for input in *inputs {
         let (name, path) = input
             .split_once('=')
             .context("--input requires NAME=PATH")?;

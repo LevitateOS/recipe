@@ -13,7 +13,13 @@ pub(crate) fn run_call(
         return Err("LLM input exceeds configured byte limit".into());
     }
     cmd.current_dir(&call.cwd).envs(call.env.iter());
-    let tee = |stream: bool| if stream { Route::OutOfBand } else { Route::Silent };
+    let tee = |stream: bool| {
+        if stream {
+            Route::OutOfBand
+        } else {
+            Route::Silent
+        }
+    };
     let finished = Run::new(cmd)
         .stdin(call.stdin)
         .route(tee(call.stream_stdout), tee(call.stream_stderr))

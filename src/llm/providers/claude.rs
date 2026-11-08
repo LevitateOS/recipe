@@ -63,7 +63,11 @@ pub(crate) fn build(
 pub(crate) fn finalize(result: ProviderResult) -> Result<String, String> {
     if !result.exit.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
-        return Err(format!("claude exited with {}: {}", result.exit, stderr.trim()));
+        return Err(format!(
+            "claude exited with {}: {}",
+            result.exit,
+            stderr.trim()
+        ));
     }
     let out = String::from_utf8_lossy(&result.stdout);
     let trimmed = out.trim();

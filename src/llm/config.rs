@@ -251,7 +251,11 @@ fn build_resolved(cfg: &LlmToml) -> Result<ResolvedLlmConfig, String> {
         ),
     };
     // `config_overrides` are Codex `-c key=value` settings; Claude has no equivalent.
-    if claude.config_overrides.as_ref().is_some_and(|overrides| !overrides.is_empty()) {
+    if claude
+        .config_overrides
+        .as_ref()
+        .is_some_and(|overrides| !overrides.is_empty())
+    {
         return Err("[providers.claude] config_overrides is Codex-only; use args".to_owned());
     }
     let at_least = |name: &str, value: Option<u64>, default: u64, minimum: u64| match value {

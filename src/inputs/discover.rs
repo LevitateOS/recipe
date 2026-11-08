@@ -572,39 +572,40 @@ pub(crate) fn static_references(source: &str) -> Result<Vec<(String, bool)>> {
         if let Some(ASTNode::Stmt(Stmt::Import(import, _))) = nodes.last() {
             match &import.0 {
                 Expr::StringConstant(path, _) => references.push((path.to_string(), true)),
-                _ => invalid = Some("dynamic import cannot be prepared; use a literal module path".into()),
+                _ => {
+                    invalid =
+                        Some("dynamic import cannot be prepared; use a literal module path".into())
+                }
             }
         }
         true
     });
     for statement in ast.statements() {
-        if let Stmt::Var(declaration, _, _) = statement {
-            if crate::recipes::DEPENDENCY_FIELDS.contains(&declaration.0.name.as_str()) {
-                match &declaration.1 {
-                    Expr::Array(items, _) => {
-                        for item in items {
-                            match item {
-                                Expr::StringConstant(name, _) => {
-                                    match crate::recipes::dependency_file(name) {
-                                        Ok(file) => references.push((file, false)),
-                                        Err(problem) => invalid = Some(problem),
-                                    }
-                                }
-                                _ => {
-                                    invalid = Some(
-                                        "dependency names must be literal strings for input preparation"
-                                            .into(),
-                                    )
+        if let Stmt::Var(declaration, _, _) = statement
+            && crate::recipes::DEPENDENCY_FIELDS.contains(&declaration.0.name.as_str())
+        {
+            match &declaration.1 {
+                Expr::Array(items, _) => {
+                    for item in items {
+                        match item {
+                            Expr::StringConstant(name, _) => {
+                                match crate::recipes::dependency_file(name) {
+                                    Ok(file) => references.push((file, false)),
+                                    Err(problem) => invalid = Some(problem),
                                 }
                             }
+                            _ => invalid = Some(
+                                "dependency names must be literal strings for input preparation"
+                                    .into(),
+                            ),
                         }
                     }
-                    _ => {
-                        invalid = Some(
-                            "dependency declarations must be literal arrays for input preparation"
-                                .into(),
-                        )
-                    }
+                }
+                _ => {
+                    invalid = Some(
+                        "dependency declarations must be literal arrays for input preparation"
+                            .into(),
+                    )
                 }
             }
         }

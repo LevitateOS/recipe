@@ -72,7 +72,9 @@ fn github_error(repo: &str, error: ureq::Error) -> String {
 pub fn github_latest_release(repo: &str) -> Result<String, Box<EvalAltResult>> {
     let url = format!("{}/repos/{}/releases/latest", GITHUB_API_BASE, repo);
 
-    let response = github_request(&url)?.call().map_err(|e| github_error(repo, e))?;
+    let response = github_request(&url)?
+        .call()
+        .map_err(|e| github_error(repo, e))?;
 
     let json = response_json(response)?;
 
@@ -92,7 +94,9 @@ pub fn github_latest_release(repo: &str) -> Result<String, Box<EvalAltResult>> {
 pub fn github_latest_tag(repo: &str) -> Result<String, Box<EvalAltResult>> {
     let url = format!("{}/repos/{}/tags", GITHUB_API_BASE, repo);
 
-    let response = github_request(&url)?.call().map_err(|e| github_error(repo, e))?;
+    let response = github_request(&url)?
+        .call()
+        .map_err(|e| github_error(repo, e))?;
 
     let json = response_json(response)?;
 
@@ -135,7 +139,9 @@ pub fn github_download_release(
 ) -> Result<String, Box<EvalAltResult>> {
     super::verify::validate_sha256(sha256)?;
     let url = format!("{}/repos/{}/releases/latest", GITHUB_API_BASE, repo);
-    let response = github_request(&url)?.call().map_err(|e| github_error(repo, e))?;
+    let response = github_request(&url)?
+        .call()
+        .map_err(|e| github_error(repo, e))?;
 
     let json = response_json(response)?;
 

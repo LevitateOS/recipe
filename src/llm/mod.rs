@@ -14,7 +14,11 @@ use provider::LlmProviderId;
 
 /// Run `prompt` through the configured (or `profile`-selected) provider in
 /// `cwd` and return the reply text.
-pub(crate) fn complete(prompt: String, cwd: &std::path::Path, profile: Option<&str>) -> Result<String, String> {
+pub(crate) fn complete(
+    prompt: String,
+    cwd: &std::path::Path,
+    profile: Option<&str>,
+) -> Result<String, String> {
     let cfg = config::resolve_config_for_call(profile)?;
     let stdin = prompt.into_bytes();
     match cfg.default_provider {

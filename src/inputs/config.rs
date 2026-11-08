@@ -23,7 +23,6 @@ const MAX_CONFIG: usize = 4096;
 /// the same reference validation. The launcher resolves the reference.
 const DEFAULT_ROOT_REF: &str = "oci:rocky-10.2.20260525.0-amd64-rootfs@sha256:1026f8d3b36eaea1bcab8e609045991f08c70eb7645cb37f58f48faa8b40be9c";
 
-
 /// Instance config for one invocation; [`InstanceConfig::render`] produces the
 /// parser-accepted text.
 #[derive(Debug, Clone)]
@@ -171,8 +170,6 @@ fn root_reference() -> Result<String> {
     validate_reference(&root)?;
     Ok(root)
 }
-
-
 
 /// Mirror of the instance parser's reference rule for `root`/`storage`/`devices`.
 fn validate_reference(value: &str) -> Result<()> {

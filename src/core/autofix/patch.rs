@@ -191,10 +191,10 @@ fn validate_patch(cwd: &Path, allow_paths: &[PathBuf], patch: &str) -> Result<()
         bail!("autofix requires between 1 and 32 source paths");
     }
     for line in patch.lines() {
-        if line.starts_with("+++ ") || line.starts_with("--- ") {
-            if !(line.starts_with("+++ b/") || line.starts_with("--- a/")) {
-                bail!("autofix supports modifications of existing files with a/ and b/ headers");
-            }
+        if (line.starts_with("+++ ") || line.starts_with("--- "))
+            && !(line.starts_with("+++ b/") || line.starts_with("--- a/"))
+        {
+            bail!("autofix supports modifications of existing files with a/ and b/ headers");
         }
     }
     for relative in paths {
@@ -232,7 +232,10 @@ fn apply_patch(cwd: &Path, patch: &str) -> Result<()> {
     // Coordinator stdout carries the final JSON, so git output is diagnostics.
     let finished = crate::process::Run::new(cmd)
         .stdin(patch_bytes)
-        .route(crate::process::Route::Diagnostics, crate::process::Route::Diagnostics)
+        .route(
+            crate::process::Route::Diagnostics,
+            crate::process::Route::Diagnostics,
+        )
         .keep(crate::process::Keep::Tail(64 * 1024))
         .run()
         .context("running git apply")?;

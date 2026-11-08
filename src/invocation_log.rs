@@ -97,8 +97,11 @@ impl InvocationLog {
     /// Atomically replace `result.json` with `status` plus `details` fields.
     pub fn record(&self, status: Status, details: serde_json::Value) -> Result<()> {
         use std::io::Write;
-        let mut record = serde_json::json!({"invocation": self.invocation, "status": status.as_str()});
-        if let (Some(record), serde_json::Value::Object(details)) = (record.as_object_mut(), details) {
+        let mut record =
+            serde_json::json!({"invocation": self.invocation, "status": status.as_str()});
+        if let (Some(record), serde_json::Value::Object(details)) =
+            (record.as_object_mut(), details)
+        {
             record.extend(details);
         }
         let mut file = tempfile::Builder::new()
@@ -152,12 +155,16 @@ fn prune(root: &Path) -> Result<()> {
         }
         // A crash can leave the record missing or partial; such a directory
         // is still ours (named, leased, our files only) and ages by its mtime.
-        let recorded = std::fs::File::open(path.join(RESULT)).ok().and_then(|file| {
-            let mut bytes = Vec::new();
-            file.take(MAX_RESULT_BYTES + 1).read_to_end(&mut bytes).ok()?;
-            let record: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-            (record["invocation"].as_str() == Some(name)).then_some(())
-        });
+        let recorded = std::fs::File::open(path.join(RESULT))
+            .ok()
+            .and_then(|file| {
+                let mut bytes = Vec::new();
+                file.take(MAX_RESULT_BYTES + 1)
+                    .read_to_end(&mut bytes)
+                    .ok()?;
+                let record: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+                (record["invocation"].as_str() == Some(name)).then_some(())
+            });
         let aged = if recorded.is_some() {
             std::fs::metadata(path.join(RESULT))?.modified()?
         } else {

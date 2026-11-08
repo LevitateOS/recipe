@@ -28,7 +28,9 @@ impl Outcome {
     }
 
     fn parse(text: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|outcome| outcome.as_str() == text)
+        Self::ALL
+            .into_iter()
+            .find(|outcome| outcome.as_str() == text)
     }
 }
 
@@ -70,7 +72,10 @@ impl ResultRecord {
                 "invocation {invocation} result file has unsupported version {version:?} (want 1)"
             )));
         }
-        let text = value.get("outcome").and_then(|v| v.as_str()).unwrap_or_default();
+        let text = value
+            .get("outcome")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
         let outcome = Outcome::parse(text).ok_or_else(|| {
             protocol(format!(
                 "invocation {invocation} result file has unknown outcome {text:?} \
@@ -109,7 +114,9 @@ impl ResultRecord {
 
 /// The record's outcome, if a valid record exists (for error diagnostics).
 pub(crate) fn peek_outcome(path: &Path, invocation: &str) -> Option<Outcome> {
-    ResultRecord::read(path, invocation).ok().map(|record| record.outcome)
+    ResultRecord::read(path, invocation)
+        .ok()
+        .map(|record| record.outcome)
 }
 
 /// A short excerpt of the record for diagnostics.

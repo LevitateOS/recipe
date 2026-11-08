@@ -121,10 +121,10 @@ pub(crate) fn publish(
         // unselected entries. Symlinks are never traversed during publication.
         let mut parent = Path::new(path).parent();
         while let Some(path) = parent {
-            if let Some(parent_kind) = seen.get(path.to_str().context("invalid export parent")?) {
-                if *parent_kind != tar::EntryType::Directory {
-                    bail!("export traverses a non-directory parent");
-                }
+            if let Some(parent_kind) = seen.get(path.to_str().context("invalid export parent")?)
+                && *parent_kind != tar::EntryType::Directory
+            {
+                bail!("export traverses a non-directory parent");
             }
             parent = path.parent();
         }
@@ -335,4 +335,3 @@ fn validate_path(path: &str) -> Result<()> {
     }
     Ok(())
 }
-

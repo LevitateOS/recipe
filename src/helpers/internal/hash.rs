@@ -38,7 +38,10 @@ impl HashAlgorithm {
 }
 
 /// The expected digest in lowercase, or an error when it is not one.
-pub fn expected_digest(expected: &str, algorithm: HashAlgorithm) -> Result<String, Box<EvalAltResult>> {
+pub fn expected_digest(
+    expected: &str,
+    algorithm: HashAlgorithm,
+) -> Result<String, Box<EvalAltResult>> {
     if expected.len() != algorithm.hex_len() || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(format!(
             "expected {} must contain exactly {} hexadecimal characters",
@@ -69,13 +72,17 @@ pub fn verify_file_hash(
         HashAlgorithm::Sha256 => {
             use sha2::Digest;
             let mut hasher = sha2::Sha256::new();
-            read_chunks(&mut f, file_size, show_progress, |chunk| hasher.update(chunk))?;
+            read_chunks(&mut f, file_size, show_progress, |chunk| {
+                hasher.update(chunk)
+            })?;
             hex::encode(hasher.finalize())
         }
         HashAlgorithm::Sha512 => {
             use sha2::Digest;
             let mut hasher = sha2::Sha512::new();
-            read_chunks(&mut f, file_size, show_progress, |chunk| hasher.update(chunk))?;
+            read_chunks(&mut f, file_size, show_progress, |chunk| {
+                hasher.update(chunk)
+            })?;
             hex::encode(hasher.finalize())
         }
         HashAlgorithm::Blake3 => {

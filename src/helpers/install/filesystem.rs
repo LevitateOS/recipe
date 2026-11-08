@@ -55,7 +55,6 @@ pub fn glob_exists(pattern: &str) -> Result<bool, Box<EvalAltResult>> {
     Ok(!glob_matches(pattern)?.is_empty())
 }
 
-
 fn copy_file_impl(src: &Path, dest: &Path) -> Result<(), Box<EvalAltResult>> {
     if !src.is_file() {
         return Err(format!("copy source is not a file: {}", src.display()).into());
@@ -82,7 +81,11 @@ fn clone_file_reflink(src: &Path, dest: &Path) -> std::io::Result<()> {
     let src_file = OpenOptions::new().read(true).open(src)?;
     // FICLONE replaces the whole destination, so it needs no truncation first;
     // a failed clone leaves existing bytes in place.
-    let dest_file = OpenOptions::new().create(true).write(true).truncate(false).open(dest)?;
+    let dest_file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(dest)?;
 
     let request = FICLONE as libc::Ioctl;
     let rc = unsafe { libc::ioctl(dest_file.as_raw_fd(), request, src_file.as_raw_fd()) };
@@ -91,7 +94,6 @@ fn clone_file_reflink(src: &Path, dest: &Path) -> std::io::Result<()> {
     }
     dest_file.set_permissions(src_file.metadata()?.permissions())
 }
-
 
 fn copy_path_to_dir(src: &Path, dest_dir: &Path) -> Result<(), Box<EvalAltResult>> {
     let Some(name) = src.file_name() else {
@@ -185,7 +187,6 @@ fn copy_symlink(link_path: &Path, dest_path: &Path) -> Result<(), Box<EvalAltRes
         .into()
     })
 }
-
 
 /// Recursively copy the contents of src_dir into dst_dir
 pub fn copy_tree_contents(src_dir: &str, dst_dir: &str) -> Result<(), Box<EvalAltResult>> {
@@ -358,8 +359,6 @@ pub fn symlink_force(src: &str, dest: &str) -> Result<(), Box<EvalAltResult>> {
         .map_err(|e| format!("symlink failed: {}", e).into())
 }
 
-
-
 /// Change file permissions
 pub fn chmod_file(path: &str, mode: i64) -> Result<(), Box<EvalAltResult>> {
     use std::os::unix::fs::PermissionsExt;
@@ -367,4 +366,3 @@ pub fn chmod_file(path: &str, mode: i64) -> Result<(), Box<EvalAltResult>> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode as u32))
         .map_err(|e| format!("chmod failed: {}", e).into())
 }
-
