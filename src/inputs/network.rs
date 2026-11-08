@@ -22,14 +22,15 @@ impl NetworkPolicy {
             return Ok(Self::default());
         }
         let mut endpoints = BTreeSet::new();
-        let mut hosts = BTreeSet::new();
-        let mut host_endpoints = BTreeMap::new();
+        let mut candidates = BTreeMap::new();
+        let mut names = BTreeMap::new();
         for grant in &options.network_hosts {
             let mut resolved = BTreeSet::new();
             if let Ok(endpoint) = grant.parse::<SocketAddr>() {
                 validate_endpoint(endpoint)?;
-                endpoints.insert(endpoint.to_string());
-                resolved.insert(endpoint.to_string());
+                // An explicit numeric grant must never be displaced by DNS.
+                endpoints.insert(endpoint);
+                resolved.insert(endpoint);
             } else {
                 let (host, port) = grant
                     .rsplit_once(':')
@@ -54,21 +55,73 @@ impl NetworkPolicy {
                 for address in resolve_host(host)? {
                     let endpoint = SocketAddr::new(address, port);
                     validate_endpoint(endpoint)?;
-                    endpoints.insert(endpoint.to_string());
-                    resolved.insert(endpoint.to_string());
-                    hosts.insert(format!("{address} {}\n", host.to_ascii_lowercase()));
+                    resolved.insert(endpoint);
                 }
+                names.insert(grant.clone(), host.to_ascii_lowercase());
             }
-            host_endpoints.insert(grant.clone(), resolved.into_iter().collect());
-            if endpoints.len() > crate::domain::MAX_NETWORK_ENDPOINTS {
-                bail!(
-                    "network grants resolve to more than {} endpoints; select fewer hosts",
-                    crate::domain::MAX_NETWORK_ENDPOINTS
-                );
+            candidates.insert(grant.clone(), resolved);
+        }
+        let limit = crate::domain::MAX_NETWORK_ENDPOINTS;
+        if endpoints.len() > limit {
+            bail!("network grants require more than {limit} numeric endpoints");
+        }
+        // Reserve at least one address per declared grant, then distribute the
+        // remaining slots round-robin. Sorted grants/addresses make selection
+        // independent of NSS output order; SocketAddr orders IPv4 before IPv6.
+        for (grant, resolved) in &candidates {
+            if !resolved.iter().any(|endpoint| endpoints.contains(endpoint)) {
+                if endpoints.len() == limit {
+                    bail!(
+                        "network grants cannot fit one address per host in {limit} endpoints; select fewer hosts (at {grant})"
+                    );
+                }
+                endpoints.insert(*resolved.first().context("network grant has no addresses")?);
             }
         }
+        while endpoints.len() < limit {
+            let mut changed = false;
+            for resolved in candidates.values() {
+                if let Some(endpoint) = resolved
+                    .iter()
+                    .find(|endpoint| !endpoints.contains(endpoint))
+                {
+                    endpoints.insert(*endpoint);
+                    changed = true;
+                    if endpoints.len() == limit {
+                        break;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let mut hosts = BTreeSet::new();
+        let mut host_endpoints = BTreeMap::new();
+        for (grant, resolved) in &candidates {
+            let selected = resolved
+                .intersection(&endpoints)
+                .copied()
+                .collect::<Vec<_>>();
+            if selected.len() < resolved.len() {
+                eprintln!(
+                    "recipe: network grant {grant}: selected {} of {} resolved addresses (endpoint limit {limit}); exact pins are recorded in authority.json",
+                    selected.len(),
+                    resolved.len()
+                );
+            }
+            if let Some(host) = names.get(grant) {
+                for endpoint in &selected {
+                    hosts.insert(format!("{} {host}\n", endpoint.ip()));
+                }
+            }
+            host_endpoints.insert(
+                grant.clone(),
+                selected.iter().map(ToString::to_string).collect(),
+            );
+        }
         Ok(Self {
-            endpoints: endpoints.into_iter().collect(),
+            endpoints: endpoints.iter().map(ToString::to_string).collect(),
             max_bytes: options.network_max_bytes,
             host_endpoints,
             hosts: hosts.into_iter().collect(),

@@ -361,6 +361,119 @@ fn is_installed(ctx) {{ ready(ctx) }}
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn managed_network_address_subset_matches_hosts_and_authority() {
+    use std::os::unix::process::CommandExt;
+    let (dir, recipes) = create_test_env();
+    let hosts_file = dir.path().join("resolver-hosts");
+    let mut rows = vec!["127.0.0.1 localhost\n".to_owned()];
+    for host in ["many.example", "other.example"] {
+        for number in 1..=10 {
+            rows.push(format!(
+                "127.79.{}.{} {host}\n",
+                if host == "many.example" { 1 } else { 2 },
+                number
+            ));
+        }
+    }
+    write_recipe(
+        &recipes,
+        "pins",
+        r#"const RECIPE_API=2;
+const NEEDS=#{network:["many.example:443","other.example:443","127.79.0.99:443"]};
+let ctx=#{name:"bounded-network-pins",state:#{hosts:""}};
+fn is_installed(ctx) { ctx.state.hosts=read_file("/etc/hosts"); ready(ctx) }
+"#,
+    );
+    for reverse in [false, true] {
+        if reverse {
+            rows.reverse();
+        }
+        std::fs::write(&hosts_file, rows.concat()).unwrap();
+        let mount_source =
+            std::ffi::CString::new(hosts_file.as_os_str().as_encoded_bytes()).unwrap();
+        let mut command = recipe_command(&recipes);
+        command
+            .args(["install", "pins", "--recipes-path"])
+            .arg(&recipes)
+            .arg("--build-dir")
+            .arg(dir.path().join("build"));
+        // Only this CLI child sees the deterministic NSS fixture. The host's
+        // mount namespace and hosts file remain untouched, including on failure.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::unshare(libc::CLONE_NEWNS) != 0
+                    || libc::mount(
+                        std::ptr::null(),
+                        c"/".as_ptr(),
+                        std::ptr::null(),
+                        libc::MS_REC | libc::MS_PRIVATE,
+                        std::ptr::null(),
+                    ) != 0
+                    || libc::mount(
+                        mount_source.as_ptr(),
+                        c"/etc/hosts".as_ptr(),
+                        std::ptr::null(),
+                        libc::MS_BIND,
+                        std::ptr::null(),
+                    ) != 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let output = command
+            .output()
+            .expect("start namespaced actual Recipe CLI");
+        assert_success(&output);
+        assert!(String::from_utf8_lossy(&output.stderr).contains("selected"));
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let hosts = result["state"]["hosts"].as_str().unwrap();
+        for number in 1..=10 {
+            assert_eq!(
+                hosts.contains(&format!("127.79.1.{number} many.example\n")),
+                number <= 4
+            );
+            assert_eq!(
+                hosts.contains(&format!("127.79.2.{number} other.example\n")),
+                number <= 3
+            );
+        }
+    }
+    let receipts = walkdir::WalkDir::new(dir.path())
+        .into_iter()
+        .map(Result::unwrap)
+        .filter(|entry| entry.file_name() == "authority.json")
+        .collect::<Vec<_>>();
+    assert_eq!(receipts.len(), 2);
+    let mut selected = Vec::new();
+    for receipt in receipts {
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(receipt.path()).unwrap()).unwrap();
+        let endpoints = value["pinned_endpoints"].as_array().unwrap();
+        assert_eq!(endpoints.len(), 8);
+        assert!(endpoints.contains(&serde_json::json!("127.79.0.99:443")));
+        assert_eq!(
+            value["host_endpoints"]["many.example:443"]
+                .as_array()
+                .unwrap()
+                .len(),
+            4
+        );
+        assert_eq!(
+            value["host_endpoints"]["other.example:443"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        selected.push(value["host_endpoints"].clone());
+    }
+    assert_eq!(selected[0], selected[1]);
+}
+
 #[test]
 fn managed_transport_rejects_the_old_grant_model_before_setup() {
     use std::os::unix::fs::PermissionsExt;

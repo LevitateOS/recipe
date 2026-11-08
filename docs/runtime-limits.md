@@ -26,6 +26,17 @@ not external AI-provider interoperability.
 The installer UI's PTYs run on the libvirt guest's Linux kernel. Their acceptance
 does not establish general PTY support inside configured Ginux recipe workloads.
 
+Hostname resolution has an eight-endpoint total budget. Explicit numeric grants
+are retained first. Sorted hostname grants each receive at least one address;
+remaining slots are distributed round-robin in numeric address order (IPv4
+before IPv6). The selected subset is identical in Ginux's endpoint grants, the
+immutable `/etc/hosts` view and the invocation's `authority.json` receipt
+(`pinned_endpoints` and `host_endpoints`). Selection warns when addresses are
+omitted; DNS answer order does not affect it. If explicit grants or one address
+per hostname cannot fit, launch fails. Availability of omitted addresses and
+runtime DNS refresh are not promised. Ordinary publisher TLS verification is
+unchanged.
+
 The superproject's `docs/ginux-contributions/prd08-public-contracts.md` records
 the detailed policy and original source-bound receipts. Current release and VM
 acceptance remain separately tracked in `docs/ginux-contribution-task-list.md`;
