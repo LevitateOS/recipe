@@ -9,6 +9,12 @@ The current contract is `const RECIPE_API = 2;`. Recipes define package facts,
 custom readiness and acquire/build/install behavior. Callers select inputs,
 resource limits, endpoint permissions and the outputs they consume.
 
+The launcher must support Ginux's explicit `configured-balanced-v2` contract
+profile (configured catalog 2). Recipe renders that profile; an older launcher
+fails at configuration validation rather than falling back to the unversioned
+configured extensions. Inputs, endpoint grants and resource bounds remain
+explicit caller options.
+
 ## Build and prepare the environment
 
 From the LevitateOS workspace:
