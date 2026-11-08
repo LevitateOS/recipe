@@ -2,7 +2,7 @@ use super::*;
 use sha2::{Digest, Sha256};
 
 pub(super) fn copy_kernel_recipes(recipes: &Path) {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../distro/builder/recipes");
+    let source = production_recipes();
     for name in ["linux.rhai", "linux-prebuilt.rhai", "linux-deps.rhai"] {
         std::fs::copy(source.join(name), recipes.join(name)).unwrap();
     }

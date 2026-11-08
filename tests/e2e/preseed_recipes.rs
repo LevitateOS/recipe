@@ -57,7 +57,7 @@ fn lock_rows(recipes: &Path, recipe: &str) -> Vec<Vec<String>> {
 }
 
 fn prepare_assets(recipes: &Path, recipe: &str) -> (PathBuf, Vec<PathBuf>) {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../distro/builder/recipes");
+    let source = production_recipes();
     std::fs::create_dir_all(recipes.join("sources")).unwrap();
     for file in [
         "locked-preseed.rhai",
@@ -255,7 +255,7 @@ fn cli_rootfs_consumers_reject_changed_explicit_assets() {
     ] {
         let (dir, recipes) = create_test_env();
         let (target, files) = prepare_assets(&recipes, producer);
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../distro/builder/recipes");
+        let source = production_recipes();
         std::fs::copy(
             source.join(format!("{consumer}.rhai")),
             recipes.join(format!("{consumer}.rhai")),
@@ -283,12 +283,22 @@ fn cli_rootfs_consumers_reject_changed_explicit_assets() {
                         target.join(output_name(producer)).display()
                     ),
                 ]);
-            for name in ["capabilities", "system_setup", "os_release"] {
+            for name in [
+                "capabilities",
+                "system_setup",
+                "os_release",
+                "admin_rule_file",
+                "admin_rule",
+            ] {
                 command.args(["--input", &format!("{name}={}", control.display())]);
             }
             let (output, _) = super::kernel_recipes::invoke_kernel(command, dir.path());
             assert!(!output.status.success());
-            assert!(String::from_utf8_lossy(&output.stderr).contains("integrity check failed"));
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("integrity check failed"),
+                "{consumer}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
             std::fs::write(file, original).unwrap();
         }
     }

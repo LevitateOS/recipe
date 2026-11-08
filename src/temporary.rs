@@ -11,8 +11,8 @@ use std::path::Path;
 pub(crate) struct TemporaryDirectory {
     directory: tempfile::TempDir,
     data: std::path::PathBuf,
-    // Inherited by the supervisor, but closed by Ginux before guest execution.
-    // Keep the lease until both coordinator and supervisor have released it.
+    // Coordinator owns this lease through launcher teardown. Ginux closes
+    // inherited duplicates before workload; they do not extend its lifetime.
     lease: File,
 }
 

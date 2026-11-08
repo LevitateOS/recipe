@@ -65,10 +65,18 @@ fn cli_prebuilt_kernel_offline_acquisition_validates_before_publication() {
         std::fs::write(&supplied, bytes).unwrap();
         let path = recipes.join("linux-prebuilt.rhai");
         // Only the fixture's declared digest changes; actual lifecycle runs.
-        let source = std::fs::read_to_string(&path).unwrap().replace(
-            "c3634752d628695eba64130b0b342042a283b164d6fa16e0c871c125256aabfc",
-            &expected,
+        let mut source = std::fs::read_to_string(&path).unwrap();
+        let target = source.find("acorn: #{").expect("Acorn asset facts");
+        let marker = "sha256: \"";
+        let digest =
+            target + source[target..].find(marker).expect("Acorn asset pin") + marker.len();
+        assert!(
+            source[digest..digest + 64]
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit())
         );
+        assert_eq!(&source[digest + 64..digest + 65], "\"");
+        source.replace_range(digest..digest + 64, &expected);
         std::fs::write(&path, &source).unwrap();
         let mut command = kernel_command(&recipes, "install", "linux-prebuilt");
         command

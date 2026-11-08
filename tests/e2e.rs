@@ -13,6 +13,15 @@ fn recipe_bin() -> std::path::PathBuf {
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_recipe").into())
 }
 
+/// Select the exact producer recipe inputs for standalone retained runs.
+fn production_recipes() -> std::path::PathBuf {
+    std::env::var_os("RECIPE_TEST_BUILDER_RECIPES")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../distro/builder/recipes")
+        })
+}
+
 /// Create a test environment
 fn create_test_env() -> (TempDir, std::path::PathBuf) {
     let retained = std::env::var_os("RECIPE_TEST_ARTIFACTS");

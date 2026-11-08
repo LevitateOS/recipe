@@ -112,20 +112,24 @@ fn managed_state_restores_files_and_nested_values_without_rewriting_sources() {
 }
 
 fn wait_for_log(child: &mut std::process::Child, path: &Path, marker: &str) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+    // Image preparation precedes the marker; this is a bootstrap allowance,
+    // not a change to execution deadlines or the checkpoint interruption point.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
     loop {
         let text = std::fs::read_to_string(path).unwrap_or_default();
         if text.contains(marker) {
             return;
         }
-        assert!(
-            child.try_wait().unwrap().is_none(),
-            "exited before {marker}: {text}"
-        );
-        assert!(
-            std::time::Instant::now() < deadline,
-            "missing {marker}: {text}"
-        );
+        let exited = child.try_wait().unwrap().is_some();
+        if exited || std::time::Instant::now() >= deadline {
+            // A fixture failure must not leave its coordinator running.
+            child.kill().ok();
+            child.wait().ok();
+            panic!(
+                "{} {marker}: {text}",
+                if exited { "exited before" } else { "missing" }
+            );
+        }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
 }

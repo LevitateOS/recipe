@@ -8,7 +8,7 @@ fn library_default_uses_ginux_even_with_spoofed_worker_environment() {
     assert_eq!(std::env::var("RECIPE_WORKER").unwrap(), "1");
     let directory = tempfile::tempdir().unwrap();
     let recipe = directory.path().join("library.rhai");
-    let source = "const RECIPE_API = 2; let ctx = #{name: \"library\"}; fn is_installed(ctx) { ready(ctx) }\n";
+    let source = "const RECIPE_API = 2; const NEEDS = #{}; let ctx = #{name: \"library\"}; fn is_installed(ctx) { ready(ctx) }\n";
     std::fs::write(&recipe, source).unwrap();
     let engine =
         RecipeEngine::new(directory.path().join("host-build")).with_state_persistence(false);

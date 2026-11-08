@@ -56,10 +56,10 @@ fn image_tar(path: &Path, entries: &[(&str, tar::EntryType, &str)]) -> String {
         header.set_entry_type(*kind);
         header.set_mode(0o755);
         if kind.is_symlink() || kind.is_hard_link() {
-            header.set_link_name(value).unwrap();
             header.set_size(0);
-            header.set_cksum();
-            archive.append(&header, std::io::empty()).unwrap();
+            // Let tar encode long link targets. Regular hostile names above
+            // remain literal so the CLI, not the fixture builder, rejects them.
+            archive.append_link(&mut header, name, value).unwrap();
         } else {
             header.set_size(value.len() as u64);
             header.set_cksum();
