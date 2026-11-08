@@ -67,7 +67,7 @@ let ctx = #{{name:"static-needs"}};
     let value: serde_json::Value = serde_json::from_slice(&allowed.stdout).unwrap();
     assert_eq!(value["effective"]["memory_mib"], 2048);
     assert_eq!(value["effective"]["network"], serde_json::json!([]));
-    assert_eq!(value["contract"]["catalog"], 2);
+    assert_eq!(value["contract"]["catalog"], 1002);
     assert_eq!(
         value["contract"]["contract"]["connect"],
         serde_json::json!([])
@@ -171,7 +171,7 @@ fn install(ctx) {{ {body} ctx.state.done=true; ctx }}
                 "typed bytes"
             );
             assert!(Path::new(value["outputs"]["tree"].as_str().unwrap()).is_dir());
-            assert_eq!(value["runtime"]["contract"]["catalog"], 2);
+            assert_eq!(value["runtime"]["contract"]["catalog"], 1002);
             assert_eq!(value["contract"], "recipe-owned contract fact");
             assert_eq!(value["network_usage"], "recipe-owned usage fact");
         } else {

@@ -26,7 +26,7 @@ paths in ctx.outputs; hooks use domain paths.
 Set GINUX_BIN to the actual launcher executable, GINUX_ROOTFS to an assembled
 rootfs tar and GINUX_ROOT to oci:name@sha256:digest matching that tar. Set
 RECIPE_WORKER_BIN when the worker cannot be resolved from the current CLI/PATH.
-The launcher must support configured catalog 2 and configured-network-audit=1
+The launcher must support configured downstream catalog 1002 and configured-network-audit=1
 and configured-denial-audit=1.
 The current native launcher needs Linux x86_64 and chroot bootstrap privileges.
 Run the whole coordinator with those privileges and the explicit launcher,

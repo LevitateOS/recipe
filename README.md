@@ -13,7 +13,7 @@ Restrictions must first be valid lowerings/subsets for the named recipe. They
 also cover every dependency: limits take the stricter bound, and endpoint sets
 intersect each dependency's own declaration. Limits remain per instance.
 
-The launcher must support configured catalog 2, `configured-network-audit=1`, `configured-denial-audit=1`,
+The launcher must support configured downstream catalog 1002, `configured-network-audit=1`, `configured-denial-audit=1`,
 configured `launch`, export, control and restore. Recipe derives a self-contained
 `[userspace.contract]` and validates it before launch; a generic `config` parse
 alone does not establish compatibility. The LevitateOS workspace's old

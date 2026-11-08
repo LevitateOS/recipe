@@ -8,6 +8,10 @@ The maintained sources are [LevitateOS/recipe](https://github.com/LevitateOS/rec
 and [LevitateOS/ginux](https://github.com/LevitateOS/ginux). Upstream Ginux leads;
 our Ginux history includes upstream main and retains the changes Recipe needs.
 Reconcile new upstream behavior and replace our changes when upstream covers it.
+The pinned version also includes upstream Gate 11 PR #249 at
+`9759daaec8589a7e2d2cc9e1c9ec1f398b6e958f`, ahead of its merge into main.
+Gate 11 remains partial against its performance budget. Recipe selects explicit
+downstream catalog 1002, separate from Gate 11 upstream catalog 2.
 This source delivery does not claim distro boot/install or complete security
 acceptance. Do not substitute a migration binary, private image cache or test CA.
 
@@ -36,7 +40,7 @@ not identify a reproducible pair. The compatible Ginux revision here is explicit
 ```sh
 git clone --branch master https://github.com/LevitateOS/recipe.git recipe-source
 git clone --branch main https://github.com/LevitateOS/ginux.git maintained-ginux
-git -C maintained-ginux checkout --detach a538e1784e258d3edda99503dc6e4f29aca2f56f
+git -C maintained-ginux checkout --detach 28f4368f6fd70d0e485386892a08d6734b5988dd
 git -C recipe-source rev-parse HEAD
 (cd maintained-ginux && make build)
 cd recipe-source

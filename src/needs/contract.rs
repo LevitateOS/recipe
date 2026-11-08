@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-pub const CATALOG: u32 = 2;
+pub const CATALOG: u32 = 1002;
 
 /// Finite, version-pinned build base. Syscall selectors select only the
 /// corresponding access verb. Assigned filesystem/device/endpoint owners
@@ -193,13 +193,13 @@ pub(crate) fn validate(launcher: &Path, config: &str, network: bool) -> Result<R
         "invalid Ginux contract digest"
     );
     let expected = if network {
-        "4106370023c93de07ccc93b48b8883dc2e09186b1fa0ed1835e6d97ff7ccf314"
+        "2fed34c8b7fb991da907669f8a93c1815ffde09edaa81d251725346af6bce589"
     } else {
-        "121cb495da506cad611b9d81dfb38eb15ff23e9c965d8d758f3a1c5076f04f79"
+        "6150d326d212a41a1ae55c8d21bf661ee42446da7b88f822782f35c04b35ba26"
     };
     ensure!(
         digest == expected,
-        "Ginux catalog-2 build-base digest changed: expected {expected}, got {digest}; review the catalog and derived grants explicitly"
+        "Ginux catalog-1002 build-base digest changed: expected {expected}, got {digest}; review the catalog and derived grants explicitly"
     );
     Ok(Receipt {
         catalog,
