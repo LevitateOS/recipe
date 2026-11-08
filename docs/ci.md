@@ -1,8 +1,10 @@
 # Managed integration CI
 
-The package declares Rust 1.93 as its MSRV. Shared CI builds on stable, checks
-Clippy and formatting, and checks fresh standalone dependency resolution on the
-MSRV. Workspace-lock checks supplement independent unlocked resolution.
+The package declares Rust 1.93 as its MSRV and retains a release Cargo.lock.
+Shared CI builds/checks the selected dependencies on stable and MSRV and runs
+Clippy/formatting. The standalone-resolution job independently exports source
+without Cargo.lock and builds on both stable and 1.93.0. Workspace-lock checks
+supplement these disposable unlocked checks.
 Shared workflow definitions are pinned to superproject commit
 `eea341c64a065d8465727919a72bc592878ea70b`; changing their behavior requires an
 explicit source update.
