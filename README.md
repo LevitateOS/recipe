@@ -23,6 +23,10 @@ superproject's `docs/ginux-contributions/prd18-implementation.md`.
 
 ## Build and prepare the environment
 
+[Linux setup and bootstrap](docs/setup-linux.md) records the verified host,
+input reproduction, package roles, required privileges and output ownership.
+Maintained runtime source delivery remains an explicit prerequisite.
+
 From the LevitateOS workspace:
 
 ```sh

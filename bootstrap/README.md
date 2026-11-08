@@ -42,8 +42,11 @@ The producer bounds each input/member at 16 GiB, aggregate input/expanded data
 at 32 GiB, and archive entries at 500,000. Links cannot traverse above the image
 root; addition hardlinks must name a selected regular file in the same archive.
 Temporary payloads use private files without keeping one descriptor per entry.
-Failures leave no published output directory. Interrupted processes can leave
-private temporary directories beside the selected output.
+Pre-publication failures leave no published output directory. Publication never
+replaces an existing directory. A late error after the atomic rename can leave
+a complete fresh directory; reject non-success rather than accepting a path's
+existence. Interrupted processes can leave private temporary directories beside
+the selected output.
 
 
 ## Acquisition and musl compiler image
