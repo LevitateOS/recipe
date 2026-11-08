@@ -23,6 +23,8 @@ consumer works. Whole-coordinator bootstrap privileges remain required; see
 owns A/B activation. Package helpers do not add a general package solver or
 global ownership database. Controlled autofix checks establish retry mechanics,
 not external AI-provider interoperability.
+The installer UI's PTYs run on the libvirt guest's Linux kernel. Their acceptance
+does not establish general PTY support inside configured Ginux recipe workloads.
 
 The superproject's `docs/ginux-contributions/prd08-public-contracts.md` records
 the detailed policy and original source-bound receipts. Current release and VM

@@ -67,7 +67,7 @@ sudo, pass the declared image/worker selections to the whole coordinator command
 ```sh
 sudo env GINUX_BIN="$GINUX_BIN" GINUX_ROOTFS="$GINUX_ROOTFS" \
   GINUX_ROOT="$GINUX_ROOT" RECIPE_WORKER_BIN="$RECIPE_WORKER_BIN" \
-  "$RECIPE_WORKER_BIN" install ./hello.rhai --build-dir ./hello-work
+  "$RECIPE_WORKER_BIN" install tools/recipe/examples/hello.rhai --build-dir ./hello-work
 ```
 
 
@@ -83,13 +83,12 @@ across two cache clients and execute the resulting threaded program.
 ## Run a recipe
 
 ```sh
-recipe install ./producer.rhai \
+recipe install tools/recipe/examples/hello.rhai \
   --build-dir .artifacts/work/example \
   --state-dir .artifacts/state/example \
-  --input source=/absolute/path/to/offline-source \
   --json-output .artifacts/example-result.json
-recipe isinstalled ./producer.rhai --build-dir .artifacts/work/example \
-  --state-dir .artifacts/state/example --input source=/absolute/path/to/offline-source
+recipe isinstalled tools/recipe/examples/hello.rhai --build-dir .artifacts/work/example \
+  --state-dir .artifacts/state/example
 ```
 
 Pass the same recipe, inputs and destination for retained lifecycle operations.
@@ -251,11 +250,11 @@ Linux compatibility beyond these boundaries.
 ## Read authority without executing setup
 
 ```sh
-recipe validate ./producer.rhai --input source=./offline-source
-recipe inspect ./producer.rhai
-recipe explain ./producer.rhai network.connect
+recipe validate tools/recipe/examples/hello.rhai
+recipe inspect tools/recipe/examples/hello.rhai
+recipe explain tools/recipe/examples/hello.rhai network.connect
 recipe explain /absolute/state/logs/INVOCATION network.connect
-recipe diff ./old.rhai ./new.rhai
+recipe diff tools/recipe/examples/hello.rhai tools/recipe/examples/threaded-hello.rhai
 ```
 
 These commands never run recipe setup or launch a workload. Validation also
@@ -317,7 +316,7 @@ RECIPE_TEST_BIN=/absolute/path/to/recipe cargo test --offline \
 
 The checkout's workspace and configured launch privileges are required. See the
 superproject implementation checkpoint for exact tested revisions and remaining
-production/VM evidence. Native tool lifecycle, custom-rootfs, selected-target,
+production/VM evidence. Real tool lifecycle, custom-rootfs, selected-target,
 checkpoint/link preservation and mediated acquisition are separately exercised;
 none implies general Linux syscall or every distro package support.
 

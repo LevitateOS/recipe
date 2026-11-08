@@ -13,6 +13,10 @@ hex-encoded raw xattrs, link target and a SHA256 binding for regular payloads.
 RPM account names are resolved against the **target** passwd/group files during
 finalization. Host account lookup is never the authority for installed ownership.
 Unsupported package inode types and xattr encodings fail explicitly.
+The target manifest does not retain original timestamps. The target archive
+writer normalizes modification times to epoch zero for reproducibility;
+generic Recipe publication preserves its supported whole-second archive times.
+Neither path promises nanosecond timestamp fidelity.
 
 The native recipe helpers are:
 
