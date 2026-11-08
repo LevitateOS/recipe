@@ -3,6 +3,8 @@
 use crate::core::output;
 use crate::helpers::internal::{cmd, progress};
 use rhai::EvalAltResult;
+use std::io::Read;
+use std::net::IpAddr;
 use std::path::Path;
 use std::process::Command;
 
@@ -87,6 +89,64 @@ fn git(dir: Option<&Path>, args: &[&str]) -> Command {
     command
 }
 
+/// Reuse the coordinator's immutable hostname mappings. libcurl's threaded
+/// resolver requires eventfd on some images, even for /etc/hosts lookups.
+/// CURLOPT_RESOLVE keeps the original URL/TLS identity and uses only these
+/// already-pinned addresses; Ginux still enforces the numeric endpoint grant.
+fn transport(url: &str, dir: Option<&Path>, args: &[&str]) -> Result<Command, Box<EvalAltResult>> {
+    let mut command = git(dir, &[]);
+    if url.starts_with("http://") || url.starts_with("https://") {
+        let parsed = ureq::get(url)
+            .request_url()
+            .map_err(|e| format!("invalid Git HTTP URL: {e}"))?;
+        let host = parsed.host();
+        if host.trim_matches(['[', ']']).parse::<IpAddr>().is_err() {
+            let mut hosts = String::new();
+            std::fs::File::open("/etc/hosts")
+                .and_then(|file| file.take(65537).read_to_string(&mut hosts))
+                .map_err(|e| format!("cannot read pinned Git hostname mappings: {e}"))?;
+            if hosts.len() > 65536 {
+                return Err("pinned Git hostname mappings exceed their bound".into());
+            }
+            let mut addresses = std::collections::BTreeSet::new();
+            for line in hosts.lines() {
+                let mut fields = line.split('#').next().unwrap_or("").split_whitespace();
+                let Some(address) = fields.next() else {
+                    continue;
+                };
+                if fields.any(|name| name.eq_ignore_ascii_case(host)) {
+                    let address: IpAddr =
+                        address.parse().map_err(|_| "invalid pinned Git address")?;
+                    addresses.insert(match address {
+                        IpAddr::V4(address) => address.to_string(),
+                        IpAddr::V6(address) => format!("[{address}]"),
+                    });
+                }
+            }
+            if addresses.is_empty() || addresses.len() > crate::domain::MAX_NETWORK_ENDPOINTS {
+                return Err(
+                    "Git hostname needs a bounded coordinator mapping; declare NEEDS.network"
+                        .into(),
+                );
+            }
+            let port = parsed
+                .port()
+                .unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
+            command.args([
+                "-c",
+                "http.curloptResolve=",
+                "-c",
+                &format!(
+                    "http.curloptResolve={host}:{port}:{}",
+                    addresses.into_iter().collect::<Vec<_>>().join(",")
+                ),
+            ]);
+        }
+    }
+    command.args(args);
+    Ok(command)
+}
+
 fn query(dir: &Path, args: &[&str]) -> Result<String, Box<EvalAltResult>> {
     let output = cmd::checked_capture(git(Some(dir), args))?;
     String::from_utf8(output.stdout)
@@ -169,7 +229,7 @@ fn validate_checkout(dest: &Path, url: &str) -> Result<(), Box<EvalAltResult>> {
     Ok(())
 }
 
-fn select_commit(dest: &Path, commit: &str) -> Result<(), Box<EvalAltResult>> {
+fn select_commit(dest: &Path, commit: &str, url: &str) -> Result<(), Box<EvalAltResult>> {
     if !query(dest, &["status", "--porcelain", "--untracked-files=all"])?.is_empty() {
         return Err(format!(
             "Git checkout {} has local changes; refusing to replace them",
@@ -187,7 +247,11 @@ fn select_commit(dest: &Path, commit: &str) -> Result<(), Box<EvalAltResult>> {
     match present.exit {
         crate::process::Exit::Code(0) => {}
         crate::process::Exit::Code(1) => {
-            cmd::run_checked(git(Some(dest), &["fetch", "--no-tags", "origin", commit]))?;
+            cmd::run_checked(transport(
+                url,
+                Some(dest),
+                &["fetch", "--no-tags", "origin", commit],
+            )?)?;
         }
         other => {
             return Err(format!(
@@ -222,7 +286,7 @@ fn acquire(url: &str, dest: &Path, commit: &str) -> Result<String, Box<EvalAltRe
                 .into());
             }
             validate_checkout(dest, url)?;
-            select_commit(dest, commit)?;
+            select_commit(dest, commit, url)?;
             output::detail(&format!("git: reusing {}", dest.display()));
             return Ok(dest.to_string_lossy().into_owned());
         }
@@ -245,12 +309,16 @@ fn acquire(url: &str, dest: &Path, commit: &str) -> Result<String, Box<EvalAltRe
         .tempdir_in(parent)
         .map_err(|error| format!("cannot create Git staging directory: {error}"))?;
     let staged = staging.path().join("checkout");
-    let mut command = git(None, &["clone", "--no-local", "--progress", "--template="]);
+    let mut command = transport(
+        url,
+        None,
+        &["clone", "--no-local", "--progress", "--template="],
+    )?;
     command.arg("--").arg(url).arg(&staged);
     let _progress = progress::Spinner::new("cloning Git source");
     cmd::run_checked(command)?;
     validate_checkout(&staged, url)?;
-    select_commit(&staged, commit)?;
+    select_commit(&staged, commit, url)?;
     std::fs::rename(&staged, dest)
         .map_err(|error| format!("cannot publish Git checkout {}: {error}", dest.display()))?;
     output::detail(&format!("git: acquired {}", dest.display()));

@@ -1,0 +1,38 @@
+const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ program: "file", rootfs: "directory", packages: "directory" }, network: ["dl-cdn.alpinelinux.org:443"], network_max_bytes: 16777216 };
+let ctx = #{name: "apk", state: #{acquired: false, built: false, installed: false}};
+fn is_acquired(ctx) { if ctx.state.acquired { ready(ctx) } else { needs_work(ctx, "download publisher-pinned APKs") } }
+fn is_built(ctx) { if ctx.state.built { ready(ctx) } else { needs_work(ctx, "execute package tool as non-root") } }
+fn is_installed(ctx) { if ctx.state.installed { ready(ctx) } else { needs_work(ctx, "publish APK products and metadata") } }
+fn acquire(ctx) {
+    mkdir("/work/build/packages");
+    for row in @ROWS@ { download(row[2], "/work/build/packages/" + basename(row[2]), row[3]); }
+    ctx.state.acquired = true; ctx
+}
+fn build(ctx) {
+    extract_with_format("/work/build/packages/" + @TOOLNAME@, "/work/build/tool", "apk");
+    let program = "/work/build/tool/sbin/apk.static";
+    ctx.state.uid = trim(exec_output("id", ["-u"], #{uid: 1000, gid: 1000}));
+    ctx.state.gid = trim(exec_output("id", ["-g"], #{uid: 1000, gid: 1000}));
+    if ctx.state.uid != "1000" || ctx.state.gid != "1000" { throw "wrong package-tool identity"; }
+    ctx.state.version = exec_output(program, ["--version"], #{uid: 1000, gid: 1000});
+    if !ctx.state.version.contains("apk-tools 3.0.9-r0") { throw "wrong APK version"; }
+    let root = "/out/rootfs";
+    mkdir(root + "/etc/apk/keys");
+    write_file(root + "/etc/apk/keys/" + @KEYNAME@, @KEY@);
+    mkdir("/work/build/apk-cache");
+    let args = ["--root", root, "--usermode", "--initdb", "--no-progress", "--no-scripts", "--force-non-repository", "--no-network", "--cache-dir", "/work/build/apk-cache", "add"];
+    for name in @PACKAGES@ { args.push("/work/build/packages/" + name); }
+    exec_checked(program, args, #{uid: 1000, gid: 1000});
+    target_capture_apks(root, ["/work/build/packages", "/work/build/apk-cache"]);
+    ctx.state.busybox = exec_output(root + "/lib/ld-musl-x86_64.so.1", [root + "/bin/busybox", "echo", "installed APK executed"], #{uid: 1000, gid: 1000});
+    if ctx.state.busybox != "installed APK executed\n" { throw "installed APK did not execute"; }
+    ctx.state.built = true; ctx
+}
+fn install(ctx) {
+    copy_file("/work/build/tool/sbin/apk.static", "/out/apk.static");
+    mkdir("/out/packages");
+    copy_tree_contents("/work/build/packages", "/out/packages");
+    ctx.outputs = #{program: "/out/apk.static", rootfs: "/out/rootfs", packages: "/out/packages"};
+    ctx.state.installed = true; ctx
+}

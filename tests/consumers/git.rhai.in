@@ -1,0 +1,17 @@
+const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ payload: "file" }, network: [@ENDPOINT@] };
+let ctx = #{name: "git", source: "/work/build/checkout", state: #{acquired: false, installed: false}};
+fn is_acquired(ctx) { if ctx.state.acquired { ready(ctx) } else { needs_work(ctx, "acquire pinned Git source") } }
+fn is_built(ctx) { if ctx.state.acquired { ready(ctx) } else { needs_work(ctx, "source acquisition required") } }
+fn is_installed(ctx) { if ctx.state.installed { ready(ctx) } else { needs_work(ctx, "publish exact checkout") } }
+fn acquire(ctx) {
+    git_checkout(@URL@, ctx.source, @COMMIT@);
+    git_checkout(@URL@, ctx.source, @COMMIT@);
+    if trim(exec_output("git", ["-C", ctx.source, "rev-parse", "HEAD"])) != @COMMIT@ { throw "wrong Git revision"; }
+    verify_sha256(join_path(ctx.source, @PAYLOAD@), @DIGEST@);
+    ctx.state.acquired = true; ctx
+}
+fn install(ctx) {
+    copy_file(join_path(ctx.source, @PAYLOAD@), "/out/payload");
+    ctx.outputs.payload = "/out/payload"; ctx.state.installed = true; ctx
+}
