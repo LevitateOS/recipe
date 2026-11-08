@@ -8,8 +8,9 @@ scripts. Ordinary recipe execution consumes the resulting image.
 Image reproducibility does not by itself establish every distro/tool consumer.
 Use the exact launcher and matching worker from the supported source, observe
 [runtime boundaries](../docs/runtime-limits.md), and keep product/VM results
-bound to those identities. Maintained runtime delivery remains open; this guide
-does not select a fork or certify guest installer/PTY/provider operation.
+bound to those identities. The maintained source pair and setup are documented in
+[Linux setup](../docs/setup-linux.md); this guide does not certify guest
+installer/PTY/provider operation.
 
 The manifest records the base image, compiler RPMs, Rust distribution and selected
 Rust components. Input paths are relative to `--input-root`. All inputs are copied
@@ -86,12 +87,14 @@ export GINUX_OCI_WORK_DIR_OVERRIDE="$INPUT_ROOT/oci-work"
 
 These require the documented host tools, including curl, jq, gzip and a SHA-256
 utility. This source selection is for the public OCI assembler; it does not
-provide Recipe's still-undelivered configured runtime. The base is
+supply Recipe's configured runtime; use the maintained version in Linux setup. The base is
 `docker.io/rockylinux/rockylinux:10.2.20260525.0`, linux/amd64, OCI manifest
 `sha256:e372170ca8630f0f03e9b70fdd0bf4a3ce3426b0de7cdba615f06337389de176`.
 The derived rootfs SHA-256 is
 `b93bfd0f6deea2a7a96216655cda3ebbd87a445231548ff491ee30aed20a36ab`, reproduced twice
-from that exact public producer and fresh verified OCI objects. The former
+from that exact public producer and fresh verified OCI objects. The maintained
+Ginux fetch/prepare scripts produce the same bytes and fix the host-tool fallback;
+they do not require a prebuilt assembler or the override above. The former
 `1026f8d3…` pin is not its output and has been corrected. The pin identifies the
 assembled tar, rather than claiming a publisher-supplied tar digest. OCI layer
 hardlinks are materialized by the upstream assembler.

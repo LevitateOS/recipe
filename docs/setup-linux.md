@@ -4,12 +4,12 @@ The verified host baseline is Rocky Linux 10.2, x86-64, kernel 6.12, glibc 2.39.
 The native Ginux coordinator currently needs root privileges. Image production,
 source compilation and package generation run as the ordinary operator.
 
-**Runtime delivery remains unavailable.** The public workspace Ginux pin and
-published Recipe source do not supply the required configured combination.
-The local preparation below has been exercised with unpublished candidate
-source; it is not a released-input obtainability claim. Obtain the approved
-maintained Ginux/Recipe source revisions before treating this as release setup.
-Do not substitute a migration executable, private image cache or test CA.
+The maintained sources are [LevitateOS/recipe](https://github.com/LevitateOS/recipe)
+and [LevitateOS/ginux](https://github.com/LevitateOS/ginux). Upstream Ginux leads;
+our Ginux history includes upstream main and retains the changes Recipe needs.
+Reconcile new upstream behavior and replace our changes when upstream covers it.
+This source delivery does not claim distro boot/install or complete security
+acceptance. Do not substitute a migration binary, private image cache or test CA.
 
 ## Host and source tools
 
@@ -28,13 +28,26 @@ fresh host. Verify its digest before running its installer. A clean host needs
 normal crates.io access for compilation; `--offline` assumes inputs already
 acquired. Do not borrow a developer Cargo target directory or alter TLS trust.
 
-Recipe source retains its standalone Cargo.lock. From an approved source checkout
-or extracted source crate:
+Recipe source retains its standalone Cargo.lock. Obtain both repositories over
+HTTPS and record the exact Recipe revision with your artifacts. For a pinned
+release use its recorded Recipe revision after cloning; moving branch names do
+not identify a reproducible pair. The compatible Ginux revision here is explicit:
 
 ```sh
+git clone --branch master https://github.com/LevitateOS/recipe.git recipe-source
+git clone --branch main https://github.com/LevitateOS/ginux.git maintained-ginux
+git -C maintained-ginux checkout --detach a538e1784e258d3edda99503dc6e4f29aca2f56f
+git -C recipe-source rev-parse HEAD
+(cd maintained-ginux && make build)
+cd recipe-source
 cargo build --locked --release --bins
 cargo install --locked --path . --bins --root /absolute/path/to/recipe-tools
 ```
+
+Set `GINUX_BIN` to `maintained-ginux/target/x86_64-unknown-linux-gnu/release/ginux`.
+The launcher is built from the maintained source, and the worker is the same
+`recipe` executable as the coordinator. An extracted source crate also supports
+the two Cargo commands above; it includes the release lock and image producer.
 
 This installs `recipe` (coordinator and worker) and `recipe-image` (bootstrap
 producer). The RPM supplies both binaries, the converter dependency, bootstrap
@@ -48,10 +61,9 @@ install. Verify artifact digests and use ordinary publisher trust for dependenci
 ## Reproduce images
 
 Use a new input directory. Acquire and verify every declared OCI, Rust and RPM
-input using the URLs/pins in the bootstrap guide and manifests. Build the public
-upstream OCI assembler with `RUSTFLAGS=''`, use its `GINUX_VFS_INDEX` override,
-and run its fetch/prepare producers. This assembler is independently obtainable;
-it is separate from the missing configured runtime delivery.
+input using the URLs/pins in the bootstrap guide and manifests. Run the maintained Ginux fetch/prepare producers from the pinned checkout.
+Its OCI assembler uses ordinary host linker flags. The bootstrap guide also
+records an equivalent public upstream assembler and explicit override.
 
 Run the actual Recipe producer for each image into a new output directory:
 
@@ -96,8 +108,7 @@ export GINUX_ROOT="oci:recipe-compiler@sha256:$(jq -er .sha256 /absolute/path/to
 export RECIPE_WORKER_BIN="$RECIPE_BIN"
 ```
 
-These source and artifact selections must be obtainable and verified; the old
-workspace pin cannot satisfy them. With `GINUX_ROOT` omitted, the default is the
+Verify these source and artifact selections against the recorded release tuple. With `GINUX_ROOT` omitted, the default is the
 corrected bare Rocky base, which has no compiler. Explicit prepared images need
 their own provenance digest; a mismatched root identity is rejected.
 
