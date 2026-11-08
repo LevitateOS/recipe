@@ -727,14 +727,8 @@ pub fn diff(old: &Path, new: &Path, search: Option<&Path>) -> Result<serde_json:
             serde_json::json!({"added":added,"removed":removed,"changed":changed}),
         );
     }
-    let endpoints = |value: &serde_json::Value| {
-        value["needs"]["network"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>()
-    };
+    let endpoints =
+        |value: &serde_json::Value| value["needs"]["network"].as_array().unwrap().to_vec();
     let before = endpoints(&old);
     let after = endpoints(&new);
     changes.insert("network".into(), serde_json::json!({"added":after.iter().filter(|value| !before.contains(value)).collect::<Vec<_>>(),

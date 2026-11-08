@@ -454,7 +454,7 @@ fn check_diagnostic(p: &DiagnosticPayload) -> Result<(), ProtocolError> {
 /// encoded frame can never carry a mismatched op/payload pair.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FramePayload {
-    Request(RequestPayload),
+    Request(Box<RequestPayload>),
     Checkpoint(CheckpointPayload),
     Ack(AckPayload),
     Result(ResultPayload),
@@ -716,7 +716,7 @@ fn parse_payload(op: Op, seq: u32, json: &[u8]) -> Result<Frame, ProtocolError> 
                 ProtocolError::PayloadInvalid(format!("request payload malformed: {e}"))
             })?;
             check_request(&p)?;
-            FramePayload::Request(p)
+            FramePayload::Request(Box::new(p))
         }
         Op::Checkpoint => {
             let p: CheckpointPayload = serde_json::from_str(text).map_err(|e| {

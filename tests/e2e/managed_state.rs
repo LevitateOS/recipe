@@ -381,7 +381,8 @@ fn install(ctx) {
 fn managed_state_disable_and_current_api_requirement_are_explicit() {
     let (dir, recipes) = create_test_env();
     write_recipe(&recipes, "check", SOURCE);
-    for option in ["--no-persist-state"] {
+    {
+        let option = "--no-persist-state";
         let output = retained_command(&recipes, "install")
             .args(["--define", "FACT=alpha", option])
             .output()

@@ -58,7 +58,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Validate { recipe } => {
             let recipe = resolve_recipe_path(&recipe, &recipes_path)?;
-            let supplied = parse_inputs(&engine_options.inputs)?;
+            let supplied = parse_inputs(engine_options.inputs)?;
             let authority = levitate_recipe::needs::validate(
                 &recipe,
                 Some(&recipes_path),

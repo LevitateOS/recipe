@@ -201,7 +201,7 @@ fn recv_request(rx: &mut FrameReceiver, input: &mut impl Read) -> Result<Request
         .check_direction(Direction::HostToWorker)
         .map_err(|e| anyhow!("{e}"))?;
     match frame.payload {
-        FramePayload::Request(req) => Ok(req),
+        FramePayload::Request(req) => Ok(*req),
         other => bail!("expected a request frame, got {}", other.op().name()),
     }
 }

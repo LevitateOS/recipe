@@ -153,12 +153,9 @@ pub(crate) fn command(
         .map_err(|error| anyhow::anyhow!("Ginux declaration validation failed: {error:?}"))?;
     ensure!(
         output.exit.success(),
-        "Ginux {operation} rejected derived contract: {}",
-        format!(
-            "{} {}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )
+        "Ginux {operation} rejected derived contract: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).context("Ginux contract output is not UTF-8")
 }

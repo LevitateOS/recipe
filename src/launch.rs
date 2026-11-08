@@ -500,7 +500,7 @@ fn pump_protocol(
     let execution_deadline =
         Instant::now() + Duration::from_secs(request.options.execution.timeout_secs);
 
-    tx.send(&mut stdin, &FramePayload::Request(request))
+    tx.send(&mut stdin, &FramePayload::Request(Box::new(request)))
         .map_err(|err| classify_stream_error(invocation, "send request", err, true))?;
     stdin
         .flush()
