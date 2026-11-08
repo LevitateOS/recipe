@@ -19,7 +19,7 @@ From the workspace root, with the manifest's artifacts present under
 `.artifacts/ginux-env`:
 
 ```sh
-cargo build --offline -p levitate-recipe --bin recipe-image
+cargo build --locked -p levitate-recipe --bin recipe-image
 target/debug/recipe-image \
   --manifest tools/recipe/bootstrap/ginux-build-image.json \
   --input-root .artifacts/ginux-env \
@@ -56,14 +56,36 @@ component archives using the same component selection and path validation; a
 component cannot occur in two inputs. The musl component includes static libc,
 libunwind and startup objects. The existing compiler supplies `rust-lld`.
 
-Prepare the pinned Rocky base with Ginux's explicit `fetch-rocky-oci.sh` and
-`prepare-rocky-oci.sh` producers, using `GINUX_OCI_CACHE_DIR_OVERRIDE` to select
-`<input-root>/oci-cache` (run those scripts from the Ginux repository). They
-require their documented host tools, including `jq` and `shasum`. The base is
+Prepare the pinned Rocky base with public upstream Ginux commit
+`53a54addea67969abaa240ea478def1b94130eee` and its explicit OCI producers.
+Build its host assembler with standard host flags, then supply its existing
+`GINUX_VFS_INDEX` override; the native default flags cannot link this std-based
+host utility. For a new input root and a fresh upstream clone:
+
+```sh
+export INPUT_ROOT=/absolute/path/to/new-inputs
+cd /absolute/path/to/upstream-ginux
+# Obtain this exact public source, without importing a local integration.
+git checkout --detach 53a54addea67969abaa240ea478def1b94130eee
+env RUSTFLAGS='' cargo build --locked -p ginux-vfs-index
+export GINUX_VFS_INDEX="$PWD/target/debug/ginux-vfs-index"
+export GINUX_OCI_CACHE_DIR_OVERRIDE="$INPUT_ROOT/oci-cache"
+export GINUX_OCI_WORK_DIR_OVERRIDE="$INPUT_ROOT/oci-work"
+./scripts/fetch-rocky-oci.sh
+./scripts/prepare-rocky-oci.sh
+```
+
+These require the documented host tools, including curl, jq, gzip and a SHA-256
+utility. This source selection is for the public OCI assembler; it does not
+provide Recipe's still-undelivered configured runtime. The base is
 `docker.io/rockylinux/rockylinux:10.2.20260525.0`, linux/amd64, OCI manifest
 `sha256:e372170ca8630f0f03e9b70fdd0bf4a3ce3426b0de7cdba615f06337389de176`.
-The manifest's base SHA256 identifies Ginux's assembled rootfs tar, rather than
-claiming a publisher-supplied rootfs tar digest.
+The derived rootfs SHA-256 is
+`b93bfd0f6deea2a7a96216655cda3ebbd87a445231548ff491ee30aed20a36ab`, reproduced twice
+from that exact public producer and fresh verified OCI objects. The former
+`1026f8d3…` pin is not its output and has been corrected. The pin identifies the
+assembled tar, rather than claiming a publisher-supplied tar digest. OCI layer
+hardlinks are materialized by the upstream assembler.
 
 Acquire the exact files below under the manifest's relative `toolchain/` and
 `packages/` paths; each expected SHA256 is in the manifest. Rust pins come from
@@ -73,29 +95,36 @@ dated 2026-10-01:
 - [Rust GNU distribution](https://static.rust-lang.org/dist/2026-10-01/rust-1.99.0-x86_64-unknown-linux-gnu.tar.gz)
 - [Matching musl standard library](https://static.rust-lang.org/dist/2026-10-01/rust-std-1.99.0-x86_64-unknown-linux-musl.tar.gz)
 
-All eight RPM pins were checked against the publisher's SHA256 fields in
+The original eight compiler/acquisition RPM pins were checked against the publisher's SHA256 fields in
 [Rocky BaseOS primary metadata](https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/repodata/76f4ee35ec89a1cfdbced3af0f0b24291d362b374e381e802107923509b34d51-primary.xml.gz)
 and [Rocky AppStream primary metadata](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/repodata/56c5886e36a7d3a5536d1b5cea97be8740edb537bd15ff7bd7db2e46aac7e582-primary.xml.gz)
 on 2026-11-06. Each metadata filename is its compressed SHA256, verified against
 `repomd.xml`; this is repository-metadata verification, not an RPM-signature claim.
-Repository updates can remove these versioned URLs; retain the pinned inputs for
-reproduction rather than silently substituting a new version.
+All twelve current pins were freshly checked against official BaseOS/AppStream
+metadata on 2026-11-08; their exact current URLs are below. Repository updates
+can remove versioned URLs. Retain verified publisher inputs for reproduction;
+never silently substitute package versions. Download each URL to the manifest's
+relative `packages/` path and verify its manifest SHA-256 before composition.
 
 | Input | Source |
 | --- | --- |
-| `cpio-2.15-3.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/c/cpio-2.15-3.el10.x86_64.rpm) |
 | `cpp-14.3.1-4.4.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/c/cpp-14.3.1-4.4.el10.x86_64.rpm) |
 | `gcc-14.3.1-4.4.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/g/gcc-14.3.1-4.4.el10.x86_64.rpm) |
-| `git-core-2.52.0-1.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/g/git-core-2.52.0-1.el10.x86_64.rpm) |
 | `glibc-devel-2.39-145.el10_2.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/g/glibc-devel-2.39-145.el10_2.x86_64.rpm) |
 | `kernel-headers-6.12.0-211.73.1.el10_2.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/k/kernel-headers-6.12.0-211.73.1.el10_2.x86_64.rpm) |
 | `libmpc-1.3.1-7.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/l/libmpc-1.3.1-7.el10.x86_64.rpm) |
 | `make-4.4.1-9.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/m/make-4.4.1-9.el10.x86_64.rpm) |
+| `git-core-2.52.0-1.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/g/git-core-2.52.0-1.el10.x86_64.rpm) |
+| `cpio-2.15-3.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/c/cpio-2.15-3.el10.x86_64.rpm) |
+| `libburn-1.5.6-6.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/l/libburn-1.5.6-6.el10.x86_64.rpm) |
+| `libisoburn-1.5.6-6.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/l/libisoburn-1.5.6-6.el10.x86_64.rpm) |
+| `libisofs-1.5.6-6.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/l/libisofs-1.5.6-6.el10.x86_64.rpm) |
+| `xorriso-1.5.6-6.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/x/xorriso-1.5.6-6.el10.x86_64.rpm) |
 
 With the exact inputs present, run from the workspace root:
 
 ```sh
-cargo build --offline -p levitate-recipe --bin recipe-image
+cargo build --locked -p levitate-recipe --bin recipe-image
 target/debug/recipe-image \
   --manifest tools/recipe/bootstrap/ginux-acquisition-image.json \
   --input-root .artifacts/ginux-env \

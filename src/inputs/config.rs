@@ -21,7 +21,7 @@ const MAX_CONFIG: usize = 4096;
 /// named by digest rather than by host path (host `.artifacts` paths never
 /// enter instance config). Override with `GINUX_ROOT`; the override must pass
 /// the same reference validation. The launcher resolves the reference.
-const DEFAULT_ROOT_REF: &str = "oci:rocky-10.2.20260525.0-amd64-rootfs@sha256:1026f8d3b36eaea1bcab8e609045991f08c70eb7645cb37f58f48faa8b40be9c";
+const DEFAULT_ROOT_REF: &str = "oci:rocky-10.2.20260525.0-amd64-rootfs@sha256:b93bfd0f6deea2a7a96216655cda3ebbd87a445231548ff491ee30aed20a36ab";
 
 /// Instance config for one invocation; [`InstanceConfig::render`] produces the
 /// parser-accepted text.

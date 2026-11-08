@@ -1,7 +1,7 @@
 {
   "base": {
     "path": "oci-cache/rocky-10.2.20260525.0-amd64-rootfs.tar",
-    "sha256": "1026f8d3b36eaea1bcab8e609045991f08c70eb7645cb37f58f48faa8b40be9c"
+    "sha256": "b93bfd0f6deea2a7a96216655cda3ebbd87a445231548ff491ee30aed20a36ab"
   },
   "rpms": [
     {
