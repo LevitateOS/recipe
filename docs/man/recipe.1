@@ -45,9 +45,15 @@ Run removal against the owned selected target; prior publications stay immutable
 .TP
 .B cleanup RECIPE [--reason TEXT]
 Run optional cleanup, with reason manual by default.
+Explicit remove/cleanup on dependency graphs has an unresolved cache-selection
+contract; the readiness correction below does not repair those operations.
 .TP
 .B isinstalled|isbuilt|isacquired RECIPE
 Run the actual custom readiness check. Work needed returns nonzero.
+Dependencies, including build dependencies, must have matching cached products.
+Their installed checks run in dependency order without acquire/build/install
+hooks. Missing or changed products fail explicitly; run install separately to
+prepare them. The checked products preserve the parent's installed input identity.
 .TP
 .B list
 List declared recipe metadata without evaluating setup/helper code.

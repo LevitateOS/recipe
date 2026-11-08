@@ -919,3 +919,106 @@ fn is_installed(ctx) { write_file("/out/product","present"); ctx.outputs.product
         .unwrap();
     assert_eq!(result["checkpoints"], serde_json::json!([]));
 }
+
+#[test]
+fn managed_manual_checks_require_cached_dependency_products_without_installing() {
+    let (dir, recipes) = create_test_env();
+    write_recipe(
+        &recipes,
+        "cached-leaf",
+        r#"const RECIPE_API=2;
+const NEEDS=#{inputs:#{asset:"file"},outputs:#{tool:"file"}};
+let ctx=#{name:"cached-leaf",state:#{done:false}};
+fn is_acquired(ctx) { ready(ctx) }
+fn is_built(ctx) { ready(ctx) }
+fn is_installed(ctx) {
+    if !ctx.state.done || !is_file("/out/tool") { return needs_work(ctx,"leaf must be installed explicitly"); }
+    ctx.outputs.tool="/out/tool"; ready(ctx)
+}
+fn install(ctx) { print("INSTALL_HOOK_CALLED"); copy_file("/inputs/asset","/out/tool");ctx.state.done=true;ctx.outputs.tool="/out/tool";ctx }
+"#,
+    );
+    write_recipe(
+        &recipes,
+        "cached-middle",
+        r#"const RECIPE_API=2;
+const NEEDS=#{outputs:#{tree:"directory"}};
+let build_deps=["cached-leaf"];
+let ctx=#{name:"cached-middle",state:#{done:false}};
+fn is_acquired(ctx) { ready(ctx) }
+fn is_built(ctx) { ready(ctx) }
+fn is_installed(ctx) {
+    if !ctx.state.done || !is_file("/out/tree/tool") { return needs_work(ctx,"middle must be installed explicitly"); }
+    ctx.outputs.tree="/out/tree"; ready(ctx)
+}
+fn install(ctx) { print("INSTALL_HOOK_CALLED");mkdir("/out/tree");copy_file(join_path(RUNTIME.paths.dependencies,"cached-leaf/tool"),"/out/tree/tool");ctx.state.done=true;ctx.outputs.tree="/out/tree";ctx }
+"#,
+    );
+    write_recipe(
+        &recipes,
+        "cached-main",
+        r#"const RECIPE_API=2;
+const NEEDS=#{outputs:#{proof:"file"}};
+let deps=["cached-middle"];
+let ctx=#{name:"cached-main",state:#{acquired:false,built:false,done:false}};
+fn is_acquired(ctx) { if ctx.state.acquired { return ready(ctx); } needs_work(ctx,"acquire") }
+fn acquire(ctx) { print("ACQUIRE_HOOK_CALLED");ctx.state.acquired=true;ctx }
+fn is_built(ctx) { if ctx.state.built { return ready(ctx); } needs_work(ctx,"build") }
+fn build(ctx) { print("BUILD_HOOK_CALLED");ctx.state.payload=read_file(join_path(RUNTIME.paths.dependencies,"cached-middle/tree/tool"));ctx.state.built=true;ctx }
+fn is_installed(ctx) {
+    if !ctx.state.done || !is_file("/out/proof") { return needs_work(ctx,"install"); }
+    if read_file("/out/proof") != ctx.state.payload { throw "cached parent bytes changed"; }
+    ctx.outputs.proof="/out/proof"; ready(ctx)
+}
+fn install(ctx) { print("INSTALL_HOOK_CALLED");write_file("/out/proof",ctx.state.payload);ctx.state.done=true;ctx.outputs.proof="/out/proof";ctx }
+"#,
+    );
+    let asset = dir.path().join("cached-asset");
+    std::fs::write(&asset, "original cached bytes").unwrap();
+    let binding = format!("cached-leaf::asset={}", asset.display());
+    assert_success(&run_recipe(
+        &["install", "cached-main", "--input", &binding],
+        &recipes,
+    ));
+    for phase in ["isacquired", "isbuilt", "isinstalled"] {
+        let output = run_recipe(&[phase, "cached-main", "--input", &binding], &recipes);
+        assert_success(&output);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        for hook in [
+            "ACQUIRE_HOOK_CALLED",
+            "BUILD_HOOK_CALLED",
+            "INSTALL_HOOK_CALLED",
+        ] {
+            assert!(!stderr.contains(hook), "{phase}: {stderr}");
+        }
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["state"]["payload"], "original cached bytes");
+        if phase == "isinstalled" {
+            assert_eq!(
+                std::fs::read_to_string(value["outputs"]["proof"].as_str().unwrap()).unwrap(),
+                "original cached bytes"
+            );
+        }
+    }
+    // A changed typed input cannot borrow the previous dependency generation,
+    // and a manual check may not repair the miss by installing the dependency.
+    std::fs::write(&asset, "changed input bytes").unwrap();
+    let failed = run_recipe(
+        &["isinstalled", "cached-main", "--input", &binding],
+        &recipes,
+    );
+    assert!(!failed.status.success());
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(
+        stderr.contains("requires matching cached products"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("INSTALL_HOOK_CALLED"), "{stderr}");
+    assert!(failed.stdout.is_empty());
+    // The failed check preserves the earlier matching generation.
+    std::fs::write(&asset, "original cached bytes").unwrap();
+    assert_success(&run_recipe(
+        &["isinstalled", "cached-main", "--input", &binding],
+        &recipes,
+    ));
+}

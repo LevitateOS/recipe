@@ -247,6 +247,14 @@ or restart semantics. Archive timestamps have whole-second precision. See
 [supported runtime limits](docs/runtime-limits.md) before claiming isolation or
 Linux compatibility beyond these boundaries.
 
+Manual `isacquired`, `isbuilt` and `isinstalled` run dependency installed checks
+in graph order and require matching cached dependency products. They never run
+dependency acquire/build/install hooks to repair missing or changed products.
+Use `install` separately to prepare those dependencies. The checked snapshots
+retain the parent's installed input identity and each dependency's own authority.
+Explicit `remove`/`cleanup` on dependency graphs remains unresolved; this
+readiness correction does not repair those operations.
+
 ## Read authority without executing setup
 
 ```sh

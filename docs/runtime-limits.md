@@ -41,3 +41,17 @@ The superproject's `docs/ginux-contributions/prd08-public-contracts.md` records
 the detailed policy and original source-bound receipts. Current release and VM
 acceptance remain separately tracked in `docs/ginux-contribution-task-list.md`;
 earlier receipts do not certify a later delivered source/image combination.
+
+Manual `isacquired`, `isbuilt` and `isinstalled` checks require matching cached
+products from every dependency, including build dependencies. Dependencies run
+only their installed checks, in dependency order; acquire/build/install hooks
+never run to repair a cache miss. The same checked product snapshots restore the
+parent's installed input identity. Missing or changed dependency inputs/products
+fail explicitly; use `install` separately to prepare them. These checks preserve
+separate dependency authority and caller restrictions.
+
+The cached-dependency rule above does not resolve explicit `remove`/`cleanup`
+for recipes with dependencies. Their current input omission can select empty
+state instead of the installed parent's files. That lifecycle policy remains
+unresolved by user decision; do not count those dependent-recipe operations as
+verified or repaired by the manual-readiness correction.
