@@ -261,8 +261,21 @@ fn cli_rootfs_consumers_reject_changed_explicit_assets() {
             recipes.join(format!("{consumer}.rhai")),
         )
         .unwrap();
+        // The Fedora consumer stages both ordinary and desktop lock modules
+        // even when this invocation selects the ordinary product. Preserve the
+        // real source closure so corruption reaches its integrity check.
+        let desktop_lock = if consumer == "fedora-rpm-source-rootfs" {
+            "levitate-rpm-desktop-lock.rhai"
+        } else {
+            "acorn-apk-desktop-lock.rhai"
+        };
+        std::fs::copy(
+            source.join("sources").join(desktop_lock),
+            recipes.join("sources").join(desktop_lock),
+        )
+        .unwrap();
         let control = dir.path().join("control");
-        std::fs::write(&control, "explicit check input").unwrap();
+        std::fs::write(&control, "explicit check input\nREC_FLAVOUR=base\n").unwrap();
         for file in sample(&files) {
             let original = std::fs::read(&file).unwrap();
             let mut changed = original.clone();

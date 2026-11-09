@@ -15,7 +15,9 @@ pub(super) fn copy_kernel_recipes(recipes: &Path) {
 }
 
 pub(super) fn kernel_command(recipes: &Path, action: &str, recipe: &str) -> Command {
-    kernel_command_for_target(recipes, action, recipe, "acorn")
+    let mut command = kernel_command_for_target(recipes, action, recipe, "acorn");
+    command.arg("--no-persist-state");
+    command
 }
 
 fn kernel_command_for_target(recipes: &Path, action: &str, recipe: &str, target: &str) -> Command {
@@ -25,7 +27,7 @@ fn kernel_command_for_target(recipes: &Path, action: &str, recipe: &str, target:
     }
     let mut command = recipe_command(recipes);
     command
-        .args([action, recipe, "--no-persist-state"])
+        .args([action, recipe])
         .args(["--input", &format!("kconfig={}", kconfig.display())])
         .args(["--define", &format!("KERNEL_TARGET={target}")])
         .arg("--recipes-path")
@@ -59,6 +61,45 @@ fn cli_kernel_readiness_preserves_release_module_and_configuration_rules() {
         for recipe in ["linux", "linux-prebuilt"] {
             let (dir, recipes) = create_test_env();
             copy_kernel_recipes(&recipes);
+            if recipe == "linux" {
+                // This case checks the real kernel recipe against disposable
+                // imported artifacts, without building a kernel/toolchain.
+                // Give its build dependency a real managed publication and
+                // verify manual checks cannot create that prerequisite. The
+                // production linux-deps acquisition is outside this fixture.
+                write_recipe(
+                    &recipes,
+                    "linux-deps",
+                    r#"const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ tools: "directory" } };
+let ctx = #{ name: "linux-deps" };
+fn is_acquired(ctx) { ready(ctx) }
+fn is_built(ctx) { ready(ctx) }
+fn is_installed(ctx) {
+    let marker = "/out/tools/readiness-fixture";
+    if !is_file(marker) { return needs_work(ctx, "prepare the readiness fixture explicitly"); }
+    if read_file(marker) != "managed prerequisite" { throw "changed prerequisite"; }
+    ctx.outputs.tools = "/out/tools"; ready(ctx)
+}
+fn install(ctx) {
+    print("KERNEL_PREREQUISITE_INSTALL");
+    mkdir("/out/tools"); write_file("/out/tools/readiness-fixture", "managed prerequisite");
+    ctx.outputs.tools = "/out/tools"; ctx
+}
+"#,
+                );
+                let (missing, _) = invoke_kernel(
+                    kernel_command_for_target(&recipes, "isbuilt", recipe, target),
+                    dir.path(),
+                );
+                assert!(!missing.status.success());
+                let stderr = String::from_utf8_lossy(&missing.stderr);
+                assert!(
+                    stderr.contains("requires matching cached products"),
+                    "{stderr}"
+                );
+                assert!(!stderr.contains("KERNEL_PREREQUISITE_INSTALL"), "{stderr}");
+            }
             let artifacts = dir.path().join("existing kernel");
             let build = artifacts.join("kernel-build");
             let release_file = build.join("include/config/kernel.release");
@@ -91,9 +132,25 @@ fn cli_kernel_readiness_preserves_release_module_and_configuration_rules() {
                 cmd.args(["--input", &format!("target={}", artifacts.display())]);
                 invoke_kernel(cmd, dir.path())
             };
+            if recipe == "linux" {
+                // Install the graph explicitly. The imported complete kernel
+                // makes the real parent ready, so no kernel build is run; the
+                // child publication is retained at its normal graph destination.
+                let (prepared, _) = run("install");
+                assert_success(&prepared);
+                assert!(
+                    String::from_utf8_lossy(&prepared.stderr)
+                        .contains("KERNEL_PREREQUISITE_INSTALL")
+                );
+            }
             for action in ["isbuilt", "isinstalled"] {
                 let (output, ctx) = run(action);
                 assert_success(&output);
+                assert!(
+                    !String::from_utf8_lossy(&output.stderr)
+                        .contains("KERNEL_PREREQUISITE_INSTALL"),
+                    "manual readiness must not install its dependency"
+                );
                 let ctx = ctx.unwrap();
                 assert_eq!(ctx["kernel_version"], release);
                 assert_eq!(ctx["build_dir"], "/out/kernel-build");
