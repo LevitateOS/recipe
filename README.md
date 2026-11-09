@@ -333,4 +333,8 @@ production/VM evidence. Real tool lifecycle, custom-rootfs, selected-target,
 checkpoint/link preservation and mediated acquisition are separately exercised;
 none implies general Linux syscall or every distro package support.
 
+For a release, set the version in source before verification, and retain
+artifact hashes with the matching source, worker, launcher and image provenance.
+CI validates the selected commit. Publish the reviewed artifacts separately.
+
 License: MIT OR Apache-2.0.
