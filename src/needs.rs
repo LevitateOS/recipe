@@ -652,6 +652,11 @@ pub fn validate(
     inspect(recipe, search, narrowing)
 }
 
+/// The resolved limits an inspection reports for one recipe.
+fn limits(effective: &crate::ExecutionOptions) -> serde_json::Value {
+    serde_json::json!({"memory_mib":effective.memory_mib,"storage_max_objects":effective.storage_max_objects,"storage_max_bytes":effective.storage_max_bytes,"timeout_secs":effective.timeout_secs,"network":effective.network_hosts,"network_max_bytes":effective.network_max_bytes})
+}
+
 /// Resolve authority for inspection, without evaluating the recipe or starting
 /// a workload. Ginux expands the exact same version-pinned contract as launch.
 pub fn inspect(
@@ -671,23 +676,14 @@ pub fn inspect(
             &node.needs.dependency_narrowing(narrowing)?,
             &crate::ExecutionOptions::default(),
         )?;
-        let receipt = contract::validate(
-            launcher.path(),
-            &contract::inspection_config(&effective),
-            !effective.network_hosts.is_empty(),
-        )?;
+        let receipt = contract::inspect(launcher.path(), &effective)?;
         dependency_contracts.push(serde_json::json!({"declaration":node,"contract":receipt,
-            "effective":{"memory_mib":effective.memory_mib,"storage_max_objects":effective.storage_max_objects,"storage_max_bytes":effective.storage_max_bytes,"timeout_secs":effective.timeout_secs,"network":effective.network_hosts,"network_max_bytes":effective.network_max_bytes}}));
+            "effective":limits(&effective)}));
     }
-    let config = contract::inspection_config(&execution);
-    let contract = contract::validate(
-        launcher.path(),
-        &config,
-        !execution.network_hosts.is_empty(),
-    )?;
+    let contract = contract::inspect(launcher.path(), &execution)?;
     Ok(
-        serde_json::json!({"recipe":main.recipe,"api":2,"needs":main.needs,
-        "effective":{"memory_mib":execution.memory_mib,"storage_max_objects":execution.storage_max_objects,"storage_max_bytes":execution.storage_max_bytes,"timeout_secs":execution.timeout_secs,"network":execution.network_hosts,"network_max_bytes":execution.network_max_bytes},
+        serde_json::json!({"recipe":main.recipe,"api":main.api,"needs":main.needs,
+        "effective":limits(&execution),
         "contract":contract,"dependencies":dependency_contracts,"dependency_bindings":main.dependencies,"source_digests":main.source_digests,
         "network_usage":{"status":"unobserved","reason":"declaration inspection does not launch","declared":main.needs.network,"warnings":[]}}),
     )
@@ -816,16 +812,8 @@ pub fn explain_recipe(
         .resolve(narrowing, &crate::ExecutionOptions::default())?;
     let launcher = crate::GinuxLauncher::from_env()?;
     let config = contract::inspection_config(&execution);
-    let receipt = contract::validate(
-        launcher.path(),
-        &config,
-        !execution.network_hosts.is_empty(),
-    )?;
-    let operation = if operation == "network.connect" {
-        "network.inet.tcp.connect"
-    } else {
-        operation
-    };
+    let receipt = contract::validate(launcher.path(), &config, &execution)?;
+    let operation = contract::operation(operation);
     let text = contract::command(
         launcher.path(),
         &config,

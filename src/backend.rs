@@ -48,11 +48,7 @@ impl GinuxLauncher {
                     .dependency_narrowing(&invocation.options.execution.narrowing)?
             };
             let effective = node.needs.resolve(&execution.narrowing, &execution)?;
-            crate::needs::contract::validate(
-                &self.path,
-                &crate::needs::contract::inspection_config(&effective),
-                !effective.network_hosts.is_empty(),
-            )?;
+            crate::needs::contract::inspect(&self.path, &effective)?;
         }
         let mut results = std::collections::BTreeMap::<PathBuf, serde_json::Value>::new();
         for node in &graph {

@@ -7,6 +7,23 @@ use std::process::Command;
 use std::time::Duration;
 
 pub const CATALOG: u32 = 1002;
+/// The Ginux operation a `NEEDS.network` endpoint grants.
+pub(crate) const TCP_CONNECT: &str = "network.inet.tcp.connect";
+
+/// The Ginux name of an operation a caller asks about; `network.connect` is
+/// Recipe's short spelling of [`TCP_CONNECT`].
+pub(crate) fn operation(name: &str) -> &str {
+    if name == "network.connect" {
+        TCP_CONNECT
+    } else {
+        name
+    }
+}
+
+/// Whether `options` grant any outbound endpoint, which selects the contract.
+fn connects(options: &crate::ExecutionOptions) -> bool {
+    !options.network_hosts.is_empty()
+}
 
 /// Finite, version-pinned build base in upstream's hierarchical format.
 /// Assignments and endpoint/resource owners still constrain every admitted call.
@@ -18,6 +35,11 @@ pub struct Contract {
 }
 
 impl Contract {
+    /// The contract Recipe derives for resolved `options`.
+    pub(crate) fn of(options: &crate::ExecutionOptions) -> Self {
+        Self::derived(connects(options))
+    }
+
     pub fn derived(network: bool) -> Self {
         let mut allow = vec![
             "syscall.*",
@@ -31,7 +53,7 @@ impl Contract {
             "memory.virtual.manage",
         ];
         if network {
-            allow.push("network.inet.tcp.connect");
+            allow.push(TCP_CONNECT);
         }
         // The catalog is pinned. These exclusions preserve the old base's
         // admitted operation set; upstream's explicit denials return EPERM.
@@ -71,7 +93,7 @@ impl Contract {
 
     /// Map the effective upstream rule back to its declaration/base owner.
     pub fn provenance(&self, source: &str, index: usize, operation: &str) -> String {
-        if operation == "network.inet.tcp.connect" {
+        if operation == TCP_CONNECT {
             return if source == "default-deny" {
                 "NEEDS.network has no effective outbound TCP grant (including caller narrowing)"
                     .into()
@@ -113,11 +135,12 @@ pub struct Receipt {
 /// Actual invocation constraints are rendered and validated separately.
 pub fn inspection_config(options: &crate::ExecutionOptions) -> String {
     format!(
-        "schema_version = 1\n[instance]\nid = \"recipe-contract\"\nroot = \"oci:recipe-contract@sha256:{}\"\ninit = \"/inputs/recipe-worker\"\nargs = []\nenvironment = []\n[resources]\nvcpus = {}\nmemory_mib = {}\n[execution]\nprofile = \"balanced\"\nbackend = \"ptrace-native\"\n{}\n[storage]\nassignments = []\n[devices]\nassignments = []\n[network]\nbackend = \"none\"\n[audit]\nmode = \"stderr\"\n[failure]\npolicy = \"stop\"\n",
+        "schema_version = 1\n[instance]\nid = \"recipe-contract\"\nroot = \"oci:recipe-contract@sha256:{}\"\ninit = \"{}\"\nargs = []\nenvironment = []\n[resources]\nvcpus = {}\nmemory_mib = {}\n[execution]\nprofile = \"balanced\"\nbackend = \"ptrace-native\"\n{}\n[storage]\nassignments = []\n[devices]\nassignments = []\n[network]\nbackend = \"none\"\n[audit]\nmode = \"stderr\"\n[failure]\npolicy = \"stop\"\n",
         "0".repeat(64),
+        crate::domain::WORKER,
         options.jobs,
         options.memory_mib,
-        Contract::derived(!options.network_hosts.is_empty()).render()
+        Contract::of(options).render()
     )
 }
 
@@ -149,7 +172,18 @@ pub(crate) fn command(
     String::from_utf8(output.stdout).context("Ginux contract output is not UTF-8")
 }
 
-pub(crate) fn validate(launcher: &Path, config: &str, network: bool) -> Result<Receipt> {
+/// Validate the declaration-only contract of `options` ([`inspection_config`]).
+pub(crate) fn inspect(launcher: &Path, options: &crate::ExecutionOptions) -> Result<Receipt> {
+    validate(launcher, &inspection_config(options), options)
+}
+
+/// Have Ginux validate `config`, which must carry the contract of `options`.
+pub(crate) fn validate(
+    launcher: &Path,
+    config: &str,
+    options: &crate::ExecutionOptions,
+) -> Result<Receipt> {
+    let network = connects(options);
     let text = command(launcher, config, "instance-validate", None)?;
     ensure!(
         text.starts_with("Contract valid:"),
@@ -188,7 +222,7 @@ pub(crate) fn validate(launcher: &Path, config: &str, network: bool) -> Result<R
     };
     ensure!(
         digest == expected,
-        "Ginux catalog-1002 build-base digest changed: expected {expected}, got {digest}; review the catalog and derived grants explicitly"
+        "Ginux catalog-{CATALOG} build-base digest changed: expected {expected}, got {digest}; review the catalog and derived grants explicitly"
     );
     Ok(Receipt {
         catalog,

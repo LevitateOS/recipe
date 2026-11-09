@@ -129,11 +129,7 @@ pub fn prepare_invocation(
     let network = network::NetworkPolicy::resolve(options)?;
     let config = InstanceConfig::for_invocation(&invocation_id, &env, options, network.clone())?;
     let config_text = config.render()?;
-    let contract = crate::needs::contract::validate(
-        launcher,
-        &config_text,
-        !options.network_hosts.is_empty(),
-    )?;
+    let contract = crate::needs::contract::validate(launcher, &config_text, options)?;
 
     let staging = crate::temporary::TemporaryDirectory::new()
         .context("input preparation failure: cannot create staging dir")?;
