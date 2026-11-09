@@ -1,26 +1,35 @@
 //! The durable per-invocation diagnostics store: `<state>/logs/<invocation>/`.
 //!
-//! This module owns the directory layout, the `result.json` status vocabulary
-//! and retention, so nothing else needs to know the file names.
+//! This module owns the directory layout, the `result.json` status vocabulary,
+//! retention and reading a finished invocation back, so nothing else needs to
+//! know the file names or their bounds.
 
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
+/// Directory under the state root holding one directory per invocation.
+const LOGS: &str = "logs";
 const LEASE: &str = "lease";
 const RESULT: &str = "result.json";
 /// Prefix of the temporary file `result.json` is written through.
 const RESULT_STAGING_PREFIX: &str = ".result.json.";
 /// Worker diagnostic stream, as the coordinator received it.
 pub(crate) const WORKER_LOG: &str = "worker.log";
-/// The launcher's own stderr (never parsed).
+/// The launcher's own stderr, which carries Ginux's audit and summary lines.
 pub(crate) const SUPERVISOR_LOG: &str = "supervisor-stderr.log";
+/// The declaration, effective constraints and contract the invocation ran under.
+const AUTHORITY: &str = "authority.json";
+/// Format version of [`AUTHORITY`].
+const AUTHORITY_VERSION: u64 = 1;
 /// Files an invocation directory may contain.
-pub(crate) const AUTHORITY: &str = "authority.json";
 const FILES: [&str; 5] = [LEASE, RESULT, WORKER_LOG, SUPERVISOR_LOG, AUTHORITY];
 /// Inactive invocation directories kept, including the one being created.
 const RETAINED_INVOCATIONS: usize = 32;
-/// Largest `result.json` read back while pruning.
+/// Largest `result.json` or `authority.json`.
 const MAX_RESULT_BYTES: u64 = 4 * 1024 * 1024;
+/// Largest retained [`SUPERVISOR_LOG`]; the launcher's stderr beyond it is
+/// drained but not kept.
+pub(crate) const MAX_LOG_BYTES: u64 = 16 * 1024 * 1024;
 
 /// `result.json` status of an invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +66,7 @@ impl InvocationLog {
         use fs2::FileExt;
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
         std::fs::create_dir_all(state_root)?;
-        let logs = state_root.join("logs");
+        let logs = state_root.join(LOGS);
         crate::fsx::private_dir(&logs, false)?;
         anyhow::ensure!(
             std::fs::symlink_metadata(&logs)?.permissions().mode() & 0o077 == 0,
@@ -94,7 +103,7 @@ impl InvocationLog {
     /// this instance. It survives failure and never re-reads mutable source.
     pub(crate) fn authority(&self, prepared: &crate::inputs::PreparedInvocation) -> Result<()> {
         use std::io::Write;
-        let record = serde_json::json!({"version":1,"declaration":prepared.declaration,
+        let record = serde_json::json!({"version":AUTHORITY_VERSION,"declaration":prepared.declaration,
             "execution":prepared.execution,"contract":prepared.contract,
             "config":std::fs::read_to_string(prepared.config_path())?,
             "pinned_endpoints":prepared.network.endpoints, "host_endpoints":prepared.network.host_endpoints});
@@ -118,6 +127,11 @@ impl InvocationLog {
         self.lease.as_raw_fd()
     }
 
+    /// The retained launcher stderr of this invocation.
+    pub(crate) fn supervisor_log(&self) -> Result<Vec<u8>> {
+        read_bounded(&self.file(SUPERVISOR_LOG), MAX_LOG_BYTES)
+    }
+
     /// Atomically replace `result.json` with `status` plus `details` fields.
     pub fn record(&self, status: Status, details: serde_json::Value) -> Result<()> {
         use std::io::Write;
@@ -138,6 +152,64 @@ impl InvocationLog {
         std::fs::File::open(&self.directory)?.sync_all()?;
         Ok(())
     }
+}
+
+/// The diagnostics directory of invocation `id` under `state_dir` (or the
+/// per-user application state), if one is retained.
+pub fn retained(state_dir: Option<&Path>, id: &Path) -> Option<PathBuf> {
+    let root = crate::retained::state_root(state_dir).ok()?;
+    Some(root.join(LOGS).join(id)).filter(|directory| directory.is_dir())
+}
+
+/// What an invocation recorded, read back from its diagnostics directory.
+pub(crate) struct Recorded {
+    /// [`InvocationLog::authority`]'s receipt.
+    pub authority: serde_json::Value,
+    /// The last [`InvocationLog::record`].
+    pub result: serde_json::Value,
+    /// The retained launcher stderr.
+    pub supervisor_log: Vec<u8>,
+}
+
+impl Recorded {
+    pub(crate) fn read(directory: &Path) -> Result<Self> {
+        anyhow::ensure!(
+            std::fs::symlink_metadata(directory)?.is_dir(),
+            "invocation must be a real diagnostics directory"
+        );
+        let json = |name: &str| -> Result<serde_json::Value> {
+            Ok(serde_json::from_slice(&read_bounded(
+                &directory.join(name),
+                MAX_RESULT_BYTES,
+            )?)?)
+        };
+        let authority = json(AUTHORITY)?;
+        anyhow::ensure!(
+            authority["version"] == AUTHORITY_VERSION,
+            "unsupported authority receipt"
+        );
+        Ok(Self {
+            authority,
+            supervisor_log: read_bounded(&directory.join(SUPERVISOR_LOG), MAX_LOG_BYTES)?,
+            result: json(RESULT)?,
+        })
+    }
+}
+
+fn read_bounded(path: &Path, bound: u64) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let file = crate::fsx::open_regular(path)?;
+    anyhow::ensure!(
+        file.metadata()?.len() <= bound,
+        "invocation diagnostic exceeds bound"
+    );
+    let mut bytes = Vec::new();
+    file.take(bound + 1).read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        bytes.len() as u64 <= bound,
+        "invocation diagnostic grew past bound"
+    );
+    Ok(bytes)
 }
 
 /// Remove the oldest unleased invocation directories beyond retention.

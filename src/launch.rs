@@ -65,7 +65,7 @@ const MAX_CHECKPOINTS: u64 = 1024;
 /// Bound on log collection: launcher/worker stderr beyond this many bytes is
 /// still drained (so a chatty worker never blocks on a full pipe) but not
 /// retained.
-const LOG_CAP_BYTES: u64 = 16 * 1024 * 1024;
+const LOG_CAP_BYTES: u64 = crate::invocation_log::MAX_LOG_BYTES;
 
 /// Grace for teardown after failure/cancellation. Successful final export uses
 /// the remaining supervised execution deadline instead.
@@ -170,7 +170,7 @@ pub(crate) fn run_domain(
             .unwrap_or_else(|| {
                 crate::needs::network_usage(
                     &prepared.network.host_endpoints,
-                    &diagnostics.file(crate::invocation_log::SUPERVISOR_LOG),
+                    &diagnostics,
                     report.log_discarded_bytes,
                 )
             }),
@@ -405,7 +405,7 @@ fn run_domain_inner(
         runtime.insert("contract".into(), serde_json::to_value(&prepared.contract)?);
         let usage = crate::needs::network_usage(
             &prepared.network.host_endpoints,
-            &diagnostics.file(crate::invocation_log::SUPERVISOR_LOG),
+            diagnostics,
             drained.discarded_bytes,
         );
         if let Some(warnings) = usage["warnings"].as_array() {

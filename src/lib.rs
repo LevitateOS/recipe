@@ -73,6 +73,7 @@ pub mod bin_support {
     pub use crate::core::output::info;
     pub use crate::domain::WORKER_ENTRY_ARG;
     pub use crate::helpers::internal::hash::{FileHashes, compute_all_hashes};
+    pub use crate::invocation_log::retained as retained_invocation;
     pub use crate::worker::protocol::{MAX_DIAGNOSTIC_BYTES, MAX_DIAGNOSTIC_FRAMES};
     /// The cleanup reason when the user gives none.
     pub const DEFAULT_CLEANUP_REASON: &str = crate::lifecycle::CleanupReason::Manual.as_str();

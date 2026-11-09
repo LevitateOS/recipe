@@ -80,18 +80,10 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             emit_json(&authority, json_output.as_deref())?;
         }
         Commands::Explain { subject, operation } => {
-            let path = PathBuf::from(&subject);
-            let logs = engine_options.state_dir.map(PathBuf::from).or_else(|| {
-                std::env::var_os("XDG_STATE_HOME")
-                    .map(PathBuf::from)
-                    .or_else(|| dirs::home_dir().map(|home| home.join(".local/state")))
-                    .map(|path| path.join("recipe"))
-            });
-            let recorded = if path.is_dir() {
-                Some(path)
+            let recorded = if subject.is_dir() {
+                Some(subject.clone())
             } else {
-                logs.map(|root| root.join("logs").join(&subject))
-                    .filter(|path| path.is_dir())
+                bin_support::retained_invocation(engine_options.state_dir, &subject)
             };
             let explanation = if let Some(directory) = recorded {
                 levitate_recipe::needs::explain_invocation(&directory, &operation)?

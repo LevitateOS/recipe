@@ -841,41 +841,14 @@ pub fn explain_recipe(
 /// Explain recorded authority/audits from a retained invocation, independently
 /// of today's recipe source or launcher. Absence/truncation is explicit.
 pub fn explain_invocation(directory: &Path, operation: &str) -> Result<serde_json::Value> {
-    use std::io::Read;
-    fn read(path: &Path, bound: u64) -> Result<Vec<u8>> {
-        let file = crate::fsx::open_regular(path)?;
-        ensure!(
-            file.metadata()?.len() <= bound,
-            "invocation diagnostic exceeds bound"
-        );
-        let mut bytes = Vec::new();
-        file.take(bound + 1).read_to_end(&mut bytes)?;
-        ensure!(
-            bytes.len() as u64 <= bound,
-            "invocation diagnostic grew past bound"
-        );
-        Ok(bytes)
-    }
-    ensure!(
-        std::fs::symlink_metadata(directory)?.is_dir(),
-        "invocation must be a real diagnostics directory"
-    );
-    let authority: serde_json::Value = serde_json::from_slice(&read(
-        &directory.join(crate::invocation_log::AUTHORITY),
-        4 * 1024 * 1024,
-    )?)?;
-    ensure!(authority["version"] == 1, "unsupported authority receipt");
+    let crate::invocation_log::Recorded {
+        authority,
+        result,
+        supervisor_log,
+    } = crate::invocation_log::Recorded::read(directory)?;
     let receipt: contract::Receipt = serde_json::from_value(authority["contract"].clone())?;
-    let operation = if operation == "network.connect" {
-        "network.inet.tcp.connect"
-    } else {
-        operation
-    };
-    let bytes = read(
-        &directory.join(crate::invocation_log::SUPERVISOR_LOG),
-        16 * 1024 * 1024,
-    )?;
-    let text = String::from_utf8_lossy(&bytes);
+    let operation = contract::operation(operation);
+    let text = String::from_utf8_lossy(&supervisor_log);
     let mut decisions = Vec::new();
     for line in text.lines() {
         if !line.starts_with("ginux: audit ") && !line.starts_with("ginux: denial-summary ") {
@@ -893,23 +866,20 @@ pub fn explain_invocation(directory: &Path, operation: &str) -> Result<serde_jso
             .get("policy-rule")
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(0);
-        let recipe_rule = if operation == "network.inet.tcp.connect"
-            && fields.get("egress") == Some(&"denied")
-        {
+        let connect = operation == contract::TCP_CONNECT;
+        let recipe_rule = if connect && fields.get("egress") == Some(&"denied") {
             "NEEDS.network/caller subset: decoded numeric endpoint is outside the pinned grant"
                 .to_owned()
-        } else if operation == "network.inet.tcp.connect" && fields.get("result") == Some(&"-122") {
+        } else if connect && fields.get("result") == Some(&"-122") {
             "NEEDS.network_max_bytes/caller byte cap: shared send+receive budget exhausted"
                 .to_owned()
-        } else if operation == "network.inet.tcp.connect" && fields.get("result") == Some(&"-24") {
+        } else if connect && fields.get("result") == Some(&"-24") {
             "Ginux fixed connection/descriptor bound; no NEEDS field widens this limit".to_owned()
         } else {
             receipt.contract.provenance(source, index, operation)
         };
         decisions.push(serde_json::json!({"audit":line,"recipe_rule":recipe_rule}));
     }
-    let result: serde_json::Value =
-        serde_json::from_slice(&read(&directory.join("result.json"), 4 * 1024 * 1024)?)?;
     Ok(
         serde_json::json!({"invocation":result["invocation"],"recipe":authority["declaration"],
         "operation":operation,"contract_digest":receipt.digest,"pinned_endpoints":authority["pinned_endpoints"],"execution":authority["execution"],
@@ -924,22 +894,12 @@ pub fn explain_invocation(directory: &Path, operation: &str) -> Result<serde_jso
 /// records are unknown, never false/unused; syscall audit truncation is separate.
 pub(crate) fn network_usage(
     host_endpoints: &BTreeMap<String, Vec<String>>,
-    path: &Path,
+    diagnostics: &crate::invocation_log::InvocationLog,
     discarded: u64,
 ) -> serde_json::Value {
-    use std::io::Read;
     let observed = (|| -> Result<_> {
-        let file = crate::fsx::open_regular(path)?;
-        ensure!(
-            file.metadata()?.len() <= 16 * 1024 * 1024,
-            "supervisor log exceeds bound"
-        );
-        let mut bytes = Vec::new();
-        file.take(16 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
-        ensure!(
-            bytes.len() <= 16 * 1024 * 1024 && discarded == 0,
-            "supervisor log truncated"
-        );
+        let bytes = diagnostics.supervisor_log()?;
+        ensure!(discarded == 0, "supervisor log truncated");
         let text = String::from_utf8_lossy(&bytes);
         let mut count = None;
         let mut usage = BTreeMap::new();
