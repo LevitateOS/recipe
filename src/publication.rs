@@ -48,7 +48,7 @@ pub(crate) fn prepare(
         let relative = path
             .strip_prefix('/')
             .context("output path must be absolute")?;
-        validate_path(relative)?;
+        crate::domain::validate_export_path(relative)?;
         selected.insert(name.clone(), relative.to_owned());
     }
     let file = crate::fsx::open_regular(archive).context("cannot open completed Ginux export")?;
@@ -111,7 +111,7 @@ pub(crate) fn prepare(
         )
         .context("export path is not UTF-8")?;
         let path = path.strip_suffix('/').unwrap_or(&path);
-        validate_path(path)?;
+        crate::domain::validate_export_path(path)?;
         let kind = entry.header().entry_type();
         if !kind.is_file() && !kind.is_dir() && !kind.is_symlink() && !kind.is_hard_link() {
             bail!("unsupported export entry kind at {path}");
@@ -185,7 +185,7 @@ pub(crate) fn prepare(
                 .unwrap()
                 .to_str()
                 .context("hardlink target must be UTF-8")?;
-            validate_path(target)?;
+            crate::domain::validate_export_path(target)?;
             let (payload, prior_mode, prior_mtime) = regulars
                 .get(target)
                 .context("hardlink target must be a prior regular file")?
@@ -346,23 +346,4 @@ impl Publication {
         }
         Ok(())
     }
-}
-
-pub(crate) fn validate_path(path: &str) -> Result<()> {
-    if path.len() > crate::domain::MAX_PATH
-        || path.contains('\0')
-        || path
-            .split('/')
-            .any(|part| part.is_empty() || part == "." || part == "..")
-    {
-        bail!("invalid export path {path:?}");
-    }
-    if !path
-        .split('/')
-        .next()
-        .is_some_and(|root| crate::domain::WRITABLE_ROOTS.contains(&root))
-    {
-        bail!("output is outside the writable domain filesystem: {path:?}");
-    }
-    Ok(())
 }

@@ -168,7 +168,7 @@ pub(crate) fn run_domain(
             .and_then(|runtime| runtime.get("network_usage"))
             .cloned()
             .unwrap_or_else(|| {
-                crate::needs::network_usage(
+                crate::needs::report::network_usage(
                     &prepared.network.host_endpoints,
                     &diagnostics,
                     report.log_discarded_bytes,
@@ -403,7 +403,7 @@ fn run_domain_inner(
                     .error("successful API-2 result is missing ctx.runtime"),
             )?;
         runtime.insert("contract".into(), serde_json::to_value(&prepared.contract)?);
-        let usage = crate::needs::network_usage(
+        let usage = crate::needs::report::network_usage(
             &prepared.network.host_endpoints,
             diagnostics,
             drained.discarded_bytes,

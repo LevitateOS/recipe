@@ -70,7 +70,7 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
         .join(crate::domain::INPUTS.trim_start_matches('/'));
     std::fs::create_dir(&inputs)?;
     for (index, input) in invocation.inputs.iter().enumerate() {
-        super::discover::validate_input_name(&input.name)?;
+        crate::domain::validate_input_name(&input.name)?;
         ensure_parents(&inputs, Path::new(&input.name))?;
         match input.kind {
             super::InputKind::Directory => {
@@ -106,7 +106,7 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
     }
     for input in &invocation.inputs {
         if let super::InputKind::Hardlink(target) = &input.kind {
-            super::discover::validate_input_name(target)?;
+            crate::domain::validate_input_name(target)?;
             ensure_parents(&inputs, Path::new(&input.name))?;
             let target = inputs.join(target);
             if !std::fs::symlink_metadata(&target)?.is_file() {

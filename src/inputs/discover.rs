@@ -102,7 +102,7 @@ pub fn discover_inputs(
     collector.collect_executable(&recipe_canonical, MAIN_NAME, &recipe_source, 0)?;
 
     for extra in extra_inputs {
-        validate_input_name(&extra.name)?;
+        crate::domain::validate_input_name(&extra.name)?;
         let meta = std::fs::symlink_metadata(&extra.path)?;
         if meta.is_dir() {
             let filesystem_tree = matches!(extra.name.as_str(), "rootfs" | "target")
@@ -292,7 +292,7 @@ impl<'a> Collector<'a> {
     /// (shared imports); the same name with different bytes is an explicit
     /// duplicate-name failure.
     fn stage_kind(&mut self, name: &str, host: &Path, kind: InputKind) -> Result<()> {
-        validate_input_name(name)?;
+        crate::domain::validate_input_name(name)?;
         if let Some(first) = self.by_name.get(name) {
             if same_file(first, host) {
                 return Ok(());
@@ -360,7 +360,7 @@ impl<'a> Collector<'a> {
                 .unwrap_or(Path::new(""))
                 .join(file);
             let name = name.to_str().context("non-Unicode dependency path")?;
-            validate_input_name(name)?;
+            crate::domain::validate_input_name(name)?;
             let source = read_recipe_file(&dependency.recipe)?;
             self.note_host_dir(&dependency.recipe);
             self.stage_kind(name, &dependency.recipe, InputKind::File)?;
@@ -417,7 +417,7 @@ impl<'a> Collector<'a> {
             let name = name
                 .to_str()
                 .context("input preparation failure: non-Unicode domain path")?;
-            validate_input_name(name)?;
+            crate::domain::validate_input_name(name)?;
             // Validate the selected path before canonicalization, preserving symlink rejection.
             let source = read_recipe_file(&host)?;
             let canonical = canonical_host(&host)?;
@@ -502,32 +502,6 @@ fn reject_secret_bearing_host(host: &Path, name: &str) -> Result<()> {
                  (host path names key material; stage only declared build inputs)"
             );
         }
-    }
-    Ok(())
-}
-
-/// Domain-path bounds, traversal and reserved names. Source filenames may use
-/// spaces, punctuation and Unicode; they are never interpolated into commands.
-pub(crate) fn validate_input_name(name: &str) -> Result<()> {
-    if name.is_empty() || name.len() > MAX_INPUT_NAME {
-        bail!(
-            "input preparation failure: input name {name:?} has {} B, want 1..={MAX_INPUT_NAME} B \
-             (so `/inputs/` + NAME fits the launcher path bound)",
-            name.len(),
-        );
-    }
-    if name
-        .split('/')
-        .any(|part| part.is_empty() || part == "." || part == "..")
-        || name
-            .split('/')
-            .next()
-            .is_some_and(|first| crate::domain::RESERVED_INPUT_NAMES.contains(&first))
-    {
-        bail!("input preparation failure: input name {name:?} is reserved");
-    }
-    if name.chars().any(char::is_control) {
-        bail!("input preparation failure: input name {name:?} contains control characters");
     }
     Ok(())
 }

@@ -124,3 +124,50 @@ pub fn input_name(path: &str) -> Option<&str> {
 pub fn tool_bin_dirs() -> impl Iterator<Item = String> {
     TOOL_BIN_DIRS.iter().map(|dir| format!("{TOOLS}/{dir}"))
 }
+
+/// Domain-path bounds, traversal and reserved names. Source filenames may use
+/// spaces, punctuation and Unicode; they are never interpolated into commands.
+pub fn validate_input_name(name: &str) -> anyhow::Result<()> {
+    if name.is_empty() || name.len() > MAX_INPUT_NAME {
+        anyhow::bail!(
+            "input preparation failure: input name {name:?} has {} B, want 1..={MAX_INPUT_NAME} B \
+             (so `/inputs/` + NAME fits the launcher path bound)",
+            name.len(),
+        );
+    }
+    if name
+        .split('/')
+        .any(|part| part.is_empty() || part == "." || part == "..")
+        || name
+            .split('/')
+            .next()
+            .is_some_and(|first| RESERVED_INPUT_NAMES.contains(&first))
+    {
+        anyhow::bail!("input preparation failure: input name {name:?} is reserved");
+    }
+    if name.chars().any(char::is_control) {
+        anyhow::bail!("input preparation failure: input name {name:?} contains control characters");
+    }
+    Ok(())
+}
+
+/// The rule for a published path, relative to the domain root: bounded, no
+/// traversal, and inside a writable tree.
+pub fn validate_export_path(path: &str) -> anyhow::Result<()> {
+    if path.len() > MAX_PATH
+        || path.contains('\0')
+        || path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        anyhow::bail!("invalid export path {path:?}");
+    }
+    if !path
+        .split('/')
+        .next()
+        .is_some_and(|root| WRITABLE_ROOTS.contains(&root))
+    {
+        anyhow::bail!("output is outside the writable domain filesystem: {path:?}");
+    }
+    Ok(())
+}

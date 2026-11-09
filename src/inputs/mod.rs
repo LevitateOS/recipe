@@ -35,13 +35,12 @@ pub(crate) use config::InstanceConfig;
 
 /// Name of the staged domain config inside the staging directory.
 const CONFIG_FILE: &str = "config.toml";
-pub(crate) use discover::validate_input_name;
 pub(crate) use discover::{ExtraInput, InputKind, StagedInput, discover_inputs, static_references};
 pub(crate) use env::{allowlisted_env, invocation_id};
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 
 /// Staged invocation inputs; launch verifies and materializes the selected image
 /// and worker into a fresh root before launching Ginux.
@@ -241,4 +240,73 @@ fn config_has_host_path(value: &toml::Value, marker: &Path) -> bool {
             .any(|value| config_has_host_path(value, marker)),
         _ => false,
     }
+}
+
+/// Bind main inputs as NAME=PATH and dependency inputs as DEP::NAME=PATH.
+/// A dependency alias must identify one recipe across the complete graph.
+/// No input is implicitly lent to another recipe, even when names match.
+pub(crate) fn bind_inputs(
+    graph: &[crate::needs::Declaration],
+    supplied: &[ExtraInput],
+    search: Option<&Path>,
+) -> Result<std::collections::BTreeMap<PathBuf, Vec<ExtraInput>>> {
+    let main = graph.last().context("empty recipe graph")?;
+    let mut aliases =
+        std::collections::BTreeMap::<String, std::collections::BTreeSet<PathBuf>>::new();
+    for node in graph {
+        for dependency in &node.dependencies {
+            aliases
+                .entry(dependency.name.clone())
+                .or_default()
+                .insert(dependency.recipe.clone());
+        }
+    }
+    let mut bindings: std::collections::BTreeMap<PathBuf, Vec<ExtraInput>> = graph
+        .iter()
+        .map(|node| (node.recipe.clone(), Vec::new()))
+        .collect();
+    for input in supplied {
+        let (recipe, name) = if let Some((alias, name)) = input.name.split_once("::") {
+            let recipes = aliases
+                .get(alias)
+                .with_context(|| format!("unknown dependency input scope {alias}"))?;
+            ensure!(
+                recipes.len() == 1,
+                "ambiguous dependency alias {alias}; use distinct dependency names"
+            );
+            (recipes.first().unwrap(), name)
+        } else {
+            (&main.recipe, input.name.as_str())
+        };
+        bindings.get_mut(recipe).unwrap().push(ExtraInput {
+            name: name.into(),
+            path: input.path.clone(),
+        });
+    }
+    for node in graph {
+        node.needs
+            .validate_inputs(
+                &bindings[&node.recipe]
+                    .iter()
+                    .map(|input| (input.name.clone(), input.path.clone()))
+                    .collect::<Vec<_>>(),
+            )
+            .with_context(|| format!("inputs for {}", node.recipe.display()))?;
+        let discovered = discover_inputs(&node.recipe, search, &bindings[&node.recipe])
+            .with_context(|| format!("input/source closure for {}", node.recipe.display()))?;
+        for (source, digest) in &node.source_digests {
+            ensure!(
+                discovered
+                    .inputs
+                    .iter()
+                    .any(
+                        |input| input.host_path.canonicalize().ok().as_ref() == Some(source)
+                            && hex::encode(input.sha256) == *digest
+                    ),
+                "recipe authority changed during graph preflight: {}",
+                source.display()
+            );
+        }
+    }
+    Ok(bindings)
 }

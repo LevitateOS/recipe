@@ -59,7 +59,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
         Commands::Validate { recipe } => {
             let recipe = resolve_recipe_path(&recipe, &recipes_path)?;
             let supplied = parse_inputs(engine_options.inputs)?;
-            let authority = levitate_recipe::needs::validate(
+            let authority = levitate_recipe::needs::report::validate(
                 &recipe,
                 Some(&recipes_path),
                 &supplied,
@@ -72,7 +72,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
         }
         Commands::Inspect { recipe } => {
             let recipe = resolve_recipe_path(&recipe, &recipes_path)?;
-            let authority = levitate_recipe::needs::inspect(
+            let authority = levitate_recipe::needs::report::inspect(
                 &recipe,
                 Some(&recipes_path),
                 &engine_options.execution.narrowing,
@@ -86,10 +86,10 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 bin_support::retained_invocation(engine_options.state_dir, &subject)
             };
             let explanation = if let Some(directory) = recorded {
-                levitate_recipe::needs::explain_invocation(&directory, &operation)?
+                levitate_recipe::needs::report::explain_invocation(&directory, &operation)?
             } else {
                 let recipe = resolve_recipe_path(&subject, &recipes_path)?;
-                levitate_recipe::needs::explain_recipe(
+                levitate_recipe::needs::report::explain_recipe(
                     &recipe,
                     Some(&recipes_path),
                     &operation,
@@ -102,7 +102,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             let old = resolve_recipe_path(&old, &recipes_path)?;
             let new = resolve_recipe_path(&new, &recipes_path)?;
             emit_json(
-                &levitate_recipe::needs::diff(&old, &new, Some(&recipes_path))?,
+                &levitate_recipe::needs::report::diff(&old, &new, Some(&recipes_path))?,
                 json_output.as_deref(),
             )?;
         }

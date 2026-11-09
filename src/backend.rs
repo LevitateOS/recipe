@@ -36,7 +36,7 @@ impl GinuxLauncher {
             .context(crate::failure::Category::Startup.error("invalid invocation options"))?;
         let graph = crate::needs::declarations(invocation.recipe, invocation.search_path)?;
         let bindings =
-            crate::needs::bind_inputs(&graph, invocation.inputs, invocation.search_path)?;
+            crate::inputs::bind_inputs(&graph, invocation.inputs, invocation.search_path)?;
         // Resolve all declarations and contracts before the first dependency can
         // execute. Parent restrictions never become dependency grants, and
         // force flags apply to the main recipe only.
