@@ -170,3 +170,17 @@ To extend an already-produced pinned compiler image, an image manifest may omit
 listing the additional pinned RPMs. The same composer validates and records all
 inputs. Select the new output digest from `provenance.json` in `GINUX_ROOT`;
 previous compiler-image digest examples above do not identify the extended image.
+
+## Managed CI inputs
+
+`managed-ci.json` pins the maintained Ginux source, expected acquisition image,
+public URLs for the acquisition manifest's exact inputs, and the Rocky signing
+key digest. The required hosted job builds its image rather than requiring an
+unpublished image URL or repository variables. `scripts/prepare-managed-image.py`
+verifies every downloaded/cached digest, checks all twelve RPM signatures in a
+private disposable RPM database, invokes Ginux's existing verified OCI producer,
+and invokes `recipe-image`. The final tar and provenance must match the pinned
+image digest. Existing outputs and wrong cached inputs fail without replacement.
+`--offline` requires the same already-acquired artifacts and OCI blobs and still
+runs the actual producers and all digest/signature checks. Ordinary builds use
+public HTTPS and publisher inputs; no fixture CA or migration executable is used.

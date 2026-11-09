@@ -56,56 +56,66 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
-      GINUX_REPOSITORY: ${{ vars.GINUX_REPOSITORY }}
-      GINUX_SOURCE_SHA: ${{ vars.GINUX_SOURCE_SHA }}
-      RECIPE_IMAGE_URL: ${{ vars.RECIPE_IMAGE_URL }}
-      RECIPE_IMAGE_SHA256: ${{ vars.RECIPE_IMAGE_SHA256 }}
+      RUSTUP_TOOLCHAIN: '1.99.0'
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Require exact runtime inputs
+      - name: Load tracked runtime inputs
         shell: bash
         run: |
-          set -euo pipefail
-          [[ "$GINUX_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
-          [[ "$GINUX_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$RECIPE_IMAGE_SHA256" =~ ^[0-9a-f]{64}$ ]]
-          [[ "$RECIPE_IMAGE_URL" == https://* ]]
+          python3 - <<'PYTHON'
+          import json, os, re
+          from pathlib import Path
+          spec = json.loads(Path('bootstrap/managed-ci.json').read_text())
+          pins = {'GINUX_REPOSITORY': spec['ginux_repository'],
+                  'GINUX_SOURCE_SHA': spec['ginux_revision'],
+                  'RECIPE_IMAGE_SHA256': spec['image_sha256']}
+          assert re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', pins['GINUX_REPOSITORY'])
+          assert re.fullmatch(r'[0-9a-f]{40}', pins['GINUX_SOURCE_SHA'])
+          assert re.fullmatch(r'[0-9a-f]{64}', pins['RECIPE_IMAGE_SHA256'])
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              for name, value in pins.items():
+                  output.write(f'{name}={value}\n')
+          PYTHON
       - uses: actions/checkout@v4
         with:
-          repository: ${{ vars.GINUX_REPOSITORY }}
-          ref: ${{ vars.GINUX_SOURCE_SHA }}
+          repository: ${{ env.GINUX_REPOSITORY }}
+          ref: ${{ env.GINUX_SOURCE_SHA }}
           path: .artifacts/ginux-source
           persist-credentials: false
       - name: Host tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential git erofs-utils rpm2cpio rpm jq ripgrep
-          rustup component add clippy rustfmt
-          rustup target add x86_64-unknown-linux-gnu
+          sudo apt-get install -y build-essential git curl erofs-utils rpm2cpio rpm jq ripgrep xz-utils bzip2 pkg-config libssl-dev
+          rustup toolchain install 1.99.0 --profile minimal --component clippy --component rustfmt
+          rustup target add --toolchain 1.99.0 x86_64-unknown-linux-gnu
       - name: Build selected launcher
         working-directory: .artifacts/ginux-source
         run: |
           test "$(git rev-parse HEAD)" = "$GINUX_SOURCE_SHA"
           make build
-      - name: Obtain pinned compiler image
+      - name: Produce pinned compiler image from public inputs
         run: |
           mkdir -p .artifacts/managed-ci
-          curl --fail --location --proto '=https' --proto-redir '=https' "$RECIPE_IMAGE_URL" -o .artifacts/managed-ci/rootfs.tar
-          echo "$RECIPE_IMAGE_SHA256  .artifacts/managed-ci/rootfs.tar" | sha256sum --check --strict
+          cargo build --locked --release --bin recipe-image
+          python3 scripts/prepare-managed-image.py \
+            --ginux-source .artifacts/ginux-source \
+            --producer target/release/recipe-image \
+            --input-root .artifacts/managed-ci/inputs \
+            --output .artifacts/managed-ci/image
       - name: Lint all integration targets
-        run: cargo clippy --lib --bins --test e2e --test library_backend --test image_producer -- -D warnings
+        run: cargo clippy --locked --lib --bins --test e2e --test library_backend --test image_producer -- -D warnings
       - name: Build CLI, matching worker and all integration targets
         run: |
-          cargo test --release --test e2e --test library_backend --test image_producer --no-run --message-format=json > .artifacts/managed-ci/build.json
+          cargo test --locked --release --test e2e --test library_backend --test image_producer --no-run --message-format=json > .artifacts/managed-ci/build.json
       - name: Run complete standalone managed catalogs
         run: |
           sudo python3 scripts/managed-integration.py \
             --build-json .artifacts/managed-ci/build.json \
             --ginux .artifacts/ginux-source/target/x86_64-unknown-linux-gnu/release/ginux \
             --ginux-source "$GINUX_SOURCE_SHA" \
-            --image .artifacts/managed-ci/rootfs.tar --image-sha256 "$RECIPE_IMAGE_SHA256" \
+            --image .artifacts/managed-ci/image/rootfs.tar --image-sha256 "$RECIPE_IMAGE_SHA256" \
             --output .artifacts/managed-ci/results
       - uses: actions/upload-artifact@v4
         if: always()
@@ -113,6 +123,7 @@ jobs:
           name: managed-integration-receipts
           path: |
             .artifacts/managed-ci/build.json
+            .artifacts/managed-ci/image/provenance.json
             .artifacts/managed-ci/results/combination.json
             .artifacts/managed-ci/results/identity.json
             .artifacts/managed-ci/results/*catalog.txt
