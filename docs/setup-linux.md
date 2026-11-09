@@ -14,6 +14,11 @@ Gate 11 remains partial against its performance budget. Recipe selects explicit
 downstream catalog 1002, separate from Gate 11 upstream catalog 2.
 This source delivery does not claim distro boot/install or complete security
 acceptance. Do not substitute a migration binary, private image cache or test CA.
+The reproducible baseline below is Recipe `e7bfc166` with Ginux `28f4368f`.
+Later local manual-readiness and TUI compiler corrections are still pending
+final delivery and product/security acceptance in the superproject's
+`docs/ginux-contributions/prd15-product-contract.md`. The baseline commands do
+not reproduce those later corrections or establish their release acceptance.
 
 ## Host and source tools
 
@@ -33,13 +38,14 @@ normal crates.io access for compilation; `--offline` assumes inputs already
 acquired. Do not borrow a developer Cargo target directory or alter TLS trust.
 
 Recipe source retains its standalone Cargo.lock. Obtain both repositories over
-HTTPS and record the exact Recipe revision with your artifacts. For a pinned
-release use its recorded Recipe revision after cloning; moving branch names do
-not identify a reproducible pair. The compatible Ginux revision here is explicit:
+HTTPS and retain both exact revisions with your artifacts. Moving branch names
+do not identify a reproducible pair. These commands reproduce the delivered
+baseline; use the recorded final release pair when that is available:
 
 ```sh
 git clone --branch master https://github.com/LevitateOS/recipe.git recipe-source
 git clone --branch main https://github.com/LevitateOS/ginux.git maintained-ginux
+git -C recipe-source checkout --detach e7bfc166343164989794c917e67f187d0ac49ba8
 git -C maintained-ginux checkout --detach 28f4368f6fd70d0e485386892a08d6734b5988dd
 git -C recipe-source rev-parse HEAD
 (cd maintained-ginux && make build)

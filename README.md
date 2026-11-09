@@ -16,16 +16,18 @@ intersect each dependency's own declaration. Limits remain per instance.
 The launcher must support configured downstream catalog 1002, `configured-network-audit=1`, `configured-denial-audit=1`,
 configured `launch`, export, control and restore. Recipe derives a self-contained
 `[userspace.contract]` and validates it before launch; a generic `config` parse
-alone does not establish compatibility. The LevitateOS workspace's old
-`tools/ginux` pin lacks this runtime. Maintained runtime delivery remains open in
-PRD01; local NEEDS verification uses the exact candidates recorded in the
-superproject's `docs/ginux-contributions/prd18-implementation.md`.
+alone does not establish compatibility. The maintained source baseline in
+[Linux setup](docs/setup-linux.md) supplies this contract. Later local consumer
+corrections still require final source delivery and acceptance, as recorded in
+the superproject's `docs/ginux-contributions/prd15-product-contract.md`. Do not
+substitute baseline receipts for that final combination.
 
 ## Build and prepare the environment
 
 [Linux setup and bootstrap](docs/setup-linux.md) records the verified host,
 input reproduction, package roles, required privileges and output ownership.
-Maintained runtime source delivery remains an explicit prerequisite.
+Select the recorded source pair and matching worker; final delivery of later
+local corrections remains separately tracked.
 
 From the LevitateOS workspace:
 

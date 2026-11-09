@@ -31,8 +31,9 @@ and configured-denial-audit=1.
 The current native launcher needs Linux x86_64 and chroot bootstrap privileges.
 Run the whole coordinator with those privileges and the explicit launcher,
 image and matching worker selections. Wrapping only the launcher in sudo loses
-required inherited channels. Runtime delivery remains a separate prerequisite;
-the workspace's old Ginux pin does not provide this configured contract.
+required inherited channels. Select the compatible maintained source pair in
+docs/setup-linux.md. Later local consumer corrections require their recorded
+final source pair; the bootstrap baseline does not certify that final release.
 Build the image explicitly with recipe-image; ordinary execution consumes it.
 See bootstrap/README.md for the pinned manifest producer.
 .SH COMMANDS
