@@ -1770,6 +1770,28 @@ Two fresh reviewers, told to report only problems worth fixing (at most 40 each)
 - CLI snapshots differ from the baseline only in the three intended files listed below.
 - `cargo build --all-targets`: no warnings. `deps.py`: no module cycles.
 
+### Follow-up sweep (2026-11-09)
+
+A quick pass over what 52 commits added after the final verification (`needs.rs`, `needs/contract.rs`, `target.rs`, `helpers/target.rs` and their wiring), from `9f16113`. One fresh reviewer plus a direct read. Untangle only: no comment or test passes.
+
+- [x] `3dc2779`: the Ginux contract has one owner. `contract::validate` took a `network` flag that had to match the contract inside the config passed with it, and "any endpoint granted" was spelled at five call sites. `Contract::of(options)` and `contract::inspect` derive it; `TCP_CONNECT` and the `network.connect` alias are named once; the inspection config takes the worker path from `domain`.
+- [x] `c8e6066`: `invocation_log` reads back what it writes. `recipe explain` re-derived the state root and `logs/<id>` in the CLI, and `needs` re-spelled `result.json`, the authority version and both size bounds. `Recorded::read`, `InvocationLog::supervisor_log` and `retained` own them, with the supervisor-log cap the launcher writes under. The CLI lookup now resolves the default state root as the writer does.
+- [x] `f23a06a`: the worker's nested-recipe machinery is gone (active stack, cycle and depth checks, the dependency branch of `options()`, four unused parameters). Dependencies run in separate instances, so it was unreachable; this also settles M25.
+- [x] `1802709`: backend derives each graph node's execution options once instead of in the preflight and again in the run loop; `parse_inputs` owns `--input NAME=PATH` for `validate` and the engine commands; the network warning uses `diag!`; doc and manifest leftovers.
+- [x] `c2da254`: `needs.rs` held the declaration model and the coordinator reports, which brought back a module cycle (inputs / invocation_log / needs / publication). Reports are in `needs::report`, `bind_inputs` is in `inputs`, and the input-name and export-path rules are in `domain`. `deps.py` reports no module cycles.
+- Checks: `cargo fmt --check` and `cargo clippy --locked --all-targets -- -D warnings` clean at each commit. Baseline and new binaries give byte-identical output for `validate`, `inspect`, `diff` and `explain` (recipes and two retained invocations), except the two intended `validate --input` messages. Managed runs against a real launcher are listed in the session report, not here.
+- Left as is:
+  - `inputs/mod.rs` `value_has_host_path` strips `PATH=`: config strings carry environment entries as `NAME=VALUE`, so the rule is needed there too.
+  - Backend's `name == "tools"` merge is the documented dependency-tools convention.
+- Still open (new since loop 3; candidates for a next pass):
+  - **Target inode kind as a type.** `target.rs` and `helpers/target.rs` compare `"file"`/`"dir"`/`"symlink"`/`"hardlink"` strings in about 25 places, with the allowed list in `load` and the "hardlink agrees with file" rule twice. A serde enum keeps the wire format. Needs the product tests to validate.
+  - **Request versus resolved options.** `ExecutionOptions` carries both the caller's `narrowing` and the resolved limits, crosses the wire whole, and `retained.rs` has to skip `narrowing`. `inspect` resolves against defaults while a run resolves against the caller's options.
+  - **One declaration per run.** The graph preflight, `prepare_invocation`, `run_single`, `collect_executable` and the worker each re-derive and re-compare the declaration. Pass the preflight `Declaration` down instead.
+  - **Two instance-config renderers.** `contract::inspection_config` repeats the section layout and fixed values of `InstanceConfig::render`.
+  - **Dependency references.** `static_references` still builds `deps`/`build_deps` references that discovery filters out; only autofix reads them (joins M15).
+  - **Unobserved network usage** is built at two call sites in `launch.rs`, and its JSON shape is spelled three times.
+  - Scripts: `prepare-managed-image.py` requires `manifest['rust']`, which the producer made optional; `managed-integration.py` spells the target set three times.
+
 ### Resume here
 
 - **Special cases.** Of the 168 at audit start:

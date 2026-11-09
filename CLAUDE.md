@@ -37,6 +37,8 @@ src/
 ├── lib.rs                         RecipeEngine (library API)
 ├── backend.rs, launch.rs          coordinator: invocation → Ginux run
 ├── inputs/                        input discovery, staging, domain config, root
+├── needs.rs, needs/               NEEDS declarations, derived Ginux contract, authority reports
+├── target.rs                      target metadata manifest (helpers in helpers/target.rs)
 ├── retained.rs, invocation_log.rs, temporary.rs, publication.rs   coordinator stores
 ├── worker/                        protocol + in-domain worker
 ├── core/                          engine: invocation, lifecycle, deps, events, output
