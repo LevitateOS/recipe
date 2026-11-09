@@ -132,9 +132,10 @@ Manual `isacquired`, `isbuilt` and `isinstalled` execute their actual custom che
 and return nonzero when it reports work needed. With dependencies, they first
 require matching cached dependency products and run only their installed checks,
 in dependency order. They never run dependency acquire/build/install hooks to
-repair a cache miss. Explicit dependent-recipe `remove`/`cleanup` has an unresolved
-cache-selection policy and is not release-accepted; see
-[the runtime limits](docs/runtime-limits.md).
+repair a cache miss. Explicit `remove`/`cleanup` uses the same cached-dependency
+rule to recover the parent's exact saved state/files. A missing or changed cache
+fails before the main hook; dependencies are never installed or removed by the
+parent's operation. See [the runtime limits](docs/runtime-limits.md).
 
 `--force-install`, `--force-build` and `--force-acquire` select progressively more
 work for the main recipe. Dependencies retain their own readiness. Current force

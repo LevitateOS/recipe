@@ -140,9 +140,9 @@ details. [HELPERS_AUDIT.md](HELPERS_AUDIT.md) lists registered helpers.
 - Dependencies run that lifecycle in separate Ginux instances with their own
   NEEDS. Declared products are snapshotted into the consumer; a directory output
   named `tools` contributes to its `/work/tools`. No parent grant is lent. Manual
-  readiness checks require matching cached dependency products and run only
-  dependency installed checks. Explicit remove/cleanup on dependency graphs
-  remains unresolved; see the manual-check limits below.
+  readiness checks and explicit remove/cleanup require matching cached dependency
+  products and run only dependency installed checks. Missing or changed products
+  fail before the main operation; dependencies are never installed implicitly.
 - `list` and `info` inspect loader-owned declared metadata without running setup
   or helper code. Dynamic metadata is reported unavailable.
 
@@ -251,13 +251,14 @@ or restart semantics. Archive timestamps have whole-second precision. See
 [supported runtime limits](docs/runtime-limits.md) before claiming isolation or
 Linux compatibility beyond these boundaries.
 
-Manual `isacquired`, `isbuilt` and `isinstalled` run dependency installed checks
+Manual `isacquired`, `isbuilt`, `isinstalled`, `remove` and `cleanup` run dependency installed checks
 in graph order and require matching cached dependency products. They never run
 dependency acquire/build/install hooks to repair missing or changed products.
 Use `install` separately to prepare those dependencies. The checked snapshots
 retain the parent's installed input identity and each dependency's own authority.
-Explicit `remove`/`cleanup` on dependency graphs remains unresolved; this
-readiness correction does not repair those operations.
+For `remove`/`cleanup`, unavailable matching dependency products fail before the
+main hook runs, preserving the prior state and files. Dependency remove/cleanup
+hooks are not run by the parent's operation.
 
 ## Read authority without executing setup
 

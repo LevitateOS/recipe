@@ -65,8 +65,8 @@ parent's installed input identity. Missing or changed dependency inputs/products
 fail explicitly; use `install` separately to prepare them. These checks preserve
 separate dependency authority and caller restrictions.
 
-The cached-dependency rule above does not resolve explicit `remove`/`cleanup`
-for recipes with dependencies. Their current input omission can select empty
-state instead of the installed parent's files. That lifecycle policy remains
-unresolved by user decision; do not count those dependent-recipe operations as
-verified or repaired by the manual-readiness correction.
+Explicit `remove`/`cleanup` follows that same cached-dependency rule, restoring
+the parent's matching saved state/files. Missing or changed dependency products
+fail before the main hook, preserving its prior state and publications. Neither
+operation runs dependency acquire/build/install or remove/cleanup hooks. Use an
+explicit install to prepare unavailable matching dependency products.

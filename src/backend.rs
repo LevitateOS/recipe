@@ -57,15 +57,11 @@ impl GinuxLauncher {
         let mut results = std::collections::BTreeMap::<PathBuf, serde_json::Value>::new();
         for node in &graph {
             let main = node.recipe == graph.last().unwrap().recipe;
-            // Manual checks reconstruct the installed input identity using
-            // checked cached products; they never run dependency install hooks.
-            let installing = invocation.operation == crate::worker::protocol::Operation::Install;
-            let checking = invocation.operation.check().is_some();
-            if !main && !installing && !checking {
-                continue;
-            }
+            // Every non-install operation reconstructs the installed input
+            // identity from checked cached products, without installing them.
+            let cached_only = invocation.operation != crate::worker::protocol::Operation::Install;
             crate::cancellation::check()?;
-            let transfer = ((installing || checking) && !node.dependencies.is_empty())
+            let transfer = (!node.dependencies.is_empty())
                 .then(crate::temporary::TemporaryDirectory::new)
                 .transpose()?;
             let mut internal = Vec::new();
@@ -138,7 +134,7 @@ impl GinuxLauncher {
             };
             let operation = if main {
                 invocation.operation
-            } else if checking {
+            } else if cached_only {
                 crate::worker::protocol::Operation::IsInstalled
             } else {
                 crate::worker::protocol::Operation::Install
@@ -160,7 +156,7 @@ impl GinuxLauncher {
                 ..*invocation
             };
             let result = self.run_single(&child, &internal, node).with_context(|| {
-                if !main && checking {
+                if !main && cached_only {
                     format!(
                         "manual {} requires matching cached products from dependency {}; run install explicitly to prepare them",
                         invocation.operation, node.recipe.display()

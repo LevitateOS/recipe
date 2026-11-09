@@ -1022,3 +1022,131 @@ fn install(ctx) { print("INSTALL_HOOK_CALLED");write_file("/out/proof",ctx.state
         &recipes,
     ));
 }
+
+#[test]
+fn managed_manual_remove_cleanup_require_cached_dependencies_without_installing() {
+    for operation in ["remove", "cleanup"] {
+        let (dir, recipes) = create_test_env();
+        write_recipe(
+            &recipes,
+            "cached-leaf",
+            r#"const RECIPE_API=2;
+const NEEDS=#{inputs:#{asset:"file"},outputs:#{tool:"file"}};
+let ctx=#{name:"cached-leaf",state:#{done:false}};
+fn is_acquired(ctx) { ready(ctx) }
+fn is_built(ctx) { ready(ctx) }
+fn is_installed(ctx) {
+    if !ctx.state.done || !is_file("/out/tool") { return needs_work(ctx,"install leaf explicitly"); }
+    ctx.outputs.tool="/out/tool"; ready(ctx)
+}
+fn install(ctx) { print("INSTALL_DEPENDENCY_HOOK");copy_file("/inputs/asset","/out/tool");ctx.state.done=true;ctx.outputs.tool="/out/tool";ctx }
+"#,
+        );
+        write_recipe(
+            &recipes,
+            "cached-middle",
+            r#"const RECIPE_API=2;
+const NEEDS=#{outputs:#{tool:"file"}};
+let build_deps=["cached-leaf"];
+let ctx=#{name:"cached-middle",state:#{done:false}};
+fn is_acquired(ctx) { ready(ctx) }
+fn is_built(ctx) { ready(ctx) }
+fn is_installed(ctx) {
+    if !ctx.state.done || !is_file("/out/tool") { return needs_work(ctx,"install middle explicitly"); }
+    ctx.outputs.tool="/out/tool"; ready(ctx)
+}
+fn install(ctx) { print("INSTALL_DEPENDENCY_HOOK");copy_file(join_path(ctx.runtime.paths.dependencies,"cached-leaf/tool"),"/out/tool");ctx.state.done=true;ctx.outputs.tool="/out/tool";ctx }
+"#,
+        );
+        write_recipe(
+            &recipes,
+            "cached-main",
+            r#"const RECIPE_API=2;
+const NEEDS=#{outputs:#{proof:"file"}};
+let deps=["cached-middle"];
+let ctx=#{name:"cached-main",state:#{done:false,hook:""}};
+fn is_acquired(ctx) { ready(ctx) }
+fn is_built(ctx) { ready(ctx) }
+fn is_installed(ctx) {
+    if !ctx.state.done || !is_file("/out/proof") { return needs_work(ctx,"install main explicitly"); }
+    ctx.outputs.proof="/out/proof";ready(ctx)
+}
+fn install(ctx) { print("INSTALL_MAIN_HOOK");copy_file(join_path(ctx.runtime.paths.dependencies,"cached-middle/tool"),"/out/proof");write_file("/work/build-marker","retained work");ctx.state.done=true;ctx.outputs.proof="/out/proof";ctx }
+fn check_cached(ctx) {
+    if !ctx.state.done || read_file("/out/proof") != "original cached bytes" { throw "wrong installed parent identity"; }
+    if read_file(join_path(ctx.runtime.paths.dependencies,"cached-middle/tool")) != "original cached bytes" { throw "wrong cached dependency"; }
+    if !is_file("/work/build-marker") { throw "lost saved work"; }
+}
+fn remove(ctx) { print("REMOVE_MAIN_HOOK");check_cached(ctx);rm("/out/proof");ctx.outputs=#{};ctx.state.done=false;ctx.state.hook="remove";ctx }
+fn cleanup(ctx,reason) {
+    if reason != "manual" { return ctx; }
+    print("CLEANUP_MAIN_HOOK");check_cached(ctx);rm("/work/build-marker");ctx.outputs.proof="/out/proof";ctx.state.hook="cleanup";ctx
+}
+"#,
+        );
+        let asset = dir.path().join("cached-asset");
+        std::fs::write(&asset, "original cached bytes").unwrap();
+        let binding = format!("cached-leaf::asset={}", asset.display());
+        let installed = run_recipe(&["install", "cached-main", "--input", &binding], &recipes);
+        assert_success(&installed);
+        let value: serde_json::Value = serde_json::from_slice(&installed.stdout).unwrap();
+        let previous = std::path::PathBuf::from(value["outputs"]["proof"].as_str().unwrap());
+        std::fs::write(&asset, "changed input bytes").unwrap();
+        let failed = run_recipe(&[operation, "cached-main", "--input", &binding], &recipes);
+        assert!(!failed.status.success());
+        let stderr = String::from_utf8_lossy(&failed.stderr);
+        assert!(
+            stderr.contains("requires matching cached products"),
+            "{operation}: {stderr}"
+        );
+        for hook in [
+            "INSTALL_DEPENDENCY_HOOK",
+            "INSTALL_MAIN_HOOK",
+            "REMOVE_MAIN_HOOK",
+            "CLEANUP_MAIN_HOOK",
+        ] {
+            assert!(!stderr.contains(hook), "{operation}: {stderr}");
+        }
+        assert!(failed.stdout.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&previous).unwrap(),
+            "original cached bytes"
+        );
+        std::fs::write(&asset, "original cached bytes").unwrap();
+        let output = run_recipe(&[operation, "cached-main", "--input", &binding], &recipes);
+        assert_success(&output);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stderr.contains("INSTALL_DEPENDENCY_HOOK"),
+            "{operation}: {stderr}"
+        );
+        assert!(
+            !stderr.contains("INSTALL_MAIN_HOOK"),
+            "{operation}: {stderr}"
+        );
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["state"]["hook"], operation);
+        if operation == "remove" {
+            assert_eq!(value["outputs"], serde_json::json!({}));
+            assert_eq!(value["state"]["done"], false);
+        } else {
+            assert_eq!(
+                std::fs::read_to_string(value["outputs"]["proof"].as_str().unwrap()).unwrap(),
+                "original cached bytes"
+            );
+            assert_eq!(value["state"]["done"], true);
+        }
+        let readiness = run_recipe(
+            &["isinstalled", "cached-main", "--input", &binding],
+            &recipes,
+        );
+        if operation == "remove" {
+            assert!(!readiness.status.success());
+        } else {
+            assert_success(&readiness);
+            let saved: serde_json::Value = serde_json::from_slice(&readiness.stdout).unwrap();
+            assert_eq!(saved["state"]["hook"], "cleanup");
+        }
+        assert!(!String::from_utf8_lossy(&readiness.stderr).contains("INSTALL_DEPENDENCY_HOOK"));
+    }
+}
