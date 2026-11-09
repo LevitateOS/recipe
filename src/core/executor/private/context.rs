@@ -1,7 +1,7 @@
-//! Worker-local invocation state shared by the main recipe and its
-//! dependencies. The coordinator owns the destination lock and all durable
+//! Worker-local invocation state of the one recipe this domain runs.
+//! The coordinator owns the destination lock and all durable
 //! state; this module never rewrites sources.
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -14,8 +14,6 @@ pub(crate) struct ExecutionContext<'a> {
     options: crate::ExecutionOptions,
     /// Saved state was offered and checkpoints are kept for recovery.
     resumable: bool,
-    /// Recipes being evaluated, main recipe first.
-    active: Vec<PathBuf>,
     states: BTreeMap<PathBuf, rhai::Map>,
 }
 
@@ -23,7 +21,6 @@ impl<'a> ExecutionContext<'a> {
     pub(crate) fn new(
         sink: &'a mut CheckpointSink<'a>,
         options: crate::ExecutionOptions,
-        _work_root: &Path,
         saved: &BTreeMap<String, serde_json::Value>,
         resumable: bool,
     ) -> Result<Self> {
@@ -38,51 +35,16 @@ impl<'a> ExecutionContext<'a> {
             sink,
             options,
             resumable,
-            active: Vec::new(),
             states,
         })
     }
 
-    /// Options for the recipe being evaluated: force flags apply to the main
-    /// recipe only, never to its dependencies.
-    pub(crate) fn options(&self) -> crate::ExecutionOptions {
-        if self.active.len() > 1 {
-            self.options.for_dependency()
-        } else {
-            self.options.clone()
-        }
+    pub(crate) fn options(&self) -> &crate::ExecutionOptions {
+        &self.options
     }
 
     pub(crate) fn resumable(&self) -> bool {
         self.resumable
-    }
-
-    pub(crate) fn enter(&mut self, recipe: &Path) -> Result<()> {
-        if self.active.iter().any(|active| active == recipe) {
-            let chain = self
-                .active
-                .iter()
-                .chain(std::iter::once(&recipe.to_path_buf()))
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>();
-            bail!(
-                "Circular recipe dependency detected: {}",
-                chain.join(" -> ")
-            );
-        }
-        if self.active.len() >= crate::recipes::MAX_DEPTH {
-            bail!(
-                "Recipe dependency depth exceeds {} at {}",
-                crate::recipes::MAX_DEPTH,
-                recipe.display()
-            );
-        }
-        self.active.push(recipe.to_path_buf());
-        Ok(())
-    }
-
-    pub(crate) fn leave(&mut self) {
-        self.active.pop();
     }
 
     pub(crate) fn saved_state(&self, recipe: &Path) -> Option<&rhai::Map> {

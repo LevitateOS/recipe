@@ -1,5 +1,5 @@
-//! Loading one recipe for one operation. Every operation, and every
-//! dependency, goes through [`with_recipe`].
+//! Loading one recipe for one operation. Every operation goes through
+//! [`with_recipe`].
 
 use super::context::ExecutionContext;
 use crate::core::executor::compile_recipe;
@@ -42,8 +42,7 @@ pub(crate) struct Load<'x> {
     pub operation: &'x str,
 }
 
-/// Compile `recipe`, enter it (cycle and depth checks), run its setup with
-/// its saved state, then run `f`. The recipe is left on every path.
+/// Compile `recipe`, run its setup with its saved state, then run `f`.
 pub(crate) fn with_recipe<'e, T>(
     engine: &'e Engine,
     exec: &mut ExecutionContext<'_>,
@@ -56,8 +55,7 @@ pub(crate) fn with_recipe<'e, T>(
     if declaration.source_digests != compiled.source_digests {
         return Err(anyhow::anyhow!("worker declaration changed during compile").into());
     }
-    exec.enter(&compiled.recipe_path)?;
-    let result = (|| {
+    {
         let base_dir = compiled.base_path.as_deref().and_then(Path::parent);
         let mut runtime = Runtime::new(
             engine,
@@ -67,7 +65,7 @@ pub(crate) fn with_recipe<'e, T>(
                 base_dir,
                 build_dir: load.build_dir,
                 defines: load.defines,
-                options: exec.options(),
+                options: exec.options().clone(),
                 operation: load.operation,
                 persist_state: exec.resumable(),
             },
@@ -95,7 +93,5 @@ pub(crate) fn with_recipe<'e, T>(
             needs: declaration.needs,
         };
         f(&mut loaded, exec)
-    })();
-    exec.leave();
-    result
+    }
 }

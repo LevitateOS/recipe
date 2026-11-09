@@ -31,7 +31,7 @@ pub(crate) fn install(
             output::detail(&format!("Extends base recipe: {}", base_path.display()));
         }
 
-        let (mut ctx, phases) = plan(recipe, &exec.options())?;
+        let (mut ctx, phases) = plan(recipe, exec.options())?;
         if phases.is_empty() {
             recipe.needs.validate_worker_outputs(&ctx, true)?;
             exec.checkpoint_reused(&recipe.path, &ctx)?;
@@ -54,8 +54,7 @@ pub(crate) fn install(
         describe_dependencies("Runtime dependencies", "deps", &deps);
         describe_dependencies("Build-time dependencies", "build_deps", &build_deps);
         // `deps` are needed by every phase; their environment lasts until install ends.
-        let _deps_environment =
-            super::dependencies::install(engine, exec, load, recipe.base_path.as_deref(), &deps)?;
+        let _deps_environment = super::dependencies::select(&deps)?;
 
         output::action(&format!("Installing {name}"));
         output::hook_event(
@@ -71,13 +70,7 @@ pub(crate) fn install(
                 if acquires && !still_needs_build(recipe, exec, &mut ctx)? {
                     continue;
                 }
-                super::dependencies::install(
-                    engine,
-                    exec,
-                    load,
-                    recipe.base_path.as_deref(),
-                    &build_deps,
-                )?
+                super::dependencies::select(&build_deps)?
             } else {
                 None
             };

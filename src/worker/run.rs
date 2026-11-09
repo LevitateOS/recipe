@@ -236,7 +236,6 @@ fn run_operation(
     let mut exec = ExecutionContext::new(
         &mut sink,
         req.options.execution.clone(),
-        build_dir,
         &req.restored_states,
         req.persist_state,
     )

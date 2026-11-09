@@ -1,18 +1,10 @@
 //! Dependencies have already completed in separate coordinator-owned instances.
 //! This worker only verifies their immutable result bindings and selects tools.
-use super::context::ExecutionContext;
-use super::loaded::Load;
 use anyhow::{Result, ensure};
-use rhai::Engine;
 use std::path::{Path, PathBuf};
 
-pub(crate) fn install(
-    _engine: &Engine,
-    _exec: &mut ExecutionContext<'_>,
-    _load: &Load<'_>,
-    _base: Option<&Path>,
-    names: &[String],
-) -> Result<Option<crate::process::EnvironmentGuard>> {
+/// Check that every named dependency was prepared, then put their tools on PATH.
+pub(crate) fn select(names: &[String]) -> Result<Option<crate::process::EnvironmentGuard>> {
     if names.is_empty() {
         return Ok(None);
     }
