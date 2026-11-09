@@ -68,9 +68,12 @@ let ctx = #{{name:"static-needs"}};
     assert_eq!(value["effective"]["memory_mib"], 2048);
     assert_eq!(value["effective"]["network"], serde_json::json!([]));
     assert_eq!(value["contract"]["catalog"], 1002);
-    assert_eq!(
-        value["contract"]["contract"]["connect"],
-        serde_json::json!([])
+    assert!(
+        !value["contract"]["contract"]["allow"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|selector| selector == "network.inet.tcp.connect")
     );
     let missing = run_recipe(&["validate", "new"], &recipes);
     assert!(!missing.status.success());
@@ -564,9 +567,12 @@ let deps=[];
     let output = run_recipe(&["install", "child"], &recipes);
     assert_success(&output);
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(
-        value["runtime"]["contract"]["contract"]["connect"],
-        serde_json::json!([])
+    assert!(
+        !value["runtime"]["contract"]["contract"]["allow"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|selector| selector == "network.inet.tcp.connect")
     );
     assert_eq!(
         value["runtime"]["network_usage"]["endpoints"],
@@ -819,9 +825,12 @@ fn install(ctx) {{ {body} ctx.outputs.status="/out/status"; ctx }}
             serde_json::from_slice(&std::fs::read(entry.path().join("authority.json")).unwrap())
                 .unwrap();
         assert_eq!(receipt["execution"]["network_hosts"], serde_json::json!([]));
-        assert_eq!(
-            receipt["contract"]["contract"]["connect"],
-            serde_json::json!([])
+        assert!(
+            !receipt["contract"]["contract"]["allow"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|selector| selector == "network.inet.tcp.connect")
         );
         let explained = run_recipe(
             &["explain", entry.path().to_str().unwrap(), "network.connect"],

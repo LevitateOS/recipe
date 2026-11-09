@@ -8,106 +8,95 @@ use std::time::Duration;
 
 pub const CATALOG: u32 = 1002;
 
-/// Finite, version-pinned build base. Syscall selectors select only the
-/// corresponding access verb. Assigned filesystem/device/endpoint owners
-/// continue to constrain every admitted operation.
+/// Finite, version-pinned build base in upstream's hierarchical format.
+/// Assignments and endpoint/resource owners still constrain every admitted call.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Contract {
     pub catalog: u32,
-    pub read: Vec<String>,
-    pub write: Vec<String>,
-    pub execute: Vec<String>,
-    pub connect: Vec<String>,
-    pub listen: Vec<String>,
-    pub process: Vec<String>,
-    pub system: Vec<String>,
+    pub allow: Vec<String>,
     pub deny: Vec<String>,
-    pub exact_allow: Vec<String>,
 }
 
 impl Contract {
     pub fn derived(network: bool) -> Self {
-        let names = |values: &[&str]| values.iter().map(|value| (*value).to_owned()).collect();
+        let mut allow = vec![
+            "syscall.*",
+            "filesystem.path.read",
+            "filesystem.path.write",
+            "device.console.read",
+            "device.console.write",
+            "time.clock.read",
+            "signal.virtual.deliver",
+            "credential.virtual.set",
+            "memory.virtual.manage",
+        ];
+        if network {
+            allow.push("network.inet.tcp.connect");
+        }
+        // The catalog is pinned. These exclusions preserve the old base's
+        // admitted operation set; upstream's explicit denials return EPERM.
+        let mut deny = vec![
+            "device.mmio.direct",
+            "device.dma.direct",
+            "network.packet.raw",
+            "syscall.accept*",
+            "syscall.bind",
+            "syscall.listen",
+        ];
+        if !network {
+            deny.extend([
+                "syscall.connect",
+                "syscall.*msg",
+                "syscall.shutdown",
+                "syscall.getsockname",
+                "syscall.getpeername",
+                "syscall.*sockopt",
+            ]);
+        }
         Self {
             catalog: CATALOG,
-            read: names(&[
-                "filesystem.path.read",
-                "device.console.read",
-                "time.clock.read",
-                "syscall.**",
-            ]),
-            write: names(&[
-                "filesystem.path.write",
-                "device.console.write",
-                "syscall.**",
-            ]),
-            execute: names(&["syscall.**"]),
-            connect: if network {
-                names(&["network.inet.tcp.connect", "syscall.**"])
-            } else {
-                Vec::new()
-            },
-            listen: Vec::new(),
-            process: names(&[
-                "signal.virtual.deliver",
-                "credential.virtual.set",
-                "syscall.**",
-            ]),
-            system: names(&["memory.virtual.manage", "syscall.**"]),
-            deny: names(&["dev.mmio.direct", "dev.dma.direct", "network.packet.raw"]),
-            // Owned local packet endpoints use these numbers too. TCP calls
-            // additionally require the network semantic grant and endpoint.
-            exact_allow: names(&["syscall.sendto", "syscall.recvfrom"]),
+            allow: allow.into_iter().map(str::to_owned).collect(),
+            deny: deny.into_iter().map(str::to_owned).collect(),
         }
     }
 
     pub fn render(&self) -> String {
-        let mut text = format!(
-            "\n[userspace.contract]\nversion = 1\ncatalog = {}\ndefault = \"deny\"\n",
-            self.catalog
-        );
-        for (name, values) in [
-            ("read", &self.read),
-            ("write", &self.write),
-            ("execute", &self.execute),
-            ("connect", &self.connect),
-            ("listen", &self.listen),
-            ("process", &self.process),
-            ("system", &self.system),
-            ("deny", &self.deny),
-            ("exact_allow", &self.exact_allow),
-        ] {
-            text.push_str(&format!(
-                "{name} = {}\n",
-                serde_json::to_string(values).expect("string array")
-            ));
-        }
-        text
+        format!(
+            "\n[contract]\nversion = 1\ncatalog = {}\ndefault = \"deny\"\nallow = {}\ndeny = {}\n",
+            self.catalog,
+            serde_json::to_string(&self.allow).expect("string array"),
+            serde_json::to_string(&self.deny).expect("string array"),
+        )
     }
 
-    /// The declaration/base owner corresponding to Ginux's recipe verb/index.
+    /// Map the effective upstream rule back to its declaration/base owner.
     pub fn provenance(&self, source: &str, index: usize, operation: &str) -> String {
-        if source == "connect" {
-            return "NEEDS.network (restricted by caller subset and pinned numeric endpoints)"
-                .into();
-        }
-        if source == "default-deny" {
-            return if operation == "network.inet.tcp.connect" {
+        if operation == "network.inet.tcp.connect" {
+            return if source == "default-deny" {
                 "NEEDS.network has no effective outbound TCP grant (including caller narrowing)"
                     .into()
-            } else if operation.starts_with("network.")
-                && (operation.ends_with("bind") || operation.ends_with("listen"))
-            {
-                "Recipe fixed exclusion: listening/binding is never granted by NEEDS".into()
+            } else {
+                "NEEDS.network (restricted by caller subset and pinned numeric endpoints)".into()
+            };
+        }
+        if source == "exact-deny" {
+            return format!(
+                "Recipe fixed exclusion: contract.deny[{index}] = {}; assignments and runtime bounds still apply",
+                self.deny
+                    .get(index)
+                    .map(String::as_str)
+                    .unwrap_or("unknown rule")
+            );
+        }
+        if source == "default-deny" {
+            return if operation.starts_with("network.") {
+                "Recipe fixed exclusion: no inbound or UDP authority is granted by NEEDS".into()
             } else {
                 "Ginux capability/build-base question: no NEEDS field grants this operation".into()
             };
         }
-        if source == "deny" {
-            return "Recipe fixed hardware/raw-packet exclusion".into();
-        }
         format!(
-            "Recipe catalog-{} build base: {source}[{index}]; assignments and runtime bounds still apply",
+            "Recipe catalog-{} build base: contract.allow[{index}]; assignments and runtime bounds still apply",
             self.catalog
         )
     }
@@ -193,9 +182,9 @@ pub(crate) fn validate(launcher: &Path, config: &str, network: bool) -> Result<R
         "invalid Ginux contract digest"
     );
     let expected = if network {
-        "2fed34c8b7fb991da907669f8a93c1815ffde09edaa81d251725346af6bce589"
+        "92b6add40edad919cf394ff902670715d7b4385a9286751191910025d5a5e30d"
     } else {
-        "6150d326d212a41a1ae55c8d21bf661ee42446da7b88f822782f35c04b35ba26"
+        "41fb0de923722522be3fab629695f72629951b7be074111a1be83d972db7a31e"
     };
     ensure!(
         digest == expected,

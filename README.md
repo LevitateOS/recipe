@@ -13,14 +13,22 @@ Restrictions must first be valid lowerings/subsets for the named recipe. They
 also cover every dependency: limits take the stricter bound, and endpoint sets
 intersect each dependency's own declaration. Limits remain per instance.
 
-The launcher must support configured downstream catalog 1002, `configured-network-audit=1`, `configured-denial-audit=1`,
-configured `launch`, export, control and restore. Recipe derives a self-contained
-`[userspace.contract]` and validates it before launch; a generic `config` parse
-alone does not establish compatibility. The maintained source baseline in
-[Linux setup](docs/setup-linux.md) supplies this contract. Later local consumer
-corrections still require final source delivery and acceptance, as recorded in
-the superproject's `docs/ginux-contributions/prd15-product-contract.md`. Do not
-substitute baseline receipts for that final combination.
+The launcher must support configured downstream catalog 1002,
+`configured-network-audit=1`, `configured-denial-audit=1`, configured `launch`,
+export, control and restore. Recipe uses upstream `[contract]` and
+`[contract.*]` sections; the former `[userspace.*]` format is rejected. Its
+pinned base preserves the admitted operation set. Explicitly excluded
+socket/listener calls return EPERM under the new rules; absent semantic grants
+still return ENOSYS. Runtime resource, descriptor, storage and endpoint limits
+are unchanged. Recipe validates the complete derived contract before launch;
+a generic `config` parse alone does not establish compatibility.
+
+The historical maintained source baseline in [Linux setup](docs/setup-linux.md)
+uses the previous schema. The current migrated source pair and its validation
+are recorded in the superproject's
+`docs/ginux-contributions/upstream-integration-2026-11-09.md`; it is local until
+separately authorized for delivery. Do not substitute baseline receipts for
+that combination or claim complete product/security acceptance.
 
 ## Build and prepare the environment
 
