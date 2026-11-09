@@ -38,21 +38,25 @@ impl GinuxLauncher {
         let bindings =
             crate::needs::bind_inputs(&graph, invocation.inputs, invocation.search_path)?;
         // Resolve all declarations and contracts before the first dependency can
-        // execute. Parent restrictions never become dependency grants.
+        // execute. Parent restrictions never become dependency grants, and
+        // force flags apply to the main recipe only.
+        let main_recipe = &graph.last().context("empty recipe graph")?.recipe;
+        let mut executions = Vec::with_capacity(graph.len());
         for node in &graph {
-            let mut execution = invocation.options.execution.for_dependency();
-            execution.narrowing = if node.recipe == graph.last().unwrap().recipe {
-                invocation.options.execution.narrowing.clone()
-            } else {
-                node.needs
-                    .dependency_narrowing(&invocation.options.execution.narrowing)?
-            };
+            let mut execution = invocation.options.execution.clone();
+            if node.recipe != *main_recipe {
+                execution = execution.for_dependency();
+                execution.narrowing = node
+                    .needs
+                    .dependency_narrowing(&invocation.options.execution.narrowing)?;
+            }
             let effective = node.needs.resolve(&execution.narrowing, &execution)?;
             crate::needs::contract::inspect(&self.path, &effective)?;
+            executions.push(execution);
         }
         let mut results = std::collections::BTreeMap::<PathBuf, serde_json::Value>::new();
-        for node in &graph {
-            let main = node.recipe == graph.last().unwrap().recipe;
+        for (node, execution) in graph.iter().zip(executions) {
+            let main = node.recipe == *main_recipe;
             // Every non-install operation reconstructs the installed input
             // identity from checked cached products, without installing them.
             let cached_only = invocation.operation != crate::worker::protocol::Operation::Install;
@@ -113,13 +117,6 @@ impl GinuxLauncher {
                 ]);
                 internal.extend(product_inputs);
             }
-            let mut execution = invocation.options.execution.clone();
-            if !main {
-                execution = execution.for_dependency();
-                execution.narrowing = node
-                    .needs
-                    .dependency_narrowing(&invocation.options.execution.narrowing)?;
-            }
             let destination = if main {
                 invocation.destination.to_path_buf()
             } else {
@@ -163,7 +160,7 @@ impl GinuxLauncher {
             })?;
             results.insert(node.recipe.clone(), result);
         }
-        Ok(results.remove(&graph.last().unwrap().recipe).unwrap())
+        Ok(results.remove(main_recipe).unwrap())
     }
 
     fn run_single(

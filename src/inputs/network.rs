@@ -104,7 +104,7 @@ impl NetworkPolicy {
                 .copied()
                 .collect::<Vec<_>>();
             if selected.len() < resolved.len() {
-                eprintln!(
+                crate::diagnostics::diag!(
                     "recipe: network grant {grant}: selected {} of {} resolved addresses (endpoint limit {limit}); exact pins are recorded in authority.json",
                     selected.len(),
                     resolved.len()

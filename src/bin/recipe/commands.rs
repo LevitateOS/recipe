@@ -281,14 +281,8 @@ fn create_engine(
         }
     }
 
-    for input in *inputs {
-        let (name, path) = input
-            .split_once('=')
-            .context("--input requires NAME=PATH")?;
-        if name.is_empty() || path.is_empty() {
-            anyhow::bail!("--input requires nonempty NAME=PATH");
-        }
-        engine.add_input(name.to_owned(), PathBuf::from(path));
+    for (name, path) in parse_inputs(inputs)? {
+        engine.add_input(name, path);
     }
 
     Ok(engine)
@@ -376,7 +370,12 @@ fn parse_inputs(values: &[String]) -> Result<Vec<(String, PathBuf)>> {
     values
         .iter()
         .map(|value| {
-            let (name, path) = value.split_once('=').context("input requires NAME=PATH")?;
+            let (name, path) = value
+                .split_once('=')
+                .context("--input requires NAME=PATH")?;
+            if name.is_empty() || path.is_empty() {
+                anyhow::bail!("--input requires nonempty NAME=PATH");
+            }
             Ok((name.to_owned(), PathBuf::from(path)))
         })
         .collect()

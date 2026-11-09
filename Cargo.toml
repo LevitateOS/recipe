@@ -25,7 +25,8 @@ path = "src/bin/recipe-image.rs"
 # Pinned exactly: `internals` APIs are version-sensitive. Users: `//! extends:` merging
 # (AST `+=`, src/core/executor.rs), setup/hook evaluation via GlobalRuntimeState/Caches and
 # the `Stmt::Var` layout (src/core/invocation.rs), and static AST walks over `Stmt`/`Expr`
-# (src/core/executor.rs declared_metadata, src/inputs/discover.rs static_references).
+# (src/core/executor.rs declared_metadata, src/inputs/discover.rs static_references,
+# src/needs.rs declaration).
 rhai = { version = "=1.19.0", features = ["sync", "serde", "internals"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
@@ -52,8 +53,6 @@ xz2 = "0.1"
 bzip2 = "0.5"
 zstd = "0.13"
 zip = "2.2"
-
-[dev-dependencies]
 
 [package.metadata.generate-rpm]
 assets = [

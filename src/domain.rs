@@ -39,9 +39,13 @@ pub const WORKER: &str = concat!(inputs_root!(), "/", worker_name!());
 pub const INPUT_MODES_NAME: &str = input_modes_name!();
 /// Domain path of the input permission manifest.
 pub const INPUT_MODES: &str = concat!(inputs_root!(), "/", input_modes_name!());
-/// Input names the coordinator writes itself; callers may not stage them.
+/// Input holding each dependency's published outputs, as `DEP/OUTPUT`. The
+/// coordinator stages it; a recipe may not declare it in `NEEDS.inputs`.
 pub const DEPENDENCY_INPUT: &str = "recipe-dependencies";
+/// Input holding the dependencies' merged `tools` outputs; staged like
+/// [`DEPENDENCY_INPUT`] and seeded into [`TOOLS`].
 pub const DEPENDENCY_TOOLS: &str = "recipe-tools";
+/// Input names the coordinator writes itself; nothing else may stage them.
 pub const RESERVED_INPUT_NAMES: [&str; 2] = [WORKER_NAME, INPUT_MODES_NAME];
 
 /// Logical input name → permission bits, written into [`INPUT_MODES`].
