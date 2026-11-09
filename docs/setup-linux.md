@@ -20,6 +20,16 @@ final delivery and product/security acceptance in the superproject's
 `docs/ginux-contributions/prd15-product-contract.md`. The baseline commands do
 not reproduce those later corrections or establish their release acceptance.
 
+The 2026-11-09 upstream integration migrates configuration to `[contract.*]`.
+Its Ginux source is `ef1b538f940d8ae99b5e798c19cada9976381d86`, and Recipe's
+functional migration is `2a786826c73b8aa9111b1a6620a30fa1e65ef6b5`. The tracked
+CI source pin selects that matching Ginux. These new commits are local pending
+publication permission; the historical clone commands below deliberately retain
+their original pair. Do not pair the new Recipe with the old launcher or assume
+the new commits are publicly obtainable. The superproject's
+`docs/ginux-contributions/upstream-integration-2026-11-09.md` owns the current
+source, validation and delivery status.
+
 ## Host and source tools
 
 On the verified Rocky host, install normal signed repository tools:
