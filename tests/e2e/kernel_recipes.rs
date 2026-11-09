@@ -14,6 +14,64 @@ pub(super) fn copy_kernel_recipes(recipes: &Path) {
     .unwrap();
 }
 
+// Prepare this control's disposable compiler prerequisite through the public
+// graph lifecycle. These cases inspect the production kernel hooks without
+// acquiring a compiler or rebuilding the excluded kernel toolchain.
+fn write_kernel_dependency_fixture(recipes: &Path) {
+    write_recipe(
+        recipes,
+        "linux-deps",
+        r#"const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ tools: "directory" } };
+let ctx = #{ name: "linux-deps" };
+fn is_acquired(ctx) { ready(ctx) }
+fn is_built(ctx) { ready(ctx) }
+fn is_installed(ctx) {
+    let marker = "/out/tools/readiness-fixture";
+    if !is_file(marker) { return needs_work(ctx, "prepare the readiness fixture explicitly"); }
+    if read_file(marker) != "managed prerequisite" { throw "changed prerequisite"; }
+    ctx.outputs.tools = "/out/tools"; ready(ctx)
+}
+fn install(ctx) {
+    print("KERNEL_PREREQUISITE_INSTALL");
+    mkdir("/out/tools"); write_file("/out/tools/readiness-fixture", "managed prerequisite");
+    ctx.outputs.tools = "/out/tools"; ctx
+}
+"#,
+    );
+}
+
+fn prepare_kernel_dependency_fixture(recipes: &Path) {
+    write_kernel_dependency_fixture(recipes);
+    write_recipe(
+        recipes,
+        "kernel-control-cache",
+        r#"const RECIPE_API = 2;
+const NEEDS = #{};
+let build_deps = ["linux-deps"];
+let ctx = #{ name: "kernel-control-cache" };
+fn is_acquired(ctx) { ready(ctx) }
+fn is_built(ctx) { ready(ctx) }
+fn install(ctx) { ctx }
+"#,
+    );
+    let mut command = recipe_command(recipes);
+    command
+        .args([
+            "install",
+            "kernel-control-cache",
+            "--define",
+            "KERNEL_TARGET=acorn",
+        ])
+        .arg("--recipes-path")
+        .arg(recipes)
+        .arg("--build-dir")
+        .arg(recipes.parent().unwrap().join("work"));
+    let output = command.output().unwrap();
+    assert_success(&output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("KERNEL_PREREQUISITE_INSTALL"));
+}
+
 pub(super) fn kernel_command(recipes: &Path, action: &str, recipe: &str) -> Command {
     let mut command = kernel_command_for_target(recipes, action, recipe, "acorn");
     command.arg("--no-persist-state");
@@ -67,27 +125,7 @@ fn cli_kernel_readiness_preserves_release_module_and_configuration_rules() {
                 // Give its build dependency a real managed publication and
                 // verify manual checks cannot create that prerequisite. The
                 // production linux-deps acquisition is outside this fixture.
-                write_recipe(
-                    &recipes,
-                    "linux-deps",
-                    r#"const RECIPE_API = 2;
-const NEEDS = #{ outputs: #{ tools: "directory" } };
-let ctx = #{ name: "linux-deps" };
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) { ready(ctx) }
-fn is_installed(ctx) {
-    let marker = "/out/tools/readiness-fixture";
-    if !is_file(marker) { return needs_work(ctx, "prepare the readiness fixture explicitly"); }
-    if read_file(marker) != "managed prerequisite" { throw "changed prerequisite"; }
-    ctx.outputs.tools = "/out/tools"; ready(ctx)
-}
-fn install(ctx) {
-    print("KERNEL_PREREQUISITE_INSTALL");
-    mkdir("/out/tools"); write_file("/out/tools/readiness-fixture", "managed prerequisite");
-    ctx.outputs.tools = "/out/tools"; ctx
-}
-"#,
-                );
+                write_kernel_dependency_fixture(&recipes);
                 let (missing, _) = invoke_kernel(
                     kernel_command_for_target(&recipes, "isbuilt", recipe, target),
                     dir.path(),
@@ -196,10 +234,14 @@ fn cli_kernel_removal_preserves_imported_artifact_tree() {
         let image = artifacts.join("staging/boot/vmlinuz");
         std::fs::create_dir_all(image.parent().unwrap()).unwrap();
         std::fs::write(&image, "immutable imported image").unwrap();
-        let mut command = kernel_command(&recipes, "remove", recipe);
+        if recipe == "linux" {
+            prepare_kernel_dependency_fixture(&recipes);
+        }
+        let mut command = kernel_command_for_target(&recipes, "remove", recipe, "acorn");
         command.args(["--input", &format!("target={}", artifacts.display())]);
         let (output, ctx) = invoke_kernel(command, dir.path());
         assert_success(&output);
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("KERNEL_PREREQUISITE_INSTALL"));
         assert!(ctx.unwrap()["outputs"].as_object().unwrap().is_empty());
         assert_eq!(
             std::fs::read_to_string(&image).unwrap(),
@@ -229,9 +271,15 @@ fn cli_kernel_cleanup_rejects_paths_outside_owned_work() {
         "ctx.source_dir_name = \"../outside\"; ctx.tarball_filename = \"../outside.tar.xz\";"
     )
     .unwrap();
-    let (output, _) = invoke_kernel(kernel_command(&recipes, "cleanup", "linux"), dir.path());
+    prepare_kernel_dependency_fixture(&recipes);
+    let (output, _) = invoke_kernel(
+        kernel_command_for_target(&recipes, "cleanup", "linux", "acorn"),
+        dir.path(),
+    );
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("unsafe kernel cleanup"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unsafe kernel cleanup"), "{stderr}");
+    assert!(!stderr.contains("KERNEL_PREREQUISITE_INSTALL"), "{stderr}");
     assert_eq!(
         std::fs::read_to_string(outside.join("preserve")).unwrap(),
         "preserve"
