@@ -232,7 +232,8 @@ have that kind. Every endpoint, including HTTP redirect destinations, belongs
 in NEEDS. `--network-host` selects a subset and resource flags select lower
 limits; widening fails with the declaration field to edit. Network byte bounds
 and teardown apply to helpers and subprocess clients alike. The configured
-contract pins catalog 2, grants outbound connect only for nonempty effective
+contract pins configured downstream catalog 1002 (separate from upstream Gate 11
+catalog 2), grants outbound connect only for nonempty effective
 network, grants no listener and denies direct MMIO/DMA/raw packets. It still
 relies on Ginux's path, descriptor, resource and numeric endpoint owners.
 
