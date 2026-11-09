@@ -5,6 +5,13 @@ targets are outside this release. Configured downstream support does not change
 upstream/native Ginux policy. A catalog permission is a ceiling: it does not
 implement every Linux syscall variant, flag or backend.
 
+Select the source pair that implements the capabilities your consumer requires.
+The [setup guide's delivered baseline](setup-linux.md) predates the local
+compiler FD/path/stack/event and manual-readiness corrections below. Their
+final source delivery and security/product acceptance remain open in the
+superproject's `docs/ginux-contributions/prd15-product-contract.md`; this page
+describes their bounded contract, not a completed release acceptance claim.
+
 | Surface | Supported boundary |
 | --- | --- |
 | Memory | `NEEDS.memory_mib` bounds each process's virtual address space through inherited `RLIMIT_AS`; it is not a combined process-tree RSS or host/supervisor budget. Storage has separate byte/object accounting within the declared memory configuration. |
@@ -14,7 +21,15 @@ implement every Linux syscall variant, flag or backend.
 | Readiness | Configured `poll` handles at most 16 descriptors through supported virtual owners; image-file readiness is unsupported. Finite waits are at most 300000 ms. `ppoll` accepts a null signal mask, rounds to milliseconds and does not promise general signal interruption/restart or temporary signal masks. Cancellation/teardown is a separate supported lifecycle. |
 | Network | The coordinator resolves declared hostnames once into a bounded hostname map and numeric TCP grants. Authority covers IP:port, including other virtual hosts on that address; it does not isolate DNS names, TLS/HTTP identities or URL paths. No UDP/DNS service, listener, proxy or native fallback is granted. Redirect destinations also need declarations. |
 | Files | Explicit inputs are immutable snapshots; writable work/output is assigned storage. Archive modification times use whole seconds. Nanosecond fidelity, arbitrary inode kinds and general Linux filesystem behavior are not promised. Target UID/GID, modes, links and capabilities/xattrs use the separate validated [target metadata contract](target-metadata.md). |
+| Proc metadata | Exact `/proc/self/fd/N` readlink reports a currently tracked domain name for a live public filesystem descriptor owned by the caller; it grants no reopen or host-FD access. Exact `/proc/self/maps` read opens a read-only snapshot of only that process's initial stack mapping, charged to existing VFS quotas. Other mappings, host paths, proc enumeration, mutation and mmap are unavailable. |
+| Path descriptors | Configured `O_PATH` retains metadata-only references under the ordinary public/filesystem FD quotas. Stat/access/readlink metadata, aliases and lifecycle are supported; data I/O, enumeration, mmap, execution, fchdir, mutation and descriptor-path reopen are denied. Relative open/exec/mutation cannot borrow a metadata directory's authority. `O_NOFOLLOW` is unsupported. |
+| Events | Configured event counters and epoll share the existing 16-object channel pool; an epoll instance has at most 32 registrations over already-owned counters/pipes/packet endpoints and granted TCP sockets. Public FD limits also apply. Host/image/filesystem descriptors and nested epoll watches are unsupported; no host eventfd/epoll is exposed. Finite waits are at most 300000 ms; temporary signal-mask changes and general signal interruption/restart semantics are not promised. |
 | Publication | Consumers require successful worker, supervisor and validated archive completion. A final path's existence alone is insufficient. Published generations retain coordinator ownership and private directory permissions. They are not automatically pruned with checkpoints. |
+
+Explicit contract denial precedes metadata allocation and effects. The selected
+Ginux source's `docs/configurable-contract.md` owns precise supported flags,
+errors, alias lifetimes and edge/one-shot behavior; this is a configured subset,
+not a general procfs, descriptor or epoll ABI.
 
 The selected image must contain each actual tool and its libraries. A helper's
 registration or a tool's `--help`/`--version` does not establish that the full
