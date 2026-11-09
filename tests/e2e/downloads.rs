@@ -38,7 +38,11 @@ fn serve_response(
 }
 
 fn accept_request(listener: &TcpListener) -> (TcpStream, String) {
-    let deadline = Instant::now() + Duration::from_secs(120);
+    // This includes coordinator image/input preparation before a workload
+    // can connect. It is a fixture startup allowance, not the HTTP read or
+    // production download timeout; concurrent full-image checks can exceed
+    // the former two-minute window before any network operation begins.
+    let deadline = Instant::now() + Duration::from_secs(600);
     let (mut stream, _) = loop {
         match listener.accept() {
             Ok(connection) => break connection,
@@ -320,7 +324,19 @@ fn managed_interrupted_download_preserves_previous_bytes() {
             let (url, server) = serve_download("truncated", 1024);
             download_recipe(&recipes, &url, &digest, prefix, resume);
             let output = download_command(&recipes, Some(&url)).output().unwrap();
-            server.join().unwrap();
+            let request = server.join().unwrap();
+            assert!(
+                request.starts_with("GET /payload HTTP/1.1\r\n"),
+                "{request}"
+            );
+            std::fs::write(
+                recipes
+                    .parent()
+                    .unwrap()
+                    .join("interrupted-http-request.txt"),
+                &request,
+            )
+            .unwrap();
             assert!(!output.status.success());
             let diagnostic = String::from_utf8_lossy(&output.stderr);
             assert!(
