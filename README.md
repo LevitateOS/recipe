@@ -140,7 +140,9 @@ details. [HELPERS_AUDIT.md](HELPERS_AUDIT.md) lists registered helpers.
 - Dependencies run that lifecycle in separate Ginux instances with their own
   NEEDS. Declared products are snapshotted into the consumer; a directory output
   named `tools` contributes to its `/work/tools`. No parent grant is lent. Manual
-  checks, remove and cleanup operate on the named recipe without preparing deps.
+  readiness checks require matching cached dependency products and run only
+  dependency installed checks. Explicit remove/cleanup on dependency graphs
+  remains unresolved; see the manual-check limits below.
 - `list` and `info` inspect loader-owned declared metadata without running setup
   or helper code. Dynamic metadata is reported unavailable.
 

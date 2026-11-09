@@ -129,7 +129,12 @@ installation.
 context. Prebuilt recipes may omit build work. Missing checks indicate work is
 needed; a missing required action fails instead of inventing an implementation.
 Manual `isacquired`, `isbuilt` and `isinstalled` execute their actual custom check
-and return nonzero when it reports work needed.
+and return nonzero when it reports work needed. With dependencies, they first
+require matching cached dependency products and run only their installed checks,
+in dependency order. They never run dependency acquire/build/install hooks to
+repair a cache miss. Explicit dependent-recipe `remove`/`cleanup` has an unresolved
+cache-selection policy and is not release-accepted; see
+[the runtime limits](docs/runtime-limits.md).
 
 `--force-install`, `--force-build` and `--force-acquire` select progressively more
 work for the main recipe. Dependencies retain their own readiness. Current force
@@ -278,10 +283,14 @@ let deps = ["runtime-tools"];
 let build_deps = ["compiler-tools"];
 ```
 
-Dependency recipes use the same contract and shared `runtime.paths.tools`.
-Their executables are prepended to worker PATH. Their own state is paired with
-the shared filesystem generation; custom dependency readiness remains active.
-Do not depend on host build-directory conventions or per-dependency publication.
+Each dependency runs in its own Ginux instance under its own NEEDS and matching
+state/filesystem identity. Caller restrictions narrow every instance across the
+graph; the parent never lends a grant. Validated direct dependency products are
+snapshotted into the consumer at `runtime.paths.dependencies`. A directory output
+named `tools` also populates that consumer's private `runtime.paths.tools`, whose
+executables are prepended to worker PATH. Custom dependency readiness remains
+active. Do not depend on host build-directory conventions or paths in another
+instance.
 
 A child can start with `//! extends: base.rhai`. The loader compiles/merges the
 base first; child functions of the same name/arity override it. Setup statements
