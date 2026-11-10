@@ -14,6 +14,39 @@ use super::PreparedInvocation;
 
 const MAX_WORKER_BYTES: u64 = 512 * 1024 * 1024;
 
+/// Verified image bytes owned by one command's sequential dependency graph.
+/// Only this anonymous archive is reused; every domain gets a fresh root.
+pub(crate) struct VerifiedImage {
+    root_reference: String,
+    snapshot: File,
+}
+
+impl VerifiedImage {
+    fn open(root_reference: &str) -> Result<Self> {
+        let digest = crate::runtime::root_digest(root_reference)?;
+        let archive_path = crate::runtime::rootfs_path(root_reference)?;
+        // Copy and hash the same bytes into an unlinked snapshot. Later nodes
+        // read these verified bytes, never a potentially changed source path.
+        let mut archive = crate::fsx::open_regular(&archive_path).with_context(|| {
+            format!(
+                "cannot open Ginux rootfs image {}; set GINUX_ROOTFS to the assembled tar matching {}",
+                archive_path.display(),
+                root_reference
+            )
+        })?;
+        let mut snapshot = tempfile::tempfile().context("cannot snapshot the rootfs image")?;
+        let (_, actual) =
+            crate::fsx::copy_hashed(&mut archive, &mut snapshot, crate::image::MAX_ARCHIVE_BYTES)?;
+        if actual != digest {
+            bail!("Ginux rootfs digest mismatch: expected {digest}, got {actual}");
+        }
+        Ok(Self {
+            root_reference: root_reference.to_owned(),
+            snapshot,
+        })
+    }
+}
+
 /// Owns the isolated root until the launcher and worker have been reaped.
 pub(crate) struct PreparedRoot {
     directory: crate::temporary::TemporaryDirectory,
@@ -29,33 +62,26 @@ impl PreparedRoot {
     }
 }
 
-pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRoot> {
+pub(crate) fn prepare_root(
+    invocation: &PreparedInvocation,
+    image: &mut Option<VerifiedImage>,
+) -> Result<PreparedRoot> {
     if std::env::consts::OS != "linux" || std::env::consts::ARCH != "x86_64" {
         bail!("Ginux execution currently requires Linux x86_64");
     }
-    let digest = crate::runtime::root_digest(&invocation.root_reference)?;
-    let archive_path = crate::runtime::rootfs_path(&invocation.root_reference)?;
-    // Copy and hash the same bytes into an unlinked snapshot. Extraction must
-    // not reread a mutable source pathname after verifying a different read.
-    let mut archive = crate::fsx::open_regular(&archive_path).with_context(|| {
-        format!(
-            "cannot open Ginux rootfs image {}; set GINUX_ROOTFS to the assembled tar matching {}",
-            archive_path.display(),
-            invocation.root_reference
-        )
-    })?;
-    let mut snapshot = tempfile::tempfile().context("cannot snapshot the rootfs image")?;
-    let (_, actual) =
-        crate::fsx::copy_hashed(&mut archive, &mut snapshot, crate::image::MAX_ARCHIVE_BYTES)?;
-    if actual != digest {
-        bail!("Ginux rootfs digest mismatch: expected {digest}, got {actual}");
+    if image
+        .as_ref()
+        .is_none_or(|image| image.root_reference != invocation.root_reference)
+    {
+        *image = Some(VerifiedImage::open(&invocation.root_reference)?);
     }
-    snapshot.seek(SeekFrom::Start(0))?;
+    let image = image.as_mut().expect("verified image initialized");
+    image.snapshot.seek(SeekFrom::Start(0))?;
     let mut root = PreparedRoot {
         worker_digest: String::new(),
         directory: crate::temporary::TemporaryDirectory::new()?,
     };
-    unpack_image(snapshot, root.path())?;
+    unpack_image(&mut image.snapshot, root.path())?;
 
     super::network::install_hosts(&invocation.network, root.path())?;
     let inputs = root
@@ -209,7 +235,7 @@ fn ensure_parents(root: &Path, relative: &Path) -> Result<()> {
     Ok(())
 }
 
-fn unpack_image(snapshot: File, root: &Path) -> Result<()> {
+fn unpack_image(snapshot: &mut File, root: &Path) -> Result<()> {
     let mut archive = tar::Archive::new(snapshot);
     let mut validator = crate::image::Validator::default();
     let mut directories = HashMap::new();

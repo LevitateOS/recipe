@@ -29,7 +29,7 @@ mod env;
 mod network;
 mod root;
 
-pub(crate) use root::{prepare_root, seed_target};
+pub(crate) use root::{VerifiedImage, prepare_root, seed_target};
 
 pub(crate) use config::InstanceConfig;
 

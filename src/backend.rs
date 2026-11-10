@@ -56,6 +56,7 @@ impl GinuxLauncher {
             executions.push(execution);
         }
         let mut results = std::collections::BTreeMap::<PathBuf, serde_json::Value>::new();
+        let mut image = None;
         for (node, execution) in graph.iter().zip(executions) {
             let main = node.recipe == *main_recipe;
             // Every non-install operation reconstructs the installed input
@@ -149,7 +150,7 @@ impl GinuxLauncher {
                 },
                 ..*invocation
             };
-            let result = self.run_single(&child, &internal, node).with_context(|| {
+            let result = self.run_single(&child, &internal, node, &mut image).with_context(|| {
                 if !main && cached_only {
                     format!(
                         "manual {} requires matching cached products from dependency {}; run install explicitly to prepare them",
@@ -204,6 +205,7 @@ impl GinuxLauncher {
         invocation: &crate::launch::Invocation<'_>,
         dependency_inputs: &[crate::inputs::ExtraInput],
         expected: &crate::needs::Declaration,
+        image: &mut Option<crate::inputs::VerifiedImage>,
     ) -> Result<serde_json::Value> {
         let operation = invocation.operation;
         invocation
@@ -238,7 +240,7 @@ impl GinuxLauncher {
             },
             ..*invocation
         };
-        let report = crate::launch::run_domain(&prepared, &invocation, &self.path)?;
+        let report = crate::launch::run_domain(&prepared, &invocation, &self.path, image)?;
         crate::diagnostics::diag!(
             "recipe: invocation {} finished in the Ginux domain: ok={} ({} checkpoint{} \
                  acked; launcher exit {}; result {})",

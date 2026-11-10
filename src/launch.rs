@@ -25,9 +25,9 @@
 //!   Disabled persistence acknowledges with no generation: nothing will be recovered.
 //!
 //! Before launch, the input owner snapshots and verifies the selected assembled
-//! rootfs tar, creates a fresh domain root, and copies the worker plus staged
-//! inputs into `/inputs`. The root is private to this invocation and is kept
-//! alive until the launcher is reaped.
+//! rootfs tar once per command, creates a fresh domain root, and copies the worker
+//! plus staged inputs into `/inputs`. The root is private to this invocation and
+//! is kept alive until the launcher is reaped.
 //!
 //! Every failure carries a [`crate::failure::Category`]. Storage joins retain
 //! the last complete pair; cancellation is forwarded and reaped before
@@ -125,6 +125,7 @@ pub(crate) fn run_domain(
     prepared: &PreparedInvocation,
     invocation: &Invocation<'_>,
     launcher: &Path,
+    image: &mut Option<crate::inputs::VerifiedImage>,
 ) -> Result<LaunchReport> {
     let state_dir = invocation.state_dir;
     let diagnostics = crate::retained::state_root(state_dir)
@@ -133,7 +134,7 @@ pub(crate) fn run_domain(
             crate::failure::Category::Storage.wrap(error, "cannot create the invocation log")
         })?;
     diagnostics.authority(prepared)?;
-    let outcome = run_domain_inner(prepared, invocation, launcher, &diagnostics);
+    let outcome = run_domain_inner(prepared, invocation, launcher, &diagnostics, image);
     use crate::invocation_log::Status;
     let (status, details) = match &outcome {
         Ok(report) => (
@@ -187,6 +188,7 @@ fn run_domain_inner(
     invocation: &Invocation<'_>,
     launcher: &Path,
     diagnostics: &crate::invocation_log::InvocationLog,
+    image: &mut Option<crate::inputs::VerifiedImage>,
 ) -> Result<LaunchReport> {
     let Invocation {
         operation,
@@ -211,7 +213,7 @@ fn run_domain_inner(
     let export_path = run_dir.path().join("export.tar");
     let config_path = prepared.config_path();
 
-    let domain_root = crate::inputs::prepare_root(prepared).map_err(|error| {
+    let domain_root = crate::inputs::prepare_root(prepared, image).map_err(|error| {
         anyhow::Error::new(crate::failure::Category::Startup.error(format!(
             "cannot prepare Ginux root for invocation {invocation}: {error:#}"
         )))
