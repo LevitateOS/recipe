@@ -19,7 +19,7 @@ pub(crate) struct Cli {
     #[arg(help_heading = "Output")]
     pub(crate) json: bool,
 
-    /// Recipes directory used for name lookup, listing, and default recipe resolution.
+    /// Recipe collection used for name lookup and listing (the OS builder selects its own collection).
     #[arg(
         short = 'r',
         long,
@@ -140,9 +140,9 @@ pub(crate) enum Commands {
     /// Compare the permissions and resource limits of two recipes
     #[command(after_help = "Example:\n  recipe diff ./old/kitty.rhai ./new/kitty.rhai\n\nCompares declared inputs, outputs, network endpoints, dependencies and limits.\nNo recipe code is executed. Requires a compatible Ginux launcher.")]
     Diff { old: PathBuf, new: PathBuf },
-    /// Install a package from a recipe file
+    /// Install into a recipe's owned output tree and publish its products
     #[command(
-        after_help = "Examples:\n  recipe install kitty\n  recipe install kitty.rhai\n  recipe install ./recipes/kitty.rhai\n  recipe install kitty --autofix --autofix-attempts 3\n\n<RECIPE> may be:\n  - an absolute path\n  - a relative path\n  - a recipe name resolved under --recipes-path\n  - the same name with .rhai appended under --recipes-path"
+        after_help = "Examples (with your own recipe):\n  recipe install ./hello.rhai\n  recipe install hello --recipes-path ./my-recipes\n  recipe install ./hello.rhai --autofix --autofix-attempts 3\n\n<RECIPE> may be:\n  - an absolute path\n  - a relative path\n  - a recipe name resolved under --recipes-path\n  - the same name with .rhai appended under --recipes-path\n\nOS producers and user-software recipes use the same format and engine.\nThis command publishes outputs; it does not activate software on the running system."
     )]
     Install {
         /// Recipe path or recipe name. If the file is not found directly, recipe will also look in --recipes-path and try appending `.rhai`.
@@ -169,9 +169,9 @@ pub(crate) enum Commands {
         autofix_allow_path: Vec<PathBuf>,
     },
 
-    /// Remove an installed package
+    /// Run a recipe's remove hook on its owned output tree
     #[command(
-        after_help = "Examples:\n  recipe remove kitty\n  recipe remove ./recipes/kitty.rhai"
+        after_help = "Example (use the same recipe, inputs and destination as install):\n  recipe remove ./hello.rhai\n\nRemoval changes the retained output tree. It does not remove earlier published\ngenerations or software from the running system."
     )]
     Remove {
         /// Recipe path or recipe name. Name lookup follows the same rules as `recipe install`.
@@ -221,7 +221,7 @@ pub(crate) enum Commands {
         recipe: PathBuf,
     },
 
-    /// List recipes in directory
+    /// List recipe declarations in the selected collection, not installed applications
     #[command(after_help = "Examples:\n  recipe list\n  recipe list --recipes-path ./recipes")]
     List,
 

@@ -22,6 +22,12 @@ bind inputs and can only narrow authority. Checks return ready(ctx) or
 needs_work(ctx, reason); check errors fail execution. Only ctx.state is restored,
 paired with its durable filesystem snapshot. Final JSON contains published host
 paths in ctx.outputs; hooks use domain paths.
+.PP
+OS artifact producers and user-managed software use the same format and engine.
+In the LevitateOS workspace, distro/builder/os-recipes is the builder's collection
+and the top-level recipes directory is the user catalog (currently without packages).
+The builder composes OS images from published outputs; recab manages image updates.
+User-software activation and independent updates/removal remain to be implemented.
 .SH PREPARATION
 Set GINUX_BIN to the actual launcher executable, GINUX_ROOTFS to an assembled
 rootfs tar and GINUX_ROOT to oci:name@sha256:digest matching that tar. Set
@@ -39,7 +45,9 @@ See bootstrap/README.md for the pinned manifest producer.
 .SH COMMANDS
 .TP
 .B install RECIPE
-Run necessary acquisition, build and installation, with custom readiness checks.
+Run necessary acquisition, build and installation into the owned output tree,
+with custom readiness checks, and publish the named products.
+This does not activate software on the running system.
 .TP
 .B remove RECIPE
 Run removal against the owned selected target; prior publications stay immutable.
@@ -59,6 +67,7 @@ prepare them. The checked products preserve the parent's installed input identit
 .TP
 .B list
 List declared recipe metadata without evaluating setup/helper code.
+This lists available recipe files, not installed applications.
 .TP
 .B info RECIPE
 Show loader-owned declared/inherited metadata. Dynamic metadata is unavailable.

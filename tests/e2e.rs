@@ -18,7 +18,7 @@ fn production_recipes() -> std::path::PathBuf {
     std::env::var_os("RECIPE_TEST_BUILDER_RECIPES")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../distro/builder/recipes")
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../distro/builder/os-recipes")
         })
 }
 

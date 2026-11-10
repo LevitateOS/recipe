@@ -5,6 +5,26 @@ coordinator imports explicit immutable inputs, retains matching state/filesystem
 checkpoints and publishes the recipe's named outputs. Recipe code and payload
 commands do not run on the coordinator host.
 
+## One engine, two consumers
+
+In the LevitateOS workspace, `distro/builder/os-recipes/` holds OS artifact
+producers, and the top-level `recipes/` directory is the user-managed software
+catalog (currently without packages). The builder selects its own collection
+with `--recipes-path`; normal CLI lookup uses `$RECIPE_PATH` or the user's XDG
+recipe directory. Both use this engine, the same Rhai API 2 and the same Ginux
+execution rules. Directory placement expresses ownership, not a new recipe type
+or permission boundary. This repository's `examples/` and `tests/` are engine
+examples and fixtures, not the application catalog.
+
+The OS builder assembles published products into images; `recab` handles system
+image activation and A/B updates. Apps bundled in a desktop image belong to that
+OS lifecycle. User-managed software needs its own activation and update/removal
+workflow in Recipe; that is not implemented yet. Today `install` and `remove`
+operate on an isolated output tree, and `list` lists recipe declarations rather
+than installed applications.
+
+## Shared execution contract
+
 The executable interface is API 2 with a literal `const NEEDS = #{...};`.
 Recipes own their typed inputs/outputs, endpoint grants and resource limits.
 Callers bind declared inputs and may explicitly narrow authority. A caller cannot
@@ -123,7 +143,7 @@ For the repository's actual offline live-tool producer:
 ```sh
 cargo run --locked -p distro-builder --bin distro-builder -- \
   --repo-root "$PWD" artifact prepare-tool-source recstrap .artifacts/recstrap-source
-recipe install distro/builder/recipes/install-tools.rhai --define BIN=recfstab \
+recipe install distro/builder/os-recipes/install-tools.rhai --define BIN=recfstab \
   --input source=.artifacts/recstrap-source \
   --build-dir .artifacts/work/recfstab --json-output .artifacts/recfstab.json
 ```

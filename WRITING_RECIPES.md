@@ -4,6 +4,12 @@ A recipe owns its package facts, lifecycle and literal NEEDS authority. Callers
 bind declared immutable inputs, may narrow grants/limits, and select the managed
 environment. Every executable recipe declares `const RECIPE_API = 2;` and its
 own `const NEEDS = #{...};`, including children that extend another recipe.
+OS artifact producers and user-managed software use this same format and engine.
+In the LevitateOS workspace they live in `distro/builder/os-recipes/` and
+`recipes/`, respectively. Their consumer owns deployment: the builder composes
+OS images, while user-software activation remains Recipe work. `install` below
+means populating the recipe's owned output tree, not changing the running system.
+
 Caller restrictions must be valid lowerings/subsets for the named recipe. They
 also apply across the dependency graph: each dependency's numeric limits take
 the stricter bound, endpoint sets intersect, and no node acquires another's
