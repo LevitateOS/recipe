@@ -5,10 +5,19 @@ use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::path::PathBuf;
 
+use levitate_recipe::sources::{self, Sources};
+
 use super::{
-    cli::{Cli, Commands},
+    cli::{Cli, Commands, SourceCommands},
     metadata::{RecipeMetadata, enumerate_recipes},
 };
+
+/// Where a recipe named on the command line is looked for.
+struct Lookup<'a> {
+    folders: &'a [PathBuf],
+    /// None with an explicit collection, which stays isolated.
+    sources: Option<&'a Sources>,
+}
 
 pub(crate) fn execute(cli: Cli) -> Result<()> {
     let mut execution = levitate_recipe::ExecutionOptions::default();
@@ -46,10 +55,16 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
         cli.recipes_path.is_some() || std::env::var_os("RECIPE_PATH").is_some();
     let recipe_paths = super::metadata::recipe_paths(cli.recipes_path);
     let recipes_path = &recipe_paths[0];
-    let package_store = PackageStore::new(match cli.package_root {
+    let package_root = match cli.package_root {
         Some(path) => std::path::absolute(path)?,
         None => super::metadata::default_package_root()?,
-    });
+    };
+    let all_sources = Sources::new(&package_root);
+    let package_store = PackageStore::new(package_root);
+    let lookup = Lookup {
+        folders: &recipe_paths,
+        sources: (!explicit_collection).then_some(&all_sources),
+    };
     let no_activate = cli.no_activate;
 
     let json_output = cli.json_output;
@@ -68,7 +83,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
 
     match cli.command {
         Commands::Validate { recipe } => {
-            let recipe = resolve_recipe_path(&recipe, &recipe_paths)?;
+            let recipe = resolve_recipe_path(&recipe, &lookup)?;
             let supplied = parse_inputs(engine_options.inputs)?;
             let authority = levitate_recipe::needs::report::validate(
                 &recipe,
@@ -84,7 +99,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             )?;
         }
         Commands::Inspect { recipe } => {
-            let recipe = resolve_recipe_path(&recipe, &recipe_paths)?;
+            let recipe = resolve_recipe_path(&recipe, &lookup)?;
             let authority = levitate_recipe::needs::report::inspect(
                 &recipe,
                 Some(&recipes_path),
@@ -106,7 +121,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             let explanation = if let Some(directory) = recorded {
                 levitate_recipe::needs::report::explain_invocation(&directory, &operation)?
             } else {
-                let recipe = resolve_recipe_path(&subject, &recipe_paths)?;
+                let recipe = resolve_recipe_path(&subject, &lookup)?;
                 levitate_recipe::needs::report::explain_recipe(
                     &recipe,
                     Some(&recipes_path),
@@ -122,8 +137,8 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             )?;
         }
         Commands::Diff { old, new } => {
-            let old = resolve_recipe_path(&old, &recipe_paths)?;
-            let new = resolve_recipe_path(&new, &recipe_paths)?;
+            let old = resolve_recipe_path(&old, &lookup)?;
+            let new = resolve_recipe_path(&new, &lookup)?;
             emit_result(
                 &levitate_recipe::needs::report::diff(&old, &new, Some(&recipes_path))?,
                 json_output.as_deref(),
@@ -139,7 +154,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             autofix_prompt_file,
             autofix_allow_path,
         } => {
-            let recipe_path = resolve_recipe_path(&recipe, &recipe_paths)?;
+            let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
             let autofix_cfg = if autofix {
                 Some(AutoFixConfig {
                     attempts: autofix_attempts,
@@ -165,11 +180,11 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             );
             let installed = installed_package(&package_store, &recipe)?
                 .with_context(|| format!("package {} is not installed", recipe.display()))?;
-            let recipe_path = resolve_recipe_path(&recipe, &recipe_paths).or_else(|error| {
+            let recipe_path = resolve_recipe_path(&recipe, &lookup).or_else(|error| {
                 if explicit_collection {
                     Err(error)
                 } else {
-                    resolve_recipe_path(&installed.recipe, &recipe_paths)
+                    resolve_recipe_path(&installed.recipe, &lookup)
                 }
             })?;
             let engine = create_engine(&recipe_path, &engine_options, None)?;
@@ -198,7 +213,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                     return Ok(());
                 }
             }
-            let recipe_path = resolve_recipe_path(&recipe, &recipe_paths)?;
+            let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
             require_output_only_if_inactive(&recipe_path, recipes_path, no_activate)?;
             let engine = create_engine(&recipe_path, &engine_options, None)?;
             let ctx = engine.remove(&recipe_path)?;
@@ -206,7 +221,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
         }
 
         Commands::Cleanup { recipe, reason } => {
-            let recipe_path = resolve_recipe_path(&recipe, &recipe_paths)?;
+            let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
             let engine = create_engine(&recipe_path, &engine_options, None)?;
             let cleanup_reason = reason
                 .as_deref()
@@ -227,7 +242,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                     return Ok(());
                 }
             }
-            let recipe_path = resolve_recipe_path(&recipe, &recipe_paths)?;
+            let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
             require_output_only_if_inactive(&recipe_path, recipes_path, no_activate)?;
             let engine = create_engine(&recipe_path, &engine_options, None)?;
             let ctx = engine.is_installed(&recipe_path)?;
@@ -240,14 +255,14 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
         }
 
         Commands::IsBuilt { recipe } => {
-            let recipe_path = resolve_recipe_path(&recipe, &recipe_paths)?;
+            let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
             let engine = create_engine(&recipe_path, &engine_options, None)?;
             let ctx = engine.is_built(&recipe_path)?;
             emit_result(&ctx, json_output.as_deref(), json, "Build check passed")?;
         }
 
         Commands::IsAcquired { recipe } => {
-            let recipe_path = resolve_recipe_path(&recipe, &recipe_paths)?;
+            let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
             let engine = create_engine(&recipe_path, &engine_options, None)?;
             let ctx = engine.is_acquired(&recipe_path)?;
             emit_result(
@@ -258,7 +273,55 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             )?;
         }
 
-        Commands::List => list_recipes(&recipe_paths, list_json)?,
+        Commands::List => list_recipes(&lookup, list_json)?,
+
+        Commands::Source { command } => {
+            anyhow::ensure!(
+                !explicit_collection,
+                "an explicit --recipes-path or $RECIPE_PATH uses no sources"
+            );
+            source_command(&all_sources, command, list_json)?;
+        }
+
+        Commands::Refresh { name } => {
+            anyhow::ensure!(
+                !explicit_collection,
+                "an explicit --recipes-path or $RECIPE_PATH uses no sources"
+            );
+            let remote: Vec<_> = match name {
+                Some(name) => vec![all_sources.get(&name)?],
+                None => all_sources
+                    .all()
+                    .0
+                    .into_iter()
+                    .filter(|source| matches!(source.kind, sources::Kind::Remote { .. }))
+                    .collect(),
+            };
+            if remote.is_empty() {
+                bin_support::info("No remote sources to refresh");
+            }
+            let mut failed = 0;
+            for source in &remote {
+                match all_sources.refresh(source) {
+                    Ok(index) => bin_support::info(&format!(
+                        "{}: {} recipe{} at commit {}",
+                        source.name,
+                        index.recipes.len(),
+                        if index.recipes.len() == 1 { "" } else { "s" },
+                        &index.commit[..12]
+                    )),
+                    Err(error) => {
+                        failed += 1;
+                        bin_support::warning(&format!("{}: {error:#}", source.name));
+                    }
+                }
+            }
+            anyhow::ensure!(
+                failed == 0,
+                "{failed} of {} sources could not be refreshed; the index kept from before stays in use",
+                remote.len()
+            );
+        }
 
         Commands::Index { folder, check } => {
             let index = levitate_recipe::catalog::index(&folder)?;
@@ -285,7 +348,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
         }
 
         Commands::Info { recipe } => {
-            let recipe_path = resolve_recipe_path(&recipe, &recipe_paths)?;
+            let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
             show_info(&recipe_path, Some(&recipes_path))?;
         }
 
@@ -334,9 +397,14 @@ fn require_output_only_if_inactive(recipe: &Path, search: &Path, no_activate: bo
 
 /// Active package identity is recorded independently of mutable recipe sources.
 fn installed_package(store: &PackageStore, requested: &Path) -> Result<Option<InstalledPackage>> {
+    // A profile holds one package of a name, whichever source it came from.
     let name = requested
         .to_str()
-        .filter(|_| requested.components().count() == 1);
+        .filter(|_| requested.components().count() == 1)
+        .map(|name| match name.split_once(':') {
+            Some((source, name)) if levitate_recipe::catalog::is_source_name(source) => name,
+            _ => name,
+        });
     let canonical = requested.canonicalize().ok().or_else(|| {
         (requested.components().count() > 1)
             .then(|| std::path::absolute(requested).ok())
@@ -599,7 +667,7 @@ fn create_engine(
     Ok(engine)
 }
 
-fn resolve_recipe_path(recipe: &Path, recipes_paths: &[PathBuf]) -> Result<PathBuf> {
+fn resolve_recipe_path(recipe: &Path, lookup: &Lookup) -> Result<PathBuf> {
     if recipe.is_absolute() {
         if recipe.is_file() {
             return Ok(recipe.to_path_buf());
@@ -611,7 +679,46 @@ fn resolve_recipe_path(recipe: &Path, recipes_paths: &[PathBuf]) -> Result<PathB
         return Ok(recipe.to_path_buf());
     }
 
-    for recipes_path in recipes_paths {
+    let remote = |source: &str, name: &str| {
+        anyhow::anyhow!(
+            "{source}:{name} is in a remote source; recipe cannot run a recipe from one yet\nNext: clone the source and add the folder with 'recipe source add --path FOLDER'."
+        )
+    };
+    let text = recipe.to_string_lossy();
+
+    // SOURCE:NAME names one source's recipe, whatever the others hold.
+    if let Some((source, name)) = text.split_once(':')
+        && levitate_recipe::catalog::is_source_name(source)
+        && levitate_recipe::catalog::is_file_name(name)
+    {
+        let folder = match source {
+            sources::LOCAL => lookup.folders.first().cloned(),
+            sources::IMAGE => lookup.folders.get(1).cloned(),
+            _ => {
+                let all = lookup.sources.with_context(|| {
+                    format!("an explicit --recipes-path or $RECIPE_PATH uses no sources, so {text} names nothing")
+                })?;
+                match all.get(source)?.kind {
+                    sources::Kind::Folder { path } => Some(path),
+                    sources::Kind::Remote { .. } => {
+                        let found = all.find(name).into_iter().any(|found| found.source == source);
+                        anyhow::ensure!(
+                            found,
+                            "{source} has no recipe named {name}\nNext: 'recipe refresh {source}' fetches its index again; 'recipe list' shows what it holds."
+                        );
+                        return Err(remote(source, name));
+                    }
+                }
+            }
+        };
+        let file = folder
+            .with_context(|| format!("there is no {source} folder in this run"))?
+            .join(format!("{name}.rhai"));
+        anyhow::ensure!(file.is_file(), "{source} has no recipe named {name} ({} is missing)", file.display());
+        return Ok(file);
+    }
+
+    for recipes_path in lookup.folders {
         let in_recipes = recipes_path.join(recipe);
         if in_recipes.is_file() {
             return Ok(in_recipes);
@@ -622,10 +729,32 @@ fn resolve_recipe_path(recipe: &Path, recipes_paths: &[PathBuf]) -> Result<PathB
         }
     }
 
+    // A bare name the folders do not hold means the one source that has it.
+    let name = text.strip_suffix(".rhai").unwrap_or(&text);
+    if let Some(all) = lookup.sources
+        && levitate_recipe::catalog::is_file_name(name)
+    {
+        let mut found = all.find(name);
+        if found.len() > 1 {
+            anyhow::bail!(
+                "{name} is in more than one source\nNext: name the one you mean: {}",
+                found
+                    .iter()
+                    .map(|found| format!("{}:{name}", found.source))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        if let Some(found) = found.pop() {
+            return found.path.ok_or_else(|| remote(&found.source, name));
+        }
+    }
+
     anyhow::bail!(
-        "Recipe not found: {}\nSearched in the current directory and: {}\nNext: run 'recipe list --recipes-path <DIRECTORY>' to see available recipes, or pass a .rhai file path.",
+        "Recipe not found: {}\nSearched in the current directory, the sources and: {}\nNext: run 'recipe list' to see available recipes, or pass a .rhai file path.",
         recipe.display(),
-        recipes_paths
+        lookup
+            .folders
             .iter()
             .map(|p| p.display().to_string())
             .collect::<Vec<_>>()
@@ -633,61 +762,189 @@ fn resolve_recipe_path(recipe: &Path, recipes_paths: &[PathBuf]) -> Result<PathB
     )
 }
 
-fn list_recipes(recipes_paths: &[PathBuf], json: bool) -> Result<()> {
+fn problem_json(problem: &sources::Problem) -> serde_json::Value {
+    serde_json::json!({ "path": problem.path, "problem": problem.problem })
+}
+
+fn list_recipes(lookup: &Lookup, json: bool) -> Result<()> {
     use owo_colors::OwoColorize;
 
+    // The folders first, as before sources existed: the first folder holding
+    // a file name hides the same name in the next.
+    let folder_name = |index: usize| if index == 0 { sources::LOCAL } else { sources::IMAGE };
     let mut names = std::collections::BTreeSet::new();
-    if json {
-        // For a front end: every recipe it could offer, read without running
-        // anything. One unreadable recipe must not hide the others.
-        let mut recipes = Vec::new();
-        let mut problems = Vec::new();
-        for recipes_path in recipes_paths {
-            let mut paths: Vec<_> = enumerate_recipes(recipes_path).collect();
-            paths.sort();
-            for path in paths {
-                if !names.insert(path.file_name().unwrap().to_owned()) {
-                    continue;
-                }
-                match levitate_recipe::catalog::entry(&path, Some(recipes_path)) {
-                    Ok(entry) => recipes.push(entry),
-                    Err(error) => problems.push(serde_json::json!({
-                        "path": path,
-                        "problem": format!("{error:#}"),
-                    })),
-                }
-            }
-        }
-        let result = serde_json::json!({
-            "schema_version": levitate_recipe::catalog::SCHEMA_VERSION,
-            "collections": recipes_paths,
-            "recipes": recipes,
-            "problems": problems,
-        });
-        writeln!(std::io::stdout(), "{}", serde_json::to_string(&result)?)?;
-        return Ok(());
-    }
-    let mut found = false;
-    for recipes_path in recipes_paths {
+    let mut about = Vec::new();
+    let mut recipes = Vec::new();
+    let mut problems = Vec::new();
+    for (index, recipes_path) in lookup.folders.iter().enumerate() {
+        about.push(serde_json::json!({
+            "name": folder_name(index),
+            "kind": "folder",
+            "title": null,
+            "path": recipes_path,
+            "checked": null,
+            "problem": null,
+        }));
         let mut paths: Vec<_> = enumerate_recipes(recipes_path).collect();
         paths.sort();
         for path in paths {
             if !names.insert(path.file_name().unwrap().to_owned()) {
                 continue;
             }
-            let meta = RecipeMetadata::load(&path, Some(recipes_path))?;
-            println!(
-                "  {} {}",
-                meta.name.bold(),
-                meta.version.as_deref().unwrap_or("?").cyan()
-            );
-            found = true;
+            if !json {
+                let meta = RecipeMetadata::load(&path, Some(recipes_path))?;
+                recipes.push(serde_json::json!({
+                    "name": meta.name,
+                    "version": meta.version,
+                    "source": folder_name(index),
+                }));
+                continue;
+            }
+            // For a front end: every recipe it could offer, read without
+            // running anything. One unreadable recipe must not hide the others.
+            match levitate_recipe::catalog::entry(&path, Some(recipes_path)) {
+                Ok(mut entry) => {
+                    entry["source"] = folder_name(index).into();
+                    recipes.push(entry);
+                }
+                Err(error) => problems.push(serde_json::json!({
+                    "path": path,
+                    "problem": format!("{error:#}"),
+                })),
+            }
         }
     }
-    if !found {
+    if let Some(all) = lookup.sources {
+        let (found, unreadable) = all.all();
+        problems.extend(unreadable.iter().map(problem_json));
+        for source in found {
+            let listing = all.listing(&source);
+            about.push(listing.about);
+            recipes.extend(listing.recipes);
+            problems.extend(listing.problems.iter().map(problem_json));
+        }
+    }
+
+    if json {
+        let result = serde_json::json!({
+            "schema_version": levitate_recipe::catalog::SCHEMA_VERSION,
+            "collections": lookup.folders,
+            "sources": about,
+            "recipes": recipes,
+            "problems": problems,
+        });
+        writeln!(std::io::stdout(), "{}", serde_json::to_string(&result)?)?;
+        return Ok(());
+    }
+    for recipe in &recipes {
+        let source = recipe["source"].as_str().unwrap_or_default();
+        println!(
+            "  {} {}{}",
+            recipe["name"].as_str().unwrap_or("?").bold(),
+            recipe["version"].as_str().unwrap_or("?").cyan(),
+            if source == sources::LOCAL || source == sources::IMAGE {
+                String::new()
+            } else {
+                format!("  {}", source.dimmed())
+            }
+        );
+    }
+    for problem in &problems {
+        bin_support::warning(problem["problem"].as_str().unwrap_or_default());
+    }
+    if recipes.is_empty() {
         bin_support::info("No recipes found in the selected collections");
     }
 
+    Ok(())
+}
+
+fn source_command(all: &Sources, command: SourceCommands, json: bool) -> Result<()> {
+    use owo_colors::OwoColorize;
+
+    match command {
+        SourceCommands::List => {
+            let (found, unreadable) = all.all();
+            let listings: Vec<_> = found.iter().map(|source| all.listing(source)).collect();
+            if json {
+                let result = serde_json::json!({
+                    "schema_version": levitate_recipe::catalog::SCHEMA_VERSION,
+                    "sources": listings.iter().map(|listing| &listing.about).collect::<Vec<_>>(),
+                    "problems": unreadable.iter().map(problem_json).collect::<Vec<_>>(),
+                });
+                writeln!(std::io::stdout(), "{}", serde_json::to_string(&result)?)?;
+                return Ok(());
+            }
+            for listing in &listings {
+                let about = &listing.about;
+                let text = |field: &str| about[field].as_str().unwrap_or_default().to_owned();
+                let place = if about["kind"] == "remote" {
+                    format!("{} ({})", text("files"), text("branch"))
+                } else {
+                    text("path")
+                };
+                println!("  {}  {}  {}", text("name").bold(), text("kind").cyan(), place);
+                let count = format!(
+                    "{} recipe{}",
+                    listing.recipes.len(),
+                    if listing.recipes.len() == 1 { "" } else { "s" }
+                );
+                let state = match about["checked"].as_u64() {
+                    Some(checked) => format!("{count}, fetched {}", sources::ago(checked)),
+                    None if about["kind"] == "folder" => count,
+                    None => String::new(),
+                };
+                if !state.is_empty() {
+                    println!("      {}", state.dimmed());
+                }
+                if let Some(problem) = about["problem"].as_str() {
+                    bin_support::warning(&format!("{}: {problem}", text("name")));
+                }
+            }
+            for problem in &unreadable {
+                bin_support::warning(&problem.problem);
+            }
+            if listings.is_empty() {
+                bin_support::info("No sources; recipes come from the recipe folders only");
+            }
+        }
+        SourceCommands::Add {
+            address,
+            branch,
+            path,
+            name,
+        } => match (address, path) {
+            (_, Some(folder)) => {
+                let source = all.add_folder(&folder, name.as_deref())?;
+                let count = all.listing(&source).recipes.len();
+                bin_support::info(&format!(
+                    "Added the folder {} as {}: {count} recipe{}",
+                    folder.display(),
+                    source.name,
+                    if count == 1 { "" } else { "s" }
+                ));
+            }
+            (Some(address), None) => {
+                let (source, index) = all.add_remote(&address, &branch)?;
+                bin_support::info(&format!(
+                    "Added {}: {}, kept by {} ({} recipe{})",
+                    source.name,
+                    index.source.title,
+                    index.source.keeper,
+                    index.recipes.len(),
+                    if index.recipes.len() == 1 { "" } else { "s" }
+                ));
+            }
+            (None, None) => unreachable!("clap requires an address or --path"),
+        },
+        SourceCommands::Remove { name } => match all.remove(&name)? {
+            sources::Removed::Gone => bin_support::info(&format!("Removed the source {name}")),
+            sources::Removed::SwitchedOff(file) => bin_support::info(&format!(
+                "{name} comes with the system, so it is switched off; delete {} to bring it back",
+                file.display()
+            )),
+        },
+    }
     Ok(())
 }
 

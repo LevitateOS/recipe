@@ -247,6 +247,22 @@ pub(crate) enum Commands {
     )]
     List,
 
+    /// Show, add or remove the sources recipes come from
+    #[command(
+        after_help = "Examples:\n  recipe source list\n  recipe source add https://github.com/OWNER/NAME\n  recipe source add 'https://example.org/OWNER/NAME/raw/{rev}/{path}' --branch main\n  recipe source add --path ~/recipes\n  recipe source remove NAME\n\nA remote source is held as its published index (see 'recipe index'); a folder\nis read as it is. Sources belong to the package root: root's are in\n/var/lib/recipe/sources, a person's in their own Recipe data. An explicit\n--recipes-path or $RECIPE_PATH uses no sources."
+    )]
+    Source {
+        #[command(subcommand)]
+        command: SourceCommands,
+    },
+
+    /// Fetch the index of every remote source again, or of one
+    #[command(after_help = "Examples:\n  recipe refresh\n  recipe refresh levitate")]
+    Refresh {
+        /// The source to refresh (default: all remote sources).
+        name: Option<String>,
+    },
+
     /// Write the index a source of recipes publishes
     #[command(
         after_help = "Examples:\n  recipe index\n  recipe index ./recipes\n  recipe index --check\n\nWrites index.json in the folder: the folder's repo.toml, every recipe as\n'recipe list --json' prints it, the SHA-256 and size of each recipe file and of\nthe files beside it that share its name, and the commit they are at. Commit the\nresult. Nothing is written while a recipe cannot be read or a listed file\ndiffers from what is committed. The same commit always gives the same index."
@@ -275,4 +291,28 @@ pub(crate) enum Commands {
         /// File path to hash.
         file: PathBuf,
     },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum SourceCommands {
+    /// List the sources, and when each remote one was last fetched
+    List,
+    /// Add a remote source by its address, or a folder with --path
+    Add {
+        /// A repository on github.com or gitlab.com, or the address its files
+        /// are fetched from with {rev} and {path} in it.
+        #[arg(required_unless_present = "path", conflicts_with = "path")]
+        address: Option<String>,
+        /// The branch whose index is followed.
+        #[arg(long, default_value = "main", conflicts_with = "path")]
+        branch: String,
+        /// Add a folder of recipes that is read as it is.
+        #[arg(long, value_name = "FOLDER")]
+        path: Option<PathBuf>,
+        /// The name of a folder that has no repo.toml (default: the folder's name).
+        #[arg(long, requires = "path")]
+        name: Option<String>,
+    },
+    /// Remove a source; a source the image ships is switched off
+    Remove { name: String },
 }

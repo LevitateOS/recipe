@@ -112,11 +112,48 @@ pub struct Source {
     pub uses: Vec<String>,
 }
 
-fn is_source_name(name: &str) -> bool {
+/// A source's short name: lower-case letters, digits and `-`.
+pub fn is_source_name(name: &str) -> bool {
     !name.is_empty()
         && name
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+/// A name a source's file may have: it goes into a download address as it is,
+/// and into one flat folder when fetched.
+pub fn is_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._+-".contains(&byte))
+}
+
+impl Source {
+    /// `origin` says where the description was read, for the message.
+    fn check(&self, origin: &str) -> Result<()> {
+        ensure!(
+            is_source_name(&self.name),
+            "{origin}: name must be lower-case letters, digits and '-', got {:?}",
+            self.name
+        );
+        for (field, value) in [
+            ("title", &self.title),
+            ("about", &self.about),
+            ("address", &self.address),
+            ("keeper", &self.keeper),
+        ] {
+            ensure!(!value.trim().is_empty(), "{origin}: {field} is empty");
+        }
+        for used in &self.uses {
+            ensure!(
+                is_source_name(used) && *used != self.name,
+                "{origin}: uses must name other sources, got {used:?}"
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Reads a folder's `repo.toml`.
@@ -130,27 +167,7 @@ pub fn source(folder: &Path) -> Result<Source> {
     })?;
     let source: Source = toml::from_str(&text)
         .with_context(|| format!("{} does not describe a source", path.display()))?;
-    ensure!(
-        is_source_name(&source.name),
-        "{}: name must be lower-case letters, digits and '-', got {:?}",
-        path.display(),
-        source.name
-    );
-    for (field, value) in [
-        ("title", &source.title),
-        ("about", &source.about),
-        ("address", &source.address),
-        ("keeper", &source.keeper),
-    ] {
-        ensure!(!value.trim().is_empty(), "{}: {field} is empty", path.display());
-    }
-    for used in &source.uses {
-        ensure!(
-            is_source_name(used) && *used != source.name,
-            "{}: uses must name other sources, got {used:?}",
-            path.display()
-        );
-    }
+    source.check(&path.display().to_string())?;
     Ok(source)
 }
 
@@ -203,6 +220,11 @@ pub fn index(folder: &Path) -> Result<Index> {
     };
     let file = |name: &str| -> Result<serde_json::Value> {
         let path = folder.join(name);
+        ensure!(
+            is_file_name(name),
+            "{}: a source's file names are letters, digits, '.', '_', '+' and '-', and do not start with '.'",
+            path.display()
+        );
         ensure!(
             path.symlink_metadata()?.is_file(),
             "{} is not a regular file",
@@ -311,4 +333,67 @@ fn commit(folder: &Path, listed: &[String]) -> Result<String> {
     let commit = git(false, &["log", "-1", "--format=%H", "--", ".", &exclude])?;
     ensure!(!commit.is_empty(), "{} has no commit yet", folder.display());
     Ok(commit)
+}
+
+/// An index as a source published it, checked for form.
+pub struct Published {
+    pub source: Source,
+    pub commit: String,
+    /// Each as [`entry`] gives it, without `path` and with `files`.
+    pub recipes: Vec<serde_json::Value>,
+}
+
+impl Published {
+    pub fn recipe(&self, name: &str) -> Option<&serde_json::Value> {
+        self.recipes.iter().find(|recipe| recipe["name"] == name)
+    }
+}
+
+/// Reads the text of an `index.json`. Everything a later download relies on
+/// is checked here: the names that go into addresses and the checksums.
+pub fn published(text: &str) -> Result<Published> {
+    #[derive(Deserialize)]
+    struct File {
+        schema_version: u32,
+        source: Source,
+        commit: String,
+        recipes: Vec<serde_json::Value>,
+    }
+    let is_hex = |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_hexdigit());
+
+    let file: File = serde_json::from_str(text).context("not an index of recipes")?;
+    ensure!(
+        file.schema_version == INDEX_SCHEMA_VERSION,
+        "the index is version {}; this recipe reads version {INDEX_SCHEMA_VERSION}",
+        file.schema_version
+    );
+    file.source.check("the index")?;
+    ensure!(
+        matches!(file.commit.len(), 40 | 64) && is_hex(&file.commit),
+        "the index names no commit"
+    );
+    let mut names = std::collections::BTreeSet::new();
+    for recipe in &file.recipes {
+        let name = recipe["name"].as_str().context("a recipe in the index has no name")?;
+        ensure!(names.insert(name), "the index lists {name} twice");
+        let files = recipe["files"].as_array().map(Vec::as_slice).unwrap_or_default();
+        ensure!(
+            files.first().is_some_and(|file| file["path"] == format!("{name}.rhai")),
+            "the index does not list {name}.rhai first among the files of {name}"
+        );
+        for file in files {
+            let path = file["path"].as_str().unwrap_or_default();
+            ensure!(
+                is_file_name(path)
+                    && file["sha256"].as_str().is_some_and(|sum| sum.len() == 64 && is_hex(sum))
+                    && file["bytes"].is_u64(),
+                "the index lists a file of {name} without a usable name, SHA-256 or size: {file}"
+            );
+        }
+    }
+    Ok(Published {
+        source: file.source,
+        commit: file.commit,
+        recipes: file.recipes,
+    })
 }

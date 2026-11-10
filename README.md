@@ -233,7 +233,21 @@ details. [HELPERS_AUDIT.md](HELPERS_AUDIT.md) lists registered helpers.
   recipe file and of the files beside it that share its name, and the commit
   they are at. The folder must be in a Git repository with full history and
   the listed files committed. `--check` fails when the file is out of date.
-  Nothing reads an index yet.
+- Sources add recipes beyond the recipe folders. `source add ADDRESS` adds a
+  remote source: a repository on github.com or gitlab.com, or the address its
+  files are fetched from with `{rev}` and `{path}` in it. Only its published
+  index is kept; `refresh [NAME]` fetches it again over HTTPS. `source add
+  --path FOLDER` adds a checkout that is read as it is. `source list` shows
+  them and `source remove NAME` removes one. A source is one file,
+  `sources/NAME.toml` under the package root (`/var/lib/recipe/sources` for
+  root), or `/usr/share/recipe/sources` when the image ships it.
+- `SOURCE:NAME` names one source's recipe; `local` and `image` name the recipe
+  folders. A bare name means a recipe folder first, then the one source that
+  has it; when several do, Recipe asks for `SOURCE:NAME`. `list` never touches
+  the network: it shows a remote source from its kept index, and `list --json`
+  adds `sources` and each recipe's `source`. A recipe of a remote source can
+  be listed but not yet run. An explicit `--recipes-path` or `$RECIPE_PATH`
+  uses no sources.
 
 ## Inputs and selected targets
 

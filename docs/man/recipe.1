@@ -6,7 +6,10 @@ recipe \- execute Rhai package recipes through Ginux
 [options] install|update|remove|cleanup|isinstalled|isbuilt|isacquired recipe
 .br
 .B recipe
-[options] list|installed|index|info|hash [argument]
+[options] list|installed|index|info|hash|refresh [argument]
+.br
+.B recipe
+[options] source list|add|remove [argument]
 .br
 .B recipe
 [options] validate|inspect|explain|diff [arguments]
@@ -94,6 +97,27 @@ and size of each recipe file and of the files beside it that share its name,
 and the commit they are at. The folder must be in a Git repository with full
 history, and the listed files must be committed. With \fB\-\-check\fR, write
 nothing and fail when index.json is missing or out of date.
+.TP
+.B source list
+.TQ
+.B source add ADDRESS [\-\-branch BRANCH]
+.TQ
+.B source add \-\-path FOLDER [\-\-name NAME]
+.TQ
+.B source remove NAME
+Show, add or remove the sources recipes come from beyond the recipe folders.
+A remote source is a repository on github.com or gitlab.com, or the address
+its files are fetched from with {rev} and {path} in it; only its published
+index is kept. A folder is read as it is. A source is one file,
+sources/NAME.toml under the package root or in /usr/share/recipe/sources; a
+shipped source is switched off, not removed. \fBSOURCE:NAME\fR names one
+source's recipe wherever a recipe name is accepted. A recipe of a remote
+source can be listed but not yet run. An explicit \fB\-\-recipes\-path\fR
+uses no sources.
+.TP
+.B refresh [NAME]
+Fetch the index of every remote source again, or of one, over HTTPS. A failed
+refresh leaves the index kept from before in use.
 .TP
 .B info RECIPE
 Show loader-owned declared/inherited metadata. Dynamic metadata is unavailable.

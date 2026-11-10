@@ -53,6 +53,7 @@ mod recipes;
 mod retained;
 /// Installed runtime defaults shared with OS packaging.
 pub mod runtime;
+pub mod sources;
 /// Target filesystem metadata carried independently of build-host privileges.
 pub mod target;
 mod temporary;
@@ -75,7 +76,7 @@ pub fn default_destination(
 #[doc(hidden)]
 pub mod bin_support {
     pub use crate::cancellation::{install_cli_handlers, signal};
-    pub use crate::core::output::info;
+    pub use crate::core::output::{info, warning};
     pub use crate::domain::WORKER_ENTRY_ARG;
     pub use crate::helpers::internal::hash::{FileHashes, compute_all_hashes};
     pub use crate::invocation_log::retained as retained_invocation;
