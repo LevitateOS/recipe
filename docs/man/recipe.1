@@ -68,6 +68,26 @@ run the removal hook against the owned selected target; prior publications stay 
 .TP
 .B installed
 List active packages and versions from the installed receipt, without Ginux.
+With --json each package also names what its recipe was allowed to use when it
+was installed (needs), when (installed_on), the length of its files (size_bytes)
+and the earlier versions go-back can return to (kept).
+.TP
+.B updates
+Say which installed packages update would change, and what the newer recipe may
+use that the installed one may not (the NEEDS recorded at install, compared).
+Reads the receipts, the collection and the sources as last fetched; fetches and
+runs nothing. A package has an update when its recipe names another version or
+its source publishes another recipe file for it.
+.TP
+.B go-back NAME [--to VERSION]
+Activate an earlier version of an installed package again from the files an
+inactive generation still holds, without a recipe or Ginux. The version left
+behind stays kept.
+.TP
+.B storage [--clear-earlier]
+Show what the active generation and the inactive ones take on disk, shared files
+counted once. --clear-earlier deletes every inactive generation; nothing
+installed changes, and go-back has nothing left to return to.
 .TP
 .B cleanup RECIPE [--reason TEXT]
 Run optional cleanup, with reason manual by default.

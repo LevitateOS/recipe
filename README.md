@@ -92,6 +92,20 @@ changing a store still requires owning it. `isinstalled` checks active files and
 packages disappear from the profile; old inactive generations and build/publication
 caches remain. They are not an installed-package inventory.
 
+For a front end, all read-only and without Ginux: `recipe installed --json`
+adds to each package what its recipe was allowed to use when it was installed
+(`needs`), when (`installed_on`), the length of its files (`size_bytes`) and
+the earlier versions still held (`kept`). `recipe updates` says which installed
+packages `recipe update` would change, from the receipts, the collection and
+the sources as last fetched, and lists under `changes` every NEEDS field in
+which the newer recipe differs from what was recorded (`added` and `raised`
+mean it may use more; `null` when the receipt predates the record).
+`recipe go-back NAME [--to VERSION]` activates an earlier version again from
+the files an inactive generation holds; `recipe storage` reports what the
+active and the inactive generations take, and `--clear-earlier` deletes the
+inactive ones. These were run on a hand-made store; the record of `needs` at
+install has compiled and not run, since an install needs Ginux.
+
 The OS builder packages the public catalog, `/usr/libexec/recipe/ginux`, and
 `/usr/share/recipe/runtime/{rootfs.tar,root-reference}`. These are runtime defaults;
 explicit `GINUX_*` selections still take precedence. The image is digest-verified

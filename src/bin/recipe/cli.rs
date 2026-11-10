@@ -212,7 +212,39 @@ pub(crate) enum Commands {
     Update { recipe: PathBuf },
 
     /// List package receipts; the system route distinguishes active and prepared selection
+    #[command(
+        after_help = "With --json each package also names what its recipe was allowed to use when it\nwas installed (needs), when (installed_on), the length of its files (size_bytes)\nand the earlier versions 'recipe go-back' can return to (kept)."
+    )]
     Installed,
+
+    /// Say which installed packages 'recipe update' would change, and what the newer recipe may use that the installed one may not
+    #[command(
+        after_help = "Examples:\n  recipe updates\n  recipe updates --json\n\nReads what is on this computer: the installed receipts and the recipes of the\ncollection and the sources as they were last fetched. Nothing is fetched and\nnothing is run; 'recipe refresh' fetches the sources' lists first. A package\nhas an update when its recipe names another version, or when its source\npublishes another recipe file for it. \"changes\" compares NEEDS with what was\nrecorded when the package was installed, and is null when nothing was."
+    )]
+    Updates,
+
+    /// Activate the earlier version of an installed package again
+    #[command(name = "go-back")]
+    #[command(
+        after_help = "Examples:\n  recipe go-back ripgrep\n  recipe go-back ripgrep --to 14.1.0\n\nUses the files an earlier profile generation still holds; no recipe is run and\nGinux is not needed. The other packages stay as they are. The version left\nbehind stays kept, so 'recipe go-back' again returns to it. 'recipe installed\n--json' lists the kept versions; 'recipe storage --clear-earlier' deletes them."
+    )]
+    GoBack {
+        /// The installed package's name.
+        name: String,
+        /// The kept version to return to (default: the newest that differs).
+        #[arg(long, value_name = "VERSION")]
+        to: Option<String>,
+    },
+
+    /// Show what installed software and its earlier versions take on disk
+    #[command(
+        after_help = "Examples:\n  recipe storage\n  recipe storage --json\n  recipe storage --clear-earlier\n\nEarlier profile generations are what 'recipe go-back' returns to. A file that\nan earlier generation shares with the active one is counted with the active\none. --clear-earlier deletes every inactive generation: nothing installed\nchanges, and no package can be gone back on afterwards."
+    )]
+    Storage {
+        /// Delete every inactive profile generation.
+        #[arg(long)]
+        clear_earlier: bool,
+    },
 
     /// Remove an active package, or run an output-only recipe's remove hook
     #[command(

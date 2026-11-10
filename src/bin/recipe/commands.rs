@@ -201,7 +201,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             let engine = create_engine(&recipe_path, &engine_options, autofix_cfg)?;
             let mut ctx = engine.execute(&recipe_path)?;
             if !no_activate {
-                activate_package(&package_store, &recipe_path, &mut ctx, None)?;
+                activate_package(&package_store, &recipe_path, recipes_path, &mut ctx, None)?;
             }
             ctx["producer_io"] = levitate_recipe::system::io_delta(&io_start);
             emit_result(&ctx, json_output.as_deref(), json, "Installation completed")?;
@@ -242,6 +242,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             activate_package(
                 &package_store,
                 &recipe_path,
+                recipes_path,
                 &mut ctx,
                 Some(&installed.name),
             )?;
@@ -252,8 +253,65 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
         }
 
         Commands::Installed => {
-            let result = serde_json::json!({"packages": package_store.list()?, "profile": package_store.profile_path()});
+            let mut kept = package_store.kept()?;
+            let packages = package_store
+                .list()?
+                .into_iter()
+                .map(|package| {
+                    let earlier = kept.remove(&package.name).unwrap_or_default();
+                    let mut entry = serde_json::to_value(&package)?;
+                    entry["kept"] = serde_json::to_value(earlier)?;
+                    Ok(entry)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let result = serde_json::json!({"packages": packages, "profile": package_store.profile_path()});
             emit_result(&result, json_output.as_deref(), json, "Installed packages")?;
+        }
+
+        Commands::Updates => {
+            let result = updates(&package_store, &lookup)?;
+            if json_output.is_some() || json {
+                emit_result(&result, json_output.as_deref(), json, "Updates")?;
+            } else {
+                print_updates(&result);
+            }
+        }
+
+        Commands::GoBack { name, to } => {
+            let back = package_store.go_back(&name, to.as_deref())?;
+            let result = serde_json::json!({"name": back.name, "version": back.version,
+                "operation": "go-back", "profile": package_store.profile_path()});
+            emit_result(&result, json_output.as_deref(), json, "Earlier version activated")?;
+        }
+
+        Commands::Storage { clear_earlier } => {
+            let result = if clear_earlier {
+                let cleared = package_store.clear_earlier()?;
+                serde_json::json!({"schema_version": levitate_recipe::catalog::SCHEMA_VERSION,
+                    "operation": "clear-earlier", "cleared_generations": cleared.earlier_generations,
+                    "cleared_bytes": cleared.earlier_bytes, "active_bytes": cleared.active_bytes,
+                    "earlier_generations": 0, "earlier_bytes": 0, "profile": package_store.profile_path()})
+            } else {
+                let storage = package_store.storage()?;
+                serde_json::json!({"schema_version": levitate_recipe::catalog::SCHEMA_VERSION,
+                    "active_bytes": storage.active_bytes, "earlier_generations": storage.earlier_generations,
+                    "earlier_bytes": storage.earlier_bytes, "profile": package_store.profile_path()})
+            };
+            if json_output.is_some() || json {
+                emit_result(&result, json_output.as_deref(), json, "Storage")?;
+            } else {
+                if clear_earlier {
+                    println!(
+                        "Deleted {} earlier generation(s), {} bytes.",
+                        result["cleared_generations"], result["cleared_bytes"]
+                    );
+                }
+                println!("Installed software: {} bytes", result["active_bytes"]);
+                println!(
+                    "Earlier versions:   {} bytes in {} generation(s)",
+                    result["earlier_bytes"], result["earlier_generations"]
+                );
+            }
         }
 
         Commands::Remove { recipe } => {
@@ -478,6 +536,7 @@ fn installed_package(store: &PackageStore, requested: &Path) -> Result<Option<In
 fn activate_package(
     store: &PackageStore,
     recipe: &Path,
+    search: &Path,
     ctx: &mut serde_json::Value,
     updating: Option<&str>,
 ) -> Result<()> {
@@ -504,7 +563,19 @@ fn activate_package(
             "update recipe names {name}, expected {expected}"
         );
     }
-    let installed = store.install(name, version, recipe, Path::new(output), updating.is_some())?;
+    // What the recipe may use is kept with the package, so that a later
+    // recipe can be compared with it ('recipe updates').
+    let needs = levitate_recipe::needs::declaration(recipe, Some(search))
+        .ok()
+        .map(|declaration| declaration.needs);
+    let installed = store.install(
+        name,
+        version,
+        recipe,
+        needs.as_ref(),
+        Path::new(output),
+        updating.is_some(),
+    )?;
     let profile = store.profile_path();
     ctx["activation"] = serde_json::json!({"name": installed.name, "version": installed.version,
         "profile": profile, "bin": profile.join("bin")});
@@ -813,6 +884,146 @@ fn resolve_recipe_path(recipe: &Path, lookup: &Lookup) -> Result<PathBuf> {
             .collect::<Vec<_>>()
             .join(", ")
     )
+}
+
+/// The catalog entry `recipe update NAME` would run for an installed package,
+/// read without fetching or running anything: its own source's, else the
+/// recipe folders', else the one source that has it, else the recipe file it
+/// was installed from.
+fn update_candidate(
+    installed: &InstalledPackage,
+    lookup: &Lookup,
+    listings: &mut std::collections::BTreeMap<String, Vec<serde_json::Value>>,
+) -> Result<Option<serde_json::Value>> {
+    let mut listed = |all: &Sources, source: &str| -> Option<serde_json::Value> {
+        if !listings.contains_key(source) {
+            let recipes = all.get(source).map(|source| all.listing(&source).recipes);
+            listings.insert(source.to_owned(), recipes.unwrap_or_default());
+        }
+        listings[source]
+            .iter()
+            .find(|recipe| recipe["name"] == installed.name.as_str())
+            .cloned()
+    };
+    if let (Some(source), Some(all)) = (&installed.source, lookup.sources)
+        && let Some(entry) = listed(all, source)
+    {
+        return Ok(Some(entry));
+    }
+    for folder in lookup.folders {
+        let path = folder.join(format!("{}.rhai", installed.name));
+        if path.is_file() {
+            let mut entry = levitate_recipe::catalog::entry(&path, Some(folder))?;
+            entry["source"] = sources::LOCAL.into();
+            return Ok(Some(entry));
+        }
+    }
+    if let Some(all) = lookup.sources {
+        let found = all.find(&installed.name);
+        if let [only] = found.as_slice()
+            && let Some(entry) = listed(all, &only.source)
+        {
+            return Ok(Some(entry));
+        }
+    }
+    if installed.recipe.is_file() {
+        return levitate_recipe::catalog::entry(&installed.recipe, installed.recipe.parent()).map(Some);
+    }
+    Ok(None)
+}
+
+/// Which installed packages `recipe update` would change. See `recipe updates --help`.
+fn updates(store: &PackageStore, lookup: &Lookup) -> Result<serde_json::Value> {
+    let mut listings = std::collections::BTreeMap::new();
+    let mut found = Vec::new();
+    let mut problems = Vec::new();
+    for installed in store.list()? {
+        let entry = match update_candidate(&installed, lookup, &mut listings) {
+            Ok(Some(entry)) => entry,
+            Ok(None) => {
+                problems.push(serde_json::json!({"name": installed.name,
+                    "problem": "no recipe for it is in the collection or the sources any more"}));
+                continue;
+            }
+            Err(error) => {
+                problems.push(serde_json::json!({"name": installed.name, "problem": format!("{error:#}")}));
+                continue;
+            }
+        };
+        let to = entry["version"].as_str().unwrap_or_default();
+        // A source publishes the checksum of each recipe file; a folder does not.
+        let published = entry["files"][0]["sha256"].as_str();
+        let other_file = published.is_some() && published != installed.sha256.as_deref();
+        let reason = if !to.is_empty() && to != installed.version {
+            "version"
+        } else if other_file {
+            "recipe"
+        } else {
+            continue;
+        };
+        let newer: Option<levitate_recipe::needs::Needs> =
+            serde_json::from_value(entry["needs"].clone()).ok();
+        let changes = match (&installed.needs, &newer) {
+            (Some(before), Some(after)) => {
+                serde_json::to_value(levitate_recipe::updates::changes(before, after))?
+            }
+            _ => serde_json::Value::Null,
+        };
+        found.push(serde_json::json!({
+            "name": installed.name,
+            "source": entry["source"],
+            "from": installed.version,
+            "to": if to.is_empty() { installed.version.as_str() } else { to },
+            "reason": reason,
+            "changes": changes,
+        }));
+    }
+    Ok(serde_json::json!({
+        "schema_version": levitate_recipe::catalog::SCHEMA_VERSION,
+        "updates": found,
+        "problems": problems,
+    }))
+}
+
+fn print_updates(result: &serde_json::Value) {
+    let found = result["updates"].as_array().map(Vec::as_slice).unwrap_or_default();
+    if found.is_empty() {
+        bin_support::info("Everything installed is at its recipe's version");
+    }
+    for update in found {
+        let (name, from, to) = (
+            update["name"].as_str().unwrap_or("?"),
+            update["from"].as_str().unwrap_or("?"),
+            update["to"].as_str().unwrap_or("?"),
+        );
+        if update["reason"] == "recipe" {
+            println!("  {name} {from}: its source publishes another recipe");
+        } else {
+            println!("  {name} {from} -> {to}");
+        }
+        match update["changes"].as_array() {
+            None => println!("      what the newer recipe may use was not compared: nothing was recorded at install"),
+            Some(changes) if changes.is_empty() => println!("      it may use the same as before"),
+            Some(changes) => {
+                for change in changes {
+                    println!(
+                        "      {}: {} -> {} ({})",
+                        change["field"].as_str().unwrap_or("?"),
+                        change["before"].as_str().unwrap_or("?"),
+                        change["after"].as_str().unwrap_or("?"),
+                        change["kind"].as_str().unwrap_or("?"),
+                    );
+                }
+            }
+        }
+    }
+    for problem in result["problems"].as_array().map(Vec::as_slice).unwrap_or_default() {
+        bin_support::warning(&format!(
+            "{}: {}",
+            problem["name"].as_str().unwrap_or("?"),
+            problem["problem"].as_str().unwrap_or_default()
+        ));
+    }
 }
 
 fn problem_json(problem: &sources::Problem) -> serde_json::Value {
