@@ -50,10 +50,12 @@ Probe current domain PATH.
 \fBcarry_libraries(package, prefix, search:Array) -> Array\fR
 Trial. Copies into package/lib/ the loader and every shared library the
 programs in package/bin/ load, from the search folders and then the build
-image, and refuses a program that was not linked for prefix.
+image, and writes into each file its loader and library folder under prefix.
+It refuses a program that was not linked with carry_link_flags().
 .TP
-\fBcarry_link_flags(prefix) -> String\fR
-Trial. Linker flags that tell a program its own loader and lib/ under prefix.
+\fBcarry_link_flags() -> String\fR
+Trial. Linker flags for every program and library of a package: a long
+stand-in library folder that reserves the room carry_libraries writes into.
 .TP
 \fBcopy_file(src, dst) -> ()\fR
 exact destination path

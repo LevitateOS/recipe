@@ -31,8 +31,8 @@ check unless the recipe explicitly handles them. Phase hooks return context.
 | `check_disk_space` | ``helpers/install/disk.rs`` | `check_disk_space(path, required_bytes) -> ()` | `df -k` based |
 | `chmod` | ``helpers/install/filesystem.rs`` | `chmod(path, mode) -> ()` | unix mode |
 | `command_exists` | `helpers/util/process.rs` | `command_exists(name) -> bool` | Probe current domain PATH. |
-| `carry_libraries` | `helpers/install/carry.rs` | `carry_libraries(package, prefix, search:Array) -> Array` | Trial. Copies into `package/lib/` the loader and every shared library the programs in `package/bin/` load, from `search` then the build image; refuses a program not linked for `prefix`. |
-| `carry_link_flags` | `helpers/install/carry.rs` | `carry_link_flags(prefix) -> String` | Trial. Linker flags that tell a program its own loader and `lib/` under `prefix`. |
+| `carry_libraries` | `helpers/install/carry.rs` | `carry_libraries(package, prefix, search:Array) -> Array` | Trial. Copies into `package/lib/` the loader and every shared library the programs in `package/bin/` load, from `search` then the build image, and writes into each file its loader and library folder under `prefix`; refuses a program not linked with `carry_link_flags()`. |
+| `carry_link_flags` | `helpers/install/carry.rs` | `carry_link_flags() -> String` | Trial. Linker flags for every program and library of a package: a long stand-in library folder that reserves the room `carry_libraries` writes into. |
 | `contains` | ``helpers/util/string.rs`` | `contains(s, pat) -> bool` |  |
 | `copy_file` | ``helpers/install/filesystem.rs`` | `copy_file(src, dst) -> ()` | exact destination path |
 | `copy_file_reflink` | `helpers/install/filesystem.rs` | `copy_file_reflink(src, dst) -> ()` | Attempts reflink; falls back to a checked copy. |

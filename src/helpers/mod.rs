@@ -150,9 +150,7 @@ pub fn register_all(engine: &mut Engine) {
         install::copy_file(src, dst)
     });
     // Self-contained packages (trial): a package carries its shared libraries.
-    helper!(engine, "carry_link_flags", |prefix: &str| {
-        install::carry::carry_link_flags(prefix)
-    });
+    engine.register_fn("carry_link_flags", install::carry::carry_link_flags);
     helper!(
         engine,
         "carry_libraries",
