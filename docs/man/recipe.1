@@ -6,7 +6,7 @@ recipe \- execute Rhai package recipes through Ginux
 [options] install|update|remove|cleanup|isinstalled|isbuilt|isacquired recipe
 .br
 .B recipe
-[options] list|installed|info|hash [argument]
+[options] list|installed|index|info|hash [argument]
 .br
 .B recipe
 [options] validate|inspect|explain|diff [arguments]
@@ -86,6 +86,14 @@ List declared recipe metadata without evaluating setup/helper code.
 This lists available recipe files, not installed applications.
 With \fB\-\-json\fR, print one entry per recipe for a front end: name, version,
 description, path, ABOUT, NEEDS, dependency names and defined hooks.
+.TP
+.B index [FOLDER] [\-\-check]
+Write index.json in a folder of recipes (default: the current directory): the
+folder's repo.toml, every recipe as \fBlist \-\-json\fR prints it, the SHA-256
+and size of each recipe file and of the files beside it that share its name,
+and the commit they are at. The folder must be in a Git repository with full
+history, and the listed files must be committed. With \fB\-\-check\fR, write
+nothing and fail when index.json is missing or out of date.
 .TP
 .B info RECIPE
 Show loader-owned declared/inherited metadata. Dynamic metadata is unavailable.

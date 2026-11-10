@@ -247,6 +247,19 @@ pub(crate) enum Commands {
     )]
     List,
 
+    /// Write the index a source of recipes publishes
+    #[command(
+        after_help = "Examples:\n  recipe index\n  recipe index ./recipes\n  recipe index --check\n\nWrites index.json in the folder: the folder's repo.toml, every recipe as\n'recipe list --json' prints it, the SHA-256 and size of each recipe file and of\nthe files beside it that share its name, and the commit they are at. Commit the\nresult. Nothing is written while a recipe cannot be read or a listed file\ndiffers from what is committed. The same commit always gives the same index."
+    )]
+    Index {
+        /// Folder of recipes with a repo.toml, inside a Git repository.
+        #[arg(default_value = ".")]
+        folder: PathBuf,
+        /// Write nothing; fail when index.json is missing or out of date.
+        #[arg(long)]
+        check: bool,
+    },
+
     /// Show recipe information
     #[command(after_help = "Examples:\n  recipe info kitty\n  recipe info ./recipes/kitty.rhai")]
     Info {

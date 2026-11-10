@@ -226,6 +226,14 @@ details. [HELPERS_AUDIT.md](HELPERS_AUDIT.md) lists registered helpers.
   name, version, description, path, the recipe's `ABOUT` block, NEEDS, dependency
   names and the hooks it defines. It needs no Ginux launcher, and a recipe that
   cannot be read is reported under `problems` instead of failing the list.
+- `index [FOLDER]` writes `index.json`, the file a source of recipes publishes
+  so its recipes can be listed without downloading them: the folder's
+  `repo.toml` (`name`, `title`, `about`, `address`, `keeper`, optional `uses`),
+  every `list --json` entry without its path, the SHA-256 and size of each
+  recipe file and of the files beside it that share its name, and the commit
+  they are at. The folder must be in a Git repository with full history and
+  the listed files committed. `--check` fails when the file is out of date.
+  Nothing reads an index yet.
 
 ## Inputs and selected targets
 

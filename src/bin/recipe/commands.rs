@@ -260,6 +260,30 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
 
         Commands::List => list_recipes(&recipe_paths, list_json)?,
 
+        Commands::Index { folder, check } => {
+            let index = levitate_recipe::catalog::index(&folder)?;
+            let path = folder.join(levitate_recipe::catalog::INDEX_FILE);
+            let summary = format!(
+                "{} recipe{} at commit {}",
+                index.recipes,
+                if index.recipes == 1 { "" } else { "s" },
+                &index.commit[..index.commit.len().min(12)]
+            );
+            if std::fs::read_to_string(&path).is_ok_and(|current| current == index.text) {
+                bin_support::info(&format!("{} is current: {summary}", path.display()));
+            } else if check {
+                anyhow::bail!(
+                    "{} is missing or out of date\nNext: run 'recipe index {}' and commit the result.",
+                    path.display(),
+                    folder.display()
+                );
+            } else {
+                std::fs::write(&path, &index.text)
+                    .with_context(|| format!("cannot write {}", path.display()))?;
+                bin_support::info(&format!("Wrote {}: {summary}", path.display()));
+            }
+        }
+
         Commands::Info { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipe_paths)?;
             show_info(&recipe_path, Some(&recipes_path))?;
