@@ -242,7 +242,9 @@ pub(crate) enum Commands {
     },
 
     /// List recipe declarations in the selected collection, not installed applications
-    #[command(after_help = "Examples:\n  recipe list\n  recipe list --recipes-path ./recipes")]
+    #[command(
+        after_help = "Examples:\n  recipe list\n  recipe list --recipes-path ./recipes\n  recipe list --json\n\n--json prints one entry per recipe for a front end: name, version, description,\nABOUT, NEEDS, dependency names and defined hooks. Nothing is run and no Ginux\nlauncher is needed. A recipe that cannot be read is reported under \"problems\"."
+    )]
     List,
 
     /// Show recipe information

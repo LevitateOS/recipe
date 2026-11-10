@@ -53,6 +53,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
     let no_activate = cli.no_activate;
 
     let json_output = cli.json_output;
+    let list_json = cli.json;
     let json = cli.json || !std::io::stdout().is_terminal();
     let engine_options = EngineOptions {
         build_dir: cli.build_dir.as_deref(),
@@ -257,7 +258,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             )?;
         }
 
-        Commands::List => list_recipes(&recipe_paths)?,
+        Commands::List => list_recipes(&recipe_paths, list_json)?,
 
         Commands::Info { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipe_paths)?;
@@ -608,10 +609,40 @@ fn resolve_recipe_path(recipe: &Path, recipes_paths: &[PathBuf]) -> Result<PathB
     )
 }
 
-fn list_recipes(recipes_paths: &[PathBuf]) -> Result<()> {
+fn list_recipes(recipes_paths: &[PathBuf], json: bool) -> Result<()> {
     use owo_colors::OwoColorize;
 
     let mut names = std::collections::BTreeSet::new();
+    if json {
+        // For a front end: every recipe it could offer, read without running
+        // anything. One unreadable recipe must not hide the others.
+        let mut recipes = Vec::new();
+        let mut problems = Vec::new();
+        for recipes_path in recipes_paths {
+            let mut paths: Vec<_> = enumerate_recipes(recipes_path).collect();
+            paths.sort();
+            for path in paths {
+                if !names.insert(path.file_name().unwrap().to_owned()) {
+                    continue;
+                }
+                match levitate_recipe::catalog::entry(&path, Some(recipes_path)) {
+                    Ok(entry) => recipes.push(entry),
+                    Err(error) => problems.push(serde_json::json!({
+                        "path": path,
+                        "problem": format!("{error:#}"),
+                    })),
+                }
+            }
+        }
+        let result = serde_json::json!({
+            "schema_version": levitate_recipe::catalog::SCHEMA_VERSION,
+            "collections": recipes_paths,
+            "recipes": recipes,
+            "problems": problems,
+        });
+        writeln!(std::io::stdout(), "{}", serde_json::to_string(&result)?)?;
+        return Ok(());
+    }
     let mut found = false;
     for recipes_path in recipes_paths {
         let mut paths: Vec<_> = enumerate_recipes(recipes_path).collect();

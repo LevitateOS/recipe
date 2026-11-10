@@ -60,12 +60,14 @@ impl PackageStore {
     }
 
     /// Read the active receipt. No recipe evaluation or runtime is needed.
+    /// Reading changes nothing, so an ordinary user may also read a store
+    /// root owns (the system's software, shown by a desktop front end).
     pub fn list(&self) -> Result<Vec<InstalledPackage>> {
         if !self.root.try_exists()? {
             return Ok(Vec::new());
         }
-        real_owned_directory(&self.root)?;
-        let active = read_active(&self.root)?;
+        readable_directory(&self.root)?;
+        let active = read_active_checked(&self.root, readable_directory)?;
         Ok(active.packages.into_values().collect())
     }
 
@@ -248,6 +250,18 @@ fn valid_file(path: &str) -> Result<()> {
     Ok(())
 }
 
+fn readable_directory(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.is_dir()
+            && (metadata.uid() == unsafe { libc::geteuid() } || metadata.uid() == 0)
+            && metadata.mode() & 0o022 == 0,
+        "package directory must be real, owned by the current user or root and not writable by others: {}",
+        path.display()
+    );
+    Ok(())
+}
+
 fn real_owned_directory(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(path)?;
     ensure!(
@@ -300,16 +314,22 @@ fn profile_target(root: &Path) -> Result<Option<PathBuf>> {
 }
 
 fn read_active(root: &Path) -> Result<Active> {
+    read_active_checked(root, real_owned_directory)
+}
+
+/// `directory` is the ownership rule for the store's directories: the caller's
+/// own for anything that changes the store, the caller's or root's for a read.
+fn read_active_checked(root: &Path, directory: fn(&Path) -> Result<()>) -> Result<Active> {
     let Some(target) = profile_target(root)? else {
         return Ok(Active {
             target: None,
             packages: BTreeMap::new(),
         });
     };
-    real_owned_directory(&root.join(GENERATIONS))?;
+    directory(&root.join(GENERATIONS))?;
     let generation = root.join(&target);
-    real_owned_directory(&generation)?;
-    real_owned_directory(&generation.join(PACKAGES))?;
+    directory(&generation)?;
+    directory(&generation.join(PACKAGES))?;
     let mut bytes = Vec::new();
     crate::fsx::open_regular(&generation.join(RECEIPT))?
         .take(MAX_RECEIPT + 1)
@@ -332,7 +352,7 @@ fn read_active(root: &Path) -> Result<Active> {
             valid_file(path)?;
             ensure!(seen.insert(path), "duplicate installed package path {path}");
         }
-        real_owned_directory(&generation.join(PACKAGES).join(name))?;
+        directory(&generation.join(PACKAGES).join(name))?;
     }
     Ok(Active {
         target: Some(target),

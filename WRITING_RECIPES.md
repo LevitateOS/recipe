@@ -359,6 +359,13 @@ Literal inherited name/version/description are available without running setup.
 Dynamic expressions are unavailable metadata; malformed literals fail clearly.
 No coordinator-side Rhai evaluation is used for discovery.
 
+A recipe may also say what a front end should show about it, in a literal
+`const ABOUT = #{...};` beside NEEDS: `kind`, `category`, `details`, `homepage`,
+`license`, `adds`, per-hook `steps` notes and `keeps` (the superproject's
+`docs/recipe-front-end-format.md` has the fields). Like NEEDS it holds no helper
+calls or variables. `recipe list --json` passes it through as written; it is the
+author's claim and is not enforced. `recipes/ripgrep.rhai` has one.
+
 Compile syntax before runtime, then exercise the real CLI with representative
 inputs, reuse, changed input, remove and failure paths. A successful compile is
 source evidence; a managed run proves only its observed image/recipe/workload.

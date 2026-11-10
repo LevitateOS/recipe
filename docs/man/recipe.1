@@ -84,6 +84,8 @@ prepare them. The checked products preserve the parent's installed input identit
 .B list
 List declared recipe metadata without evaluating setup/helper code.
 This lists available recipe files, not installed applications.
+With \fB\-\-json\fR, print one entry per recipe for a front end: name, version,
+description, path, ABOUT, NEEDS, dependency names and defined hooks.
 .TP
 .B info RECIPE
 Show loader-owned declared/inherited metadata. Dynamic metadata is unavailable.

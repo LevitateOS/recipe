@@ -53,7 +53,9 @@ Root's package root is `/var/lib/recipe`; an ordinary user's is
 `$XDG_DATA_HOME/recipe` (normally `~/.local/share/recipe`). `--package-root PATH`
 selects another store. Its `profile/bin` contains active commands; installed login
 profiles add the system and user paths to PATH. `remove` uses the installed receipt
-without the recipe or runtime. `isinstalled` checks active files and links. Removed
+without the recipe or runtime. `installed` only reads, so an ordinary user may
+also read a store root owns (`recipe installed --package-root /var/lib/recipe`);
+changing a store still requires owning it. `isinstalled` checks active files and links. Removed
 packages disappear from the profile; old inactive generations and build/publication
 caches remain. They are not an installed-package inventory.
 
@@ -220,6 +222,10 @@ details. [HELPERS_AUDIT.md](HELPERS_AUDIT.md) lists registered helpers.
   fail before the main operation; dependencies are never installed implicitly.
 - `list` and `info` inspect loader-owned declared metadata without running setup
   or helper code. Dynamic metadata is reported unavailable.
+- `list --json` prints one entry per recipe for a front end (`schema_version` 1):
+  name, version, description, path, the recipe's `ABOUT` block, NEEDS, dependency
+  names and the hooks it defines. It needs no Ginux launcher, and a recipe that
+  cannot be read is reported under `problems` instead of failing the list.
 
 ## Inputs and selected targets
 

@@ -476,7 +476,7 @@ pub fn declaration(recipe: &Path, search_path: Option<&Path>) -> Result<Declarat
     })
 }
 
-fn literal(expression: &Expr) -> Result<serde_json::Value> {
+pub(crate) fn literal(expression: &Expr) -> Result<serde_json::Value> {
     use serde_json::Value;
     Ok(match expression {
         Expr::StringConstant(value, _) => Value::String(value.to_string()),
