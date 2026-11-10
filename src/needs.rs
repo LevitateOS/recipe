@@ -2,7 +2,7 @@
 pub mod contract;
 pub mod report;
 use anyhow::{Context, Result, bail, ensure};
-use rhai::{ASTFlags, Expr, OptimizationLevel, Stmt};
+use rhai::{ASTFlags, Expr, Stmt};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -405,8 +405,7 @@ pub fn declaration(recipe: &Path, search_path: Option<&Path>) -> Result<Declarat
         std::fs::symlink_metadata(&recipe)?.is_file(),
         "recipe must be a regular file"
     );
-    let mut engine = rhai::Engine::new();
-    engine.set_optimization_level(OptimizationLevel::None);
+    let engine = crate::core::invocation::compile_engine();
     let compiled = crate::core::executor::compile_recipe(&engine, &recipe, search_path)?;
     crate::core::invocation::validate_api(&compiled.ast)?;
     let ast = &compiled.source_ast;

@@ -577,9 +577,8 @@ pub fn hash_file(host: &Path, expected: u64) -> Result<[u8; 32]> {
 /// Compile only: no module loading, top-level evaluation or native helpers on
 /// the coordinator. Dynamic imports/dependency declarations need explicit inputs.
 pub(crate) fn static_references(source: &str) -> Result<Vec<(String, bool)>> {
-    use rhai::{ASTNode, Expr, OptimizationLevel, Stmt};
-    let mut engine = rhai::Engine::new();
-    engine.set_optimization_level(OptimizationLevel::None);
+    use rhai::{ASTNode, Expr, Stmt};
+    let engine = crate::core::invocation::compile_engine();
     let ast = engine
         .compile(source)
         .context("input preparation failure: invalid Rhai source")?;

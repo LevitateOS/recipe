@@ -11,9 +11,25 @@ pub(crate) fn engine() -> Engine {
     let mut engine = Engine::new();
     engine.set_max_operations(2_000_000);
     engine.set_max_call_levels(64);
+    set_expr_depths(&mut engine);
     engine.set_max_string_size(64 * 1024 * 1024);
     crate::helpers::register_all(&mut engine);
     engine
+}
+
+/// An engine that only compiles recipe source (declarations, metadata,
+/// references), with the same parsing limits as `engine()` and no optimizer.
+pub(crate) fn compile_engine() -> Engine {
+    let mut engine = Engine::new();
+    engine.set_optimization_level(rhai::OptimizationLevel::None);
+    set_expr_depths(&mut engine);
+    engine
+}
+
+/// Rhai halves its expression-depth limits in debug builds; fixing them at its
+/// release values makes a debug and a release Recipe accept the same recipes.
+fn set_expr_depths(engine: &mut Engine) {
+    engine.set_max_expr_depths(64, 32);
 }
 
 /// What the engine supplies to one recipe for one operation.

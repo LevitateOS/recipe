@@ -145,8 +145,7 @@ pub struct DeclaredMetadata {
 /// imports, hooks or helper calls. Dynamic fields remain unavailable.
 pub fn declared_metadata(recipe: &Path, search_path: Option<&Path>) -> Result<DeclaredMetadata> {
     use rhai::{Expr, Stmt};
-    let mut engine = Engine::new();
-    engine.set_optimization_level(rhai::OptimizationLevel::None);
+    let engine = crate::core::invocation::compile_engine();
     let compiled = compile_recipe(&engine, recipe, search_path)?;
     let mut metadata = DeclaredMetadata::default();
     for statement in compiled.ast.statements() {

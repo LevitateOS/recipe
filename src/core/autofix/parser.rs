@@ -183,8 +183,7 @@ pub(super) fn protected_ranges(source: &str) -> Vec<ProtectedRange> {
 
     // Authority is immutable during automatic repair. Parse without evaluating
     // setup; reuse the literal declaration boundary for multiline maps/arrays.
-    let mut engine = rhai::Engine::new();
-    engine.set_optimization_level(rhai::OptimizationLevel::None);
+    let engine = crate::core::invocation::compile_engine();
     if let Ok(ast) = engine.compile(source) {
         for statement in ast.statements() {
             if let rhai::Stmt::Var(binding, _, _) = statement {
