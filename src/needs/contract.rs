@@ -215,10 +215,12 @@ pub(crate) fn validate(
         digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
         "invalid Ginux contract digest"
     );
+    // Reviewed against cda285e1: fchmodat and splice join the configured
+    // catalog. Existing grants and fixed exclusions retain their meaning.
     let expected = if network {
-        "92b6add40edad919cf394ff902670715d7b4385a9286751191910025d5a5e30d"
+        "b3af8bf11c78a7b3f559ab5c2b2ffdaf4a43a30d7e15d3ab5f64238f93f3a9a7"
     } else {
-        "41fb0de923722522be3fab629695f72629951b7be074111a1be83d972db7a31e"
+        "07a6f3ac80f0106038abbc6b13b8fe5c390dd4eba1a7ff98a12dae9f63976d94"
     };
     ensure!(
         digest == expected,
