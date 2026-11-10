@@ -361,3 +361,5 @@ pub fn mode(root: &str, path: &str, mode: i64) -> Result<(), Box<EvalAltResult>>
 pub fn finalize(root: &str) -> Result<(), Box<EvalAltResult>> {
     recipe_result(target::finalize(Path::new(root)))
 }
+
+pub fn remove(root:&str,path:&str)->Result<(),Box<EvalAltResult>> {recipe_result(target::remove(Path::new(root),Path::new(path)))}

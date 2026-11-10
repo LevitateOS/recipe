@@ -24,9 +24,41 @@ OS lifecycle. For user software, the CLI activates a directory output named
 still operate on their isolated output tree. `--no-activate` keeps product-only
 behavior. `list` lists recipe declarations; `installed` lists active packages.
 
-## User-managed software
+## System software on immutable A/B installations
 
-On an installed system with the current catalog/runtime (use `doas` on AcornOS):
+Root's install/update/remove commands delegate to recab's prepared inactive
+system. `--system` selects this explicitly. They leave the running root unchanged:
+
+```sh
+sudo recipe --system install ripgrep
+sudo recipe --system installed
+sudo recipe --system isinstalled ripgrep --prepared
+sudo recab finalize
+sudo recab set-next B   # A is running; use A when B is running
+sudo reboot
+rg --version
+```
+
+A compatible recab runtime is required in both slots. Normal package outputs
+install under the candidate's `/usr/lib/recipe/profile`, with selection recorded
+in `/usr/lib/recipe/system.json`. Explicit `system` directory outputs carry
+root-relative intended metadata from `target_finalize`. Dependencies are produced
+through the existing Recipe graph. Builds receive isolated inputs and outputs;
+recab alone mounts and changes the inactive root. Updates/removals refuse
+conflicting ownership and administrator edits. `recab edit PATH [--file FILE]`
+applies bounded configuration edits to that same preparation. Finalization and
+a successful trial boot make the changes active; package commands do not reboot.
+
+`recipe installed` reports active and prepared receipts; `isinstalled` checks the
+active selection unless `--prepared` is given. `--preparation ID --revision N`
+guards stale requests. `update` resolves the current catalog first, then falls
+back to the prepared package's recorded producer. `--package-root DIR` retains an
+independent profile and `--no-activate` retains output-only builder execution.
+Other commands, including catalog listing and validation, keep their normal routes.
+
+## Independent user software
+
+On a mutable system, or with an explicit independent package root (use `doas` on AcornOS):
 
 ```sh
 sudo recipe install ripgrep
@@ -49,10 +81,10 @@ symlinks, special files and setuid/setgid payloads fail before switching. No
 activation script executes on the host. Failed acquisition or activation preserves
 the previous profile.
 
-Root's package root is `/var/lib/recipe`; an ordinary user's is
+Outside the immutable system route, root's package root is `/var/lib/recipe`; an ordinary user's is
 `$XDG_DATA_HOME/recipe` (normally `~/.local/share/recipe`). `--package-root PATH`
 selects another store. Its `profile/bin` contains active commands; installed login
-profiles add the system and user paths to PATH. `remove` uses the installed receipt
+profiles add the booted slot system path and ordinary user paths to PATH. `remove` uses the installed receipt
 without the recipe or runtime. `installed` only reads, so an ordinary user may
 also read a store root owns (`recipe installed --package-root /var/lib/recipe`);
 changing a store still requires owning it. `isinstalled` checks active files and links. Removed

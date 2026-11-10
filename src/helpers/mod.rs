@@ -231,6 +231,7 @@ pub fn register_all(engine: &mut Engine) {
         "target_mode",
         |root: &str, path: &str, mode: i64| target::mode(root, path, mode)
     );
+    helper!(engine, "target_remove", |root:&str,path:&str| target::remove(root,path));
     helper!(engine, "target_finalize", |root: &str| target::finalize(
         root
     ));

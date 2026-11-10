@@ -40,6 +40,8 @@ pub struct Entry {
 pub struct Manifest {
     pub version: u32,
     pub entries: BTreeMap<String, Entry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removals: Vec<String>,
 }
 
 impl Default for Manifest {
@@ -47,6 +49,7 @@ impl Default for Manifest {
         Self {
             version: 1,
             entries: BTreeMap::new(),
+            removals: Vec::new(),
         }
     }
 }
@@ -121,7 +124,18 @@ pub fn load(root: &Path) -> Result<Manifest> {
         "target metadata exceeds bound"
     );
     let manifest: Manifest = serde_json::from_slice(&bytes)?;
-    ensure!(manifest.version == 1, "unsupported target metadata version");
+    ensure!(
+        matches!(manifest.version, 1 | 2),
+        "unsupported target metadata version"
+    );
+    for name in &manifest.removals {
+        ensure!(
+            !name.is_empty()
+                && relative(Path::new(name))? == Path::new(name)
+                && !manifest.entries.contains_key(name),
+            "invalid target removal"
+        );
+    }
     for (name, entry) in &manifest.entries {
         ensure!(
             relative(Path::new(name))? == Path::new(name),
@@ -205,6 +219,15 @@ fn current(path: &Path) -> Result<Entry> {
 /// Finish a producer after its explicit policy changes. Missing package paths
 /// (e.g. RPM ghosts) are omitted; generated paths default to root ownership.
 pub fn finalize(root: &Path) -> Result<()> {
+    save(root, &snapshot(root, true)?)
+}
+
+/// Inspect published ordinary package metadata without modifying its cache.
+pub fn inspect(root: &Path) -> Result<Manifest> {
+    snapshot(root, false)
+}
+
+fn snapshot(root: &Path, grant_staging: bool) -> Result<Manifest> {
     let mut manifest = load(root)?;
     let accounts = |file: &str| -> Result<BTreeMap<String, u32>> {
         let mut ids = BTreeMap::from([("root".into(), 0)]);
@@ -240,7 +263,7 @@ pub fn finalize(root: &Path) -> Result<()> {
         // Installation clients may leave unreadable or non-writable inodes.
         // Grant access only to staging, after observing the authored metadata.
         // Target permissions remain the independent package/recipe entry.
-        if observed.kind != "symlink" {
+        if grant_staging && observed.kind != "symlink" {
             let grant = if observed.kind == "dir" { 0o700 } else { 0o600 };
             let staged = fs::metadata(item.path())?.mode() & 0o777;
             fs::set_permissions(item.path(), fs::Permissions::from_mode(staged | grant))?;
@@ -281,13 +304,11 @@ pub fn finalize(root: &Path) -> Result<()> {
         }
         entries.insert(rel, entry);
     }
-    save(
-        root,
-        &Manifest {
-            entries,
-            ..Manifest::default()
-        },
-    )
+    Ok(Manifest {
+        version: if manifest.removals.is_empty() { 1 } else { 2 },
+        entries,
+        removals: manifest.removals,
+    })
 }
 
 /// Record a deliberate recipe mode change, independently of staging grants.
@@ -484,4 +505,26 @@ pub fn write_tar(root: &Path, output: impl Write) -> Result<()> {
     }
     writer.finish()?;
     Ok(())
+}
+
+/// Declare an owned path absent in the next system selection.
+pub fn remove(root: &Path, path: &Path) -> Result<()> {
+    let path = relative(path)?;
+    ensure!(!path.as_os_str().is_empty(), "cannot remove target root");
+    let name = path.to_str().context("non-UTF8 removal")?.to_owned();
+    let mut manifest = load(root)?;
+    let resolved = resolve_member(root, &path)?;
+    if let Ok(meta) = fs::symlink_metadata(&resolved) {
+        if meta.is_dir() {
+            fs::remove_dir(&resolved)?;
+        } else {
+            fs::remove_file(&resolved)?;
+        }
+    }
+    manifest.entries.remove(&name);
+    if !manifest.removals.contains(&name) {
+        manifest.removals.push(name);
+    }
+    manifest.version = 2;
+    save(root, &manifest)
 }

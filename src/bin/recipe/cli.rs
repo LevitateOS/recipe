@@ -24,13 +24,34 @@ pub(crate) struct Cli {
     #[arg(help_heading = "Recipes")]
     pub(crate) recipes_path: Option<PathBuf>,
 
-    /// Package storage and active profile (default: per-user Recipe data, or /var/lib/recipe for root).
+    /// Independent package storage/profile; overrides root's immutable-system route.
     #[arg(long, global = true, help_heading = "Installed software")]
     pub(crate) package_root: Option<PathBuf>,
 
     /// Produce outputs only; do not activate packages or use the installed-package receipt.
     #[arg(long, global = true, help_heading = "Installed software")]
     pub(crate) no_activate: bool,
+
+    /// Apply/list system software through recab's prepared inactive system.
+    #[arg(long, global=true, conflicts_with_all=["no_activate","package_root"], help_heading="Installed software")]
+    pub(crate) system: bool,
+    /// Inspect the prepared selection rather than the running selection.
+    #[arg(long, global = true, help_heading = "Installed software")]
+    pub(crate) prepared: bool,
+    #[arg(
+        long,
+        global = true,
+        requires = "revision",
+        help_heading = "Installed software"
+    )]
+    pub(crate) preparation: Option<String>,
+    #[arg(
+        long,
+        global = true,
+        requires = "preparation",
+        help_heading = "Installed software"
+    )]
+    pub(crate) revision: Option<u64>,
 
     /// Logical build destination and lock (default: stable destination under the state directory).
     #[arg(short, long, global = true)]
@@ -186,7 +207,7 @@ pub(crate) enum Commands {
     )]
     Update { recipe: PathBuf },
 
-    /// List active user-managed packages without running recipes
+    /// List package receipts; the system route distinguishes active and prepared selection
     Installed,
 
     /// Remove an active package, or run an output-only recipe's remove hook

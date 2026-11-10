@@ -56,6 +56,7 @@ pub mod runtime;
 pub mod sources;
 /// Target filesystem metadata carried independently of build-host privileges.
 pub mod target;
+pub mod system;
 mod temporary;
 mod worker;
 

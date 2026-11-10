@@ -20,6 +20,10 @@ struct Lookup<'a> {
 }
 
 pub(crate) fn execute(cli: Cli) -> Result<()> {
+    if system_route(&cli)? {
+        return Ok(());
+    }
+    let io_start = levitate_recipe::system::process_io();
     let mut execution = levitate_recipe::ExecutionOptions::default();
     execution.target_os = cli.target_os;
     execution.target_arch = cli.target_arch;
@@ -170,6 +174,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             if !no_activate {
                 activate_package(&package_store, &recipe_path, &mut ctx, None)?;
             }
+            ctx["producer_io"] = levitate_recipe::system::io_delta(&io_start);
             emit_result(&ctx, json_output.as_deref(), json, "Installation completed")?;
         }
 
@@ -701,7 +706,10 @@ fn resolve_recipe_path(recipe: &Path, lookup: &Lookup) -> Result<PathBuf> {
                 match all.get(source)?.kind {
                     sources::Kind::Folder { path } => Some(path),
                     sources::Kind::Remote { .. } => {
-                        let found = all.find(name).into_iter().any(|found| found.source == source);
+                        let found = all
+                            .find(name)
+                            .into_iter()
+                            .any(|found| found.source == source);
                         anyhow::ensure!(
                             found,
                             "{source} has no recipe named {name}\nNext: 'recipe refresh {source}' fetches its index again; 'recipe list' shows what it holds."
@@ -714,7 +722,11 @@ fn resolve_recipe_path(recipe: &Path, lookup: &Lookup) -> Result<PathBuf> {
         let file = folder
             .with_context(|| format!("there is no {source} folder in this run"))?
             .join(format!("{name}.rhai"));
-        anyhow::ensure!(file.is_file(), "{source} has no recipe named {name} ({} is missing)", file.display());
+        anyhow::ensure!(
+            file.is_file(),
+            "{source} has no recipe named {name} ({} is missing)",
+            file.display()
+        );
         return Ok(file);
     }
 
@@ -771,7 +783,13 @@ fn list_recipes(lookup: &Lookup, json: bool) -> Result<()> {
 
     // The folders first, as before sources existed: the first folder holding
     // a file name hides the same name in the next.
-    let folder_name = |index: usize| if index == 0 { sources::LOCAL } else { sources::IMAGE };
+    let folder_name = |index: usize| {
+        if index == 0 {
+            sources::LOCAL
+        } else {
+            sources::IMAGE
+        }
+    };
     let mut names = std::collections::BTreeSet::new();
     let mut about = Vec::new();
     let mut recipes = Vec::new();
@@ -883,7 +901,12 @@ fn source_command(all: &Sources, command: SourceCommands, json: bool) -> Result<
                 } else {
                     text("path")
                 };
-                println!("  {}  {}  {}", text("name").bold(), text("kind").cyan(), place);
+                println!(
+                    "  {}  {}  {}",
+                    text("name").bold(),
+                    text("kind").cyan(),
+                    place
+                );
                 let count = format!(
                     "{} recipe{}",
                     listing.recipes.len(),
@@ -984,4 +1007,173 @@ fn parse_inputs(values: &[String]) -> Result<Vec<(String, PathBuf)>> {
             Ok((name.to_owned(), PathBuf::from(path)))
         })
         .collect()
+}
+
+/// Root's installed-system software never activates a shared /var profile.
+/// Explicit independent roots and builder output-only invocations retain their
+/// existing behavior, including on an immutable host.
+fn system_route(cli: &Cli) -> Result<bool> {
+    let command = match &cli.command {
+        Commands::Install { recipe, .. } => Some(("install", Some(recipe))),
+        Commands::Update { recipe } => Some(("update", Some(recipe))),
+        Commands::Remove { recipe } => Some(("remove", Some(recipe))),
+        Commands::Installed => Some(("list", None)),
+        Commands::IsInstalled { recipe } => Some(("check", Some(recipe))),
+        _ => None,
+    };
+    let immutable = std::fs::read_to_string("/proc/cmdline")
+        .unwrap_or_default()
+        .split_whitespace()
+        .any(|p| p == "recab.immutable");
+    let route = cli.system
+        || (!cli.no_activate
+            && command.is_some()
+            && cli.package_root.is_none()
+            && unsafe { libc::geteuid() } == 0
+            && immutable);
+    if !route {
+        anyhow::ensure!(
+            !cli.prepared && cli.preparation.is_none(),
+            "prepared selection options require the system route"
+        );
+        return Ok(false);
+    }
+    let (action, recipe) =
+        command.context("--system supports install, update, remove, installed and isinstalled")?;
+    anyhow::ensure!(
+        cli.build_dir.is_none() && cli.state_dir.is_none(),
+        "recab scopes system producer state/build work to the preparation; use --package-root for an independent profile"
+    );
+    let mut cmd = std::process::Command::new(
+        std::env::var_os("RECIPE_RECAB_BIN").unwrap_or_else(|| "recab".into()),
+    );
+    cmd.arg("change").arg(action);
+    if let Some(recipe) = recipe {
+        cmd.arg(if recipe.exists() {
+            std::fs::canonicalize(recipe)?
+        } else {
+            recipe.clone()
+        });
+        if matches!(action, "install" | "update") {
+            let paths = super::metadata::recipe_paths(cli.recipes_path.clone());
+            let sources = Sources::new(&super::metadata::default_package_root()?);
+            let explicit = cli.recipes_path.is_some() || std::env::var_os("RECIPE_PATH").is_some();
+            let lookup = Lookup {
+                folders: &paths,
+                sources: (!explicit).then_some(&sources),
+            };
+            match resolve_recipe_path(recipe, &lookup) {
+                Ok(path) => {
+                    cmd.arg("--producer-recipe")
+                        .arg(std::fs::canonicalize(path)?);
+                }
+                Err(e) if action == "install" || explicit => return Err(e),
+                Err(_) => {} // recab falls back to this prepared package's recorded source.
+            }
+        }
+    }
+    if let Some(id) = &cli.preparation {
+        cmd.arg("--preparation")
+            .arg(id)
+            .arg("--revision")
+            .arg(cli.revision.unwrap().to_string());
+    }
+    if cli.prepared {
+        cmd.arg("--prepared");
+    }
+    let json = cli.json || !std::io::stdout().is_terminal() || cli.json_output.is_some();
+    if json {
+        cmd.arg("--json");
+    }
+    if matches!(action, "install" | "update") {
+        cmd.arg("--");
+        if let Some(path) = &cli.recipes_path {
+            cmd.arg("--recipes-path").arg(std::path::absolute(path)?);
+        }
+        cmd.args([
+            "--target-os",
+            &cli.target_os,
+            "--target-arch",
+            &cli.target_arch,
+            "--jobs",
+            &cli.jobs.to_string(),
+        ]);
+        for (flag, value) in [
+            ("--timeout-secs", cli.timeout_secs),
+            ("--memory-mib", cli.memory_mib),
+            ("--storage-max-objects", cli.storage_max_objects),
+            ("--storage-max-bytes", cli.storage_max_bytes),
+            ("--network-max-bytes", cli.network_max_bytes),
+        ] {
+            if let Some(value) = value {
+                cmd.arg(flag).arg(value.to_string());
+            }
+        }
+        for (flag, value) in [
+            ("--no-network", cli.no_network),
+            ("--force-acquire", cli.force_acquire),
+            ("--force-build", cli.force_build),
+            ("--force-install", cli.force_install),
+            ("--no-persist-state", cli.no_persist_state),
+        ] {
+            if value {
+                cmd.arg(flag);
+            }
+        }
+        for host in &cli.network_hosts {
+            cmd.arg("--network-host").arg(host);
+        }
+        for define in &cli.defines {
+            cmd.arg("--define").arg(define);
+        }
+        for input in &cli.inputs {
+            let (name, path) = input.split_once('=').context("input must be NAME=PATH")?;
+            cmd.arg("--input")
+                .arg(format!("{name}={}", std::path::absolute(path)?.display()));
+        }
+        if let Some(profile) = &cli.llm_profile {
+            cmd.arg("--llm-profile").arg(profile);
+        }
+        if cli.machine_events {
+            cmd.arg("--machine-events");
+        }
+        if let Commands::Install {
+            autofix: true,
+            autofix_attempts,
+            autofix_cwd,
+            autofix_prompt_file,
+            autofix_allow_path,
+            ..
+        } = &cli.command
+        {
+            cmd.arg("--autofix")
+                .arg("--autofix-attempts")
+                .arg(autofix_attempts.to_string());
+            for (flag, path) in [
+                ("--autofix-cwd", autofix_cwd),
+                ("--autofix-prompt-file", autofix_prompt_file),
+            ] {
+                if let Some(path) = path {
+                    cmd.arg(flag).arg(std::path::absolute(path)?);
+                }
+            }
+            for path in autofix_allow_path {
+                cmd.arg("--autofix-allow-path")
+                    .arg(std::path::absolute(path)?);
+            }
+        }
+    }
+    cmd.env("RECAB_RECIPE_BIN", std::env::current_exe()?);
+    if let Some(path) = std::env::var_os("RECIPE_PATH") {
+        cmd.env("RECIPE_PATH", std::path::absolute(path)?);
+    }
+    if let Some(output) = &cli.json_output {
+        let result = cmd.output()?;
+        std::io::stderr().write_all(&result.stderr)?;
+        anyhow::ensure!(result.status.success(), "system change refused by recab");
+        std::fs::write(output, result.stdout)?;
+    } else {
+        anyhow::ensure!(cmd.status()?.success(), "system change refused by recab");
+    }
+    Ok(true)
 }

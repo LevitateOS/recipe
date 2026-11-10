@@ -7,7 +7,7 @@ installed system's metadata. Target metadata travels as ordinary data in
 checkpoint recovery and explicit input import preserve the manifest without
 performing privileged operations on the coordinator's filesystem.
 
-A version 1 manifest maps canonical relative paths (the empty path means the
+Manifest versions 1 and 2 map canonical relative paths (the empty path means the
 root directory) to inode kind, mode including setid/sticky bits, numeric UID/GID,
 hex-encoded raw xattrs, link target and a SHA256 binding for regular payloads.
 RPM account names are resolved against the **target** passwd/group files during
@@ -31,6 +31,10 @@ The native recipe helpers are:
   **before** applying recipe-specific filesystem policy.
 - `target_mode(root, relative_path, mode)`: set intended target permissions while
   keeping staging readable/writable. Use this for deliberate mode overrides.
+- `target_remove(root, relative_path)`: remove an output member and record an
+  explicit intended removal in manifest version 2. The system consumer permits
+  it only for paths previously owned by this producer; it never grants deletion
+  of base files, administrator edits or another package's surviving selection.
 - `target_finalize(root)`: resolve target accounts, discard absent package ghosts,
   record generated paths, preserve hardlink identity, and bind metadata to final
   payload bytes. Call after recipe policy changes and before writing the recipe's
@@ -83,3 +87,15 @@ APK 3 requires a non-root virtual identity for `--usermode`. Per-command
 `uid`/`gid` options select that identity inside Ginux while package metadata
 continues to describe installed UID/GID values. No host credential changes are
 used by the configured runtime.
+
+For recab system changes, declare `NEEDS.outputs.system = "directory"` and
+publish a finalized root-relative tree as `ctx.outputs.system`. Numeric installed
+UID/GID, mode, raw xattrs, links and content fingerprints come from this manifest,
+not the Ginux worker's staging inodes. Omitted old owned files are also removed
+when updating the selection. Ordinary `package` outputs are placed in the slot's
+system profile instead. The coordinator attaches versioned recipe/dependency
+provenance after verified publication; worker-supplied provenance is not trusted.
+
+When a system producer omits `security.selinux`, recab retains labels assigned
+by the installed kernel policy. An explicitly authored label remains an exact
+metadata constraint, as do capabilities and all other intended xattrs.

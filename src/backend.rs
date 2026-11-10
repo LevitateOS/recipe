@@ -1,5 +1,6 @@
 //! The required Ginux launcher for executable recipe operations.
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
+use sha2::Digest;
 use std::path::{Path, PathBuf};
 
 /// Verified executable used to start the Ginux domain.
@@ -160,7 +161,42 @@ impl GinuxLauncher {
             })?;
             results.insert(node.recipe.clone(), result);
         }
-        Ok(results.remove(main_recipe).unwrap())
+        let mut result = results.remove(main_recipe).unwrap();
+        if invocation
+            .options
+            .defines
+            .iter()
+            .any(|(k, _)| k == "RECAB_SYSTEM_CONTEXT")
+        {
+            let mut runtime = std::collections::BTreeSet::new();
+            let mut pending = vec![main_recipe.clone()];
+            while let Some(path) = pending.pop() {
+                let node = graph.iter().find(|n| n.recipe == path).unwrap();
+                for dep in node.dependencies.iter().filter(|d| !d.build_only) {
+                    if runtime.insert(dep.recipe.clone()) {
+                        pending.push(dep.recipe.clone());
+                    }
+                }
+            }
+            let mut packages = Vec::new();
+            for node in &graph {
+                let digest = hex::encode(sha2::Sha256::digest(serde_json::to_vec(
+                    &node.source_digests,
+                )?));
+                let mut output = if node.recipe == *main_recipe {
+                    result.clone()
+                } else {
+                    results[&node.recipe].clone()
+                };
+                output["producer"] = serde_json::json!({"version":1,"recipe":node.recipe,"recipe_digest":digest,"architecture":invocation.options.execution.target_arch,
+                    "dependencies":node.dependencies.iter().filter(|d|!d.build_only).map(|d| d.recipe.clone()).collect::<Vec<_>>()});
+                if node.recipe == *main_recipe || runtime.contains(&node.recipe) {
+                    packages.push(output);
+                }
+            }
+            result["system_producers"] = serde_json::Value::Array(packages);
+        }
+        Ok(result)
     }
 
     fn run_single(
@@ -270,10 +306,8 @@ fn resolve_launcher() -> Result<PathBuf> {
         ))
     })?;
     if !meta.is_file() {
-        bail!(
-            crate::failure::Category::Startup
-                .error(format!("ginux launcher {} is not a file", path.display()))
-        );
+        bail!(crate::failure::Category::Startup
+            .error(format!("ginux launcher {} is not a file", path.display())));
     }
     if !is_executable(&meta) {
         bail!(crate::failure::Category::Startup.error(format!(
