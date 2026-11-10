@@ -58,7 +58,10 @@ def acquire(url, destination, expected):
     finally:
         temporary.unlink(missing_ok=True)
 
-entries = [*manifest['rpms'], manifest['rust'], *manifest.get('rust_additions', [])]
+entries = list(manifest['rpms'])
+if manifest.get('rust') is not None:
+    entries.append(manifest['rust'])
+entries.extend(manifest.get('rust_additions', []))
 if set(spec['sources']) != {x['path'] for x in entries}:
     raise SystemExit('CI sources must exactly match image manifest inputs')
 for entry in entries:
@@ -91,7 +94,7 @@ if sha(inputs / manifest['base']['path']) != manifest['base']['sha256']:
 subprocess.run([str(producer), '--manifest', str(manifest_path), '--input-root', str(inputs),
                 '--output', str(output)], check=True)
 if sha(output / 'rootfs.tar') != spec['image_sha256']:
-    raise SystemExit('produced compiler image digest differs from tracked CI pin')
+    raise SystemExit('produced managed image digest differs from tracked CI pin')
 provenance = json.loads((output / 'provenance.json').read_text())
 if provenance['sha256'] != spec['image_sha256']:
     raise SystemExit('produced provenance differs from tracked CI pin')

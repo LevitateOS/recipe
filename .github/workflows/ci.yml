@@ -24,7 +24,7 @@ jobs:
       msrv: '1.93'
 
   managed-integration:
-    # These pins must identify the maintained delivery source and compiler image.
+    # These pins identify the maintained delivery source and C/runtime image.
     # Missing pins fail the required job; they never silently skip acceptance.
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -68,7 +68,7 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "$GINUX_SOURCE_SHA"
           make build
-      - name: Produce pinned compiler image from public inputs
+      - name: Produce pinned C/runtime image from public inputs
         run: |
           mkdir -p .artifacts/managed-ci
           cargo build --locked --release --bin recipe-image

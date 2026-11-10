@@ -12,9 +12,9 @@ bound to those identities. The maintained source pair and setup are documented i
 [Linux setup](../docs/setup-linux.md); this guide does not certify guest
 installer/PTY/provider operation.
 
-The manifest records the base image, compiler RPMs, Rust distribution and selected
-Rust components. Input paths are relative to `--input-root`. All inputs are copied
-and verified against SHA-256 before use. RPM payloads are converted with the host's
+The manifest records the base image, compiler RPMs and optional Rust distribution
+and selected components. Input paths are relative to `--input-root`. All inputs
+are copied and verified against SHA-256 before use. RPM payloads are converted with the host's
 `rpm2archive`; their paths are never extracted onto the host. The producer merges
 `usr/` additions into the base archive, validates paths/links, normalizes timestamps
 and numeric owners, and publishes a fresh directory containing `rootfs.tar` and
@@ -56,6 +56,29 @@ a complete fresh directory; reject non-success rather than accepting a path's
 existence. Interrupted processes can leave private temporary directories beside
 the selected output.
 
+
+## Managed integration C/runtime image
+
+[`ginux-e2e-image.json`](ginux-e2e-image.json) selects the same base and RPMs as
+the acquisition image below, with no Rust distribution or components. It keeps
+GCC, Make, Git, cpio, ISO tools, `cmp` and `pkg-config` for the managed integration
+catalog. Those cases execute C compilation and ordinary runtime tools; the
+separate Cargo consumer still selects the full acquisition image.
+
+With the pinned inputs already present, produce it from the workspace root:
+
+```sh
+target/debug/recipe-image \
+  --manifest tools/recipe/bootstrap/ginux-e2e-image.json \
+  --input-root .artifacts/ginux-env \
+  --output .artifacts/ginux-env/prepared-image-e2e
+```
+
+[`managed-ci.json`](managed-ci.json) pins this manifest and its output digest for
+CI. `scripts/prepare-managed-image.py` acquires its selected public inputs, checks
+RPM signatures, invokes the existing image producers and verifies that digest.
+The integration runner also accepts an explicit image and digest for local runs.
+Select the full acquisition image whenever the workload needs Rust or Cargo.
 
 ## Acquisition and musl compiler image
 

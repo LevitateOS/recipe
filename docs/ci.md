@@ -13,22 +13,19 @@ explicit source update.
 runs as the ordinary runner user. Only integration execution uses `sudo`, because
 configured launch needs coordinator/ptrace privileges. Use a disposable host.
 
-Provision these Actions variables from the agreed delivery inputs:
+The job reads the launcher source, image manifest, output digest and public input
+URLs from [`bootstrap/managed-ci.json`](../bootstrap/managed-ci.json). Missing or
+invalid pins fail the job. Each downloaded input is verified before the existing
+Ginux and `recipe-image` producers assemble the selected image. The resulting tar
+and provenance must match the tracked output digest.
 
-| Variable | Required value |
-| --- | --- |
-| `GINUX_REPOSITORY` | Repository containing the maintained launcher source |
-| `GINUX_SOURCE_SHA` | Complete 40-character source commit, built in the job |
-| `RECIPE_IMAGE_URL` | HTTPS URL for the produced compiler/acquisition rootfs tar |
-| `RECIPE_IMAGE_SHA256` | Complete SHA-256 of that tar |
-
-No fork, moving branch, worktree or developer binary is selected by default.
-Missing/invalid inputs fail the job. HTTPS verification and a matching digest
-are required before managed launch. Produce and retain the image and provenance
-with `recipe-image` and the pinned [manifest](../bootstrap/ginux-acquisition-image.json).
-Use the output digest from its provenance; the historical eight-RPM `c089…`
-image is not the output of the current twelve-RPM manifest. A changed image
-needs its own combination verification. The maintained source remains separate.
+The managed catalog uses the pinned
+[`ginux-e2e-image.json`](../bootstrap/ginux-e2e-image.json) C/runtime image. It keeps
+GCC, Make, Git, cpio, ISO tools, `cmp` and `pkg-config`; the catalog does not invoke
+Rust or Cargo. The separate GNU/musl Cargo consumer uses the full
+[`ginux-acquisition-image.json`](../bootstrap/ginux-acquisition-image.json) image.
+Both manifests use the same pinned base and RPM inputs. A changed image needs
+verification with its matching digest and launcher/worker identities.
 
 The script enumerates the current `e2e`, `library_backend` and `image_producer`
 catalogs, rejects ignored cases, runs every selected case with retained logs,
