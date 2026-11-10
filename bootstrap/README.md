@@ -38,7 +38,8 @@ Select `prepared-image/rootfs.tar` with `GINUX_ROOTFS`. Set `GINUX_ROOT` to
 separately by Recipe, so updating Recipe does not rebuild the compiler image.
 Build and run the Ginux launcher explicitly before executing recipes.
 
-The image includes the Rust compiler, Cargo, standard library, GCC and Make.
+The image includes the Rust compiler, Cargo, standard library, GCC, Make, GNU
+Diffutils (including `cmp`) and pkgconf (including `pkg-config`).
 The current local Ginux integration admits 32 tasks. Verified offline GNU and
 musl checks use two concurrent Cargo clients with one job each, share the locked
 target directory, and execute the compiled threaded program. The checks retain
@@ -112,9 +113,12 @@ The original eight compiler/acquisition RPM pins were checked against the publis
 and [Rocky AppStream primary metadata](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/repodata/56c5886e36a7d3a5536d1b5cea97be8740edb537bd15ff7bd7db2e46aac7e582-primary.xml.gz)
 on 2026-11-06. Each metadata filename is its compressed SHA256, verified against
 `repomd.xml`; this is repository-metadata verification, not an RPM-signature claim.
-All twelve current pins were freshly checked against official BaseOS/AppStream
-metadata on 2026-11-08; their exact current URLs are below. Repository updates
-can remove versioned URLs. Retain verified publisher inputs for reproduction;
+The twelve existing pins were freshly checked against official BaseOS/AppStream
+metadata on 2026-11-08. The five Diffutils/pkgconf pins were checked against
+[official BaseOS primary metadata](https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/repodata/289dc9ca5dad8347c010b1fa65b78b94d3014156cc4457883e140bd190fddd0e-primary.xml.gz)
+on 2026-11-10, with its compressed SHA256 verified against `repomd.xml`. Their
+exact URLs are below. Repository updates can remove versioned URLs. Retain
+verified publisher inputs for reproduction;
 never silently substitute package versions. Download each URL to the manifest's
 relative `packages/` path and verify its manifest SHA-256 before composition.
 
@@ -126,6 +130,11 @@ relative `packages/` path and verify its manifest SHA-256 before composition.
 | `kernel-headers-6.12.0-211.73.1.el10_2.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/k/kernel-headers-6.12.0-211.73.1.el10_2.x86_64.rpm) |
 | `libmpc-1.3.1-7.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/l/libmpc-1.3.1-7.el10.x86_64.rpm) |
 | `make-4.4.1-9.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/m/make-4.4.1-9.el10.x86_64.rpm) |
+| `diffutils-3.10-8.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/d/diffutils-3.10-8.el10.x86_64.rpm) |
+| `libpkgconf-2.1.0-3.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/l/libpkgconf-2.1.0-3.el10.x86_64.rpm) |
+| `pkgconf-2.1.0-3.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/p/pkgconf-2.1.0-3.el10.x86_64.rpm) |
+| `pkgconf-m4-2.1.0-3.el10.noarch.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/p/pkgconf-m4-2.1.0-3.el10.noarch.rpm) |
+| `pkgconf-pkg-config-2.1.0-3.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/p/pkgconf-pkg-config-2.1.0-3.el10.x86_64.rpm) |
 | `git-core-2.52.0-1.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/g/git-core-2.52.0-1.el10.x86_64.rpm) |
 | `cpio-2.15-3.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/c/cpio-2.15-3.el10.x86_64.rpm) |
 | `libburn-1.5.6-6.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/l/libburn-1.5.6-6.el10.x86_64.rpm) |
@@ -147,10 +156,10 @@ export GINUX_ROOT="oci:recipe-compiler@sha256:$(jq -er '.sha256' .artifacts/ginu
 
 The historical eight-RPM output SHA256 was
 `c089f95c462582cc0fcc2a8b2ba86c7d2d64c22c82efa499ce20e3704a7fe15e`.
-The current manifest adds four ISO-tool RPMs, so that historical digest does not
-identify its output. Use the actual `provenance.json` digest as above; changing
-the image requires verification of that new combination. A fresh output
-directory is required.
+The current manifest adds four ISO-tool RPMs and the Diffutils/pkgconf packages,
+so that historical digest does not identify its output. Use the actual
+`provenance.json` digest as above; changing the image requires verification of
+that new combination. A fresh output directory is required.
 For musl builds pass `--target x86_64-unknown-linux-musl` to Cargo and set
 `RUSTFLAGS="-C linker=/usr/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld -C linker-flavor=ld.lld"`
 in the command's environment options. The GNU fixture uses Cargo's default
@@ -177,7 +186,7 @@ previous compiler-image digest examples above do not identify the extended image
 public URLs for the acquisition manifest's exact inputs, and the Rocky signing
 key digest. The required hosted job builds its image rather than requiring an
 unpublished image URL or repository variables. `scripts/prepare-managed-image.py`
-verifies every downloaded/cached digest, checks all twelve RPM signatures in a
+verifies every downloaded/cached digest, checks all seventeen RPM signatures in a
 private disposable RPM database, invokes Ginux's existing verified OCI producer,
 and invokes `recipe-image`. The final tar and provenance must match the pinned
 image digest. Existing outputs and wrong cached inputs fail without replacement.

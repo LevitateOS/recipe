@@ -51,6 +51,26 @@
     {
       "path": "packages/xorriso-1.5.6-6.el10.x86_64.rpm",
       "sha256": "ddb440abced84dd91c5489e299937c6e2f83f161b67ba183889e6862d5cdf812"
+    },
+    {
+      "path": "packages/diffutils-3.10-8.el10.x86_64.rpm",
+      "sha256": "32bfb2c9581634d73ffc53c20ad86f1b6656f8b4a93017a25ac0c7f67a5919c0"
+    },
+    {
+      "path": "packages/libpkgconf-2.1.0-3.el10.x86_64.rpm",
+      "sha256": "ce1ae14445d8a3cf09909878d442968da9a049b473432504064459618ae15f75"
+    },
+    {
+      "path": "packages/pkgconf-2.1.0-3.el10.x86_64.rpm",
+      "sha256": "1a7cdd1e6431169e959fc1b8a7d8789df4321f5dd5e67e2e61546e690bb4391b"
+    },
+    {
+      "path": "packages/pkgconf-m4-2.1.0-3.el10.noarch.rpm",
+      "sha256": "8fe51ce526aba6a51d5dc497f99e5f27258278a3337525d3578c1a4205299ab4"
+    },
+    {
+      "path": "packages/pkgconf-pkg-config-2.1.0-3.el10.x86_64.rpm",
+      "sha256": "1ccce9b5e134cc6b594f2ce9b67b26480688bcef15af5a2540fc7c7e83c3d637"
     }
   ],
   "rust": {

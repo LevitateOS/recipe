@@ -3,7 +3,7 @@
   "ginux_repository": "LevitateOS/ginux",
   "ginux_revision": "ef1b538f940d8ae99b5e798c19cada9976381d86",
   "image_manifest": "ginux-acquisition-image.json",
-  "image_sha256": "ffe04d8671e45036ac77acc958fb6cfd3c24a939075dc7e6c5437b69d7f05c15",
+  "image_sha256": "4ec20be0f93bdd650ba42b0fd08b18d5ae61494f83c805a6a714e2f361042eff",
   "rocky_signing_key": {
     "url": "https://download.rockylinux.org/pub/rocky/RPM-GPG-KEY-Rocky-10",
     "sha256": "be8c4f070b696e64d8ce40e59a95a57e8b5c776f0015c2fd64e14b896622bdb4",
@@ -23,6 +23,11 @@
     "packages/libisofs-1.5.6-6.el10.x86_64.rpm": "https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/l/libisofs-1.5.6-6.el10.x86_64.rpm",
     "packages/xorriso-1.5.6-6.el10.x86_64.rpm": "https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/x/xorriso-1.5.6-6.el10.x86_64.rpm",
     "toolchain/rust-1.99.0-x86_64-unknown-linux-gnu.tar.gz": "https://static.rust-lang.org/dist/2026-10-01/rust-1.99.0-x86_64-unknown-linux-gnu.tar.gz",
-    "toolchain/rust-std-1.99.0-x86_64-unknown-linux-musl.tar.gz": "https://static.rust-lang.org/dist/2026-10-01/rust-std-1.99.0-x86_64-unknown-linux-musl.tar.gz"
+    "toolchain/rust-std-1.99.0-x86_64-unknown-linux-musl.tar.gz": "https://static.rust-lang.org/dist/2026-10-01/rust-std-1.99.0-x86_64-unknown-linux-musl.tar.gz",
+    "packages/diffutils-3.10-8.el10.x86_64.rpm": "https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/d/diffutils-3.10-8.el10.x86_64.rpm",
+    "packages/libpkgconf-2.1.0-3.el10.x86_64.rpm": "https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/l/libpkgconf-2.1.0-3.el10.x86_64.rpm",
+    "packages/pkgconf-2.1.0-3.el10.x86_64.rpm": "https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/p/pkgconf-2.1.0-3.el10.x86_64.rpm",
+    "packages/pkgconf-m4-2.1.0-3.el10.noarch.rpm": "https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/p/pkgconf-m4-2.1.0-3.el10.noarch.rpm",
+    "packages/pkgconf-pkg-config-2.1.0-3.el10.x86_64.rpm": "https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/p/pkgconf-pkg-config-2.1.0-3.el10.x86_64.rpm"
   }
 }
