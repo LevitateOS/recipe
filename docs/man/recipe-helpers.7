@@ -48,9 +48,10 @@ Probe current domain PATH.
 
 .TP
 \fBcarry_libraries(package, prefix, search:Array) -> Array\fR
-Trial. Copies into package/lib/ the loader and every shared library the
-programs in package/bin/ load, from the search folders and then the build
-image, and writes into each file its loader and library folder under prefix.
+Trial. Copies into package/lib/ the loader and every shared library that
+the programs in package/bin/, and the programs and plug-ins the recipe put
+under package/lib/, load, from the search folders and then the build image,
+and writes into each file its loader and library folder under prefix.
 It refuses a program that was not linked with carry_link_flags().
 .TP
 \fBcarry_link_flags() -> String\fR

@@ -247,41 +247,63 @@ pub fn carry_libraries(
         Ok(after)
     };
 
-    // Each program is given its place, and its loader is carried.
+    // Everything the recipe put in the package is looked at: programs in
+    // bin/, and under lib/ the plug-ins a program opens by name and any
+    // program kept beside them. A program is given its place and its loader
+    // is carried; a plug-in is settled; the needs of both are followed.
     let mut pending = Vec::new();
-    let programs = std::fs::read_dir(package.join("bin"))
-        .map_err(|error| format!("cannot read {}/bin: {error}", package.display()))?;
-    for program in programs.flatten() {
-        let path = program.path();
-        let mut bytes = read(&path)?;
-        let Some(linked) = parse(&bytes).filter(|elf| elf.dynamic) else {
-            continue; // a script, or a program with nothing to load
-        };
-        let settled = settle(&mut bytes, &linked, prefix)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
-        let elf = parse(&bytes).ok_or_else(|| format!("{} cannot be read back", path.display()))?;
-        let loader = linked.interpreter.clone().unwrap_or_default();
-        let name = loader.rsplit('/').next().unwrap_or_default().to_owned();
-        let told = settled
-            && elf.interpreter.as_deref() == Some(&format!("{place}/{name}"))
-            && elf.rpath == [place.clone()]
-            && elf.runpath.is_empty();
-        if !told {
-            return Err(format!(
-                "{} was not linked for carrying (loader {:?}, rpath {:?}, runpath {:?})\nNext: link it with the flags carry_link_flags() returns, and with no other -rpath.",
-                path.display(),
-                linked.interpreter,
-                linked.rpath.iter().map(|folder| folder.chars().take(40).collect::<String>()).collect::<Vec<_>>(),
-                linked.runpath
-            )
-            .into());
+    let mut folders_left = vec![package.join("bin"), library.clone()];
+    while let Some(folder) = folders_left.pop() {
+        for item in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+            let path = item.path();
+            if path.is_dir() {
+                folders_left.push(path);
+                continue;
+            }
+            let mut bytes = read(&path)?;
+            let Some(placed) = parse(&bytes).filter(|elf| elf.dynamic) else {
+                continue; // a script, data, or a program with nothing to load
+            };
+            let settled = settle(&mut bytes, &placed, prefix)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            let elf = parse(&bytes).ok_or_else(|| format!("{} cannot be read back", path.display()))?;
+            if let Some(loader) = &placed.interpreter {
+                let name = loader.rsplit('/').next().unwrap_or_default().to_owned();
+                let told = settled
+                    && elf.interpreter.as_deref() == Some(&format!("{place}/{name}"))
+                    && elf.rpath == [place.clone()]
+                    && elf.runpath.is_empty();
+                if !told {
+                    return Err(format!(
+                        "{} was not linked for carrying (loader {:?}, rpath {:?}, runpath {:?})\nNext: link it with the flags carry_link_flags() returns, and with no other -rpath.",
+                        path.display(),
+                        placed.interpreter,
+                        placed.rpath.iter().map(|folder| folder.chars().take(40).collect::<String>()).collect::<Vec<_>>(),
+                        placed.runpath
+                    )
+                    .into());
+                }
+                if !library.join(&name).is_file() {
+                    copy(&name, Path::new(loader))?;
+                }
+            } else {
+                let own = |folder: &String| *folder == place || folder == "$ORIGIN";
+                if !elf.rpath.iter().chain(&elf.runpath).all(own) {
+                    return Err(format!(
+                        "{} would look for its libraries in {:?} {:?}, outside the package",
+                        path.display(),
+                        elf.rpath,
+                        elf.runpath
+                    )
+                    .into());
+                }
+            }
+            if settled {
+                std::fs::write(&path, &bytes)
+                    .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+            }
+            pending.push((path, elf));
         }
-        std::fs::write(&path, &bytes)
-            .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
-        if !library.join(&name).is_file() {
-            copy(&name, Path::new(&loader))?;
-        }
-        pending.push((path, elf));
     }
 
     while let Some((file, elf)) = pending.pop() {
