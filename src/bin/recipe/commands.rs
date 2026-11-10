@@ -744,7 +744,6 @@ fn resolve_recipe_path(recipe: &Path, lookup: &Lookup) -> Result<PathBuf> {
     {
         let folder = match source {
             sources::LOCAL => lookup.folders.first().cloned(),
-            sources::IMAGE => lookup.folders.get(1).cloned(),
             _ => {
                 let all = lookup.sources.with_context(|| {
                     format!("an explicit --recipes-path or $RECIPE_PATH uses no sources, so {text} names nothing")
@@ -823,15 +822,8 @@ fn problem_json(problem: &sources::Problem) -> serde_json::Value {
 fn list_recipes(lookup: &Lookup, json: bool) -> Result<()> {
     use owo_colors::OwoColorize;
 
-    // The folders first, as before sources existed: the first folder holding
-    // a file name hides the same name in the next.
-    let folder_name = |index: usize| {
-        if index == 0 {
-            sources::LOCAL
-        } else {
-            sources::IMAGE
-        }
-    };
+    // The recipe folder first, as before sources existed.
+    let folder_name = |_: usize| sources::LOCAL;
     let mut names = std::collections::BTreeSet::new();
     let mut about = Vec::new();
     let mut recipes = Vec::new();
@@ -902,7 +894,7 @@ fn list_recipes(lookup: &Lookup, json: bool) -> Result<()> {
             "  {} {}{}",
             recipe["name"].as_str().unwrap_or("?").bold(),
             recipe["version"].as_str().unwrap_or("?").cyan(),
-            if source == sources::LOCAL || source == sources::IMAGE {
+            if source == sources::LOCAL {
                 String::new()
             } else {
                 format!("  {}", source.dimmed())
@@ -957,6 +949,9 @@ fn source_command(all: &Sources, command: SourceCommands, json: bool) -> Result<
                 let state = match about["checked"].as_u64() {
                     Some(checked) => format!("{count}, fetched {}", sources::ago(checked)),
                     None if about["kind"] == "folder" => count,
+                    None if !listing.recipes.is_empty() => {
+                        format!("{count}, from the copy that came with the system; not fetched yet")
+                    }
                     None => String::new(),
                 };
                 if !state.is_empty() {

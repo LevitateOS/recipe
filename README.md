@@ -11,7 +11,8 @@ In the LevitateOS workspace, `distro/builder/os-recipes/` holds OS artifact
 producers, and the top-level `recipes/` directory is the user-managed software
 catalog, starting with ripgrep. The builder selects its own collection
 with `--recipes-path DIR` and `--no-activate`; normal CLI lookup uses an explicitly selected
-catalog, or the user's XDG recipe directory followed by `/usr/share/recipe/recipes`.
+catalog, or the user's XDG recipe directory and then the sources, of which the
+image ships the official one in `/usr/share/recipe/sources`.
 Both use this engine, the same Rhai API 2 and the same Ginux
 execution rules. Directory placement expresses ownership, not a new recipe type
 or permission boundary. This repository's `examples/` and `tests/` are engine
@@ -272,9 +273,12 @@ details. [HELPERS_AUDIT.md](HELPERS_AUDIT.md) lists registered helpers.
   --path FOLDER` adds a checkout that is read as it is. `source list` shows
   them and `source remove NAME` removes one. A source is one file,
   `sources/NAME.toml` under the package root (`/var/lib/recipe/sources` for
-  root), or `/usr/share/recipe/sources` when the image ships it.
-- `SOURCE:NAME` names one source's recipe; `local` and `image` name the recipe
-  folders. A bare name means a recipe folder first, then the one source that
+  root), or `/usr/share/recipe/sources` when the image ships it. An image
+  ships a copy of its source beside that file, `NAME/` with the published
+  index and its files: it stands in for the index until one is fetched and
+  spares downloading a file it holds, so shipped recipes install offline.
+- `SOURCE:NAME` names one source's recipe; `local` names the recipe
+  folder. A bare name means a recipe folder first, then the one source that
   has it; when several do, Recipe asks for `SOURCE:NAME`. `list` never touches
   the network: it shows a remote source from its kept index, and `list --json`
   adds `sources` and each recipe's `source`. An explicit `--recipes-path` or
@@ -354,7 +358,7 @@ Run `recipe --help` and `recipe install --help` for the complete current syntax.
 
 | Option | Meaning |
 | --- | --- |
-| `-r, --recipes-path DIR` | Explicit name/module/dependency search directory. Otherwise user overrides precede the shipped catalog; `$RECIPE_PATH` selects one directory exclusively. |
+| `-r, --recipes-path DIR` | Explicit name/module/dependency search directory. Otherwise the user's recipe folder precedes the sources; `$RECIPE_PATH` selects one directory exclusively. |
 | `--package-root DIR` | Store for installed receipts, generations and the active `profile` symlink. |
 | `--no-activate` | Produce outputs or run hooks only, without installing/removing an active package. |
 | `-b, --build-dir DIR` | Logical destination identity and lock. |

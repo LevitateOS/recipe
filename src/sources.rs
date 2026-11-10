@@ -11,6 +11,11 @@
 //! The files live in `/usr/share/recipe/sources` (what the image ships) and in
 //! `sources` under the package root (what its owner added; the same name
 //! replaces a shipped one). Git is the author's tool: nothing here speaks it.
+//!
+//! An image also ships a copy of its sources, `NAME/` beside `NAME.toml`: the
+//! published index and the files it lists. It stands in for the index until
+//! one is fetched, and spares downloading a file it already holds, so the
+//! shipped recipes install without a network.
 
 use crate::catalog::{self, Published};
 use anyhow::{Context, Result, bail, ensure};
@@ -21,12 +26,11 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
-/// The sources an image ships.
+/// The sources an image ships. `$RECIPE_SHIPPED_SOURCES` names another
+/// folder, for trying an image's sources without being that image.
 pub const SHIPPED: &str = "/usr/share/recipe/sources";
-/// The name of the first folder of `--recipes-path` or the defaults.
+/// The name of the recipe folder: `--recipes-path` or the default.
 pub const LOCAL: &str = "local";
-/// The name of the catalog the image ships as a folder.
-pub const IMAGE: &str = "image";
 
 const INDEX_LIMIT: u64 = 32 * 1024 * 1024;
 
@@ -134,7 +138,7 @@ struct Wanted {
 }
 
 fn reserved(name: &str) -> bool {
-    name == LOCAL || name == IMAGE
+    name == LOCAL
 }
 
 fn is_rev(rev: &str) -> bool {
@@ -277,7 +281,8 @@ impl Sources {
         Self {
             store: package_root.join("sources"),
             fetched: package_root.join("fetched"),
-            shipped: PathBuf::from(SHIPPED),
+            shipped: std::env::var_os("RECIPE_SHIPPED_SOURCES")
+                .map_or_else(|| PathBuf::from(SHIPPED), PathBuf::from),
             cache: dirs::cache_dir().map(|cache| cache.join("recipe/sources")),
         }
     }
@@ -330,6 +335,22 @@ impl Sources {
             bail!("{}: {}", problem.path.display(), problem.problem);
         }
         bail!("no source named {name}\nNext: 'recipe source list' shows the sources.");
+    }
+
+    /// The copy the image ships of this source, when the image's own file
+    /// names the same address: a replaced source is another source.
+    fn shipped_copy(&self, source: &Source) -> Option<PathBuf> {
+        let Kind::Remote { files, branch } = &source.kind else {
+            return None;
+        };
+        let named = read(&self.shipped.join(format!("{}.toml", source.name))).ok()?;
+        let same = matches!(
+            kind(named),
+            Ok(Some(Kind::Remote { files: shipped, branch: shipped_branch }))
+                if shipped == *files && shipped_branch == *branch
+        );
+        let folder = self.shipped.join(&source.name);
+        (same && folder.join(catalog::INDEX_FILE).is_file()).then_some(folder)
     }
 
     /// Where a remote source's index is kept. The address is part of the
@@ -413,11 +434,21 @@ impl Sources {
                 }
                 Err(error) => kept.problem = Some(format!("{}: {error:#}", file.display())),
             },
+            // Nothing fetched yet: the copy the image ships, if there is one.
             Err(_) => {
-                kept.problem = Some(format!(
-                    "no index fetched yet; run 'recipe refresh {}'",
-                    source.name
-                ));
+                let shipped = self.shipped_copy(source).and_then(|folder| {
+                    let text = std::fs::read_to_string(folder.join(catalog::INDEX_FILE)).ok()?;
+                    catalog::published(&text).ok()
+                });
+                match shipped {
+                    Some(index) => kept.index = Some(index),
+                    None => {
+                        kept.problem = Some(format!(
+                            "no index fetched yet; run 'recipe refresh {}'",
+                            source.name
+                        ));
+                    }
+                }
             }
         }
         if let Ok(problem) = std::fs::read_to_string(folder.join("problem")) {
@@ -517,7 +548,7 @@ impl Sources {
             (Ok(index), _) => Ok(index),
             (Err(error), Some(kept)) => {
                 crate::core::output::warning(&format!(
-                    "{}: {error:#}; using the index fetched before",
+                    "{}: {error:#}; using the index already here",
                     source.name
                 ));
                 Ok(kept)
@@ -636,9 +667,19 @@ impl Sources {
             if std::fs::read(&target).is_ok_and(|kept| hex::encode(Sha256::digest(&kept)) == file.sha256) {
                 continue;
             }
-            let bytes = fetch(&file.address, file.bytes)?;
+            let right = |bytes: &[u8]| {
+                bytes.len() as u64 == file.bytes && hex::encode(Sha256::digest(bytes)) == file.sha256
+            };
+            let shipped = self
+                .shipped_copy(source)
+                .and_then(|copy| std::fs::read(copy.join(path)).ok())
+                .filter(|bytes| right(bytes));
+            let bytes = match shipped {
+                Some(bytes) => bytes,
+                None => fetch(&file.address, file.bytes)?,
+            };
             ensure!(
-                bytes.len() as u64 == file.bytes && hex::encode(Sha256::digest(&bytes)) == file.sha256,
+                right(&bytes),
                 "{} is not the file the index of {} lists (SHA-256 or size differs); nothing was run\nNext: 'recipe refresh {}' and try again; if it stays, the source's index is out of date.",
                 file.address,
                 source.name,

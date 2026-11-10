@@ -58,17 +58,14 @@ pub(crate) fn default_recipes_path() -> PathBuf {
     data_home.join("recipe/recipes")
 }
 
-/// User overrides precede the immutable catalog shipped by the OS. An explicit
-/// collection remains isolated, including the builder's OS recipe collection.
+/// The one recipe folder: the explicit collection, which stays isolated (the
+/// builder's OS recipes among them), or the user's own. What the OS ships is a
+/// source, not a folder.
 pub(crate) fn recipe_paths(selected: Option<PathBuf>) -> Vec<PathBuf> {
     if let Some(path) = selected {
         return vec![path];
     }
-    let path = default_recipes_path();
-    if std::env::var_os("RECIPE_PATH").is_some() {
-        return vec![path];
-    }
-    vec![path, PathBuf::from("/usr/share/recipe/recipes")]
+    vec![default_recipes_path()]
 }
 
 pub(crate) fn default_package_root() -> anyhow::Result<PathBuf> {

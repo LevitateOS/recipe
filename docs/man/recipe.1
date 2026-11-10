@@ -145,8 +145,9 @@ Compute SHA256, SHA512 and BLAKE3 for a local file.
 .TP
 .B -r, --recipes-path DIR
 Directory for name, module and dependency lookup. Defaults to RECIPE_PATH or
-the per-user application-data recipe directory followed by the shipped catalog
-at /usr/share/recipe/recipes. Explicit --recipes-path or RECIPE_PATH disables fallback.
+the per-user application-data recipe directory, followed by the sources (see
+\fBsource\fR), of which an image ships its own in /usr/share/recipe/sources.
+Explicit --recipes-path or RECIPE_PATH uses that directory alone.
 .TP
 .B --package-root DIR
 Package generations, installed receipts and active profile symlink. Defaults to
