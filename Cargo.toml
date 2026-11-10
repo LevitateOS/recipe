@@ -30,7 +30,9 @@ path = "src/bin/recipe-image.rs"
 rhai = { version = "=1.19.0", features = ["sync", "serde", "internals"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-sha2 = "0.10"
+# Image verification hashes gigabytes even in development builds. Keep the
+# compression backend optimized on CPUs without SHA instructions.
+sha2 = { version = "0.10", features = ["asm"] }
 blake3 = "1.5"
 toml = "0.8"
 serde = { version = "1.0", features = ["derive"] }
