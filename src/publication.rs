@@ -80,6 +80,7 @@ pub(crate) fn prepare(
     let payloads = staging.0.path().join(".payloads");
     fs::create_dir(&payloads)?;
     let mut regulars = BTreeMap::<String, (PathBuf, u32, u64)>::new();
+    let mut synced_payloads = HashSet::new();
     for (raw_count, entry) in archive.entries()?.raw(true).enumerate() {
         if raw_count >= max_entries * 3 {
             bail!("excessive export headers");
@@ -171,12 +172,13 @@ pub(crate) fn prepare(
                 .create_new(true)
                 .mode(0o600)
                 .open(&payload)?;
+            // Creation mode is filtered by the coordinator's umask. A later
+            // selected hardlink must be able to reopen this private payload.
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
             if std::io::copy(&mut entry, &mut file)? != size {
                 bail!("truncated export entry");
             }
             file.set_modified(modified)?;
-            file.set_permissions(fs::Permissions::from_mode(mode))?;
-            file.sync_all()?;
             regulars.insert(path.to_owned(), (payload.clone(), mode, mtime));
             Some(payload)
         } else if kind.is_hard_link() {
@@ -234,7 +236,16 @@ pub(crate) fn prepare(
                 directories.insert(destination, (mode, modified));
             } else {
                 fs::create_dir_all(destination.parent().context("missing output parent")?)?;
-                fs::hard_link(payload.as_ref().unwrap(), destination)?;
+                let payload = payload.as_ref().unwrap();
+                if synced_payloads.insert(payload.clone()) {
+                    // Unselected payloads are discarded. Keep them private and
+                    // readable until a selected name needs their inode, then
+                    // sync once, including aliases of an earlier unselected file.
+                    let file = File::open(payload)?;
+                    file.set_permissions(fs::Permissions::from_mode(mode))?;
+                    file.sync_all()?;
+                }
+                fs::hard_link(payload, destination)?;
             }
         }
     }
