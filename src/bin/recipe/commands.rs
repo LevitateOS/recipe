@@ -38,10 +38,40 @@ fn require_sha256(recipe: &Path, expected: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// The package a change is about, as a front end names it: without its source
+/// and without `.rhai`.
+fn changed_package(command: &Commands) -> Option<String> {
+    let recipe = match command {
+        Commands::Install { recipe, .. }
+        | Commands::Update { recipe }
+        | Commands::Remove { recipe } => recipe.file_stem()?.to_str()?.to_owned(),
+        Commands::GoBack { name, .. } => name.clone(),
+        _ => return None,
+    };
+    Some(match recipe.split_once(':') {
+        Some((source, name)) if levitate_recipe::catalog::is_source_name(source) => name.to_owned(),
+        _ => recipe,
+    })
+}
+
 pub(crate) fn execute(cli: Cli) -> Result<()> {
+    // A change delegated to recab is reported by the run that makes it.
     if system_route(&cli)? {
         return Ok(());
     }
+    let changed = cli
+        .machine_events
+        .then(|| changed_package(&cli.command))
+        .flatten();
+    let result = run(cli);
+    if let Some(recipe) = changed {
+        // For a front end: how the change ended, as the last event.
+        eprintln!("{}", bin_support::final_event(&recipe, &result));
+    }
+    result
+}
+
+fn run(cli: Cli) -> Result<()> {
     let io_start = levitate_recipe::system::process_io();
     let mut execution = levitate_recipe::ExecutionOptions::default();
     execution.target_os = cli.target_os;

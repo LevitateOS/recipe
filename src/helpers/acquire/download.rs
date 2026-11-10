@@ -225,6 +225,9 @@ fn save_response_with_prefix(
             }
         }
         pb.set_position(total_bytes);
+        // A front end is told at the start, a few times a second, and at the end.
+        crate::core::output::fetch_event(filename, total_bytes, expected_total);
+        let mut told = std::time::Instant::now();
         let mut reader = response.into_reader();
         let mut buffer = [0u8; 8192];
         loop {
@@ -243,7 +246,12 @@ fn save_response_with_prefix(
             file.write_all(&buffer[..bytes_read])
                 .map_err(|e| format!("write error: {}", e))?;
             pb.set_position(total_bytes);
+            if told.elapsed() >= std::time::Duration::from_millis(250) {
+                crate::core::output::fetch_event(filename, total_bytes, expected_total);
+                told = std::time::Instant::now();
+            }
         }
+        crate::core::output::fetch_event(filename, total_bytes, expected_total);
         if expected_total.is_some_and(|total| total_bytes != total) {
             return Err("download ended before the declared length".into());
         }

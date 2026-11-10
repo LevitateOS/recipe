@@ -86,6 +86,27 @@ pub mod bin_support {
     /// The cleanup reason when the user gives none.
     pub const DEFAULT_CLEANUP_REASON: &str = crate::lifecycle::CleanupReason::Manual.as_str();
     pub use crate::worker::run_worker;
+
+    /// The last event of a change, for a front end (`--machine-events`):
+    /// `done`, or `failed` with the step that failed where the worker named
+    /// one, and Recipe's own message as the reason.
+    pub fn final_event(recipe: &str, result: &anyhow::Result<()>) -> serde_json::Value {
+        match result {
+            Ok(()) => serde_json::json!({"event": "done", "recipe": recipe}),
+            Err(error) => {
+                let hook = error
+                    .downcast_ref::<crate::backend::WorkloadFailure>()
+                    .and_then(|failure| failure.0.phase)
+                    .map(crate::lifecycle::Phase::name);
+                serde_json::json!({
+                    "event": "failed",
+                    "recipe": recipe,
+                    "hook": hook,
+                    "reason": format!("{error:#}"),
+                })
+            }
+        }
+    }
 }
 
 use anyhow::{Context, Result};
@@ -283,7 +304,8 @@ impl RecipeEngine {
                 failure.phase.map_or("-", lifecycle::Phase::name),
                 cfg.attempts
             ));
-            core::autofix::run_and_apply(
+            let phase = failure.phase.map_or("-", lifecycle::Phase::name);
+            let changed = core::autofix::run_and_apply(
                 cfg,
                 recipe_path,
                 self.recipes_path.as_deref(),
@@ -293,6 +315,25 @@ impl RecipeEngine {
                 self.llm_profile.as_deref(),
             )
             .context("coordinator autofix failed")?;
+            if self.execution.machine_events {
+                // For a front end: the agent changed the recipe during this
+                // run, and the run starts again with the changed files.
+                let files: Vec<_> = changed.iter().map(|path| path.display().to_string()).collect();
+                eprintln!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "agent",
+                        "recipe": recipe_path.file_stem().and_then(|stem| stem.to_str()),
+                        "hook": phase,
+                        "attempt": repairs,
+                        "files": files,
+                        "summary": format!(
+                            "after the {phase} step failed, the agent changed {}; the run starts again",
+                            files.join(", ")
+                        ),
+                    })
+                );
+            }
             // The next launch rediscovers and hashes all patched inputs;
             // saved state from the failed identity is never translated.
         }

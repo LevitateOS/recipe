@@ -19,6 +19,7 @@ pub(crate) fn install(
 ) -> Result<Map, EngineError> {
     with_recipe(engine, exec, recipe, load, |recipe, exec| {
         let name = recipe.name.clone();
+        output::set_event_recipe(&name);
         output::action(&format!("Preparing recipe for {name}"));
         output::hook_event(
             &name,
@@ -32,6 +33,12 @@ pub(crate) fn install(
         }
 
         let (mut ctx, phases) = plan(recipe, exec.options())?;
+        // For a front end: which steps run this time; the others are not needed.
+        output::machine_event(serde_json::json!({
+            "event": "plan",
+            "recipe": name,
+            "steps": phases.iter().map(|phase| phase.name()).collect::<Vec<_>>(),
+        }));
         if phases.is_empty() {
             recipe.needs.validate_worker_outputs(&ctx, true)?;
             exec.checkpoint_reused(&recipe.path, &ctx)?;

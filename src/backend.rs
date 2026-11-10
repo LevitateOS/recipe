@@ -36,6 +36,37 @@ impl GinuxLauncher {
             .validate_for(invocation.operation)
             .context(crate::failure::Category::Startup.error("invalid invocation options"))?;
         let graph = crate::needs::declarations(invocation.recipe, invocation.search_path)?;
+        if invocation.options.execution.machine_events
+            && invocation.operation == crate::worker::protocol::Operation::Install
+        {
+            // For a front end: every recipe of this run in the order they run,
+            // each with the steps it defines. Each recipe says which of them it
+            // needs this time when its own checks have run (`plan` with `recipe`).
+            let recipes: Vec<_> = graph
+                .iter()
+                .map(|node| {
+                    let entry = crate::catalog::entry(&node.recipe, invocation.search_path).ok();
+                    let name = entry
+                        .as_ref()
+                        .and_then(|entry| entry["name"].as_str().map(str::to_owned))
+                        .or_else(|| Some(node.recipe.file_stem()?.to_str()?.to_owned()))
+                        .unwrap_or_default();
+                    let steps: Vec<&str> = crate::lifecycle::Phase::ALL
+                        .into_iter()
+                        .map(crate::lifecycle::Phase::name)
+                        .filter(|step| {
+                            entry.as_ref().is_none_or(|entry| {
+                                entry["hooks"]
+                                    .as_array()
+                                    .is_some_and(|hooks| hooks.iter().any(|hook| hook == *step))
+                            })
+                        })
+                        .collect();
+                    serde_json::json!({"name": name, "steps": steps})
+                })
+                .collect();
+            crate::diagnostics::diag!("{}", serde_json::json!({"event": "plan", "recipes": recipes}));
+        }
         let bindings =
             crate::inputs::bind_inputs(&graph, invocation.inputs, invocation.search_path)?;
         // Resolve all declarations and contracts before the first dependency can

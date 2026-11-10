@@ -269,7 +269,7 @@ pub(crate) fn run_and_apply(
     reason: &str,
     failure: &str,
     profile: Option<&str>,
-) -> Result<()> {
+) -> Result<Vec<PathBuf>> {
     let cwd = prompt::detect_cwd(cfg, recipe_path)?;
     let allow_paths = prompt::normalize_allow_paths(&cwd, cfg);
 
@@ -333,5 +333,10 @@ pub(crate) fn run_and_apply(
     let patch = run_llm(prompt, &cwd, profile).context("LLM invocation failed")?;
     validate_patch(&cwd, &allow_paths, &patch)?;
     apply_patch(&cwd, &patch)?;
-    Ok(())
+    // What the patch changed, for whoever is told about the repair.
+    let changed: std::collections::BTreeSet<_> = parser::extract_patch_paths(&patch)
+        .into_iter()
+        .map(|path| cwd.join(path))
+        .collect();
+    Ok(changed.into_iter().collect())
 }

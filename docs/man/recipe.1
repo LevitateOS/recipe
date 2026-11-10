@@ -240,7 +240,17 @@ Disable state/files recovery. Managed execution and output publication still run
 Write final context JSON to this file. Diagnostics go to stderr.
 .TP
 .B --machine-events
-Emit machine-readable hook events alongside stderr progress.
+Emit machine-readable events alongside stderr progress, one JSON object per
+line with an "event" field. recipe-hook: one lifecycle step of a recipe (recipe,
+hook, status, msg). plan with "recipes": every recipe of an install in the order
+they run, each with the steps it defines; plan with "recipe" and "steps": the
+steps that recipe needs this time, once its checks have run. fetch: how far a
+download is (recipe, source, bytes, total; total is null when the server did not
+say). agent: an --autofix repair changed files and the run starts again (recipe,
+hook, attempt, files, summary). The last event of install, update, remove and
+go-back is done (recipe), or failed (recipe, hook where a step failed, reason).
+Build progress inside a step and the endpoint of a refused connection are not
+reported.
 .SH OPTIONAL REPAIR
 install --autofix explicitly enables bounded coordinator patch/retry for eligible
 build/install failures. Normal execution needs no AI provider. Configuration is
