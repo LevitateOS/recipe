@@ -29,6 +29,14 @@ pub struct InstalledPackage {
     pub version: String,
     pub recipe: PathBuf,
     pub files: Vec<String>,
+    /// For a recipe fetched from a remote source: the source's name, the
+    /// commit the recipe file was fetched at and the file's SHA-256.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -131,6 +139,7 @@ impl PackageStore {
         package_output: &Path,
         update_only: bool,
     ) -> Result<InstalledPackage> {
+        let origin = crate::sources::origin(source_recipe);
         valid_name(name)?;
         ensure!(
             !version.is_empty() && version.len() <= 256 && !version.chars().any(char::is_control),
@@ -156,6 +165,9 @@ impl PackageStore {
             version: version.to_owned(),
             recipe,
             files,
+            source: origin.as_ref().map(|origin| origin.source.clone()),
+            commit: origin.as_ref().map(|origin| origin.commit.clone()),
+            sha256: origin.map(|origin| origin.sha256),
         };
         packages.insert(name.to_owned(), installed.clone());
         finish_generation(&root, pending, packages, active.target.as_deref())?;

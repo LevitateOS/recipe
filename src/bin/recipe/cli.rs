@@ -180,6 +180,10 @@ pub(crate) enum Commands {
         /// Recipe path or recipe name. If the file is not found directly, recipe will also look in --recipes-path and try appending `.rhai`.
         recipe: PathBuf,
 
+        /// Run only if the recipe file has this SHA-256: what was looked at is what runs.
+        #[arg(long, value_name = "HASH")]
+        sha256: Option<String>,
+
         /// Automatically attempt to patch build/install failures using the configured LLM provider.
         #[arg(long)]
         autofix: bool,

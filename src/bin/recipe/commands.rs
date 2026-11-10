@@ -17,6 +17,25 @@ struct Lookup<'a> {
     folders: &'a [PathBuf],
     /// None with an explicit collection, which stays isolated.
     sources: Option<&'a Sources>,
+    /// What a recipe of a remote source is fetched for.
+    purpose: sources::Purpose,
+}
+
+/// What was looked at is what runs: the recipe file must be the one named.
+fn require_sha256(recipe: &Path, expected: Option<&str>) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let found = hex::encode(Sha256::digest(
+        std::fs::read(recipe).with_context(|| format!("cannot read {}", recipe.display()))?,
+    ));
+    anyhow::ensure!(
+        found.eq_ignore_ascii_case(expected),
+        "{} changed since it was looked at; nothing was run\n  expected SHA-256 {expected}\n  it is now       {found}\nNext: look at the recipe again, then install.",
+        recipe.display()
+    );
+    Ok(())
 }
 
 pub(crate) fn execute(cli: Cli) -> Result<()> {
@@ -68,6 +87,14 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
     let lookup = Lookup {
         folders: &recipe_paths,
         sources: (!explicit_collection).then_some(&all_sources),
+        purpose: if matches!(
+            cli.command,
+            Commands::Install { .. } | Commands::Update { .. }
+        ) {
+            sources::Purpose::Install
+        } else {
+            sources::Purpose::Look
+        },
     };
     let no_activate = cli.no_activate;
 
@@ -152,6 +179,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
         }
         Commands::Install {
             recipe,
+            sha256,
             autofix,
             autofix_attempts,
             autofix_cwd,
@@ -159,6 +187,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             autofix_allow_path,
         } => {
             let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
+            require_sha256(&recipe_path, sha256.as_deref())?;
             let autofix_cfg = if autofix {
                 Some(AutoFixConfig {
                     attempts: autofix_attempts,
@@ -185,13 +214,29 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             );
             let installed = installed_package(&package_store, &recipe)?
                 .with_context(|| format!("package {} is not installed", recipe.display()))?;
-            let recipe_path = resolve_recipe_path(&recipe, &lookup).or_else(|error| {
+            // A package fetched from a remote source is updated from that
+            // source, unless the command names another.
+            let named = match &installed.source {
+                Some(source)
+                    if !explicit_collection && recipe.as_os_str() == installed.name.as_str() =>
+                {
+                    PathBuf::from(format!("{source}:{}", installed.name))
+                }
+                _ => recipe,
+            };
+            let recipe_path = resolve_recipe_path(&named, &lookup).or_else(|error| {
                 if explicit_collection {
                     Err(error)
                 } else {
                     resolve_recipe_path(&installed.recipe, &lookup)
                 }
             })?;
+            if installed.source.is_some() && recipe_path == installed.recipe {
+                let result = serde_json::json!({"name": installed.name, "version": installed.version,
+                    "operation": "update", "current": true, "profile": package_store.profile_path()});
+                emit_result(&result, json_output.as_deref(), json, "Package is current")?;
+                return Ok(());
+            }
             let engine = create_engine(&recipe_path, &engine_options, None)?;
             let mut ctx = engine.execute(&recipe_path)?;
             activate_package(
@@ -200,6 +245,9 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 &mut ctx,
                 Some(&installed.name),
             )?;
+            if let Some(source) = &installed.source {
+                all_sources.forget(source, &installed.name, Some(&recipe_path));
+            }
             emit_result(&ctx, json_output.as_deref(), json, "Package updated")?;
         }
 
@@ -212,6 +260,9 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             if !no_activate {
                 if let Some(installed) = installed_package(&package_store, &recipe)? {
                     let removed = package_store.remove(&installed.name)?;
+                    if let Some(source) = &removed.source {
+                        all_sources.forget(source, &removed.name, None);
+                    }
                     let result = serde_json::json!({"name": removed.name, "version": removed.version,
                         "operation": "remove", "profile": package_store.profile_path()});
                     emit_result(&result, json_output.as_deref(), json, "Package removed")?;
@@ -684,11 +735,6 @@ fn resolve_recipe_path(recipe: &Path, lookup: &Lookup) -> Result<PathBuf> {
         return Ok(recipe.to_path_buf());
     }
 
-    let remote = |source: &str, name: &str| {
-        anyhow::anyhow!(
-            "{source}:{name} is in a remote source; recipe cannot run a recipe from one yet\nNext: clone the source and add the folder with 'recipe source add --path FOLDER'."
-        )
-    };
     let text = recipe.to_string_lossy();
 
     // SOURCE:NAME names one source's recipe, whatever the others hold.
@@ -703,18 +749,11 @@ fn resolve_recipe_path(recipe: &Path, lookup: &Lookup) -> Result<PathBuf> {
                 let all = lookup.sources.with_context(|| {
                     format!("an explicit --recipes-path or $RECIPE_PATH uses no sources, so {text} names nothing")
                 })?;
-                match all.get(source)?.kind {
-                    sources::Kind::Folder { path } => Some(path),
+                let from = all.get(source)?;
+                match &from.kind {
+                    sources::Kind::Folder { path } => Some(path.clone()),
                     sources::Kind::Remote { .. } => {
-                        let found = all
-                            .find(name)
-                            .into_iter()
-                            .any(|found| found.source == source);
-                        anyhow::ensure!(
-                            found,
-                            "{source} has no recipe named {name}\nNext: 'recipe refresh {source}' fetches its index again; 'recipe list' shows what it holds."
-                        );
-                        return Err(remote(source, name));
+                        return all.fetch(&from, name, lookup.purpose);
                     }
                 }
             }
@@ -758,7 +797,10 @@ fn resolve_recipe_path(recipe: &Path, lookup: &Lookup) -> Result<PathBuf> {
             );
         }
         if let Some(found) = found.pop() {
-            return found.path.ok_or_else(|| remote(&found.source, name));
+            return match found.path {
+                Some(path) => Ok(path),
+                None => all.fetch(&all.get(&found.source)?, name, lookup.purpose),
+            };
         }
     }
 
@@ -1061,9 +1103,13 @@ fn system_route(cli: &Cli) -> Result<bool> {
             let lookup = Lookup {
                 folders: &paths,
                 sources: (!explicit).then_some(&sources),
+                purpose: sources::Purpose::Install,
             };
             match resolve_recipe_path(recipe, &lookup) {
                 Ok(path) => {
+                    if let Commands::Install { sha256, .. } = &cli.command {
+                        require_sha256(&path, sha256.as_deref())?;
+                    }
                     cmd.arg("--producer-recipe")
                         .arg(std::fs::canonicalize(path)?);
                 }

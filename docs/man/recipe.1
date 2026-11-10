@@ -111,9 +111,12 @@ its files are fetched from with {rev} and {path} in it; only its published
 index is kept. A folder is read as it is. A source is one file,
 sources/NAME.toml under the package root or in /usr/share/recipe/sources; a
 shipped source is switched off, not removed. \fBSOURCE:NAME\fR names one
-source's recipe wherever a recipe name is accepted. A recipe of a remote
-source can be listed but not yet run. An explicit \fB\-\-recipes\-path\fR
-uses no sources.
+source's recipe wherever a recipe name is accepted. Naming a recipe of a
+remote source downloads it with the recipes it needs, each file checked
+against the index; \fBinstall\fR and \fBupdate\fR keep the copy under the
+package root and record source, commit and SHA-256 in the receipt. With
+\fBinstall \-\-sha256 HASH\fR, nothing runs unless the recipe file has that
+checksum. An explicit \fB\-\-recipes\-path\fR uses no sources.
 .TP
 .B refresh [NAME]
 Fetch the index of every remote source again, or of one, over HTTPS. A failed

@@ -277,9 +277,18 @@ details. [HELPERS_AUDIT.md](HELPERS_AUDIT.md) lists registered helpers.
   folders. A bare name means a recipe folder first, then the one source that
   has it; when several do, Recipe asks for `SOURCE:NAME`. `list` never touches
   the network: it shows a remote source from its kept index, and `list --json`
-  adds `sources` and each recipe's `source`. A recipe of a remote source can
-  be listed but not yet run. An explicit `--recipes-path` or `$RECIPE_PATH`
-  uses no sources.
+  adds `sources` and each recipe's `source`. An explicit `--recipes-path` or
+  `$RECIPE_PATH` uses no sources.
+- Naming a recipe of a remote source downloads it with every recipe it needs
+  (`deps`, `build_deps`), each file at the index's commit and checked against
+  the index's SHA-256 and size; a file that differs stops before anything
+  runs. `install` and `update` fetch the index first and keep the copy in
+  `fetched/SOURCE/NAME-KEY/` under the package root; other commands use the
+  kept index and the cache. The receipt records `source`, `commit` and the
+  recipe file's `sha256`. `update NAME` follows the receipt's source and runs
+  nothing when the source has not changed; `remove` deletes the kept copies.
+- `install --sha256 HASH` runs only when the recipe file has that checksum:
+  what a person looked at in a front end is what runs.
 
 ## Inputs and selected targets
 

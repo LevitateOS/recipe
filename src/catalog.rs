@@ -259,6 +259,24 @@ pub fn index(folder: &Path) -> Result<Index> {
             continue;
         }
         let mut files = vec![file(&recipe)?];
+        // What the recipe is compiled from besides itself (a base it extends)
+        // is fetched with it, so it must be a file of this folder too.
+        let compiled = crate::needs::declaration(&folder.join(&recipe), Some(folder))?;
+        for source in compiled.source_digests.keys() {
+            let name = source.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+            if name == recipe {
+                continue;
+            }
+            if source.parent() != folder.canonicalize().ok().as_deref() {
+                problems.push(format!(
+                    "{recipe}: is compiled from {}, which is not in this folder",
+                    source.display()
+                ));
+                continue;
+            }
+            files.push(file(name)?);
+            listed.push(name.to_owned());
+        }
         listed.push(recipe);
         for name in names.iter().filter(|name| owner(name) == Some(*stem)) {
             files.push(file(name)?);

@@ -88,6 +88,30 @@ pub struct Found {
     pub path: Option<PathBuf>,
 }
 
+/// Where a fetched recipe came from; kept beside it and in the receipt.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Origin {
+    pub recipe: String,
+    pub source: String,
+    /// The commit of the source the recipe file was fetched at.
+    pub commit: String,
+    /// Of the recipe file.
+    pub sha256: String,
+}
+
+const ORIGIN_FILE: &str = ".origin.json";
+
+/// What a recipe of a remote source is fetched for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Purpose {
+    /// To run and keep: the index is fetched first, and the copy is kept
+    /// under the package root for as long as the package is installed.
+    Install,
+    /// To read: the kept index will do, and the copy goes into the cache.
+    Look,
+}
+
 pub enum Removed {
     Gone,
     /// A shipped source cannot be deleted; this file switches it off.
@@ -97,7 +121,16 @@ pub enum Removed {
 pub struct Sources {
     store: PathBuf,
     shipped: PathBuf,
+    fetched: PathBuf,
     cache: Option<PathBuf>,
+}
+
+/// One file of a fetched recipe: where it is downloaded from and what it
+/// must be.
+struct Wanted {
+    address: String,
+    sha256: String,
+    bytes: u64,
 }
 
 fn reserved(name: &str) -> bool {
@@ -169,6 +202,8 @@ fn pattern(address: &str) -> Result<String> {
     Ok(files)
 }
 
+/// At most `limit` bytes of what is at an address, and one more when there
+/// is more, so the caller can tell.
 fn fetch(address: &str, limit: u64) -> Result<Vec<u8>> {
     check_address(address)?;
     let response = ureq::AgentBuilder::new()
@@ -191,7 +226,6 @@ fn fetch(address: &str, limit: u64) -> Result<Vec<u8>> {
         .take(limit + 1)
         .read_to_end(&mut bytes)
         .with_context(|| format!("cannot read {address}"))?;
-    ensure!(bytes.len() as u64 <= limit, "{address} is larger than {limit} bytes");
     Ok(bytes)
 }
 
@@ -199,8 +233,12 @@ fn fetch_index(files: &str, branch: &str) -> Result<(String, Published)> {
     let address = files
         .replace("{rev}", branch)
         .replace("{path}", catalog::INDEX_FILE);
-    let text = String::from_utf8(fetch(&address, INDEX_LIMIT)?)
-        .with_context(|| format!("{address} is not text"))?;
+    let bytes = fetch(&address, INDEX_LIMIT)?;
+    ensure!(
+        bytes.len() as u64 <= INDEX_LIMIT,
+        "{address} is larger than {INDEX_LIMIT} bytes"
+    );
+    let text = String::from_utf8(bytes).with_context(|| format!("{address} is not text"))?;
     let published = catalog::published(&text).with_context(|| {
         format!("{address} is not a usable index; a source publishes one with 'recipe index'")
     })?;
@@ -238,6 +276,7 @@ impl Sources {
     pub fn new(package_root: &Path) -> Self {
         Self {
             store: package_root.join("sources"),
+            fetched: package_root.join("fetched"),
             shipped: PathBuf::from(SHIPPED),
             cache: dirs::cache_dir().map(|cache| cache.join("recipe/sources")),
         }
@@ -467,7 +506,174 @@ impl Sources {
         }
     }
 
-    /// Every source that has a recipe of this name.
+    /// A remote source's index: fetched now when `fresh` or when none is kept,
+    /// and the kept one when the source cannot be reached.
+    fn index(&self, source: &Source, fresh: bool) -> Result<Published> {
+        let kept = self.kept(source).index;
+        if !fresh && let Some(kept) = kept {
+            return Ok(kept);
+        }
+        match (self.refresh(source), kept) {
+            (Ok(index), _) => Ok(index),
+            (Err(error), Some(kept)) => {
+                crate::core::output::warning(&format!(
+                    "{}: {error:#}; using the index fetched before",
+                    source.name
+                ));
+                Ok(kept)
+            }
+            (Err(error), None) => Err(error),
+        }
+    }
+
+    /// Downloads a recipe of a remote source and every recipe it needs into
+    /// one folder, each file checked against the index, and returns the
+    /// recipe's file there. A needed recipe comes from the recipe's own
+    /// source, or from a source that one names under `uses`.
+    pub fn fetch(&self, source: &Source, recipe: &str, purpose: Purpose) -> Result<PathBuf> {
+        let Kind::Remote { files, .. } = &source.kind else {
+            bail!("{} is a folder; recipe reads it as it is", source.name);
+        };
+        let fresh = purpose == Purpose::Install;
+        let index = self.index(source, fresh)?;
+        let own = index.recipe(recipe).with_context(|| {
+            format!(
+                "{} has no recipe named {recipe}\nNext: 'recipe list' shows what it holds.",
+                source.name
+            )
+        })?;
+        let origin = Origin {
+            recipe: recipe.to_owned(),
+            source: source.name.clone(),
+            commit: index.commit.clone(),
+            sha256: own["files"][0]["sha256"].as_str().unwrap_or_default().to_owned(),
+        };
+
+        // Every recipe needed, by name: the folder is flat, as a source is.
+        let mut wanted = BTreeMap::<String, Wanted>::new();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut used = BTreeMap::<String, (String, Published)>::new();
+        let mut pending = vec![(recipe.to_owned(), source.name.clone())];
+        used.insert(source.name.clone(), (files.clone(), index));
+        while let Some((name, from)) = pending.pop() {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            let (pattern, index) = &used[&from];
+            let entry = index.recipe(&name).expect("looked up before it was queued");
+            for file in entry["files"].as_array().into_iter().flatten() {
+                let path = file["path"].as_str().unwrap_or_default();
+                let fresh = Wanted {
+                    address: pattern.replace("{rev}", &index.commit).replace("{path}", path),
+                    sha256: file["sha256"].as_str().unwrap_or_default().to_owned(),
+                    bytes: file["bytes"].as_u64().unwrap_or_default(),
+                };
+                if let Some(other) = wanted.get(path) {
+                    ensure!(
+                        other.sha256 == fresh.sha256,
+                        "{path} is needed from two sources with different contents"
+                    );
+                }
+                wanted.insert(path.to_owned(), fresh);
+            }
+            let uses = index.source.uses.clone();
+            let needs: Vec<String> = ["deps", "build_deps"]
+                .iter()
+                .flat_map(|field| entry[*field].as_array().into_iter().flatten())
+                .filter_map(|name| name.as_str().map(str::to_owned))
+                .collect();
+            'needed: for needed in needs {
+                if seen.contains(&needed) {
+                    continue;
+                }
+                if used[&from].1.recipe(&needed).is_some() {
+                    pending.push((needed, from.clone()));
+                    continue;
+                }
+                for other in &uses {
+                    if !used.contains_key(other) {
+                        let other_source = self.get(other).with_context(|| {
+                            format!("{from} uses the source {other}, which is not added here")
+                        })?;
+                        let Kind::Remote { files, .. } = &other_source.kind else {
+                            bail!("{from} uses the source {other}, which is a folder here; recipe fetches needed recipes from remote sources only");
+                        };
+                        let index = self.index(&other_source, fresh)?;
+                        used.insert(other.clone(), (files.clone(), index));
+                    }
+                    if used[other].1.recipe(&needed).is_some() {
+                        pending.push((needed, other.clone()));
+                        continue 'needed;
+                    }
+                }
+                bail!(
+                    "{name} needs {needed}, which {from} does not have{}",
+                    if uses.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", nor the sources it uses ({})", uses.join(", "))
+                    }
+                );
+            }
+        }
+
+        // The folder is named by everything in it, so a change to any needed
+        // recipe gives a new folder and an installed one is never rewritten.
+        let mut contents = Sha256::new();
+        for (path, file) in &wanted {
+            contents.update(format!("{path} {}\n", file.sha256));
+        }
+        let key = hex::encode(contents.finalize());
+        let base = match purpose {
+            Purpose::Install => self.fetched.join(&source.name),
+            Purpose::Look => self.kept_folder(source)?.join("look"),
+        };
+        let folder = base.join(format!("{recipe}-{}", &key[..12]));
+        std::fs::create_dir_all(&folder)
+            .with_context(|| format!("cannot create {}", folder.display()))?;
+        for (path, file) in &wanted {
+            let target = folder.join(path);
+            if std::fs::read(&target).is_ok_and(|kept| hex::encode(Sha256::digest(&kept)) == file.sha256) {
+                continue;
+            }
+            let bytes = fetch(&file.address, file.bytes)?;
+            ensure!(
+                bytes.len() as u64 == file.bytes && hex::encode(Sha256::digest(&bytes)) == file.sha256,
+                "{} is not the file the index of {} lists (SHA-256 or size differs); nothing was run\nNext: 'recipe refresh {}' and try again; if it stays, the source's index is out of date.",
+                file.address,
+                source.name,
+                source.name
+            );
+            let fresh = folder.join(format!("{path}.new"));
+            std::fs::write(&fresh, bytes)
+                .and_then(|()| std::fs::rename(&fresh, &target))
+                .with_context(|| format!("cannot write {}", target.display()))?;
+        }
+        std::fs::write(folder.join(ORIGIN_FILE), serde_json::to_string(&origin)?)
+            .with_context(|| format!("cannot write in {}", folder.display()))?;
+        Ok(folder.join(format!("{recipe}.rhai")))
+    }
+
+    /// Removes the copies kept of a source's recipe, except `keep`: all of
+    /// them once the package is removed, the older ones once it is updated.
+    /// A copy left by a run that failed goes the same way.
+    pub fn forget(&self, source: &str, recipe: &str, keep: Option<&Path>) {
+        let prefix = format!("{recipe}-");
+        for item in std::fs::read_dir(self.fetched.join(source)).into_iter().flatten().flatten() {
+            let folder = item.path();
+            let is_copy = item.file_name().to_str().is_some_and(|name| {
+                name.strip_prefix(&prefix).is_some_and(|key| {
+                    key.len() == 12 && key.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+            });
+            if is_copy && keep.and_then(Path::parent) != Some(folder.as_path()) {
+                let _ = std::fs::remove_dir_all(folder);
+            }
+        }
+    }
+
+    /// Every source that has a recipe of this name. A remote source whose
+    /// index was never fetched is fetched once, so a first use finds it.
     pub fn find(&self, recipe: &str) -> Vec<Found> {
         let mut found = Vec::new();
         for source in self.all().0 {
@@ -482,7 +688,7 @@ impl Sources {
                     }
                 }
                 Kind::Remote { .. } => {
-                    if self.kept(&source).index.is_some_and(|index| index.recipe(recipe).is_some()) {
+                    if self.index(&source, false).is_ok_and(|index| index.recipe(recipe).is_some()) {
                         found.push(Found {
                             source: source.name,
                             path: None,
@@ -631,4 +837,12 @@ pub fn ago(checked: u64) -> String {
         seconds => (seconds / 86400, "day"),
     };
     format!("{count} {unit}{} ago", if count == 1 { "" } else { "s" })
+}
+
+/// Where a recipe file was fetched from, when it is a kept copy of a remote
+/// source's recipe.
+pub fn origin(recipe: &Path) -> Option<Origin> {
+    let text = std::fs::read_to_string(recipe.parent()?.join(ORIGIN_FILE)).ok()?;
+    let origin: Origin = serde_json::from_str(&text).ok()?;
+    (recipe.file_stem()? == origin.recipe.as_str()).then_some(origin)
 }
