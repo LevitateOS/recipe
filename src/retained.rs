@@ -140,6 +140,12 @@ pub(crate) struct Pending {
     pub generation: u64,
 }
 
+/// The SHA-256 of the file at `path`, in hex (the launcher's identity).
+pub(crate) fn file_digest(path: &Path) -> Result<String> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
 impl Retained {
     pub fn open(
         root: Option<&Path>,
@@ -147,6 +153,7 @@ impl Retained {
         recipe: &Path,
         prepared: &PreparedInvocation,
         worker_digest: &str,
+        launcher_digest: &str,
         options: &InvocationOptions,
     ) -> Result<Self> {
         let root = state_root(root)?;
@@ -211,6 +218,7 @@ impl Retained {
             prepared.contract.catalog,
             &prepared.contract.digest,
             worker_digest,
+            launcher_digest,
             inputs,
             defines,
             target_os,

@@ -187,7 +187,8 @@ root, which defaults to `$XDG_STATE_HOME/recipe` (normally `~/.local/state/recip
 Use `--state-dir PATH` to choose a different state root.
 
 Identity includes the recipe/module/dependency closure, declared input content,
-custom defines, execution options, image and worker. Changed inputs start fresh
+custom defines, execution options, image, worker and Ginux launcher (by content:
+a rebuilt `GINUX_BIN` starts fresh state). Changed inputs start fresh
 state. Checkpoints become recoverable only after both files and separate
 `ctx.state` records are durable. Interrupted, unacknowledged work is discarded.
 A successful failure-cleanup hook is also checkpointed with its returned state
