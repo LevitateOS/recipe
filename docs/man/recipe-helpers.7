@@ -131,6 +131,16 @@ true if any match
 \fBglob_list(pattern) -> Array\fR
 returns string paths
 .TP
+\fBfetch_bounded(url, dest, limit) -> String\fR
+Fetch binary metadata with HTTP 200, identity encoding and a byte bound of
+1 through 1048576. Reject oversized or truncated responses before atomic
+publication. Network policy and redirects remain bounded by Recipe/Ginux.
+.TP
+\fBdownload_exact(url, dest, sha256, size) -> String\fR
+Download one complete signed payload. The positive size and SHA256 are caller
+inputs; reject conflicting Content-Length, excess bytes or truncation. Publish
+atomically only after verifying both. Incomplete bodies are not retained.
+.TP
 \fBhttp_get(url) -> String\fR
 Bounded metadata text; requires invocation network permission.
 .TP

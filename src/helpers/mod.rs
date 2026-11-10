@@ -202,6 +202,8 @@ pub fn register_all(engine: &mut Engine) {
             url, dest, sha256, resume
         )
     );
+    helper!(engine, "fetch_bounded", |url: &str, dest: &str, limit: i64| acquire::download::fetch_bounded(url,dest,limit));
+    helper!(engine, "download_exact", |url: &str, dest: &str, sha: &str, size: i64| acquire::download::download_exact(url,dest,sha,size));
     helper!(engine, "verify_sha256", |path: &str, expected: &str| {
         acquire::verify_sha256(path, expected)
     });

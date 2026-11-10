@@ -258,3 +258,74 @@ fn save_response_with_prefix(
     drop(pb);
     result
 }
+
+/// Bounded, exact-byte metadata acquisition. Authenticity is established by the
+/// caller's signed metadata protocol; an unbounded text/UTF-8 conversion cannot
+/// represent detached binary signatures.
+pub fn fetch_bounded(url: &str, dest: &str, limit: i64) -> Result<String, Box<EvalAltResult>> {
+    if !(1..=1024 * 1024).contains(&limit) {
+        return Err("metadata acquisition bound must be 1..1048576 bytes".into());
+    }
+    let response = request(url)?
+        .call()
+        .map_err(|e| format!("metadata acquisition failed: {e}"))?;
+    if response.status() != 200 {
+        return Err("metadata acquisition requires HTTP 200".into());
+    }
+    identity_encoding(&response)?;
+    let declared = content_length(&response)?;
+    if declared.is_some_and(|n| n > limit as u64) {
+        return Err("metadata exceeds acquisition bound".into());
+    }
+    let path = Path::new(dest);
+    fs_utils::ensure_parent_dir(path)?;
+    let parent = path.parent().ok_or("metadata destination needs a parent")?;
+    let mut output =
+        tempfile::NamedTempFile::new_in(parent).map_err(|e| format!("metadata staging: {e}"))?;
+    let mut input = response.into_reader().take(limit as u64 + 1);
+    let size = std::io::copy(&mut input, &mut output).map_err(|e| format!("metadata read: {e}"))?;
+    if size > limit as u64 || declared.is_some_and(|n| n != size) {
+        return Err("metadata length differs from acquisition bound/Content-Length".into());
+    }
+    output
+        .as_file()
+        .sync_all()
+        .map_err(|e| format!("metadata flush: {e}"))?;
+    output
+        .persist(path)
+        .map_err(|e| format!("metadata publication: {e}"))?;
+    Ok(dest.into())
+}
+/// A signed release's length is authority, not a response header chosen by the
+/// server. Publication remains atomic and SHA256-verified by the existing writer.
+pub fn download_exact(
+    url: &str,
+    dest: &str,
+    sha256: &str,
+    size: i64,
+) -> Result<String, Box<EvalAltResult>> {
+    if size <= 0 {
+        return Err("download length must be positive".into());
+    }
+    super::verify::validate_sha256(sha256)?;
+    let response = request(url)?
+        .call()
+        .map_err(|e| format!("download failed: {e}"))?;
+    if response.status() != 200 {
+        return Err("complete download requires HTTP 200".into());
+    }
+    identity_encoding(&response)?;
+    if content_length(&response)?.is_some_and(|n| n != size as u64) {
+        return Err("download Content-Length differs from signed size".into());
+    }
+    let path = Path::new(dest);
+    save_response_with_prefix(
+        response,
+        path,
+        &path.file_name().unwrap_or_default().to_string_lossy(),
+        None,
+        Some(size as u64),
+        sha256,
+    )?;
+    Ok(dest.into())
+}
