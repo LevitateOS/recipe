@@ -140,7 +140,12 @@ impl PackageStore {
         let payload = generation.join(PACKAGES).join(name);
         for file in &package.files {
             let relative = Path::new(file);
-            for base in [&generation, &payload] {
+            let bases: &[&PathBuf] = if private(file) {
+                &[&payload]
+            } else {
+                &[&generation, &payload]
+            };
+            for base in bases.iter().copied() {
                 let mut parent = base.to_path_buf();
                 for part in relative
                     .parent()
@@ -164,7 +169,8 @@ impl PackageStore {
                 );
             }
             ensure!(
-                fs::read_link(generation.join(relative))? == profile_link_target(name, file),
+                private(file)
+                    || fs::read_link(generation.join(relative))? == profile_link_target(name, file),
                 "active package link was changed: {file}"
             );
         }
@@ -407,6 +413,12 @@ fn valid_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// `lib/` is what a package carries for its own programs: kept in the package,
+/// linked nowhere, so two packages never meet over it.
+fn private(file: &str) -> bool {
+    file.starts_with("lib/")
+}
+
 fn valid_file(path: &str) -> Result<()> {
     let components: Vec<_> = Path::new(path).components().collect();
     ensure!(
@@ -420,7 +432,8 @@ fn valid_file(path: &str) -> Result<()> {
     );
     ensure!(
         (components[0].as_os_str() == "bin" && components.len() == 2)
-            || components[0].as_os_str() == "share",
+            || components[0].as_os_str() == "share"
+            || components[0].as_os_str() == "lib",
         "package files must be bin/COMMAND or share/PATH: {path}"
     );
     // Components normalizes repeated slashes and trailing separators; receipts
@@ -709,7 +722,7 @@ fn copy_package(source: &Path, destination: &Path, retained: bool) -> Result<Vec
         );
         let first = relative.components().next().context("empty package path")?;
         ensure!(
-            first.as_os_str() == "bin" || first.as_os_str() == "share",
+            first.as_os_str() == "bin" || first.as_os_str() == "share" || first.as_os_str() == "lib",
             "unsupported package directory: {relative_text}"
         );
         let output = destination.join(relative);
@@ -766,7 +779,7 @@ fn finish_generation(
 ) -> Result<()> {
     let mut owners = BTreeMap::<&str, &str>::new();
     for (name, package) in &packages {
-        for file in &package.files {
+        for file in package.files.iter().filter(|file| !private(file)) {
             if let Some(other) = owners.insert(file, name) {
                 bail!("package file conflict: {file} is provided by both {other} and {name}");
             }

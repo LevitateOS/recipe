@@ -9,6 +9,7 @@
 //! - **io**: read_file, write_file, append_file, glob_list, text replacement
 //! - **disk**: check_disk_space
 
+pub mod carry;
 pub mod disk;
 pub mod filesystem;
 pub mod io;

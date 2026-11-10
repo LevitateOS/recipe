@@ -47,6 +47,14 @@ Probe current domain PATH.
 \fBcontains(s, pat) -> bool\fR
 
 .TP
+\fBcarry_libraries(package, prefix, search:Array) -> Array\fR
+Trial. Copies into package/lib/ the loader and every shared library the
+programs in package/bin/ load, from the search folders and then the build
+image, and refuses a program that was not linked for prefix.
+.TP
+\fBcarry_link_flags(prefix) -> String\fR
+Trial. Linker flags that tell a program its own loader and lib/ under prefix.
+.TP
 \fBcopy_file(src, dst) -> ()\fR
 exact destination path
 .TP

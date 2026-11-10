@@ -149,6 +149,17 @@ pub fn register_all(engine: &mut Engine) {
     helper!(engine, "copy_file", |src: &str, dst: &str| {
         install::copy_file(src, dst)
     });
+    // Self-contained packages (trial): a package carries its shared libraries.
+    helper!(engine, "carry_link_flags", |prefix: &str| {
+        install::carry::carry_link_flags(prefix)
+    });
+    helper!(
+        engine,
+        "carry_libraries",
+        |package: &str, prefix: &str, search: rhai::Array| {
+            install::carry::carry_libraries(package, prefix, search)
+        }
+    );
     helper!(engine, "copy_file_reflink", |src: &str, dst: &str| {
         install::copy_file_reflink(src, dst)
     });

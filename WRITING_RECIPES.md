@@ -87,7 +87,10 @@ const NEEDS = #{ outputs: #{ "package": "directory" } };
 `package` is a Rhai keyword, so quote the output key. The files must be regular
 files; commands need executable permission. The initial activation surface is
 `bin/COMMAND` and `share/PATH`; symlinks, special files and setuid/setgid permissions
-are rejected. There are no host installation hooks. See the workspace's
+are rejected. There are no host installation hooks. A package may also hold
+`lib/`, which stays in the package and is linked nowhere: it is where a program
+carries the shared libraries it loads (`carry_libraries`, a trial of the
+self-contained packages design in the LevitateOS superproject). See the workspace's
 `recipes/ripgrep.rhai` for a complete pinned package producer.
 
 `recipe install` activates this output atomically unless `--no-activate` is set.
