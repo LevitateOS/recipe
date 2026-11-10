@@ -57,3 +57,25 @@ pub(crate) fn default_recipes_path() -> PathBuf {
 
     data_home.join("recipe/recipes")
 }
+
+/// User overrides precede the immutable catalog shipped by the OS. An explicit
+/// collection remains isolated, including the builder's OS recipe collection.
+pub(crate) fn recipe_paths(selected: Option<PathBuf>) -> Vec<PathBuf> {
+    if let Some(path) = selected {
+        return vec![path];
+    }
+    let path = default_recipes_path();
+    if std::env::var_os("RECIPE_PATH").is_some() {
+        return vec![path];
+    }
+    vec![path, PathBuf::from("/usr/share/recipe/recipes")]
+}
+
+pub(crate) fn default_package_root() -> anyhow::Result<PathBuf> {
+    if unsafe { libc::geteuid() } == 0 {
+        return Ok(PathBuf::from("/var/lib/recipe"));
+    }
+    Ok(dirs::data_dir()
+        .ok_or_else(|| anyhow::anyhow!("cannot locate package data; select --package-root"))?
+        .join("recipe"))
+}

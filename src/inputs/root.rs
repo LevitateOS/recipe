@@ -33,15 +33,8 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
     if std::env::consts::OS != "linux" || std::env::consts::ARCH != "x86_64" {
         bail!("Ginux execution currently requires Linux x86_64");
     }
-    let digest = root_digest(&invocation.root_reference)?;
-    let archive_path = match std::env::var_os("GINUX_ROOTFS") {
-        Some(path) if !path.is_empty() => PathBuf::from(path),
-        Some(_) => bail!("GINUX_ROOTFS is empty; select a verified assembled rootfs tar"),
-        None => dirs::cache_dir()
-            .context("cannot locate the image cache; set GINUX_ROOTFS to an assembled rootfs tar")?
-            .join("recipe/images")
-            .join(format!("{digest}.tar")),
-    };
+    let digest = crate::runtime::root_digest(&invocation.root_reference)?;
+    let archive_path = crate::runtime::rootfs_path(&invocation.root_reference)?;
     // Copy and hash the same bytes into an unlinked snapshot. Extraction must
     // not reread a mutable source pathname after verifying a different read.
     let mut archive = crate::fsx::open_regular(&archive_path).with_context(|| {
@@ -171,24 +164,6 @@ pub(crate) fn prepare_root(invocation: &PreparedInvocation) -> Result<PreparedRo
     }
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o555))?;
     Ok(root)
-}
-
-fn root_digest(reference: &str) -> Result<&str> {
-    let (image, digest) = reference.split_once("@sha256:").context(
-        "domain.root must identify the assembled rootfs tar as oci:NAME@sha256:CONTENT_DIGEST",
-    )?;
-    if !image.starts_with("oci:")
-        || image.len() <= 4
-        || digest.len() != 64
-        || !digest
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        bail!(
-            "domain.root must identify the assembled rootfs tar as oci:NAME@sha256:CONTENT_DIGEST"
-        );
-    }
-    Ok(digest)
 }
 
 fn worker_binary() -> Result<PathBuf> {

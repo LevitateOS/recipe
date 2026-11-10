@@ -245,17 +245,16 @@ impl GinuxLauncher {
     }
 }
 
-/// Resolve the Ginux launcher from `GINUX_BIN` (interfaces §2).
+/// Resolve Ginux from `GINUX_BIN`, or the launcher shipped with the OS.
 ///
 /// A missing, empty, nonexistent, or unexecutable value is an explicit
 /// `startup` failure — never a silent fallback to host execution.
 fn resolve_launcher() -> Result<PathBuf> {
-    let raw = std::env::var("GINUX_BIN").with_context(|| {
-        crate::failure::Category::Startup.error(
-            "GINUX_BIN is not set \
-         (no launcher to start)",
-        )
-    })?;
+    let raw = match std::env::var("GINUX_BIN") {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => crate::runtime::LAUNCHER.to_owned(),
+        Err(error) => return Err(error).context("GINUX_BIN is not valid UTF-8"),
+    };
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         bail!(crate::failure::Category::Startup.error(

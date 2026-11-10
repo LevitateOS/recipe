@@ -1,5 +1,29 @@
 # Actual managed consumers
 
+`user-packages.py` exercises the public ripgrep recipe through the real CLI and
+Ginux: install 15.1.0, run `rg`, update to pinned 15.2.0, reject a denied update
+without changing active software, then remove it without catalog/runtime access.
+It installs only into a new directory below `--artifacts` and retains logs.
+With the runtime selections below and whole-coordinator privileges:
+
+```sh
+sudo -n --preserve-env=GINUX_BIN,GINUX_ROOTFS,GINUX_ROOT \
+  python3 tools/recipe/tests/consumers/user-packages.py \
+  --binary "$PWD/target/debug/recipe" --recipe "$PWD/recipes/ripgrep.rhai" \
+  --artifacts "$PWD/.artifacts/consumers/user-packages"
+```
+
+`package-boundaries.py` imports the verified `rg` executable from that run's
+published package through Ginux. It checks producer-only execution, activation,
+file conflicts and preservation of an unmanaged profile:
+
+```sh
+sudo -n --preserve-env=GINUX_BIN,GINUX_ROOTFS,GINUX_ROOT \
+  python3 tools/recipe/tests/consumers/package-boundaries.py \
+  --binary "$PWD/target/debug/recipe" --program /absolute/published/package/bin/rg \
+  --artifacts "$PWD/.artifacts/consumers/package-boundaries"
+```
+
 `run.py` drives the real Recipe CLI, matching worker and configured Ginux
 launcher. It does not compile or execute the workload on the host. Select all
 three executables and the digest-verified compiler/acquisition image explicitly:

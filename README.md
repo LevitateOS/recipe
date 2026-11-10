@@ -9,19 +9,60 @@ commands do not run on the coordinator host.
 
 In the LevitateOS workspace, `distro/builder/os-recipes/` holds OS artifact
 producers, and the top-level `recipes/` directory is the user-managed software
-catalog (currently without packages). The builder selects its own collection
-with `--recipes-path`; normal CLI lookup uses `$RECIPE_PATH` or the user's XDG
-recipe directory. Both use this engine, the same Rhai API 2 and the same Ginux
+catalog, starting with ripgrep. The builder selects its own collection
+with `--recipes-path DIR` and `--no-activate`; normal CLI lookup uses an explicitly selected
+catalog, or the user's XDG recipe directory followed by `/usr/share/recipe/recipes`.
+Both use this engine, the same Rhai API 2 and the same Ginux
 execution rules. Directory placement expresses ownership, not a new recipe type
 or permission boundary. This repository's `examples/` and `tests/` are engine
 examples and fixtures, not the application catalog.
 
 The OS builder assembles published products into images; `recab` handles system
 image activation and A/B updates. Apps bundled in a desktop image belong to that
-OS lifecycle. User-managed software needs its own activation and update/removal
-workflow in Recipe; that is not implemented yet. Today `install` and `remove`
-operate on an isolated output tree, and `list` lists recipe declarations rather
-than installed applications.
+OS lifecycle. For user software, the CLI activates a directory output named
+`package` after managed execution and publication succeed. The engine's hooks
+still operate on their isolated output tree. `--no-activate` keeps product-only
+behavior. `list` lists recipe declarations; `installed` lists active packages.
+
+## User-managed software
+
+On an installed system with the current catalog/runtime (use `doas` on AcornOS):
+
+```sh
+sudo recipe install ripgrep
+rg --version
+sudo recipe installed
+sudo recipe update ripgrep
+sudo recipe remove ripgrep
+```
+
+`update` runs the current selected recipe and activates its pinned version. It
+does not discover upstream releases or rewrite recipe pins. A reviewed newer
+recipe can be placed in the user's override catalog independently of an OS image
+update. Explicit `--recipes-path` or `$RECIPE_PATH` selects only that catalog;
+otherwise the XDG recipe directory overrides matching shipped recipe filenames.
+
+Packages publish regular `bin/COMMAND` and `share/PATH` files, with a name and
+version. The coordinator copies them into an owned profile generation and commits
+the files and installed receipt through one atomic symlink switch. File conflicts,
+symlinks, special files and setuid/setgid payloads fail before switching. No
+activation script executes on the host. Failed acquisition or activation preserves
+the previous profile.
+
+Root's package root is `/var/lib/recipe`; an ordinary user's is
+`$XDG_DATA_HOME/recipe` (normally `~/.local/share/recipe`). `--package-root PATH`
+selects another store. Its `profile/bin` contains active commands; installed login
+profiles add the system and user paths to PATH. `remove` uses the installed receipt
+without the recipe or runtime. `isinstalled` checks active files and links. Removed
+packages disappear from the profile; old inactive generations and build/publication
+caches remain. They are not an installed-package inventory.
+
+The OS builder packages the public catalog, `/usr/libexec/recipe/ginux`, and
+`/usr/share/recipe/runtime/{rootfs.tar,root-reference}`. These are runtime defaults;
+explicit `GINUX_*` selections still take precedence. The image is digest-verified
+before execution. Existing images must be rebuilt to carry these files; a source
+change alone does not update a running installation. Native Ginux still requires
+whole-coordinator bootstrap privileges, as described below.
 
 ## Shared execution contract
 
@@ -196,8 +237,8 @@ rootfs symlink bytes; they never authorize following host paths.
 retained state, Recipe restores that target instead. Hooks inspect
 `ctx.runtime.paths.target`; compiler-image files under `/usr` cannot establish
 that a selected product is installed. Removal changes the owned target, leaving
-the imported input and earlier published generations unchanged. There is no
-live-system activation command.
+the imported input and earlier published generations unchanged. The CLI handles
+package activation separately; `--no-activate` selects only this producer lifecycle.
 
 ## State, diagnostics and recovery
 
@@ -244,7 +285,9 @@ Run `recipe --help` and `recipe install --help` for the complete current syntax.
 
 | Option | Meaning |
 | --- | --- |
-| `-r, --recipes-path DIR` | Name/module/dependency search directory; defaults to `$RECIPE_PATH` or the per-user recipe data directory. |
+| `-r, --recipes-path DIR` | Explicit name/module/dependency search directory. Otherwise user overrides precede the shipped catalog; `$RECIPE_PATH` selects one directory exclusively. |
+| `--package-root DIR` | Store for installed receipts, generations and the active `profile` symlink. |
+| `--no-activate` | Produce outputs or run hooks only, without installing/removing an active package. |
 | `-b, --build-dir DIR` | Logical destination identity and lock. |
 | `--input NAME=PATH` | Explicit immutable file/tree input. |
 | `--define KEY=VALUE` | Recipe-specific constant; not a runtime path substitute. |

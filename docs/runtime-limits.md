@@ -34,8 +34,8 @@ not a general procfs, descriptor or epoll ABI.
 The selected image must contain each actual tool and its libraries. A helper's
 registration or a tool's `--help`/`--version` does not establish that the full
 consumer works. Whole-coordinator bootstrap privileges remain required; see
-[Linux setup](setup-linux.md). Recipe does not activate a running system; recab
-owns A/B activation. Package helpers do not add a general package solver or
+[Linux setup](setup-linux.md). Recipe activates user-package publications in an
+owned profile; recab owns OS image and A/B activation. Package helpers do not add a general package solver or
 global ownership database. Controlled autofix checks establish retry mechanics,
 not external AI-provider interoperability.
 The installer UI's PTYs run on the libvirt guest's Linux kernel. Their acceptance

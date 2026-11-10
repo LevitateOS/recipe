@@ -20,14 +20,17 @@ pub(crate) struct Cli {
     pub(crate) json: bool,
 
     /// Recipe collection used for name lookup and listing (the OS builder selects its own collection).
-    #[arg(
-        short = 'r',
-        long,
-        global = true,
-        default_value_os_t = super::metadata::default_recipes_path()
-    )]
+    #[arg(short = 'r', long, global = true)]
     #[arg(help_heading = "Recipes")]
-    pub(crate) recipes_path: PathBuf,
+    pub(crate) recipes_path: Option<PathBuf>,
+
+    /// Package storage and active profile (default: per-user Recipe data, or /var/lib/recipe for root).
+    #[arg(long, global = true, help_heading = "Installed software")]
+    pub(crate) package_root: Option<PathBuf>,
+
+    /// Produce outputs only; do not activate packages or use the installed-package receipt.
+    #[arg(long, global = true, help_heading = "Installed software")]
+    pub(crate) no_activate: bool,
 
     /// Logical build destination and lock (default: stable destination under the state directory).
     #[arg(short, long, global = true)]
@@ -129,20 +132,28 @@ pub(crate) struct Cli {
 #[derive(Subcommand)]
 pub(crate) enum Commands {
     /// Check a recipe's declared inputs, dependencies and permissions without running it
-    #[command(after_help = "Examples:\n  recipe validate kitty\n  recipe validate ./recipes/kitty.rhai --input source=./source\n\nChecks declarations and required inputs without executing recipe code.\nRequires a compatible Ginux launcher. Use --json to see the full report.")]
+    #[command(
+        after_help = "Examples:\n  recipe validate kitty\n  recipe validate ./recipes/kitty.rhai --input source=./source\n\nChecks declarations and required inputs without executing recipe code.\nRequires a compatible Ginux launcher. Use --json to see the full report."
+    )]
     Validate { recipe: PathBuf },
     /// Show a recipe's permissions and resource limits without running it
-    #[command(after_help = "Examples:\n  recipe inspect kitty\n  recipe inspect ./recipes/kitty.rhai --json\n\nShows declared inputs, outputs, network endpoints and effective resource limits.\nNo recipe code is executed. Requires a compatible Ginux launcher.")]
+    #[command(
+        after_help = "Examples:\n  recipe inspect kitty\n  recipe inspect ./recipes/kitty.rhai --json\n\nShows declared inputs, outputs, network endpoints and effective resource limits.\nNo recipe code is executed. Requires a compatible Ginux launcher."
+    )]
     Inspect { recipe: PathBuf },
     /// Explain why an operation is allowed or denied for a recipe or past run
-    #[command(after_help = "Examples:\n  recipe explain kitty filesystem.path.read\n  recipe explain /path/to/retained-invocation network.tcp.connect\n\nA recipe explains declared rules; a retained invocation explains recorded\ndecisions. Missing observations do not imply that an operation succeeded.")]
+    #[command(
+        after_help = "Examples:\n  recipe explain kitty filesystem.path.read\n  recipe explain /path/to/retained-invocation network.tcp.connect\n\nA recipe explains declared rules; a retained invocation explains recorded\ndecisions. Missing observations do not imply that an operation succeeded."
+    )]
     Explain { subject: PathBuf, operation: String },
     /// Compare the permissions and resource limits of two recipes
-    #[command(after_help = "Example:\n  recipe diff ./old/kitty.rhai ./new/kitty.rhai\n\nCompares declared inputs, outputs, network endpoints, dependencies and limits.\nNo recipe code is executed. Requires a compatible Ginux launcher.")]
-    Diff { old: PathBuf, new: PathBuf },
-    /// Install into a recipe's owned output tree and publish its products
     #[command(
-        after_help = "Examples (with your own recipe):\n  recipe install ./hello.rhai\n  recipe install hello --recipes-path ./my-recipes\n  recipe install ./hello.rhai --autofix --autofix-attempts 3\n\n<RECIPE> may be:\n  - an absolute path\n  - a relative path\n  - a recipe name resolved under --recipes-path\n  - the same name with .rhai appended under --recipes-path\n\nOS producers and user-software recipes use the same format and engine.\nThis command publishes outputs; it does not activate software on the running system."
+        after_help = "Example:\n  recipe diff ./old/kitty.rhai ./new/kitty.rhai\n\nCompares declared inputs, outputs, network endpoints, dependencies and limits.\nNo recipe code is executed. Requires a compatible Ginux launcher."
+    )]
+    Diff { old: PathBuf, new: PathBuf },
+    /// Run a recipe and activate its package output, if declared
+    #[command(
+        after_help = "Examples:\n  recipe install ripgrep\n  recipe install ./hello.rhai\n  recipe install ./producer.rhai --no-activate\n\nRecipes use the same Ginux engine. A directory output named package is activated\natomically in the selected package root's profile; other outputs remain products.\nOS builders use --no-activate. Acquisition or activation failure preserves the old profile."
     )]
     Install {
         /// Recipe path or recipe name. If the file is not found directly, recipe will also look in --recipes-path and try appending `.rhai`.
@@ -169,9 +180,18 @@ pub(crate) enum Commands {
         autofix_allow_path: Vec<PathBuf>,
     },
 
-    /// Run a recipe's remove hook on its owned output tree
+    /// Update an installed package to the version pinned by its current recipe
     #[command(
-        after_help = "Example (use the same recipe, inputs and destination as install):\n  recipe remove ./hello.rhai\n\nRemoval changes the retained output tree. It does not remove earlier published\ngenerations or software from the running system."
+        after_help = "Example:\n  recipe update ripgrep\n\nUses the current catalog recipe, or the installed source path if no catalog entry\nexists. It does not edit version pins or fetch an unverified latest release.\nThe previous package remains active until the replacement is ready."
+    )]
+    Update { recipe: PathBuf },
+
+    /// List active user-managed packages without running recipes
+    Installed,
+
+    /// Remove an active package, or run an output-only recipe's remove hook
+    #[command(
+        after_help = "Examples:\n  recipe remove ripgrep\n  recipe remove ./producer.rhai --no-activate\n\nActive package removal uses its installed receipt and needs neither the recipe\nnor Ginux. Inactive profile generations and build caches are retained.\n--no-activate runs only the recipe's removal hook in its owned output tree."
     )]
     Remove {
         /// Recipe path or recipe name. Name lookup follows the same rules as `recipe install`.
@@ -191,10 +211,10 @@ pub(crate) enum Commands {
         reason: Option<String>,
     },
 
-    /// Evaluate the recipe's `is_installed(ctx)` hook manually
+    /// Check active package files, or an output-only recipe's installed state
     #[command(name = "isinstalled")]
     #[command(
-        after_help = "Examples:\n  recipe isinstalled kitty\n  recipe isinstalled ./recipes/kitty.rhai --no-persist-state\n\nUseful when debugging whether install state detection is correct."
+        after_help = "Examples:\n  recipe isinstalled ripgrep\n  recipe isinstalled ./recipes/ripgrep.rhai --no-activate\n\nActive packages are checked without Ginux. Use --no-activate to run the producer's is_installed hook instead."
     )]
     IsInstalled {
         /// Recipe path or recipe name. Name lookup follows the same rules as `recipe install`.

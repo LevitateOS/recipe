@@ -3,10 +3,10 @@
 recipe \- execute Rhai package recipes through Ginux
 .SH SYNOPSIS
 .B recipe
-[options] install|remove|cleanup|isinstalled|isbuilt|isacquired recipe
+[options] install|update|remove|cleanup|isinstalled|isbuilt|isacquired recipe
 .br
 .B recipe
-[options] list|info|hash [argument]
+[options] list|installed|info|hash [argument]
 .br
 .B recipe
 [options] validate|inspect|explain|diff [arguments]
@@ -25,10 +25,14 @@ paths in ctx.outputs; hooks use domain paths.
 .PP
 OS artifact producers and user-managed software use the same format and engine.
 In the LevitateOS workspace, distro/builder/os-recipes is the builder's collection
-and the top-level recipes directory is the user catalog (currently without packages).
+and the top-level recipes directory is the user catalog (starting with ripgrep).
 The builder composes OS images from published outputs; recab manages image updates.
-User-software activation and independent updates/removal remain to be implemented.
+The CLI activates directory outputs named package through an atomic profile switch.
+The library and builder (--no-activate) continue to consume outputs only.
 .SH PREPARATION
+Installed defaults are /usr/libexec/recipe/ginux and
+/usr/share/recipe/runtime/rootfs.tar with its root-reference file. Explicit
+environment selections override these defaults.
 Set GINUX_BIN to the actual launcher executable, GINUX_ROOTFS to an assembled
 rootfs tar and GINUX_ROOT to oci:name@sha256:digest matching that tar. Set
 RECIPE_WORKER_BIN when the worker cannot be resolved from the current CLI/PATH.
@@ -47,10 +51,20 @@ See bootstrap/README.md for the pinned manifest producer.
 .B install RECIPE
 Run necessary acquisition, build and installation into the owned output tree,
 with custom readiness checks, and publish the named products.
-This does not activate software on the running system.
+A directory output named package activates regular bin/COMMAND and share/PATH
+files in the selected package root's profile, unless --no-activate is set.
+.TP
+.B update RECIPE
+Update an already installed package using the current selected recipe's pin.
+Does not discover upstream versions or edit pins. Failure preserves the old profile.
 .TP
 .B remove RECIPE
-Run removal against the owned selected target; prior publications stay immutable.
+Deactivate an installed package using its receipt, without a recipe or Ginux.
+Inactive generations are retained. With --no-activate (or an output-only producer),
+run the removal hook against the owned selected target; prior publications stay immutable.
+.TP
+.B installed
+List active packages and versions from the installed receipt, without Ginux.
 .TP
 .B cleanup RECIPE [--reason TEXT]
 Run optional cleanup, with reason manual by default.
@@ -60,6 +74,8 @@ prior state and publications.
 .TP
 .B isinstalled|isbuilt|isacquired RECIPE
 Run the actual custom readiness check. Work needed returns nonzero.
+For an active user package, isinstalled verifies its profile files and links;
+--no-activate selects the producer's check instead.
 Dependencies, including build dependencies, must have matching cached products.
 Their installed checks run in dependency order without acquire/build/install
 hooks. Missing or changed products fail explicitly; run install separately to
@@ -92,7 +108,16 @@ Compute SHA256, SHA512 and BLAKE3 for a local file.
 .TP
 .B -r, --recipes-path DIR
 Directory for name, module and dependency lookup. Defaults to RECIPE_PATH or
-the per-user application-data recipe directory.
+the per-user application-data recipe directory followed by the shipped catalog
+at /usr/share/recipe/recipes. Explicit --recipes-path or RECIPE_PATH disables fallback.
+.TP
+.B --package-root DIR
+Package generations, installed receipts and active profile symlink. Defaults to
+/var/lib/recipe for root or XDG_DATA_HOME/recipe for an ordinary user.
+Add DIR/profile/bin to PATH. Old inactive generations remain after removal.
+.TP
+.B --no-activate
+Run the producer lifecycle only. Do not activate package outputs or remove active packages.
 .TP
 .B -b, --build-dir DIR
 Logical destination identity and shared lock. Domain work stays /work/build.
@@ -200,7 +225,8 @@ recipe isinstalled ./tool.rhai --input source=./offline-source \
 .SH LIMITATIONS
 Prepared tools, image libraries and required runtime operations must be present.
 Network grants do not isolate virtual hosts sharing an allowed IP and port.
-There is no native host execution/network fallback or live-system activation.
+There is no native host execution/network fallback. Package activation copies
+verified publications into an owned profile; OS image activation belongs to recab.
 Raw clocks expose host realtime/monotonic time and vDSO clocks remain observable.
 Configured sysinfo returns zeros, not resource accounting. CPU selection exposes
 real eligible IDs, not virtual topology. Memory limits bound per-process address

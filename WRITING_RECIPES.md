@@ -7,8 +7,8 @@ own `const NEEDS = #{...};`, including children that extend another recipe.
 OS artifact producers and user-managed software use this same format and engine.
 In the LevitateOS workspace they live in `distro/builder/os-recipes/` and
 `recipes/`, respectively. Their consumer owns deployment: the builder composes
-OS images, while user-software activation remains Recipe work. `install` below
-means populating the recipe's owned output tree, not changing the running system.
+OS images, while the CLI activates user package outputs. The `install` hook below
+populates the recipe's owned output tree; activation happens after publication.
 
 Caller restrictions must be valid lowerings/subsets for the named recipe. They
 also apply across the dependency graph: each dependency's numeric limits take
@@ -69,6 +69,32 @@ fn remove(ctx) {
 The result's `outputs.program` is a published host path. `/out/bin/hello` is its
 path inside hooks. Use the same recipe/destination with `isinstalled` or `remove`.
 A successful remove does not delete an earlier published generation.
+
+## A package for the active profile
+
+Use the existing directory output contract to opt into CLI activation:
+
+```rhai
+const RECIPE_API = 2;
+const NEEDS = #{ outputs: #{ "package": "directory" } };
+// ctx must also declare a name and version.
+// install(ctx) writes package_root/bin/COMMAND and/or package_root/share/PATH.
+// is_installed(ctx) checks those files before publishing the same directory.
+// Both return the updated ctx with:
+// ctx.outputs["package"] = package_root;
+```
+
+`package` is a Rhai keyword, so quote the output key. The files must be regular
+files; commands need executable permission. The initial activation surface is
+`bin/COMMAND` and `share/PATH`; symlinks, special files and setuid/setgid permissions
+are rejected. There are no host installation hooks. See the workspace's
+`recipes/ripgrep.rhai` for a complete pinned package producer.
+
+`recipe install` activates this output atomically unless `--no-activate` is set.
+`recipe update NAME` consumes the selected recipe's current pin. `recipe remove
+NAME` deactivates a recorded package without running its recipe; its `remove(ctx)`
+hook remains available for producer cleanup with `--no-activate`. The library
+continues to publish outputs only. OS builders pass `--no-activate` explicitly.
 
 ## Runtime, package facts and resumable state
 

@@ -2,7 +2,9 @@
 //!
 //! Usage:
 //!   recipe install <path>           Install a recipe
-//!   recipe remove <path>            Remove an installed package
+//!   recipe update <name>            Update an active package from its catalog recipe
+//!   recipe remove <name>            Deactivate an installed package
+//!   recipe installed                List active packages
 //!   recipe cleanup <path>           Clean up build artifacts
 //!   recipe isinstalled <path>       Execute is_installed(ctx)
 //!   recipe isbuilt <path>           Execute is_built(ctx)
@@ -22,7 +24,7 @@ mod metadata;
 
 fn default_help_footer() -> String {
     format!(
-        "Defaults:\n  Recipes directory: {}\n  Build destination: stable directory under state storage unless --build-dir is set\n  LLM profiles: $XDG_CONFIG_HOME/recipe/llm.toml (or ~/.config/recipe/llm.toml)\n  Results: readable summaries in terminals; JSON when piped or with --json\n  Logs and helper output stay on stderr; --json-output FILE saves the full result\n  list, info and hash print text\n\nExamples:\n  recipe list\n  recipe info kitty\n  recipe install kitty\n  recipe install kitty --json\n  recipe install ./custom/foo.rhai --define VERSION=1.2.3\n  recipe isbuilt kitty --no-persist-state\n\nManual pages:\n  man recipe\n  man 5 recipe-recipe\n  man 7 recipe-helpers\n\nRun 'recipe <command> --help' for command-specific options.",
+        "Defaults:\n  Override recipes directory: {}\n  Shipped catalog fallback: /usr/share/recipe/recipes\n  Build destination: stable directory under state storage unless --build-dir is set\n  LLM profiles: $XDG_CONFIG_HOME/recipe/llm.toml (or ~/.config/recipe/llm.toml)\n  Results: readable summaries in terminals; JSON when piped or with --json\n  Logs and helper output stay on stderr; --json-output FILE saves the full result\n  list, info and hash print text\n\nExamples:\n  recipe list\n  recipe info ripgrep\n  recipe install ripgrep\n  recipe install ripgrep --json\n  recipe install ./custom/foo.rhai --define VERSION=1.2.3\n  recipe update ripgrep\n  recipe installed\n  recipe remove ripgrep\n\nManual pages:\n  man recipe\n  man 5 recipe-recipe\n  man 7 recipe-helpers\n\nRun 'recipe <command> --help' for command-specific options.",
         metadata::default_recipes_path().display()
     )
 }

@@ -10,18 +10,11 @@
 use anyhow::{Result, bail};
 
 /// §2 hard limits (bytes/items); enforced, never truncated.
-const MAX_CONFIG_PATH: usize = 128;
 const MAX_ARGS: usize = 7;
 const MAX_ARG: usize = 128;
 const MAX_ENV: usize = 8;
 const MAX_ENV_ENTRY: usize = 256;
 const MAX_CONFIG: usize = 4096;
-
-/// Default immutable image reference: the pinned Rocky rootfs content,
-/// named by digest rather than by host path (host `.artifacts` paths never
-/// enter instance config). Override with `GINUX_ROOT`; the override must pass
-/// the same reference validation. The launcher resolves the reference.
-const DEFAULT_ROOT_REF: &str = "oci:rocky-10.2.20260525.0-amd64-rootfs@sha256:b93bfd0f6deea2a7a96216655cda3ebbd87a445231548ff491ee30aed20a36ab";
 
 /// Instance config for one invocation; [`InstanceConfig::render`] produces the
 /// parser-accepted text.
@@ -50,7 +43,7 @@ impl InstanceConfig {
         options: &crate::ExecutionOptions,
         network: super::network::NetworkPolicy,
     ) -> Result<Self> {
-        let root = root_reference()?;
+        let root = crate::runtime::root_reference()?;
         if env.len() > MAX_ENV {
             bail!(
                 "input preparation failure: {} env entries exceed the §2 limit of {MAX_ENV} × 256 B",
@@ -150,43 +143,6 @@ impl InstanceConfig {
         }
         Ok(out)
     }
-}
-
-/// Image reference: the pin by default, `GINUX_ROOT` override when set.
-/// Mirrors the instance parser's reference rule (no leading `/`, no `..`,
-/// charset `[A-Za-z0-9_.:/@-]`), plus the §2 ≤ 128 B bound.
-fn root_reference() -> Result<String> {
-    let root = match std::env::var("GINUX_ROOT") {
-        Ok(root) => root,
-        Err(std::env::VarError::NotPresent) => DEFAULT_ROOT_REF.to_string(),
-        Err(std::env::VarError::NotUnicode(_)) => {
-            bail!("input preparation failure: GINUX_ROOT is not valid UTF-8")
-        }
-    };
-    if root.is_empty() || root.len() > MAX_CONFIG_PATH {
-        bail!(
-            "input preparation failure: instance root {root:?} has {} B, want 1..={MAX_CONFIG_PATH} B (§2)",
-            root.len(),
-        );
-    }
-    validate_reference(&root)?;
-    Ok(root)
-}
-
-/// Mirror of the instance parser's reference rule for `root`/`storage`/`devices`.
-fn validate_reference(value: &str) -> Result<()> {
-    if value.starts_with('/')
-        || value.contains("..")
-        || !value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/' | b'@')
-        })
-    {
-        bail!(
-            "input preparation failure: instance reference {value:?} is not a reference \
-             (no leading `/`, no `..`, charset `[A-Za-z0-9_.:/@-]`; host paths never enter config)"
-        );
-    }
-    Ok(())
 }
 
 /// TOML basic-string quoting matching the instance parser's escapes.

@@ -44,10 +44,13 @@ mod lifecycle;
 mod llm;
 pub mod needs;
 mod options;
+pub mod packages;
 mod process;
 mod publication;
 mod recipes;
 mod retained;
+/// Installed runtime defaults shared with OS packaging.
+pub mod runtime;
 /// Target filesystem metadata carried independently of build-host privileges.
 pub mod target;
 mod temporary;
