@@ -92,6 +92,12 @@ across two cache clients and execute the resulting threaded program.
 
 ## Run a recipe
 
+Execution and inspection commands print readable summaries when stdout is a
+terminal. Add `--json` for the full result, or `--json-output result.json` to save
+it. Redirected or piped execution/inspection output keeps the existing JSON
+format. Progress and diagnostics go to stderr; `list`, `info` and `hash` print
+text. Each command's `--help` includes examples.
+
 ```sh
 recipe install tools/recipe/examples/hello.rhai \
   --build-dir .artifacts/work/example \

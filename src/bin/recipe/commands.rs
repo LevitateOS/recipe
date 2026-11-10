@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use levitate_recipe::{AutoFixConfig, GinuxLauncher, RecipeEngine, bin_support};
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -44,6 +44,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
     let recipes_path = cli.recipes_path;
 
     let json_output = cli.json_output;
+    let json = cli.json || !std::io::stdout().is_terminal();
     let engine_options = EngineOptions {
         build_dir: cli.build_dir.as_deref(),
         state_dir: cli.state_dir.as_deref(),
@@ -65,9 +66,11 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 &supplied,
                 &engine_options.execution.narrowing,
             )?;
-            emit_json(
+            emit_result(
                 &serde_json::json!({"valid":true,"authority":authority}),
                 json_output.as_deref(),
+                json,
+                "Validation passed",
             )?;
         }
         Commands::Inspect { recipe } => {
@@ -77,7 +80,7 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 Some(&recipes_path),
                 &engine_options.execution.narrowing,
             )?;
-            emit_json(&authority, json_output.as_deref())?;
+            emit_result(&authority, json_output.as_deref(), json, "Recipe permissions and limits")?;
         }
         Commands::Explain { subject, operation } => {
             let recorded = if subject.is_dir() {
@@ -96,14 +99,16 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                     &engine_options.execution.narrowing,
                 )?
             };
-            emit_json(&explanation, json_output.as_deref())?;
+            emit_result(&explanation, json_output.as_deref(), json, "Operation explanation")?;
         }
         Commands::Diff { old, new } => {
             let old = resolve_recipe_path(&old, &recipes_path)?;
             let new = resolve_recipe_path(&new, &recipes_path)?;
-            emit_json(
+            emit_result(
                 &levitate_recipe::needs::report::diff(&old, &new, Some(&recipes_path))?,
                 json_output.as_deref(),
+                json,
+                "Recipe permission changes",
             )?;
         }
         Commands::Install {
@@ -127,14 +132,14 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
             };
             let engine = create_engine(&recipe_path, &engine_options, autofix_cfg)?;
             let ctx = engine.execute(&recipe_path)?;
-            emit_json(&ctx, json_output.as_deref())?;
+            emit_result(&ctx, json_output.as_deref(), json, "Installation completed")?;
         }
 
         Commands::Remove { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(&recipe_path, &engine_options, None)?;
             let ctx = engine.remove(&recipe_path)?;
-            emit_json(&ctx, json_output.as_deref())?;
+            emit_result(&ctx, json_output.as_deref(), json, "Removal completed")?;
         }
 
         Commands::Cleanup { recipe, reason } => {
@@ -146,28 +151,28 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
                 .filter(|s| !s.is_empty())
                 .unwrap_or(levitate_recipe::bin_support::DEFAULT_CLEANUP_REASON);
             let ctx = engine.cleanup_with_reason(&recipe_path, cleanup_reason)?;
-            emit_json(&ctx, json_output.as_deref())?;
+            emit_result(&ctx, json_output.as_deref(), json, "Cleanup completed")?;
         }
 
         Commands::IsInstalled { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(&recipe_path, &engine_options, None)?;
             let ctx = engine.is_installed(&recipe_path)?;
-            emit_json(&ctx, json_output.as_deref())?;
+            emit_result(&ctx, json_output.as_deref(), json, "Installation check passed")?;
         }
 
         Commands::IsBuilt { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(&recipe_path, &engine_options, None)?;
             let ctx = engine.is_built(&recipe_path)?;
-            emit_json(&ctx, json_output.as_deref())?;
+            emit_result(&ctx, json_output.as_deref(), json, "Build check passed")?;
         }
 
         Commands::IsAcquired { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &recipes_path)?;
             let engine = create_engine(&recipe_path, &engine_options, None)?;
             let ctx = engine.is_acquired(&recipe_path)?;
-            emit_json(&ctx, json_output.as_deref())?;
+            emit_result(&ctx, json_output.as_deref(), json, "Source acquisition check passed")?;
         }
 
         Commands::List => list_recipes(&recipes_path)?,
@@ -208,18 +213,110 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-fn emit_json(ctx: &serde_json::Value, path: Option<&Path>) -> Result<()> {
-    let json_str = serde_json::to_string(ctx)?;
-    match path {
-        Some(p) => {
-            std::fs::write(p, &json_str)
-                .with_context(|| format!("Failed to write JSON to {}", p.display()))?;
+fn emit_result(value: &serde_json::Value, path: Option<&Path>, json: bool, summary: &str) -> Result<()> {
+    if let Some(path) = path {
+        std::fs::write(path, serde_json::to_string(value)?)
+            .with_context(|| format!("Failed to write JSON to {}", path.display()))?;
+        if !json {
+            println!("{summary}. Full result saved to {}.", path.display());
         }
-        None => {
-            writeln!(std::io::stdout(), "{}", json_str)?;
-        }
+    } else if json {
+        writeln!(std::io::stdout(), "{}", serde_json::to_string(value)?)?;
+    } else {
+        println!("{summary}");
+        print_summary(value);
+        println!("\nUse --json for the full result, or --json-output <FILE> to save it.");
     }
     Ok(())
+}
+
+/// Terminal summaries expose the useful result; the full context and contract
+/// remain available as JSON, including the historical output to pipes.
+fn print_summary(value: &serde_json::Value) {
+    if let Some(authority) = value.get("authority") {
+        print_summary(authority);
+        return;
+    }
+    for (field, label) in [("name", "Package"), ("version", "Version"), ("recipe", "Recipe"), ("operation", "Operation"), ("phase", "Observation"), ("limitation", "Limitation")] {
+        if let Some(text) = value.get(field).and_then(|v| v.as_str()) {
+            println!("  {label}: {text}");
+        }
+    }
+    for (field, label) in [("outputs", "Outputs"), ("effective", "Resource limits"), ("changes", "Changes"), ("decisions", "Recorded decisions")] {
+        if let Some(details) = value.get(field) {
+            println!("\n{label}:");
+            print_details(details, 2);
+        }
+    }
+    if let Some(needs) = value.get("needs") {
+        for (field, label) in [("inputs", "Inputs"), ("outputs", "Declared outputs"), ("network", "Declared network endpoints")] {
+            if let Some(details) = needs.get(field) {
+                println!("\n{label}:");
+                print_details(details, 2);
+            }
+        }
+    }
+    if let Some(dependencies) = value.get("dependencies").and_then(|v| v.as_array()) {
+        println!("\nDependencies: {}", dependencies.len());
+        for dependency in dependencies {
+            if let Some(recipe) = dependency.pointer("/declaration/recipe").and_then(|v| v.as_str()) {
+                println!("  {recipe}");
+            }
+        }
+    }
+    if let Some(changed) = value.get("authority_changed").and_then(|v| v.as_bool()) {
+        println!("\nPermissions or limits changed: {}", if changed { "yes" } else { "no" });
+    }
+    if let Some(text) = value.get("ginux").and_then(|v| v.as_str()) {
+        println!("\n{text}");
+    }
+    if let Some(text) = value.get("recipe_rule").and_then(|v| v.as_str()) {
+        println!("Recipe rule: {text}");
+    }
+}
+
+fn print_details(value: &serde_json::Value, indent: usize) {
+    match value {
+        serde_json::Value::Object(fields) if !fields.is_empty() => {
+            for (key, value) in fields {
+                let label = match key.as_str() {
+                    "memory_mib" => "Memory limit (MiB)".to_owned(),
+                    "network" => "Network endpoints".to_owned(),
+                    "network_max_bytes" => "Network transfer budget".to_owned(),
+                    "storage_max_bytes" => "Storage byte limit".to_owned(),
+                    "storage_max_objects" => "Storage object limit".to_owned(),
+                    "timeout_secs" => "Time limit (seconds)".to_owned(),
+                    _ => key.replace('_', " "),
+                };
+                if value.is_object() || value.is_array() {
+                    println!("{:indent$}{label}:", "");
+                    print_details(value, indent + 2);
+                } else {
+                    print!("{:indent$}{label}: ", "");
+                    if key.ends_with("_bytes") && value.is_u64() {
+                        let bytes = value.as_u64().unwrap();
+                        let gib = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+                        if gib >= 1.0 {
+                            println!("{gib:.1} GiB ({bytes} bytes)");
+                        } else {
+                            println!("{bytes} bytes");
+                        }
+                    } else {
+                        print_details(value, 0);
+                    }
+                }
+            }
+        }
+        serde_json::Value::Array(items) if !items.is_empty() => {
+            for item in items {
+                print_details(item, indent);
+            }
+        }
+        serde_json::Value::String(text) => println!("{:indent$}{text}", ""),
+        serde_json::Value::Null => println!("{:indent$}not set", ""),
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => println!("{:indent$}none", ""),
+        other => println!("{:indent$}{other}", ""),
+    }
 }
 
 /// Configure one executable operation through mandatory Ginux. Metadata and
@@ -311,7 +408,7 @@ fn resolve_recipe_path(recipe: &Path, recipes_path: &Path) -> Result<PathBuf> {
     }
 
     anyhow::bail!(
-        "Recipe not found: {}\nSearched in: {}",
+        "Recipe not found: {}\nSearched in the current directory and: {}\nNext: run 'recipe list --recipes-path <DIRECTORY>' to see available recipes, or pass a .rhai file path.",
         recipe.display(),
         recipes_path.display()
     )
