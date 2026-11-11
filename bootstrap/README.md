@@ -79,6 +79,11 @@ CI. `scripts/prepare-managed-image.py` acquires its selected public inputs, chec
 RPM signatures, invokes the existing image producers and verifies that digest.
 The integration runner also accepts an explicit image and digest for local runs.
 Select the full acquisition image whenever the workload needs Rust or Cargo.
+`product-ci.json` pins that full image and its public acquisition inputs. Pass
+`--spec bootstrap/product-ci.json` to `scripts/prepare-managed-image.py` for
+product builds; the default specification remains the smaller standalone
+acceptance image. The product image is pinned to the previously verified
+`4ec20be0f93bdd650ba42b0fd08b18d5ae61494f83c805a6a714e2f361042eff` output.
 
 ## Acquisition and musl compiler image
 

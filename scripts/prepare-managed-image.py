@@ -13,10 +13,12 @@ parser.add_argument('--ginux-source', type=Path, required=True)
 parser.add_argument('--producer', type=Path, required=True)
 parser.add_argument('--input-root', type=Path, required=True)
 parser.add_argument('--output', type=Path, required=True)
+parser.add_argument('--spec', type=Path, help='Tracked CI input specification (default bootstrap/managed-ci.json)')
 parser.add_argument('--offline', action='store_true', help='Require already acquired pinned inputs and OCI blobs')
 args = parser.parse_args()
 root = Path(__file__).resolve().parent.parent
-spec = json.loads((root / 'bootstrap/managed-ci.json').read_text())
+spec_path = args.spec if args.spec is not None else root / 'bootstrap/managed-ci.json'
+spec = json.loads(spec_path.read_text())
 manifest_path = root / 'bootstrap' / spec['image_manifest']
 manifest = json.loads(manifest_path.read_text())
 ginux = args.ginux_source.resolve(strict=True)

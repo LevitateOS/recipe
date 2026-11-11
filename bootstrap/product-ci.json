@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "ginux_repository": "LevitateOS/ginux",
+  "ginux_revision": "cec0613f3e50f1f202f6278898ddbb8b6cb14ae7",
+  "image_manifest": "ginux-acquisition-image.json",
+  "image_sha256": "4ec20be0f93bdd650ba42b0fd08b18d5ae61494f83c805a6a714e2f361042eff",
+  "rocky_signing_key": {
+    "url": "https://download.rockylinux.org/pub/rocky/RPM-GPG-KEY-Rocky-10",
+    "sha256": "be8c4f070b696e64d8ce40e59a95a57e8b5c776f0015c2fd64e14b896622bdb4",
+    "fingerprint": "FC226859C0860BF0DDB95B085B106C736FEDFC85"
+  },
+  "sources": {
+    "packages/cpp-14.3.1-4.4.el10.x86_64.rpm": "https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/c/cpp-14.3.1-4.4.el10.x86_64.rpm",
+    "packages/gcc-14.3.1-4.4.el10.x86_64.rpm": "https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/g/gcc-14.3.1-4.4.el10.x86_64.rpm",
+    "packages/glibc-devel-2.39-145.el10_2.x86_64.rpm": "https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/g/glibc-devel-2.39-145.el10_2.x86_64.rpm",
+    "packages/kernel-headers-6.12.0-211.73.1.el10_2.x86_64.rpm": "https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/k/kernel-headers-6.12.0-211.73.1.el10_2.x86_64.rpm",
+    "packages/libmpc-1.3.1-7.el10.x86_64.rpm": "https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/l/libmpc-1.3.1-7.el10.x86_64.rpm",
+    "packages/make-4.4.1-9.el10.x86_64.rpm": "https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/m/make-4.4.1-9.el10.x86_64.rpm",
+    "packages/git-core-2.52.0-1.el10.x86_64.rpm": "https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/g/git-core-2.52.0-1.el10.x86_64.rpm",
+    "packages/cpio-2.15-3.el10.x86_64.rpm": "https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/c/cpio-2.15-3.el10.x86_64.rpm",
+    "packages/libburn-1.5.6-6.el10.x86_64.rpm": "https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/l/libburn-1.5.6-6.el10.x86_64.rpm",
+    "packages/libisoburn-1.5.6-6.el10.x86_64.rpm": "https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/l/libisoburn-1.5.6-6.el10.x86_64.rpm",
+    "packages/libisofs-1.5.6-6.el10.x86_64.rpm": "https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/l/libisofs-1.5.6-6.el10.x86_64.rpm",
+    "packages/xorriso-1.5.6-6.el10.x86_64.rpm": "https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/x/xorriso-1.5.6-6.el10.x86_64.rpm",
+    "packages/diffutils-3.10-8.el10.x86_64.rpm": "https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/d/diffutils-3.10-8.el10.x86_64.rpm",
+    "packages/libpkgconf-2.1.0-3.el10.x86_64.rpm": "https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/l/libpkgconf-2.1.0-3.el10.x86_64.rpm",
+    "packages/pkgconf-2.1.0-3.el10.x86_64.rpm": "https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/p/pkgconf-2.1.0-3.el10.x86_64.rpm",
+    "packages/pkgconf-m4-2.1.0-3.el10.noarch.rpm": "https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/p/pkgconf-m4-2.1.0-3.el10.noarch.rpm",
+    "packages/pkgconf-pkg-config-2.1.0-3.el10.x86_64.rpm": "https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/p/pkgconf-pkg-config-2.1.0-3.el10.x86_64.rpm",
+    "toolchain/rust-1.99.0-x86_64-unknown-linux-gnu.tar.gz": "https://static.rust-lang.org/dist/2026-10-01/rust-1.99.0-x86_64-unknown-linux-gnu.tar.gz",
+    "toolchain/rust-std-1.99.0-x86_64-unknown-linux-musl.tar.gz": "https://static.rust-lang.org/dist/2026-10-01/rust-std-1.99.0-x86_64-unknown-linux-musl.tar.gz"
+  }
+}
