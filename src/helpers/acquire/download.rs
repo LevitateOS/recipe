@@ -274,9 +274,33 @@ pub fn fetch_bounded(url: &str, dest: &str, limit: i64) -> Result<String, Box<Ev
     if !(1..=1024 * 1024).contains(&limit) {
         return Err("metadata acquisition bound must be 1..1048576 bytes".into());
     }
-    let response = request(url)?
-        .call()
-        .map_err(|e| format!("metadata acquisition failed: {e}"))?;
+    fetch_response(
+        request(url)?
+            .call()
+            .map_err(|e| format!("metadata acquisition failed: {e}"))?,
+        dest,
+        limit,
+    )
+}
+pub fn fetch_bounded_scoped(
+    url: &str,
+    dest: &str,
+    limit: i64,
+    prefixes: rhai::Array,
+) -> Result<String, Box<EvalAltResult>> {
+    if !(1..=1024 * 1024).contains(&limit) {
+        return Err("metadata acquisition bound must be 1..1048576 bytes".into());
+    }
+    fetch_response(scoped_response(url, prefixes)?, dest, limit)
+}
+fn fetch_response(
+    response: ureq::Response,
+    dest: &str,
+    limit: i64,
+) -> Result<String, Box<EvalAltResult>> {
+    if !(1..=1024 * 1024).contains(&limit) {
+        return Err("metadata acquisition bound must be 1..1048576 bytes".into());
+    }
     if response.status() != 200 {
         return Err("metadata acquisition requires HTTP 200".into());
     }
@@ -316,9 +340,38 @@ pub fn download_exact(
         return Err("download length must be positive".into());
     }
     super::verify::validate_sha256(sha256)?;
-    let response = request(url)?
-        .call()
-        .map_err(|e| format!("download failed: {e}"))?;
+    exact_response(
+        request(url)?
+            .call()
+            .map_err(|e| format!("download failed: {e}"))?,
+        dest,
+        sha256,
+        size,
+    )
+}
+pub fn download_exact_scoped(
+    url: &str,
+    dest: &str,
+    sha256: &str,
+    size: i64,
+    prefixes: rhai::Array,
+) -> Result<String, Box<EvalAltResult>> {
+    if size <= 0 {
+        return Err("download length must be positive".into());
+    }
+    super::verify::validate_sha256(sha256)?;
+    exact_response(scoped_response(url, prefixes)?, dest, sha256, size)
+}
+fn exact_response(
+    response: ureq::Response,
+    dest: &str,
+    sha256: &str,
+    size: i64,
+) -> Result<String, Box<EvalAltResult>> {
+    if size <= 0 {
+        return Err("download length must be positive".into());
+    }
+    super::verify::validate_sha256(sha256)?;
     if response.status() != 200 {
         return Err("complete download requires HTTP 200".into());
     }
@@ -336,4 +389,101 @@ pub fn download_exact(
         sha256,
     )?;
     Ok(dest.into())
+}
+
+/// Follow only explicitly granted HTTPS prefixes, validating before each request.
+/// Numeric Ginux grants remain enforced independently; no proxy/DNS bypass.
+fn scoped_response(
+    initial: &str,
+    prefixes: rhai::Array,
+) -> Result<ureq::Response, Box<EvalAltResult>> {
+    let failure = |message: String| -> Box<EvalAltResult> { message.into() };
+    if prefixes.is_empty() || prefixes.len() > 5 {
+        return Err("invalid acquisition prefix count".into());
+    }
+    let mut grants = Vec::new();
+    for prefix in prefixes {
+        let prefix = prefix
+            .into_string()
+            .map_err(|_| "acquisition prefixes must be strings")?;
+        let u = url::Url::parse(&prefix).map_err(|e| failure(e.to_string()))?;
+        if u.scheme() != "https"
+            || u.host_str().is_none()
+            || !u.username().is_empty()
+            || u.password().is_some()
+            || u.query().is_some()
+            || u.fragment().is_some()
+            || !u.path().ends_with('/')
+        {
+            return Err(
+                "acquisition grant must be an HTTPS prefix without credentials/query/fragment"
+                    .into(),
+            );
+        }
+        grants.push(u);
+    }
+    let agent = ureq::AgentBuilder::new()
+        .try_proxy_from_env(false)
+        .https_only(true)
+        .redirects(0)
+        .timeout_connect(Duration::from_secs(30))
+        .timeout(Duration::from_secs(300))
+        .build();
+    let mut address = url::Url::parse(initial).map_err(|e| failure(e.to_string()))?;
+    let mut redirects = 0;
+    let mut retries = 0;
+    loop {
+        if address.scheme() != "https"
+            || !address.username().is_empty()
+            || address.password().is_some()
+            || address.fragment().is_some()
+            || !grants
+                .iter()
+                .any(|g| g.origin() == address.origin() && address.path().starts_with(g.path()))
+        {
+            return Err(
+                "acquisition URL/redirect leaves installed HTTPS delivery authority".into(),
+            );
+        }
+        let response = match agent
+            .get(address.as_str())
+            .set("Accept-Encoding", "identity")
+            .call()
+        {
+            Ok(r) => r,
+            Err(ureq::Error::Status(code, r))
+                if matches!(code, 429 | 502 | 503 | 504) && retries < 2 =>
+            {
+                let seconds = r
+                    .header("retry-after")
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(1 << retries);
+                if seconds > 5 {
+                    return Err(
+                        "update origin asks for a longer Retry-After; retry this operation later"
+                            .into(),
+                    );
+                }
+                retries += 1;
+                std::thread::sleep(Duration::from_secs(seconds));
+                continue;
+            }
+            Err(e) => return Err(failure(format!("scoped acquisition failed: {e}"))),
+        };
+        if matches!(response.status(), 301 | 302 | 303 | 307 | 308) {
+            if redirects == 5 {
+                return Err("too many update redirects".into());
+            }
+            address = address
+                .join(
+                    response
+                        .header("location")
+                        .ok_or("update redirect has no Location")?,
+                )
+                .map_err(|e| failure(e.to_string()))?;
+            redirects += 1;
+            continue;
+        }
+        return Ok(response);
+    }
 }

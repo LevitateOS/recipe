@@ -41,6 +41,7 @@ tempfile = "3"
 glob = "0.3"
 dirs = "5"
 ureq = { version = "2", features = ["native-certs"] }
+url = "2"
 serde_json = "1"
 fs2 = "0.4"
 walkdir = "2"
