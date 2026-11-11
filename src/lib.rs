@@ -37,6 +37,8 @@ mod failure;
 pub mod fsx;
 mod ginux;
 mod helpers;
+/// Declared behaviour versions that name Recipe and Ginux in cache identities.
+pub mod identity;
 #[doc(hidden)]
 pub mod image;
 mod inputs;

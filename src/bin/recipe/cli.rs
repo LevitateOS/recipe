@@ -153,6 +153,11 @@ pub(crate) struct Cli {
     #[arg(long = "no-persist-state", global = true, default_value_t = false)]
     #[arg(help_heading = "Build and state")]
     pub(crate) no_persist_state: bool,
+
+    /// Reuse saved state only from byte-identical Recipe and Ginux (release builds); also RECIPE_EXACT_IDENTITY=1.
+    #[arg(long, global = true)]
+    #[arg(help_heading = "Build and state")]
+    pub(crate) exact_identity: bool,
 }
 
 #[derive(Subcommand)]

@@ -220,11 +220,9 @@ fn run_domain_inner(
     })?;
 
     let mut retained = if persist_state {
-        // The launcher is part of the identity: Ginux is developed alongside
-        // the recipes, and saved work from another launcher is not reused.
-        let launcher_digest = crate::retained::file_digest(launcher).map_err(|error| {
-            crate::failure::Category::Startup.wrap(error, "cannot read the ginux launcher")
-        })?;
+        // Recipe and Ginux enter the identity by their declared behaviour
+        // versions; with exact identity also by the worker's and the
+        // launcher's bytes (`crate::identity`).
         Some(
             crate::retained::Retained::open(
                 state_dir,
@@ -232,7 +230,7 @@ fn run_domain_inner(
                 recipe,
                 prepared,
                 &domain_root.worker_digest,
-                &launcher_digest,
+                launcher,
                 options,
             )
             .map_err(|error| {

@@ -140,7 +140,7 @@ pub(crate) struct Pending {
     pub generation: u64,
 }
 
-/// The SHA-256 of the file at `path`, in hex (the launcher's identity).
+/// The SHA-256 of the file at `path`, in hex (the launcher's exact identity).
 pub(crate) fn file_digest(path: &Path) -> Result<String> {
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     Ok(hex::encode(Sha256::digest(bytes)))
@@ -153,7 +153,7 @@ impl Retained {
         recipe: &Path,
         prepared: &PreparedInvocation,
         worker_digest: &str,
-        launcher_digest: &str,
+        launcher: &Path,
         options: &InvocationOptions,
     ) -> Result<Self> {
         let root = state_root(root)?;
@@ -205,21 +205,30 @@ impl Retained {
             force_acquire: _,
             force_build: _,
             force_install: _,
+            exact_identity,
         } = &options.execution;
+        // The executing tools are named by their declared behaviour versions
+        // (`crate::identity`); exact identity also names their bytes. The two
+        // never share an identity: `tools` is null in one and set in the other.
+        let tools = if *exact_identity {
+            let launcher_digest = file_digest(launcher)
+                .context("cannot read the ginux launcher for the exact identity")?;
+            Some((worker_digest.to_owned(), launcher_digest))
+        } else {
+            None
+        };
         // Requested hosts, not their resolved addresses: a DNS change must
         // not silently discard saved state.
         let identity = hex::encode(Sha256::digest(serde_json::to_vec(&(
-            &format!(
-                "recipe-state-v1-transport-v{}",
-                crate::worker::protocol::PROTOCOL_VERSION
-            ),
+            // v2: tools by declared versions (v1 hashed their bytes always).
+            "recipe-state-v2",
+            crate::identity::Declared::current(),
+            &tools,
             network_hosts,
             network_max_bytes,
             &prepared.root_reference,
             prepared.contract.catalog,
             &prepared.contract.digest,
-            worker_digest,
-            launcher_digest,
             inputs,
             defines,
             target_os,

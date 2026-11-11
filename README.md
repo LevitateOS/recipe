@@ -352,9 +352,21 @@ root, which defaults to `$XDG_STATE_HOME/recipe` (normally `~/.local/state/recip
 Use `--state-dir PATH` to choose a different state root.
 
 Identity includes the recipe/module/dependency closure, declared input content,
-custom defines, execution options, image, worker and Ginux launcher (by content:
-a rebuilt `GINUX_BIN` starts fresh state). Changed inputs start fresh
-state. Checkpoints become recoverable only after both files and separate
+custom defines, execution options and the root image, by content. Changed inputs
+start fresh state. Recipe itself (the coordinator and the worker) and the Ginux
+launcher enter it by declared behaviour versions, not by their bytes, so a
+rebuilt `recipe` or `GINUX_BIN` that behaves the same reuses saved state. The
+versions live in `src/identity.rs`: `ENGINE_BEHAVIOUR` (bumped with any Recipe
+change that can alter what a recipe produces: helper semantics, target metadata,
+staging, how inputs and outputs are materialized, the rendered Ginux config, a
+Rhai or archive-crate upgrade that changes results; not for a pure speed-up),
+`GINUX_BEHAVIOUR` (bumped when a Ginux change can alter what a workload observes:
+syscall results, VFS behaviour, credentials, clocks, signals, the snapshot or
+export format), the coordinator/worker transport version, and the Ginux catalog
+and build-base contract digests Recipe pins and checks. `--exact-identity` (or
+`RECIPE_EXACT_IDENTITY=1`) also names the worker's and the launcher's bytes, so
+only byte-identical tools reuse saved state; release builds use it. Exact and
+default identities never share saved state. Checkpoints become recoverable only after both files and separate
 `ctx.state` records are durable. Interrupted, unacknowledged work is discarded.
 A successful failure-cleanup hook is also checkpointed with its returned state
 and matching files, while the producer operation still fails and publishes

@@ -253,6 +253,16 @@ the caller subset. No restriction lends another recipe an endpoint.
 .B --no-persist-state
 Disable state/files recovery. Managed execution and output publication still run.
 .TP
+.B --exact-identity
+Name the worker's and the Ginux launcher's bytes in the saved-state identity, on
+top of their declared behaviour versions, so only byte-identical tools reuse
+saved state. Release builds use it. RECIPE_EXACT_IDENTITY=1 selects it too
+(0 or empty does not; any other value is an error). Without it, Recipe and Ginux
+enter the identity by ENGINE_BEHAVIOUR, GINUX_BEHAVIOUR, the transport version
+and the pinned Ginux catalog and build-base digests (src/identity.rs, which
+states when each is bumped); inputs, recipe closure, defines, options and the
+root image are always named by content.
+.TP
 .B --json-output FILE
 Write final context JSON to this file. Diagnostics go to stderr.
 .TP

@@ -7,6 +7,14 @@ use std::process::Command;
 use std::time::Duration;
 
 pub const CATALOG: u32 = 1002;
+// The build-base digests Ginux must report for the derived contract, with and
+// without an outbound grant. Reviewed after upstream cfebfdab: configured
+// rt_sigpending and sigaltstack affect only the calling thread. Fixed
+// exclusions remain. Both are part of `crate::identity::Declared`.
+pub(crate) const BASE_DIGEST_NETWORK: &str =
+    "cce1895cb6da15e246154bf0ee41dfe639a9a338508091da4edb762a64b8bbde";
+pub(crate) const BASE_DIGEST_OFFLINE: &str =
+    "0c8e73d32ee6d54ddfed2cc42a451f517f781dc1837b49555414b9ff7fe97359";
 /// The Ginux operation a `NEEDS.network` endpoint grants.
 pub(crate) const TCP_CONNECT: &str = "network.inet.tcp.connect";
 
@@ -215,12 +223,10 @@ pub(crate) fn validate(
         digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
         "invalid Ginux contract digest"
     );
-    // Reviewed after upstream cfebfdab: configured rt_sigpending and
-    // sigaltstack affect only the calling thread. Fixed exclusions remain.
     let expected = if network {
-        "cce1895cb6da15e246154bf0ee41dfe639a9a338508091da4edb762a64b8bbde"
+        BASE_DIGEST_NETWORK
     } else {
-        "0c8e73d32ee6d54ddfed2cc42a451f517f781dc1837b49555414b9ff7fe97359"
+        BASE_DIGEST_OFFLINE
     };
     ensure!(
         digest == expected,

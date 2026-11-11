@@ -32,6 +32,13 @@ pub struct ExecutionOptions {
     pub force_build: bool,
     /// Rerun the main recipe's installation phase.
     pub force_install: bool,
+    /// Name the worker's and the Ginux launcher's bytes in the saved-state
+    /// identity, on top of the declared behaviour versions
+    /// (`crate::identity`), so only byte-identical tools reuse a state.
+    /// Release builds set it. Applies to dependencies too. Coordinator only:
+    /// never sent to the worker.
+    #[serde(skip)]
+    pub exact_identity: bool,
 }
 impl Default for ExecutionOptions {
     fn default() -> Self {
@@ -51,6 +58,7 @@ impl Default for ExecutionOptions {
             force_acquire: false,
             force_build: false,
             force_install: false,
+            exact_identity: false,
         }
     }
 }

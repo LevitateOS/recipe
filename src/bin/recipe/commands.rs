@@ -92,6 +92,8 @@ fn run(cli: Cli) -> Result<()> {
     execution.force_acquire = cli.force_acquire;
     execution.force_build = cli.force_build;
     execution.force_install = cli.force_install;
+    execution.exact_identity =
+        cli.exact_identity || levitate_recipe::identity::exact_from_env()?;
     execution.narrowing = levitate_recipe::needs::Narrowing {
         timeout_secs: cli.timeout_secs,
         memory_mib: cli.memory_mib,
@@ -1516,6 +1518,7 @@ fn system_route(cli: &Cli) -> Result<bool> {
             ("--force-build", cli.force_build),
             ("--force-install", cli.force_install),
             ("--no-persist-state", cli.no_persist_state),
+            ("--exact-identity", cli.exact_identity),
         ] {
             if value {
                 cmd.arg(flag);
