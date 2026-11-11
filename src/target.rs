@@ -151,7 +151,10 @@ impl<'a> Resolver<'a> {
             match fs::symlink_metadata(&full) {
                 Ok(m) if m.is_dir() => {}
                 Ok(_) if i + 1 == count => return Ok(false),
-                Ok(_) => bail!("target path component is not a directory: {}", cur.display()),
+                Ok(_) => bail!(
+                    "target path component is not a directory: {}",
+                    cur.display()
+                ),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     if let Err(e) = fs::create_dir(&full) {
                         ensure!(
