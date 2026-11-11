@@ -456,7 +456,14 @@ fn scoped_response(
             {
                 let seconds = r
                     .header("retry-after")
-                    .and_then(|s| s.parse::<u64>().ok())
+                    .map(|s| {
+                        // HTTP-date is valid too. Defer rather than treating it
+                        // as a missing header and retrying before its deadline.
+                        s.parse::<u64>().map_err(|_| failure(
+                            "update origin supplied a non-numeric Retry-After; automatic retry deferred".into()
+                        ))
+                    })
+                    .transpose()?
                     .unwrap_or(1 << retries);
                 if seconds > 5 {
                     return Err(
