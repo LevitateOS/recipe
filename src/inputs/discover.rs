@@ -496,7 +496,10 @@ fn reject_secret_bearing_host(host: &Path, name: &str) -> Result<()> {
             }
             _ => {}
         }
-        if component.len() > 4 && (component.ends_with(b".pem") || component.ends_with(b".key")) {
+        if component.len() > 4
+            && (component.ends_with(b".key")
+                || (component.ends_with(b".pem") && !public_certificate_bundle(host)))
+        {
             bail!(
                 "input preparation failure: refusing secret-bearing input {name:?} \
                  (host path names key material; stage only declared build inputs)"
@@ -504,6 +507,24 @@ fn reject_secret_bearing_host(host: &Path, name: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Public CA bundles are build data, unlike PEM private keys. Keep this
+/// best-effort guard bounded and never follow a host symlink to classify it.
+fn public_certificate_bundle(host: &Path) -> bool {
+    use std::io::Read;
+    const LIMIT: u64 = 4 * 1024 * 1024;
+    let Ok(file) = crate::fsx::open_regular(host) else {
+        return false;
+    };
+    let mut bytes = Vec::new();
+    if file.take(LIMIT + 1).read_to_end(&mut bytes).is_err() || bytes.len() as u64 > LIMIT {
+        return false;
+    }
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        return false;
+    };
+    text.contains("-----BEGIN CERTIFICATE-----") && !text.contains("PRIVATE KEY-----")
 }
 
 /// Validate one host file and hash it by streaming (never fully buffered).

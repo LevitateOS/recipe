@@ -135,7 +135,7 @@ pub struct Receipt {
 /// Actual invocation constraints are rendered and validated separately.
 pub fn inspection_config(options: &crate::ExecutionOptions) -> String {
     format!(
-        "schema_version = 1\n[instance]\nid = \"recipe-contract\"\nroot = \"oci:recipe-contract@sha256:{}\"\ninit = \"{}\"\nargs = []\nenvironment = []\n[resources]\nvcpus = {}\nmemory_mib = {}\n[execution]\nprofile = \"balanced\"\nbackend = \"ptrace-native\"\n{}\n[storage]\nassignments = []\n[devices]\nassignments = []\n[network]\nbackend = \"none\"\n[audit]\nmode = \"stderr\"\n[failure]\npolicy = \"stop\"\n",
+        "schema_version = 1\n[instance]\nid = \"recipe-contract\"\nroot = \"oci:recipe-contract@sha256:{}\"\ninit = \"{}\"\nargs = []\nenvironment = []\n[resources]\nvcpus = {}\nmemory_mib = {}\n[execution]\nprofile = \"balanced\"\nbackend = \"ptrace-native\"\n{}\n[storage]\nassignments = []\n[devices]\nassignments = []\n[network]\nbackend = \"none\"\n[audit]\nenabled = true\n[failure]\npolicy = \"stop\"\n",
         "0".repeat(64),
         crate::domain::WORKER,
         options.jobs,
@@ -215,12 +215,12 @@ pub(crate) fn validate(
         digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
         "invalid Ginux contract digest"
     );
-    // Reviewed against cda285e1: fchmodat and splice join the configured
-    // catalog. Existing grants and fixed exclusions retain their meaning.
+    // Reviewed after upstream cfebfdab: configured rt_sigpending and
+    // sigaltstack affect only the calling thread. Fixed exclusions remain.
     let expected = if network {
-        "b3af8bf11c78a7b3f559ab5c2b2ffdaf4a43a30d7e15d3ab5f64238f93f3a9a7"
+        "cce1895cb6da15e246154bf0ee41dfe639a9a338508091da4edb762a64b8bbde"
     } else {
-        "07a6f3ac80f0106038abbc6b13b8fe5c390dd4eba1a7ff98a12dae9f63976d94"
+        "0c8e73d32ee6d54ddfed2cc42a451f517f781dc1837b49555414b9ff7fe97359"
     };
     ensure!(
         digest == expected,

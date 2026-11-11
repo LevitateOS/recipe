@@ -132,7 +132,7 @@ impl InstanceConfig {
                 self.network.max_bytes
             ));
         }
-        out.push_str("\n[audit]\nmode = \"stderr\"\n");
+        out.push_str("\n[audit]\nenabled = true\n");
         out.push_str("\n[failure]\npolicy = \"stop\"\n");
         if out.len() > MAX_CONFIG {
             bail!(
