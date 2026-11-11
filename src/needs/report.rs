@@ -263,6 +263,29 @@ pub fn explain_invocation(directory: &Path, operation: &str) -> Result<serde_jso
     )
 }
 
+/// The first connection a retained invocation's supervisor log records as
+/// denied: the endpoint as the audit line names it (a numeric address) and the
+/// network endpoints the recipe declared. None when no denial was recorded or
+/// the record cannot be read.
+pub fn refused_connection(directory: &Path) -> Option<serde_json::Value> {
+    let recorded = crate::invocation_log::Recorded::read(directory).ok()?;
+    let text = String::from_utf8_lossy(&recorded.supervisor_log);
+    let endpoint = text.lines().find_map(|line| {
+        if !line.starts_with("ginux: audit ") {
+            return None;
+        }
+        let fields = line
+            .split_whitespace()
+            .filter_map(|part| part.split_once('='))
+            .collect::<BTreeMap<_, _>>();
+        (fields.get("egress") == Some(&"denied"))
+            .then(|| fields.get("network-endpoint").map(|endpoint| (*endpoint).to_owned()))
+            .flatten()
+    })?;
+    let declared = recorded.authority["declaration"]["needs"]["network"].clone();
+    Some(serde_json::json!({"endpoint": endpoint, "declared": if declared.is_array() { declared } else { serde_json::json!([]) }}))
+}
+
 /// Advisory endpoint use from the supervisor's bounded final summary. Missing
 /// records are unknown, never false/unused; syscall audit truncation is separate.
 pub(crate) fn network_usage(

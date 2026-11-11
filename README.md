@@ -103,7 +103,24 @@ mean it may use more; `null` when the receipt predates the record).
 `recipe go-back NAME [--to VERSION]` activates an earlier version again from
 the files an inactive generation holds; `recipe storage` reports what the
 active and the inactive generations take, and `--clear-earlier` deletes the
-inactive ones. These were run on a hand-made store; the record of `needs` at
+inactive ones. `recipe history [--json]` lists what was done to the store,
+newest first (install, update, remove, go-back, hold, unhold, clear-earlier),
+from `history.jsonl` in the package root: one JSON object per line with `at`
+(seconds since 1970), `what`, `package`, `from`, `to` and `source`, null where
+one does not apply. It is written under the store's lock after each change; a
+failure to write it is reported on stderr and does not undo the change. It keeps
+the newest entries (about 256 KiB when it passes 512 KiB). `--json` (and piped
+output) prints `{"schema_version": 1, "history": [...]}`.
+`recipe hold NAME` and `recipe unhold NAME` set `held` in the receipt (a new
+generation, like remove; absent when false). `recipe update NAME` refuses a held
+package before it needs Ginux; `recipe updates` still lists it with `"held":
+true`, `recipe installed --json` shows `held`, and `recipe install NAME` and
+`recipe go-back NAME` keep it as it is. With `--machine-events`, a failed
+install carries `"refused": {"endpoint", "declared"}` when Ginux's log of that
+run records a denied connection: `endpoint` is the numeric address the audit
+line names, `declared` the recipe's NEEDS.network. The history, hold and
+unhold commands were run on a hand-made store; `refused` is compiled and not
+run, since it needs a failed install under Ginux. These were run on a hand-made store; the record of `needs` at
 install has compiled and not run, since an install needs Ginux.
 
 The OS builder packages the public catalog, `/usr/libexec/recipe/ginux`, and

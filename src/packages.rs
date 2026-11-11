@@ -23,6 +23,9 @@ const PACKAGES: &str = ".packages";
 const RECEIPT: &str = ".installed.json";
 const MAX_RECEIPT: u64 = 8 * 1024 * 1024;
 
+mod history;
+pub use history::HistoryEntry;
+
 /// An active package, recorded alongside the profile that exposes its files.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,6 +52,13 @@ pub struct InstalledPackage {
     /// The length of its files together.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_bytes: Option<u64>,
+    /// Held: 'recipe update' leaves it as it is. Absent when not held.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub held: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// An earlier version of a package that an inactive generation still holds.
@@ -224,9 +234,22 @@ impl PackageStore {
             needs: needs.cloned(),
             installed_on: Some(now_seconds()),
             size_bytes: Some(size_bytes),
+            // Installing again keeps a package held.
+            held: active.packages.get(name).is_some_and(|before| before.held),
         };
+        let before = active.packages.get(name).map(|before| before.version.clone());
         packages.insert(name.to_owned(), installed.clone());
         finish_generation(&root, pending, packages, active.target.as_deref())?;
+        history::record(
+            &root,
+            HistoryEntry::new(
+                if update_only { "update" } else { "install" },
+                Some(name),
+                before.as_deref(),
+                Some(version),
+                installed.source.as_deref(),
+            ),
+        );
         Ok(installed)
     }
 
@@ -243,7 +266,52 @@ impl PackageStore {
         let pending = new_generation(&root)?;
         copy_existing(&root, &active, pending.path(), Some(name))?;
         finish_generation(&root, pending, packages, active.target.as_deref())?;
+        history::record(
+            &root,
+            HistoryEntry::new(
+                "remove",
+                Some(name),
+                Some(&removed.version),
+                None,
+                removed.source.as_deref(),
+            ),
+        );
         Ok(removed)
+    }
+
+    /// Hold or release one package: a new generation that differs only in the
+    /// receipt's `held`. Holding a held package changes nothing.
+    pub fn set_held(&self, name: &str, held: bool) -> Result<InstalledPackage> {
+        valid_name(name)?;
+        let (root, _lock) = self.lock()?;
+        let active = read_active(&root)?;
+        let now = active
+            .packages
+            .get(name)
+            .with_context(|| format!("package {name} is not installed"))?;
+        if now.held == held {
+            return Ok(now.clone());
+        }
+        let pending = new_generation(&root)?;
+        let mut packages = active.packages.clone();
+        copy_existing(&root, &active, pending.path(), None)?;
+        let changed = InstalledPackage {
+            held,
+            ..now.clone()
+        };
+        packages.insert(name.to_owned(), changed.clone());
+        finish_generation(&root, pending, packages, active.target.as_deref())?;
+        history::record(
+            &root,
+            HistoryEntry::new(
+                if held { "hold" } else { "unhold" },
+                Some(name),
+                Some(&changed.version),
+                Some(&changed.version),
+                changed.source.as_deref(),
+            ),
+        );
+        Ok(changed)
     }
 
     /// The earlier versions of each active package that can be gone back to,
@@ -313,12 +381,25 @@ impl PackageStore {
             "the kept files of {name} {} no longer match their receipt",
             earlier.version
         );
+        // Going back keeps the package held or free as it is now.
         let back = InstalledPackage {
             installed_on: Some(now_seconds()),
+            held: now.held,
             ..earlier
         };
+        let left = now.version.clone();
         packages.insert(name.to_owned(), back.clone());
         finish_generation(&root, pending, packages, active.target.as_deref())?;
+        history::record(
+            &root,
+            HistoryEntry::new(
+                "go-back",
+                Some(name),
+                Some(&left),
+                Some(&back.version),
+                back.source.as_deref(),
+            ),
+        );
         Ok(back)
     }
 
@@ -368,6 +449,7 @@ impl PackageStore {
                 .with_context(|| format!("cannot delete {}", generation.display()))?;
         }
         File::open(root.join(GENERATIONS))?.sync_all()?;
+        history::record(&root, HistoryEntry::new("clear-earlier", None, None, None, None));
         Ok(cleared)
     }
 

@@ -236,6 +236,28 @@ pub(crate) enum Commands {
         to: Option<String>,
     },
 
+    /// Show what was done to the installed software, newest first
+    #[command(
+        after_help = "Examples:\n  recipe history\n  recipe history --json\n\nLists installs, updates, removals, goings back, holds, releases and clearings of\nearlier versions, from the log in the package root. The log keeps the newest\nentries; it is not the earlier profile generations, which 'recipe storage\n--clear-earlier' deletes. With --json (and when piped) it prints\n{\"schema_version\": 1, \"history\": [...]}; each entry has at (seconds since 1970),\nwhat, package, from, to and source, null where one does not apply."
+    )]
+    History,
+
+    /// Keep an installed package from being updated by accident
+    #[command(
+        after_help = "Example:\n  recipe hold ripgrep\n\n'recipe update' refuses a held package; 'recipe updates' still lists it, marked\nheld. Installing, removing and going back still work. Release it with\n'recipe unhold'. Needs neither the recipe nor Ginux."
+    )]
+    Hold {
+        /// The installed package's name.
+        name: String,
+    },
+
+    /// Let an installed package be updated again
+    #[command(after_help = "Example:\n  recipe unhold ripgrep")]
+    Unhold {
+        /// The installed package's name.
+        name: String,
+    },
+
     /// Show what installed software and its earlier versions take on disk
     #[command(
         after_help = "Examples:\n  recipe storage\n  recipe storage --json\n  recipe storage --clear-earlier\n\nEarlier profile generations are what 'recipe go-back' returns to. A file that\nan earlier generation shares with the active one is counted with the active\none. --clear-earlier deletes every inactive generation: nothing installed\nchanges, and no package can be gone back on afterwards."

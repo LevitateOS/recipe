@@ -296,7 +296,9 @@ impl GinuxLauncher {
                 .failure
                 .clone()
                 .expect("protocol: a failed result carries its failure");
-            return Err(anyhow::Error::new(WorkloadFailure(failure)).context(
+            let diagnostics =
+                crate::invocation_log::retained(invocation.state_dir, Path::new(&prepared.invocation_id));
+            return Err(anyhow::Error::new(WorkloadFailure(failure, diagnostics)).context(
                 crate::failure::Category::Workload.error(format!(
                     "`{operation}` failed in the Ginux domain (invocation {})",
                     prepared.invocation_id
@@ -359,7 +361,11 @@ fn is_executable(meta: &std::fs::Metadata) -> bool {
 
 /// The worker's account of a failed workload, kept typed for the autofix loop.
 #[derive(Debug)]
-pub(crate) struct WorkloadFailure(pub crate::worker::protocol::FailureInfo);
+pub(crate) struct WorkloadFailure(
+    pub crate::worker::protocol::FailureInfo,
+    /// The retained diagnostics directory of the failed invocation, if there is one.
+    pub Option<PathBuf>,
+);
 
 impl std::fmt::Display for WorkloadFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

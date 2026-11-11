@@ -98,12 +98,21 @@ pub mod bin_support {
                     .downcast_ref::<crate::backend::WorkloadFailure>()
                     .and_then(|failure| failure.0.phase)
                     .map(crate::lifecycle::Phase::name);
-                serde_json::json!({
+                let mut event = serde_json::json!({
                     "event": "failed",
                     "recipe": recipe,
                     "hook": hook,
                     "reason": format!("{error:#}"),
-                })
+                });
+                // A connection Ginux refused during the run, if its log holds one.
+                let refused = error
+                    .downcast_ref::<crate::backend::WorkloadFailure>()
+                    .and_then(|failure| failure.1.as_deref())
+                    .and_then(crate::needs::report::refused_connection);
+                if let Some(refused) = refused {
+                    event["refused"] = refused;
+                }
+                event
             }
         }
     }

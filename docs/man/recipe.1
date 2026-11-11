@@ -6,7 +6,7 @@ recipe \- execute Rhai package recipes through Ginux
 [options] install|update|remove|cleanup|isinstalled|isbuilt|isacquired recipe
 .br
 .B recipe
-[options] list|installed|index|info|hash|refresh [argument]
+[options] list|installed|history|hold|unhold|index|info|hash|refresh [argument]
 .br
 .B recipe
 [options] source list|add|remove [argument]
@@ -83,6 +83,23 @@ its source publishes another recipe file for it.
 Activate an earlier version of an installed package again from the files an
 inactive generation still holds, without a recipe or Ginux. The version left
 behind stays kept.
+.TP
+.B history
+List what was done to the installed software, newest first: installs, updates,
+removals, goings back, holds, releases and clearings of earlier versions. Reads
+history.jsonl in the package root, without Ginux; a line that cannot be read is
+left out. Each entry has at (seconds since 1970), what, package, from, to and
+source, null where one does not apply. The log keeps the newest entries. With
+--json (and when piped) prints {"schema_version": 1, "history": [...]}.
+.TP
+.B hold NAME
+Keep an installed package from being updated: update refuses it, with one
+sentence saying so. updates still lists it with "held": true, and installed
+--json shows held. A new generation; neither the recipe nor Ginux is needed.
+install and go-back keep the package held.
+.TP
+.B unhold NAME
+Let a held package be updated again.
 .TP
 .B storage [--clear-earlier]
 Show what the active generation and the inactive ones take on disk, shared files
@@ -248,8 +265,10 @@ steps that recipe needs this time, once its checks have run. fetch: how far a
 download is (recipe, source, bytes, total; total is null when the server did not
 say). agent: an --autofix repair changed files and the run starts again (recipe,
 hook, attempt, files, summary). The last event of install, update, remove and
-go-back is done (recipe), or failed (recipe, hook where a step failed, reason).
-Build progress inside a step and the endpoint of a refused connection are not
+go-back, hold and unhold is done (recipe), or failed (recipe, hook where a step
+failed, reason). A failed install whose Ginux log records a denied connection
+also has refused: endpoint, the numeric address the audit line names, and
+declared, the recipe's NEEDS.network. Build progress inside a step is not
 reported.
 .SH OPTIONAL REPAIR
 install --autofix explicitly enables bounded coordinator patch/retry for eligible

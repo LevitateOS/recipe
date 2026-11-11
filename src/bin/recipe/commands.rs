@@ -45,7 +45,9 @@ fn changed_package(command: &Commands) -> Option<String> {
         Commands::Install { recipe, .. }
         | Commands::Update { recipe }
         | Commands::Remove { recipe } => recipe.file_stem()?.to_str()?.to_owned(),
-        Commands::GoBack { name, .. } => name.clone(),
+        Commands::GoBack { name, .. }
+        | Commands::Hold { name }
+        | Commands::Unhold { name } => name.clone(),
         _ => return None,
     };
     Some(match recipe.split_once(':') {
@@ -142,6 +144,11 @@ fn run(cli: Cli) -> Result<()> {
         llm_profile: cli.llm_profile,
     };
 
+    let command_name = match &cli.command {
+        Commands::Hold { .. } => "hold",
+        Commands::Unhold { .. } => "unhold",
+        _ => "",
+    };
     match cli.command {
         Commands::Validate { recipe } => {
             let recipe = resolve_recipe_path(&recipe, &lookup)?;
@@ -244,6 +251,11 @@ fn run(cli: Cli) -> Result<()> {
             );
             let installed = installed_package(&package_store, &recipe)?
                 .with_context(|| format!("package {} is not installed", recipe.display()))?;
+            anyhow::ensure!(
+                !installed.held,
+                "{0} is held, so it is not updated. Release it with: recipe unhold {0}",
+                installed.name
+            );
             // A package fetched from a remote source is updated from that
             // source, unless the command names another.
             let named = match &installed.source {
@@ -291,6 +303,7 @@ fn run(cli: Cli) -> Result<()> {
                     let earlier = kept.remove(&package.name).unwrap_or_default();
                     let mut entry = serde_json::to_value(&package)?;
                     entry["kept"] = serde_json::to_value(earlier)?;
+                    entry["held"] = package.held.into();
                     Ok(entry)
                 })
                 .collect::<Result<Vec<_>>>()?;
@@ -305,6 +318,35 @@ fn run(cli: Cli) -> Result<()> {
             } else {
                 print_updates(&result);
             }
+        }
+
+        Commands::History => {
+            let entries = package_store.history()?;
+            if json_output.is_some() || json {
+                let result = serde_json::json!({"schema_version": 1, "history": entries});
+                emit_result(&result, json_output.as_deref(), json, "History")?;
+            } else if entries.is_empty() {
+                bin_support::info("Nothing has been done to the installed software yet");
+            } else {
+                for entry in &entries {
+                    println!("{}", history_line(entry));
+                }
+            }
+        }
+
+        Commands::Hold { name } | Commands::Unhold { name } => {
+            let held = matches!(command_name, "hold");
+            let installed = installed_package(&package_store, Path::new(&name))?
+                .with_context(|| format!("package {name} is not installed"))?;
+            let changed = package_store.set_held(&installed.name, held)?;
+            let result = serde_json::json!({"name": changed.name, "version": changed.version,
+                "operation": command_name, "held": changed.held, "profile": package_store.profile_path()});
+            emit_result(
+                &result,
+                json_output.as_deref(),
+                json,
+                if held { "Package held" } else { "Package released" },
+            )?;
         }
 
         Commands::GoBack { name, to } => {
@@ -1006,6 +1048,7 @@ fn updates(store: &PackageStore, lookup: &Lookup) -> Result<serde_json::Value> {
             "to": if to.is_empty() { installed.version.as_str() } else { to },
             "reason": reason,
             "changes": changes,
+            "held": installed.held,
         }));
     }
     Ok(serde_json::json!({
@@ -1026,10 +1069,15 @@ fn print_updates(result: &serde_json::Value) {
             update["from"].as_str().unwrap_or("?"),
             update["to"].as_str().unwrap_or("?"),
         );
-        if update["reason"] == "recipe" {
-            println!("  {name} {from}: its source publishes another recipe");
+        let held = if update["held"] == true {
+            " (held: 'recipe update' leaves it; 'recipe unhold' releases it)"
         } else {
-            println!("  {name} {from} -> {to}");
+            ""
+        };
+        if update["reason"] == "recipe" {
+            println!("  {name} {from}: its source publishes another recipe{held}");
+        } else {
+            println!("  {name} {from} -> {to}{held}");
         }
         match update["changes"].as_array() {
             None => println!("      what the newer recipe may use was not compared: nothing was recorded at install"),
@@ -1054,6 +1102,46 @@ fn print_updates(result: &serde_json::Value) {
             problem["problem"].as_str().unwrap_or_default()
         ));
     }
+}
+
+/// One history entry as a line for a terminal: when (UTC), what, which package.
+fn history_line(entry: &levitate_recipe::packages::HistoryEntry) -> String {
+    let days = (entry.at / 86_400) as i64;
+    let seconds = entry.at % 86_400;
+    // Civil date from days since 1970 (proleptic Gregorian).
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 { month_index + 3 } else { month_index - 9 };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    let mut line = format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}  {}",
+        seconds / 3600,
+        seconds % 3600 / 60,
+        seconds % 60,
+        entry.what
+    );
+    if let Some(package) = &entry.package {
+        line.push(' ');
+        line.push_str(package);
+    }
+    match (entry.from.as_deref(), entry.to.as_deref()) {
+        (Some(from), Some(to)) if from != to => line.push_str(&format!(" {from} -> {to}")),
+        (Some(version), Some(_)) | (Some(version), None) | (None, Some(version)) => {
+            line.push(' ');
+            line.push_str(version);
+        }
+        (None, None) => {}
+    }
+    if let Some(source) = &entry.source {
+        line.push_str(&format!(" (from {source})"));
+    }
+    line
 }
 
 fn problem_json(problem: &sources::Problem) -> serde_json::Value {
