@@ -54,8 +54,13 @@ fn yes() -> bool {
 #[derive(Debug, Clone)]
 pub enum Kind {
     /// `files` is an address with `{rev}` and `{path}` in it.
-    Remote { files: String, branch: String },
-    Folder { path: PathBuf },
+    Remote {
+        files: String,
+        branch: String,
+    },
+    Folder {
+        path: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -250,8 +255,8 @@ fn fetch_index(files: &str, branch: &str) -> Result<(String, Published)> {
 }
 
 fn read(path: &Path) -> Result<Declared> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("cannot read {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
     toml::from_str(&text).with_context(|| format!("{} does not name a source", path.display()))
 }
 
@@ -263,12 +268,19 @@ fn kind(declared: Declared) -> Result<Option<Kind>> {
         (Some(files), None) => {
             check_pattern(&files)?;
             let branch = declared.branch.unwrap_or_else(|| "main".to_owned());
-            ensure!(is_rev(&branch), "branch {branch:?} cannot go into an address");
+            ensure!(
+                is_rev(&branch),
+                "branch {branch:?} cannot go into an address"
+            );
             Ok(Some(Kind::Remote { files, branch }))
         }
         (None, Some(path)) => {
             ensure!(declared.branch.is_none(), "a folder has no branch");
-            ensure!(path.is_absolute(), "path must be absolute, got {}", path.display());
+            ensure!(
+                path.is_absolute(),
+                "path must be absolute, got {}",
+                path.display()
+            );
             Ok(Some(Kind::Folder { path }))
         }
         _ => bail!("a source has either `files` (a remote source) or `path` (a folder)"),
@@ -294,7 +306,9 @@ impl Sources {
         for folder in [&self.shipped, &self.store] {
             for item in std::fs::read_dir(folder).into_iter().flatten().flatten() {
                 let path = item.path();
-                if path.extension().is_some_and(|extension| extension == "toml")
+                if path
+                    .extension()
+                    .is_some_and(|extension| extension == "toml")
                     && let Some(name) = path.file_stem().and_then(|stem| stem.to_str())
                 {
                     files.insert(name.to_owned(), path);
@@ -404,8 +418,9 @@ impl Sources {
             }
             Err(error) => {
                 if let Ok(folder) = self.kept_folder(source) {
-                    let _ = std::fs::create_dir_all(&folder)
-                        .and_then(|()| std::fs::write(folder.join("problem"), format!("{error:#}")));
+                    let _ = std::fs::create_dir_all(&folder).and_then(|()| {
+                        std::fs::write(folder.join("problem"), format!("{error:#}"))
+                    });
                 }
                 Err(error)
             }
@@ -466,7 +481,11 @@ impl Sources {
             Kind::Remote { files, branch } => {
                 let kept = self.kept(source);
                 let published = kept.index.as_ref().map(|index| &index.source);
-                recipes = kept.index.as_ref().map(|index| index.recipes.clone()).unwrap_or_default();
+                recipes = kept
+                    .index
+                    .as_ref()
+                    .map(|index| index.recipes.clone())
+                    .unwrap_or_default();
                 serde_json::json!({
                     "name": source.name,
                     "kind": "remote",
@@ -491,7 +510,10 @@ impl Sources {
                     .flatten()
                     .flatten()
                     .map(|item| item.path())
-                    .filter(|path| path.extension().is_some_and(|extension| extension == "rhai"))
+                    .filter(|path| {
+                        path.extension()
+                            .is_some_and(|extension| extension == "rhai")
+                    })
                     .collect();
                 names.sort();
                 for recipe in names {
@@ -577,7 +599,10 @@ impl Sources {
             recipe: recipe.to_owned(),
             source: source.name.clone(),
             commit: index.commit.clone(),
-            sha256: own["files"][0]["sha256"].as_str().unwrap_or_default().to_owned(),
+            sha256: own["files"][0]["sha256"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
         };
 
         // Every recipe needed, by name: the folder is flat, as a source is.
@@ -595,7 +620,9 @@ impl Sources {
             for file in entry["files"].as_array().into_iter().flatten() {
                 let path = file["path"].as_str().unwrap_or_default();
                 let fresh = Wanted {
-                    address: pattern.replace("{rev}", &index.commit).replace("{path}", path),
+                    address: pattern
+                        .replace("{rev}", &index.commit)
+                        .replace("{path}", path),
                     sha256: file["sha256"].as_str().unwrap_or_default().to_owned(),
                     bytes: file["bytes"].as_u64().unwrap_or_default(),
                 };
@@ -627,7 +654,9 @@ impl Sources {
                             format!("{from} uses the source {other}, which is not added here")
                         })?;
                         let Kind::Remote { files, .. } = &other_source.kind else {
-                            bail!("{from} uses the source {other}, which is a folder here; recipe fetches needed recipes from remote sources only");
+                            bail!(
+                                "{from} uses the source {other}, which is a folder here; recipe fetches needed recipes from remote sources only"
+                            );
                         };
                         let index = self.index(&other_source, fresh)?;
                         used.insert(other.clone(), (files.clone(), index));
@@ -664,11 +693,14 @@ impl Sources {
             .with_context(|| format!("cannot create {}", folder.display()))?;
         for (path, file) in &wanted {
             let target = folder.join(path);
-            if std::fs::read(&target).is_ok_and(|kept| hex::encode(Sha256::digest(&kept)) == file.sha256) {
+            if std::fs::read(&target)
+                .is_ok_and(|kept| hex::encode(Sha256::digest(&kept)) == file.sha256)
+            {
                 continue;
             }
             let right = |bytes: &[u8]| {
-                bytes.len() as u64 == file.bytes && hex::encode(Sha256::digest(bytes)) == file.sha256
+                bytes.len() as u64 == file.bytes
+                    && hex::encode(Sha256::digest(bytes)) == file.sha256
             };
             let shipped = self
                 .shipped_copy(source)
@@ -700,7 +732,11 @@ impl Sources {
     /// A copy left by a run that failed goes the same way.
     pub fn forget(&self, source: &str, recipe: &str, keep: Option<&Path>) {
         let prefix = format!("{recipe}-");
-        for item in std::fs::read_dir(self.fetched.join(source)).into_iter().flatten().flatten() {
+        for item in std::fs::read_dir(self.fetched.join(source))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
             let folder = item.path();
             let is_copy = item.file_name().to_str().is_some_and(|name| {
                 name.strip_prefix(&prefix).is_some_and(|key| {
@@ -729,7 +765,10 @@ impl Sources {
                     }
                 }
                 Kind::Remote { .. } => {
-                    if self.index(&source, false).is_ok_and(|index| index.recipe(recipe).is_some()) {
+                    if self
+                        .index(&source, false)
+                        .is_ok_and(|index| index.recipe(recipe).is_some())
+                    {
                         found.push(Found {
                             source: source.name,
                             path: None,
@@ -750,7 +789,10 @@ impl Sources {
             catalog::is_source_name(name),
             "a source's name is lower-case letters, digits and '-', got {name:?}"
         );
-        ensure!(!reserved(name), "{name} names a folder recipe already reads");
+        ensure!(
+            !reserved(name),
+            "{name} names a folder recipe already reads"
+        );
         let file = self.file(name);
         for taken in [&file, &self.shipped.join(format!("{name}.toml"))] {
             ensure!(
@@ -771,7 +813,10 @@ impl Sources {
     /// Adds a remote source: fetches its index, which names it, and keeps it.
     pub fn add_remote(&self, address: &str, branch: &str) -> Result<(Source, Published)> {
         let files = pattern(address)?;
-        ensure!(is_rev(branch), "branch {branch:?} cannot go into an address");
+        ensure!(
+            is_rev(branch),
+            "branch {branch:?} cannot go into an address"
+        );
         let (text, published) = fetch_index(&files, branch)?;
         let source = Source {
             name: published.source.name.clone(),

@@ -315,10 +315,10 @@ pub fn reconcile(
                 let mut current = observed.get(path).cloned();
                 // Unspecified SELinux labels are assigned by installed kernel
                 // policy; an authored label remains an exact constraint.
-                if !prior.xattrs.contains_key("security.selinux") {
-                    if let Some(current) = &mut current {
-                        current.xattrs.remove("security.selinux");
-                    }
+                if !prior.xattrs.contains_key("security.selinux")
+                    && let Some(current) = &mut current
+                {
+                    current.xattrs.remove("security.selinux");
                 }
                 ensure!(
                     current.as_ref() == Some(prior),

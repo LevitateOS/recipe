@@ -85,8 +85,16 @@ pub fn changes(before: &Needs, after: &Needs) -> Vec<Change> {
             after.network_max_bytes,
             "bytes",
         ),
-        names("inputs", &kinds(&before.inputs, input), &kinds(&after.inputs, input)),
-        names("outputs", &kinds(&before.outputs, output), &kinds(&after.outputs, output)),
+        names(
+            "inputs",
+            &kinds(&before.inputs, input),
+            &kinds(&after.inputs, input),
+        ),
+        names(
+            "outputs",
+            &kinds(&before.outputs, output),
+            &kinds(&after.outputs, output),
+        ),
         amount("memory_mib", before.memory_mib, after.memory_mib, "MiB"),
         amount(
             "storage_max_objects",

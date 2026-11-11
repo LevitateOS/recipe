@@ -40,7 +40,10 @@ pub fn fetch_event(source: &str, bytes: u64, total: Option<u64>) {
     if !machine_events() {
         return;
     }
-    let recipe = EVENT_RECIPE.lock().map(|recipe| recipe.clone()).unwrap_or_default();
+    let recipe = EVENT_RECIPE
+        .lock()
+        .map(|recipe| recipe.clone())
+        .unwrap_or_default();
     machine_event(serde_json::json!({
         "event": "fetch", "recipe": recipe, "source": source, "bytes": bytes, "total": total,
     }));

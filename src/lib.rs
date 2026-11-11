@@ -54,11 +54,11 @@ mod retained;
 /// Installed runtime defaults shared with OS packaging.
 pub mod runtime;
 pub mod sources;
+pub mod system;
 /// Target filesystem metadata carried independently of build-host privileges.
 pub mod target;
-pub mod updates;
-pub mod system;
 mod temporary;
+pub mod updates;
 mod worker;
 
 pub use backend::GinuxLauncher;
@@ -327,7 +327,10 @@ impl RecipeEngine {
             if self.execution.machine_events {
                 // For a front end: the agent changed the recipe during this
                 // run, and the run starts again with the changed files.
-                let files: Vec<_> = changed.iter().map(|path| path.display().to_string()).collect();
+                let files: Vec<_> = changed
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect();
                 eprintln!(
                     "{}",
                     serde_json::json!({

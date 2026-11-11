@@ -1,5 +1,5 @@
 //! The required Ginux launcher for executable recipe operations.
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use sha2::Digest;
 use std::path::{Path, PathBuf};
 
@@ -65,7 +65,10 @@ impl GinuxLauncher {
                     serde_json::json!({"name": name, "steps": steps})
                 })
                 .collect();
-            crate::diagnostics::diag!("{}", serde_json::json!({"event": "plan", "recipes": recipes}));
+            crate::diagnostics::diag!(
+                "{}",
+                serde_json::json!({"event": "plan", "recipes": recipes})
+            );
         }
         let bindings =
             crate::inputs::bind_inputs(&graph, invocation.inputs, invocation.search_path)?;
@@ -296,14 +299,18 @@ impl GinuxLauncher {
                 .failure
                 .clone()
                 .expect("protocol: a failed result carries its failure");
-            let diagnostics =
-                crate::invocation_log::retained(invocation.state_dir, Path::new(&prepared.invocation_id));
-            return Err(anyhow::Error::new(WorkloadFailure(failure, diagnostics)).context(
-                crate::failure::Category::Workload.error(format!(
-                    "`{operation}` failed in the Ginux domain (invocation {})",
-                    prepared.invocation_id
-                )),
-            ));
+            let diagnostics = crate::invocation_log::retained(
+                invocation.state_dir,
+                Path::new(&prepared.invocation_id),
+            );
+            return Err(
+                anyhow::Error::new(WorkloadFailure(failure, diagnostics)).context(
+                    crate::failure::Category::Workload.error(format!(
+                        "`{operation}` failed in the Ginux domain (invocation {})",
+                        prepared.invocation_id
+                    )),
+                ),
+            );
         }
         if !report.result.ctx_summary.is_object() {
             bail!(crate::failure::Category::Protocol.error(format!(
@@ -341,8 +348,10 @@ fn resolve_launcher() -> Result<PathBuf> {
         ))
     })?;
     if !meta.is_file() {
-        bail!(crate::failure::Category::Startup
-            .error(format!("ginux launcher {} is not a file", path.display())));
+        bail!(
+            crate::failure::Category::Startup
+                .error(format!("ginux launcher {} is not a file", path.display()))
+        );
     }
     if !is_executable(&meta) {
         bail!(crate::failure::Category::Startup.error(format!(

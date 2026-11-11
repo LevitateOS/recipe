@@ -362,4 +362,6 @@ pub fn finalize(root: &str) -> Result<(), Box<EvalAltResult>> {
     recipe_result(target::finalize(Path::new(root)))
 }
 
-pub fn remove(root:&str,path:&str)->Result<(),Box<EvalAltResult>> {recipe_result(target::remove(Path::new(root),Path::new(path)))}
+pub fn remove(root: &str, path: &str) -> Result<(), Box<EvalAltResult>> {
+    recipe_result(target::remove(Path::new(root), Path::new(path)))
+}

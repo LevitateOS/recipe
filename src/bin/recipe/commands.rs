@@ -45,9 +45,9 @@ fn changed_package(command: &Commands) -> Option<String> {
         Commands::Install { recipe, .. }
         | Commands::Update { recipe }
         | Commands::Remove { recipe } => recipe.file_stem()?.to_str()?.to_owned(),
-        Commands::GoBack { name, .. }
-        | Commands::Hold { name }
-        | Commands::Unhold { name } => name.clone(),
+        Commands::GoBack { name, .. } | Commands::Hold { name } | Commands::Unhold { name } => {
+            name.clone()
+        }
         _ => return None,
     };
     Some(match recipe.split_once(':') {
@@ -137,7 +137,7 @@ fn run(cli: Cli) -> Result<()> {
         build_dir: cli.build_dir.as_deref(),
         state_dir: cli.state_dir.as_deref(),
         execution,
-        recipes_path: Some(&recipes_path),
+        recipes_path: Some(recipes_path),
         defines: &cli.defines,
         inputs: &cli.inputs,
         no_persist_state: cli.no_persist_state,
@@ -155,7 +155,7 @@ fn run(cli: Cli) -> Result<()> {
             let supplied = parse_inputs(engine_options.inputs)?;
             let authority = levitate_recipe::needs::report::validate(
                 &recipe,
-                Some(&recipes_path),
+                Some(recipes_path),
                 &supplied,
                 &engine_options.execution.narrowing,
             )?;
@@ -170,7 +170,7 @@ fn run(cli: Cli) -> Result<()> {
             let recipe = resolve_recipe_path(&recipe, &lookup)?;
             let authority = levitate_recipe::needs::report::inspect(
                 &recipe,
-                Some(&recipes_path),
+                Some(recipes_path),
                 &engine_options.execution.narrowing,
             )?;
             emit_result(
@@ -192,7 +192,7 @@ fn run(cli: Cli) -> Result<()> {
                 let recipe = resolve_recipe_path(&subject, &lookup)?;
                 levitate_recipe::needs::report::explain_recipe(
                     &recipe,
-                    Some(&recipes_path),
+                    Some(recipes_path),
                     &operation,
                     &engine_options.execution.narrowing,
                 )?
@@ -208,7 +208,7 @@ fn run(cli: Cli) -> Result<()> {
             let old = resolve_recipe_path(&old, &lookup)?;
             let new = resolve_recipe_path(&new, &lookup)?;
             emit_result(
-                &levitate_recipe::needs::report::diff(&old, &new, Some(&recipes_path))?,
+                &levitate_recipe::needs::report::diff(&old, &new, Some(recipes_path))?,
                 json_output.as_deref(),
                 json,
                 "Recipe permission changes",
@@ -307,7 +307,8 @@ fn run(cli: Cli) -> Result<()> {
                     Ok(entry)
                 })
                 .collect::<Result<Vec<_>>>()?;
-            let result = serde_json::json!({"packages": packages, "profile": package_store.profile_path()});
+            let result =
+                serde_json::json!({"packages": packages, "profile": package_store.profile_path()});
             emit_result(&result, json_output.as_deref(), json, "Installed packages")?;
         }
 
@@ -345,7 +346,11 @@ fn run(cli: Cli) -> Result<()> {
                 &result,
                 json_output.as_deref(),
                 json,
-                if held { "Package held" } else { "Package released" },
+                if held {
+                    "Package held"
+                } else {
+                    "Package released"
+                },
             )?;
         }
 
@@ -353,7 +358,12 @@ fn run(cli: Cli) -> Result<()> {
             let back = package_store.go_back(&name, to.as_deref())?;
             let result = serde_json::json!({"name": back.name, "version": back.version,
                 "operation": "go-back", "profile": package_store.profile_path()});
-            emit_result(&result, json_output.as_deref(), json, "Earlier version activated")?;
+            emit_result(
+                &result,
+                json_output.as_deref(),
+                json,
+                "Earlier version activated",
+            )?;
         }
 
         Commands::Storage { clear_earlier } => {
@@ -387,17 +397,15 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Commands::Remove { recipe } => {
-            if !no_activate {
-                if let Some(installed) = installed_package(&package_store, &recipe)? {
-                    let removed = package_store.remove(&installed.name)?;
-                    if let Some(source) = &removed.source {
-                        all_sources.forget(source, &removed.name, None);
-                    }
-                    let result = serde_json::json!({"name": removed.name, "version": removed.version,
-                        "operation": "remove", "profile": package_store.profile_path()});
-                    emit_result(&result, json_output.as_deref(), json, "Package removed")?;
-                    return Ok(());
+            if !no_activate && let Some(installed) = installed_package(&package_store, &recipe)? {
+                let removed = package_store.remove(&installed.name)?;
+                if let Some(source) = &removed.source {
+                    all_sources.forget(source, &removed.name, None);
                 }
+                let result = serde_json::json!({"name": removed.name, "version": removed.version,
+                        "operation": "remove", "profile": package_store.profile_path()});
+                emit_result(&result, json_output.as_deref(), json, "Package removed")?;
+                return Ok(());
             }
             let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
             require_output_only_if_inactive(&recipe_path, recipes_path, no_activate)?;
@@ -419,14 +427,12 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Commands::IsInstalled { recipe } => {
-            if !no_activate {
-                if let Some(installed) = installed_package(&package_store, &recipe)? {
-                    let installed = package_store.verify(&installed.name)?;
-                    let result = serde_json::json!({"name": installed.name, "version": installed.version,
+            if !no_activate && let Some(installed) = installed_package(&package_store, &recipe)? {
+                let installed = package_store.verify(&installed.name)?;
+                let result = serde_json::json!({"name": installed.name, "version": installed.version,
                         "profile": package_store.profile_path()});
-                    emit_result(&result, json_output.as_deref(), json, "Package is active")?;
-                    return Ok(());
-                }
+                emit_result(&result, json_output.as_deref(), json, "Package is active")?;
+                return Ok(());
             }
             let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
             require_output_only_if_inactive(&recipe_path, recipes_path, no_activate)?;
@@ -535,7 +541,7 @@ fn run(cli: Cli) -> Result<()> {
 
         Commands::Info { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
-            show_info(&recipe_path, Some(&recipes_path))?;
+            show_info(&recipe_path, Some(recipes_path))?;
         }
 
         Commands::Hash { file } => {
@@ -999,7 +1005,8 @@ fn update_candidate(
         }
     }
     if installed.recipe.is_file() {
-        return levitate_recipe::catalog::entry(&installed.recipe, installed.recipe.parent()).map(Some);
+        return levitate_recipe::catalog::entry(&installed.recipe, installed.recipe.parent())
+            .map(Some);
     }
     Ok(None)
 }
@@ -1018,7 +1025,9 @@ fn updates(store: &PackageStore, lookup: &Lookup) -> Result<serde_json::Value> {
                 continue;
             }
             Err(error) => {
-                problems.push(serde_json::json!({"name": installed.name, "problem": format!("{error:#}")}));
+                problems.push(
+                    serde_json::json!({"name": installed.name, "problem": format!("{error:#}")}),
+                );
                 continue;
             }
         };
@@ -1059,7 +1068,10 @@ fn updates(store: &PackageStore, lookup: &Lookup) -> Result<serde_json::Value> {
 }
 
 fn print_updates(result: &serde_json::Value) {
-    let found = result["updates"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let found = result["updates"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
     if found.is_empty() {
         bin_support::info("Everything installed is at its recipe's version");
     }
@@ -1080,7 +1092,9 @@ fn print_updates(result: &serde_json::Value) {
             println!("  {name} {from} -> {to}{held}");
         }
         match update["changes"].as_array() {
-            None => println!("      what the newer recipe may use was not compared: nothing was recorded at install"),
+            None => println!(
+                "      what the newer recipe may use was not compared: nothing was recorded at install"
+            ),
             Some(changes) if changes.is_empty() => println!("      it may use the same as before"),
             Some(changes) => {
                 for change in changes {
@@ -1095,7 +1109,11 @@ fn print_updates(result: &serde_json::Value) {
             }
         }
     }
-    for problem in result["problems"].as_array().map(Vec::as_slice).unwrap_or_default() {
+    for problem in result["problems"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
         bin_support::warning(&format!(
             "{}: {}",
             problem["name"].as_str().unwrap_or("?"),
@@ -1117,7 +1135,11 @@ fn history_line(entry: &levitate_recipe::packages::HistoryEntry) -> String {
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let month_index = (5 * day_of_year + 2) / 153;
     let day = day_of_year - (153 * month_index + 2) / 5 + 1;
-    let month = if month_index < 10 { month_index + 3 } else { month_index - 9 };
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
     let year = year_of_era + era * 400 + i64::from(month <= 2);
     let mut line = format!(
         "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}  {}",

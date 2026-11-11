@@ -211,8 +211,32 @@ pub fn register_all(engine: &mut Engine) {
             url, dest, sha256, resume
         )
     );
-    helper!(engine, "fetch_bounded", |url: &str, dest: &str, limit: i64| acquire::download::fetch_bounded(url,dest,limit));
-    helper!(engine, "download_exact", |url: &str, dest: &str, sha: &str, size: i64| acquire::download::download_exact(url,dest,sha,size));
+    helper!(
+        engine,
+        "fetch_bounded",
+        |url: &str, dest: &str, limit: i64| acquire::download::fetch_bounded(url, dest, limit)
+    );
+    helper!(
+        engine,
+        "download_exact",
+        |url: &str, dest: &str, sha: &str, size: i64| acquire::download::download_exact(
+            url, dest, sha, size
+        )
+    );
+    helper!(
+        engine,
+        "fetch_bounded",
+        |url: &str, dest: &str, limit: i64, prefixes: rhai::Array| {
+            acquire::download::fetch_bounded_scoped(url, dest, limit, prefixes)
+        }
+    );
+    helper!(
+        engine,
+        "download_exact",
+        |url: &str, dest: &str, sha: &str, size: i64, prefixes: rhai::Array| {
+            acquire::download::download_exact_scoped(url, dest, sha, size, prefixes)
+        }
+    );
     helper!(engine, "verify_sha256", |path: &str, expected: &str| {
         acquire::verify_sha256(path, expected)
     });
@@ -242,7 +266,9 @@ pub fn register_all(engine: &mut Engine) {
         "target_mode",
         |root: &str, path: &str, mode: i64| target::mode(root, path, mode)
     );
-    helper!(engine, "target_remove", |root:&str,path:&str| target::remove(root,path));
+    helper!(engine, "target_remove", |root: &str, path: &str| {
+        target::remove(root, path)
+    });
     helper!(engine, "target_finalize", |root: &str| target::finalize(
         root
     ));

@@ -81,7 +81,9 @@ fn parse(bytes: &[u8]) -> Option<Elf> {
         let offset = usize::try_from(u64_at(at + 8)?).ok()?;
         let length = usize::try_from(u64_at(at + 32)?).ok()?;
         match u32_at(at)? {
-            1 => elf.loads.push((u64_at(at + 16)?, u64_at(at + 32)?, u64_at(at + 8)?)),
+            1 => elf
+                .loads
+                .push((u64_at(at + 16)?, u64_at(at + 32)?, u64_at(at + 8)?)),
             2 => dynamic = Some((offset, length)),
             3 => {
                 elf.interpreter = text_at(offset);
@@ -102,7 +104,10 @@ fn parse(bytes: &[u8]) -> Option<Elf> {
         }
         entries.push((tag, value, at));
     }
-    let table = entries.iter().find(|(tag, ..)| *tag == 5).map(|(_, value, _)| *value)?;
+    let table = entries
+        .iter()
+        .find(|(tag, ..)| *tag == 5)
+        .map(|(_, value, _)| *value)?;
     let (address, _, offset) = elf
         .loads
         .iter()
@@ -155,12 +160,16 @@ fn settle(bytes: &mut [u8], elf: &Elf, prefix: &str) -> Result<bool, String> {
             let name = interpreter.rsplit('/').next().unwrap_or_default();
             let loader = format!("{real}/{name}");
             if text + loader.len() + 1 > start {
-                return Err(format!("{loader} and {real} do not fit in the stand-in's room"));
+                return Err(format!(
+                    "{loader} and {real} do not fit in the stand-in's room"
+                ));
             }
             let (address, _, offset) = elf
                 .loads
                 .iter()
-                .find(|(_, size, offset)| (*text as u64) >= *offset && (*text as u64) < offset + size)
+                .find(|(_, size, offset)| {
+                    (*text as u64) >= *offset && (*text as u64) < offset + size
+                })
                 .ok_or("the stand-in is not in a loaded part of the file")?;
             let at = address + (*text as u64 - offset);
             bytes[*text..text + loader.len()].copy_from_slice(loader.as_bytes());
@@ -220,7 +229,8 @@ pub fn carry_libraries(
     let mut copy = |name: &str, from: &Path| -> Result<Option<Elf>, Box<EvalAltResult>> {
         let mut bytes = read(from)?;
         if let Some(built) = parse(&bytes) {
-            settle(&mut bytes, &built, prefix).map_err(|error| format!("{}: {error}", from.display()))?;
+            settle(&mut bytes, &built, prefix)
+                .map_err(|error| format!("{}: {error}", from.display()))?;
         }
         let after = parse(&bytes);
         if let Some(after) = &after {
@@ -266,7 +276,8 @@ pub fn carry_libraries(
             };
             let settled = settle(&mut bytes, &placed, prefix)
                 .map_err(|error| format!("{}: {error}", path.display()))?;
-            let elf = parse(&bytes).ok_or_else(|| format!("{} cannot be read back", path.display()))?;
+            let elf =
+                parse(&bytes).ok_or_else(|| format!("{} cannot be read back", path.display()))?;
             if let Some(loader) = &placed.interpreter {
                 let name = loader.rsplit('/').next().unwrap_or_default().to_owned();
                 let told = settled

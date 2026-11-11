@@ -279,11 +279,17 @@ pub fn refused_connection(directory: &Path) -> Option<serde_json::Value> {
             .filter_map(|part| part.split_once('='))
             .collect::<BTreeMap<_, _>>();
         (fields.get("egress") == Some(&"denied"))
-            .then(|| fields.get("network-endpoint").map(|endpoint| (*endpoint).to_owned()))
+            .then(|| {
+                fields
+                    .get("network-endpoint")
+                    .map(|endpoint| (*endpoint).to_owned())
+            })
             .flatten()
     })?;
     let declared = recorded.authority["declaration"]["needs"]["network"].clone();
-    Some(serde_json::json!({"endpoint": endpoint, "declared": if declared.is_array() { declared } else { serde_json::json!([]) }}))
+    Some(
+        serde_json::json!({"endpoint": endpoint, "declared": if declared.is_array() { declared } else { serde_json::json!([]) }}),
+    )
 }
 
 /// Advisory endpoint use from the supervisor's bounded final summary. Missing

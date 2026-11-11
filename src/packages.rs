@@ -155,7 +155,7 @@ impl PackageStore {
             } else {
                 &[&generation, &payload]
             };
-            for base in bases.iter().copied() {
+            for base in bases {
                 let mut parent = base.to_path_buf();
                 for part in relative
                     .parent()
@@ -237,7 +237,10 @@ impl PackageStore {
             // Installing again keeps a package held.
             held: active.packages.get(name).is_some_and(|before| before.held),
         };
-        let before = active.packages.get(name).map(|before| before.version.clone());
+        let before = active
+            .packages
+            .get(name)
+            .map(|before| before.version.clone());
         packages.insert(name.to_owned(), installed.clone());
         finish_generation(&root, pending, packages, active.target.as_deref())?;
         history::record(
@@ -374,7 +377,11 @@ impl PackageStore {
         let pending = new_generation(&root)?;
         let mut packages = active.packages.clone();
         copy_existing(&root, &active, pending.path(), Some(name))?;
-        let source = root.join(GENERATIONS).join(&generation).join(PACKAGES).join(name);
+        let source = root
+            .join(GENERATIONS)
+            .join(&generation)
+            .join(PACKAGES)
+            .join(name);
         let files = copy_package(&source, &pending.path().join(PACKAGES).join(name), true)?;
         ensure!(
             files == earlier.files,
@@ -449,7 +456,10 @@ impl PackageStore {
                 .with_context(|| format!("cannot delete {}", generation.display()))?;
         }
         File::open(root.join(GENERATIONS))?.sync_all()?;
-        history::record(&root, HistoryEntry::new("clear-earlier", None, None, None, None));
+        history::record(
+            &root,
+            HistoryEntry::new("clear-earlier", None, None, None, None),
+        );
         Ok(cleared)
     }
 
@@ -804,7 +814,9 @@ fn copy_package(source: &Path, destination: &Path, retained: bool) -> Result<Vec
         );
         let first = relative.components().next().context("empty package path")?;
         ensure!(
-            first.as_os_str() == "bin" || first.as_os_str() == "share" || first.as_os_str() == "lib",
+            first.as_os_str() == "bin"
+                || first.as_os_str() == "share"
+                || first.as_os_str() == "lib",
             "unsupported package directory: {relative_text}"
         );
         let output = destination.join(relative);

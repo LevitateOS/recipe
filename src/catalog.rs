@@ -190,8 +190,8 @@ pub fn index(folder: &Path) -> Result<Index> {
     let source = source(folder)?;
 
     let mut names = Vec::new();
-    for item in std::fs::read_dir(folder)
-        .with_context(|| format!("cannot read {}", folder.display()))?
+    for item in
+        std::fs::read_dir(folder).with_context(|| format!("cannot read {}", folder.display()))?
     {
         let name = item?.file_name();
         let Some(name) = name.to_str() else {
@@ -263,7 +263,10 @@ pub fn index(folder: &Path) -> Result<Index> {
         // is fetched with it, so it must be a file of this folder too.
         let compiled = crate::needs::declaration(&folder.join(&recipe), Some(folder))?;
         for source in compiled.source_digests.keys() {
-            let name = source.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+            let name = source
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
             if name == recipe {
                 continue;
             }
@@ -291,7 +294,11 @@ pub fn index(folder: &Path) -> Result<Index> {
         problems.is_empty(),
         "no index for {}: {} cannot be listed\n  {}",
         folder.display(),
-        if problems.len() == 1 { "a recipe" } else { "some recipes" },
+        if problems.len() == 1 {
+            "a recipe"
+        } else {
+            "some recipes"
+        },
         problems.join("\n  ")
     );
 
@@ -340,7 +347,13 @@ fn commit(folder: &Path, listed: &[String]) -> Result<String> {
         "{} is a shallow clone; recipe index needs the full history (in CI, fetch all of it)",
         folder.display()
     );
-    let mut status = vec!["status", "--porcelain", "--untracked-files=all", "--ignored", "--"];
+    let mut status = vec![
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+        "--ignored",
+        "--",
+    ];
     status.extend(listed.iter().map(String::as_str));
     let changed = git(true, &status)?;
     ensure!(
@@ -392,18 +405,27 @@ pub fn published(text: &str) -> Result<Published> {
     );
     let mut names = std::collections::BTreeSet::new();
     for recipe in &file.recipes {
-        let name = recipe["name"].as_str().context("a recipe in the index has no name")?;
+        let name = recipe["name"]
+            .as_str()
+            .context("a recipe in the index has no name")?;
         ensure!(names.insert(name), "the index lists {name} twice");
-        let files = recipe["files"].as_array().map(Vec::as_slice).unwrap_or_default();
+        let files = recipe["files"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
         ensure!(
-            files.first().is_some_and(|file| file["path"] == format!("{name}.rhai")),
+            files
+                .first()
+                .is_some_and(|file| file["path"] == format!("{name}.rhai")),
             "the index does not list {name}.rhai first among the files of {name}"
         );
         for file in files {
             let path = file["path"].as_str().unwrap_or_default();
             ensure!(
                 is_file_name(path)
-                    && file["sha256"].as_str().is_some_and(|sum| sum.len() == 64 && is_hex(sum))
+                    && file["sha256"]
+                        .as_str()
+                        .is_some_and(|sum| sum.len() == 64 && is_hex(sum))
                     && file["bytes"].is_u64(),
                 "the index lists a file of {name} without a usable name, SHA-256 or size: {file}"
             );
