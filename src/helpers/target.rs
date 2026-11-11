@@ -57,6 +57,7 @@ fn metadata<R: Read>(entry: &mut tar::Entry<'_, R>) -> Result<Entry> {
 fn read_tar<R: Read>(reader: R, root: &Path, manifest: &mut Manifest, extract: bool) -> Result<()> {
     let mut archive = tar::Archive::new(reader);
     let mut hardlinks = Vec::new();
+    let mut resolver = target::Resolver::new(root);
     for entry in archive.entries()? {
         let mut entry = entry?;
         let rel = target::relative(&entry.path()?)?;
@@ -85,17 +86,20 @@ fn read_tar<R: Read>(reader: R, root: &Path, manifest: &mut Manifest, extract: b
                 .into(),
             );
         }
+        let resolved = resolver.resolve(&rel)?;
         if extract {
-            let dest = target::resolve_member(root, &rel)?;
+            let dest = resolved.clone();
             if let Some(parent) = dest.parent() {
-                fs::create_dir_all(parent)?;
+                ensure!(
+                    resolver.ensure_dir(parent)?,
+                    "package parent is not a directory: {name}"
+                );
             }
             if md.kind == "dir" {
                 ensure!(
-                    !fs::symlink_metadata(&dest).is_ok_and(|m| !m.is_dir()),
+                    resolver.ensure_dir(&dest)?,
                     "package directory conflict: {name}"
                 );
-                fs::create_dir_all(&dest)?;
                 fs::set_permissions(&dest, fs::Permissions::from_mode((md.mode & 0o777) | 0o700))?;
             } else {
                 if fs::symlink_metadata(&dest).is_ok() {
@@ -103,11 +107,11 @@ fn read_tar<R: Read>(reader: R, root: &Path, manifest: &mut Manifest, extract: b
                 }
                 match md.kind.as_str() {
                     "file" => {
-                        std::io::copy(&mut entry, &mut File::create(&dest)?)?;
-                        fs::set_permissions(
-                            &dest,
-                            fs::Permissions::from_mode((md.mode & 0o777) | 0o600),
-                        )?;
+                        let mut file = File::create(&dest)?;
+                        std::io::copy(&mut entry, &mut file)?;
+                        file.set_permissions(fs::Permissions::from_mode(
+                            (md.mode & 0o777) | 0o600,
+                        ))?;
                     }
                     "symlink" => {
                         std::os::unix::fs::symlink(
@@ -120,14 +124,13 @@ fn read_tar<R: Read>(reader: R, root: &Path, manifest: &mut Manifest, extract: b
                 }
             }
         }
-        let resolved = target::resolve_member(root, &rel)?;
         let canonical = resolved
             .strip_prefix(root)?
             .to_str()
             .context("non-UTF8 package path")?
             .to_owned();
         if md.kind == "hardlink" {
-            let resolved = target::resolve_member(root, Path::new(md.link.as_deref().unwrap()))?;
+            let resolved = resolver.resolve(Path::new(md.link.as_deref().unwrap()))?;
             md.link = Some(
                 resolved
                     .strip_prefix(root)?
@@ -139,7 +142,7 @@ fn read_tar<R: Read>(reader: R, root: &Path, manifest: &mut Manifest, extract: b
         manifest.entries.insert(canonical, md);
     }
     for (dest, link) in hardlinks {
-        let source = target::resolve_member(root, Path::new(&link))?;
+        let source = resolver.resolve(Path::new(&link))?;
         ensure!(
             fs::symlink_metadata(&source)?.is_file(),
             "hardlink target is not a regular file"

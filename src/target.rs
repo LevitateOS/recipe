@@ -6,7 +6,7 @@
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -71,39 +71,103 @@ pub fn relative(path: &Path) -> Result<PathBuf> {
 /// to this root, never to the compiler/coordinator filesystem. The final inode
 /// is not followed, so its own symlink metadata can be represented.
 pub fn resolve_member(root: &Path, member: &Path) -> Result<PathBuf> {
-    // Normalize a link lexically first. Repeated links are rejected by a
-    // bounded explicit resolver below, avoiding recursive unbounded traversal.
-    let mut path = member.to_path_buf();
-    for _ in 0..40 {
-        let mut relative = PathBuf::new();
-        let parts = path.components().collect::<Vec<_>>();
-        let mut replaced = false;
-        for (i, part) in parts.iter().enumerate() {
-            match part {
-                Component::RootDir => relative.clear(),
-                Component::CurDir => (),
-                Component::ParentDir => ensure!(relative.pop(), "target link escapes root"),
-                Component::Normal(name) => relative.push(name),
-                _ => bail!("invalid target path"),
-            }
-            if i + 1 < parts.len()
-                && fs::symlink_metadata(root.join(&relative))
-                    .is_ok_and(|m| m.file_type().is_symlink())
-            {
-                let link = fs::read_link(root.join(&relative))?;
-                relative.pop();
-                path = relative
-                    .join(link)
-                    .join(parts[i + 1..].iter().collect::<PathBuf>());
-                replaced = true;
-                break;
-            }
-        }
-        if !replaced {
-            return Ok(root.join(relative));
+    Resolver::new(root).resolve(member)
+}
+
+/// `resolve_member` with a memory of root-relative paths already confirmed to
+/// be real directories, so bulk extraction does not re-lstat every ancestor of
+/// every entry. Callers must never replace a remembered directory with another
+/// kind of inode while the resolver is alive.
+pub struct Resolver<'a> {
+    root: &'a Path,
+    dirs: HashSet<PathBuf>,
+}
+
+impl<'a> Resolver<'a> {
+    pub fn new(root: &'a Path) -> Self {
+        Self {
+            root,
+            dirs: HashSet::new(),
         }
     }
-    bail!("target symlink loop")
+
+    /// Same semantics as `resolve_member`.
+    pub fn resolve(&mut self, member: &Path) -> Result<PathBuf> {
+        // Normalize a link lexically first. Repeated links are rejected by a
+        // bounded explicit resolver below, avoiding recursive unbounded traversal.
+        let mut path = member.to_path_buf();
+        for _ in 0..40 {
+            let mut relative = PathBuf::new();
+            let parts = path.components().collect::<Vec<_>>();
+            let mut replaced = false;
+            for (i, part) in parts.iter().enumerate() {
+                match part {
+                    Component::RootDir => relative.clear(),
+                    Component::CurDir => (),
+                    Component::ParentDir => ensure!(relative.pop(), "target link escapes root"),
+                    Component::Normal(name) => relative.push(name),
+                    _ => bail!("invalid target path"),
+                }
+                if i + 1 < parts.len() && !self.dirs.contains(&relative) {
+                    let full = self.root.join(&relative);
+                    match fs::symlink_metadata(&full) {
+                        Ok(m) if m.file_type().is_symlink() => {
+                            let link = fs::read_link(&full)?;
+                            relative.pop();
+                            path = relative
+                                .join(link)
+                                .join(parts[i + 1..].iter().collect::<PathBuf>());
+                            replaced = true;
+                            break;
+                        }
+                        Ok(m) if m.is_dir() => {
+                            self.dirs.insert(relative.clone());
+                        }
+                        _ => (),
+                    }
+                }
+            }
+            if !replaced {
+                return Ok(self.root.join(relative));
+            }
+        }
+        bail!("target symlink loop")
+    }
+
+    /// Make `dir` (a resolved path under the root) and its ancestors real
+    /// directories, creating missing ones. Returns false when the final
+    /// component exists as something other than a directory; an intermediate
+    /// non-directory is an error.
+    pub fn ensure_dir(&mut self, dir: &Path) -> Result<bool> {
+        let rel = dir.strip_prefix(self.root)?.to_path_buf();
+        let mut cur = PathBuf::new();
+        let count = rel.components().count();
+        for (i, part) in rel.components().enumerate() {
+            cur.push(part);
+            if self.dirs.contains(&cur) {
+                continue;
+            }
+            let full = self.root.join(&cur);
+            match fs::symlink_metadata(&full) {
+                Ok(m) if m.is_dir() => {}
+                Ok(_) if i + 1 == count => return Ok(false),
+                Ok(_) => bail!("target path component is not a directory: {}", cur.display()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    if let Err(e) = fs::create_dir(&full) {
+                        ensure!(
+                            e.kind() == std::io::ErrorKind::AlreadyExists
+                                && fs::symlink_metadata(&full).is_ok_and(|m| m.is_dir()),
+                            "cannot create {}: {e}",
+                            full.display()
+                        );
+                    }
+                }
+                Err(e) => return Err(e.into()),
+            }
+            self.dirs.insert(cur.clone());
+        }
+        Ok(true)
+    }
 }
 
 pub fn load(root: &Path) -> Result<Manifest> {
