@@ -74,6 +74,14 @@ pub(crate) fn execute(cli: Cli) -> Result<()> {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    anyhow::ensure!(
+        !(cli.force_acquire || cli.force_build || cli.force_install)
+            || matches!(
+                &cli.command,
+                Commands::Install { .. } | Commands::Update { .. }
+            ),
+        "force options apply only to install operations"
+    );
     let io_start = levitate_recipe::system::process_io();
     let mut execution = levitate_recipe::ExecutionOptions::default();
     execution.target_os = cli.target_os;
