@@ -419,6 +419,10 @@ valid destination. `git_checkout(url, exact_dest, full_commit)` requires a full
 40/64-hex commit and a direct repository URL: Git redirects are disabled, and
 cached repository settings that override transport or execute hooks/filters are
 rejected. HTTP download redirect destinations need explicit endpoint grants.
+Scoped HTTPS acquisition retries transient 429/502/503/504 responses at most
+twice. Numeric `Retry-After` delays up to five seconds are respected; longer
+delays, HTTP-date values and malformed values defer automatic retry instead of
+retrying before the origin's requested deadline.
 Recipes own version/URL/digest facts and literal NEEDS authority. Variant TOML
 keeps recipe selection and input path bindings. The Fedora rootfs/preseed declare
 8192 MiB; Alpine declares 4096 MiB. Fedora rootfs declares 196608 objects and
