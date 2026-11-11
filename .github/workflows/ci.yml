@@ -24,8 +24,11 @@ jobs:
       msrv: '1.93'
 
   managed-integration:
+    # On demand only (Actions > CI > Run workflow): it builds Ginux and a compiler
+    # image and runs whole catalogs, too costly for every push.
     # These pins identify the maintained delivery source and C/runtime image.
-    # Missing pins fail the required job; they never silently skip acceptance.
+    # Missing pins fail the job; they never silently skip acceptance.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
