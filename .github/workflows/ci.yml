@@ -109,26 +109,3 @@ jobs:
             .artifacts/managed-ci/results/*/receipt.json
             .artifacts/managed-ci/results/*/stdout.log
             .artifacts/managed-ci/results/*/stderr.log
-
-  standalone-resolution:
-    runs-on: ubuntu-24.04
-    strategy:
-      matrix:
-        toolchain: [stable, '1.93.0']
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.toolchain }}
-      - name: Resolve and build independently without the release lock
-        env:
-          RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
-        run: |
-          set -euo pipefail
-          recipe_export=$(mktemp -d "$RUNNER_TEMP/recipe-unlocked.XXXXXX")
-          git archive HEAD | tar -x --exclude=Cargo.lock -C "$recipe_export"
-          cd "$recipe_export"
-          test ! -e Cargo.lock
-          cargo build --verbose

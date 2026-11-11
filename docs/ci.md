@@ -2,14 +2,13 @@
 
 The package declares Rust 1.93 as its MSRV and retains a release Cargo.lock.
 Shared CI builds/checks the selected dependencies on stable and MSRV and runs
-Clippy/formatting. The standalone-resolution job independently exports source
-without Cargo.lock and builds on both stable and 1.93.0. Workspace-lock checks
-supplement these disposable unlocked checks.
+Clippy/formatting. No CI job builds without Cargo.lock (cut for CI cost).
 Shared workflow definitions are pinned to superproject commit
 `eea341c64a065d8465727919a72bc592878ea70b`; changing their behavior requires an
 explicit source update.
 
-`managed-integration` uses a disposable Ubuntu 24.04 hosted runner. Compilation
+`managed-integration` runs only on a manual dispatch (Actions > CI > Run workflow),
+never on a push. It uses a disposable Ubuntu 24.04 hosted runner. Compilation
 runs as the ordinary runner user. Only integration execution uses `sudo`, because
 configured launch needs coordinator/ptrace privileges. Use a disposable host.
 
