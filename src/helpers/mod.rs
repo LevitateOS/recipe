@@ -264,6 +264,19 @@ pub fn register_all(engine: &mut Engine) {
     });
     helper!(
         engine,
+        "target_extract_rpm",
+        |archive: &str, root: &str, members: &str| target::extract_rpm_members(
+            archive, root, members
+        )
+    );
+    helper!(engine, "target_unpack_tree", |archive: &str, root: &str| {
+        target::unpack_tree(archive, root)
+    });
+    helper!(engine, "target_pack_tree", |root: &str, archive: &str| {
+        target::pack_tree(root, archive)
+    });
+    helper!(
+        engine,
         "target_capture_apks",
         |root: &str, paths: rhai::Array| target::capture_apks(root, paths)
     );

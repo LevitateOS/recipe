@@ -6,7 +6,7 @@ use rhai::EvalAltResult;
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Cursor, Read};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 use std::process::Command;
 
@@ -54,10 +54,18 @@ fn metadata<R: Read>(entry: &mut tar::Entry<'_, R>) -> Result<Entry> {
     Ok(result)
 }
 
-fn read_tar<R: Read>(reader: R, root: &Path, manifest: &mut Manifest, extract: bool) -> Result<()> {
+/// Extract (or, without `extract`, only record) a tar stream's members into
+/// `root` through [`target::Extraction`]. With `members`, also record each
+/// member as extraction applied it ([`target::Member`]).
+fn read_tar<R: Read>(
+    reader: R,
+    root: &Path,
+    manifest: &mut Manifest,
+    extract: bool,
+    mut members: Option<&mut Vec<target::Member>>,
+) -> Result<()> {
     let mut archive = tar::Archive::new(reader);
-    let mut hardlinks = Vec::new();
-    let mut resolver = target::Resolver::new(root);
+    let mut extraction = target::Extraction::new(root);
     for entry in archive.entries()? {
         let mut entry = entry?;
         let rel = target::relative(&entry.path()?)?;
@@ -76,136 +84,118 @@ fn read_tar<R: Read>(reader: R, root: &Path, manifest: &mut Manifest, extract: b
             "package uses reserved metadata path"
         );
         let mut md = metadata(&mut entry)?;
-        if md.kind == "hardlink" {
-            md.link = Some(
-                target::relative(Path::new(
-                    md.link.as_deref().context("missing hardlink target")?,
-                ))?
-                .to_str()
-                .context("non-UTF8 hardlink")?
-                .into(),
-            );
+        target::Extraction::normalize(&mut md)?;
+        let recorded = members.as_ref().map(|_| md.clone());
+        let (canonical, _) = extraction.member(manifest, &rel, md, extract, |dest, mode| {
+            let mut file = File::create(dest)?;
+            std::io::copy(&mut entry, &mut file)?;
+            file.set_permissions(fs::Permissions::from_mode(mode))?;
+            Ok(())
+        })?;
+        if let (Some(members), Some(entry)) = (members.as_deref_mut(), recorded) {
+            let data = (entry.kind == "file").then(|| canonical.clone());
+            members.push(target::Member {
+                path: name,
+                entry,
+                data,
+            });
         }
-        let resolved = resolver.resolve(&rel)?;
-        if extract {
-            let dest = resolved.clone();
-            if let Some(parent) = dest.parent() {
-                ensure!(
-                    resolver.ensure_dir(parent)?,
-                    "package parent is not a directory: {name}"
-                );
-            }
-            if md.kind == "dir" {
-                ensure!(
-                    resolver.ensure_dir(&dest)?,
-                    "package directory conflict: {name}"
-                );
-                fs::set_permissions(&dest, fs::Permissions::from_mode((md.mode & 0o777) | 0o700))?;
-            } else {
-                if fs::symlink_metadata(&dest).is_ok() {
-                    fs::remove_file(&dest)?;
-                }
-                match md.kind.as_str() {
-                    "file" => {
-                        let mut file = File::create(&dest)?;
-                        std::io::copy(&mut entry, &mut file)?;
-                        file.set_permissions(fs::Permissions::from_mode(
-                            (md.mode & 0o777) | 0o600,
-                        ))?;
-                    }
-                    "symlink" => {
-                        std::os::unix::fs::symlink(
-                            md.link.as_ref().context("missing symlink target")?,
-                            &dest,
-                        )?;
-                    }
-                    "hardlink" => hardlinks.push((dest, md.link.clone().unwrap())),
-                    _ => bail!("unsupported package inode"),
-                }
-            }
-        }
-        let canonical = resolved
-            .strip_prefix(root)?
-            .to_str()
-            .context("non-UTF8 package path")?
-            .to_owned();
-        if md.kind == "hardlink" {
-            let resolved = resolver.resolve(Path::new(md.link.as_deref().unwrap()))?;
-            md.link = Some(
-                resolved
-                    .strip_prefix(root)?
-                    .to_str()
-                    .context("non-UTF8 hardlink")?
-                    .into(),
-            );
-        }
-        manifest.entries.insert(canonical, md);
     }
-    for (dest, link) in hardlinks {
-        let source = resolver.resolve(Path::new(&link))?;
-        ensure!(
-            fs::symlink_metadata(&source)?.is_file(),
-            "hardlink target is not a regular file"
-        );
-        fs::hard_link(source, dest)?;
+    extraction.finish()
+}
+
+pub fn extract_rpm(archive: &str, root: &str) -> Result<(), Box<EvalAltResult>> {
+    recipe_result(extract_rpm_recorded(archive, root, None))
+}
+
+/// `extract_rpm`, and the record of what it did (`target::Members`) written to
+/// `members`, outside `root`, so the package can be composed into another
+/// root later (`target::replay`).
+pub fn extract_rpm_members(
+    archive: &str,
+    root: &str,
+    members: &str,
+) -> Result<(), Box<EvalAltResult>> {
+    recipe_result(extract_rpm_recorded(archive, root, Some(Path::new(members))))
+}
+
+fn extract_rpm_recorded(archive: &str, root: &str, record: Option<&Path>) -> Result<()> {
+    let root = Path::new(root);
+    fs::create_dir_all(root)?;
+    let mut manifest = target::load(root)?;
+    let mut command = Command::new("rpm2archive");
+    command.args(["-n", archive]);
+    let result = crate::process::Run::new(command)
+        .keep(crate::process::Keep::Limit(512 * 1024 * 1024))
+        .run()?;
+    ensure!(
+        result.exit.success(),
+        "rpm2archive failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let mut members = record.map(|_| Vec::new());
+    read_tar(
+        Cursor::new(result.stdout),
+        root,
+        &mut manifest,
+        true,
+        members.as_mut(),
+    )?;
+    // rpm2archive omits RPM file capabilities; query the verified package,
+    // then encode Linux v2 file capabilities as raw target xattr bytes.
+    let mut command = Command::new("rpm");
+    // Authentication is the recipe's pinned SHA256/signature acquisition
+    // contract. Reading metadata must not open the compiler image's RPM DB
+    // to search for signing keys.
+    command.args([
+        "-qp",
+        "--nosignature",
+        "--qf",
+        "[%{FILENAMES}\t%{FILECAPS}\n]",
+        archive,
+    ]);
+    let result = crate::helpers::internal::cmd::checked_capture(command)
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let mut capabilities = Vec::new();
+    for line in std::str::from_utf8(&result.stdout)?.lines() {
+        let (path, caps) = line
+            .split_once('\t')
+            .context("invalid RPM capability record")?;
+        if caps.is_empty() || caps == "(none)" {
+            continue;
+        }
+        capabilities.push(target::Capability {
+            path: path.trim_start_matches('/').to_owned(),
+            xattr: hex::encode(file_caps(caps)?),
+        });
+    }
+    target::apply_capabilities(root, &mut manifest, &capabilities)?;
+    target::save(root, &manifest)?;
+    if let (Some(path), Some(members)) = (record, members) {
+        target::save_members(
+            path,
+            &target::Members {
+                version: target::MEMBERS_VERSION,
+                dir_mode: created_dir_mode(path)?,
+                members,
+                capabilities,
+            },
+        )?;
     }
     Ok(())
 }
 
-pub fn extract_rpm(archive: &str, root: &str) -> Result<(), Box<EvalAltResult>> {
-    recipe_result((|| {
-        let root = Path::new(root);
-        fs::create_dir_all(root)?;
-        let mut manifest = target::load(root)?;
-        let mut command = Command::new("rpm2archive");
-        command.args(["-n", archive]);
-        let result = crate::process::Run::new(command)
-            .keep(crate::process::Keep::Limit(512 * 1024 * 1024))
-            .run()?;
-        ensure!(
-            result.exit.success(),
-            "rpm2archive failed: {}",
-            String::from_utf8_lossy(&result.stderr)
-        );
-        read_tar(Cursor::new(result.stdout), root, &mut manifest, true)?;
-        // rpm2archive omits RPM file capabilities; query the verified package,
-        // then encode Linux v2 file capabilities as raw target xattr bytes.
-        let mut command = Command::new("rpm");
-        // Authentication is the recipe's pinned SHA256/signature acquisition
-        // contract. Reading metadata must not open the compiler image's RPM DB
-        // to search for signing keys.
-        command.args([
-            "-qp",
-            "--nosignature",
-            "--qf",
-            "[%{FILENAMES}\t%{FILECAPS}\n]",
-            archive,
-        ]);
-        let result = crate::helpers::internal::cmd::checked_capture(command)
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        for line in std::str::from_utf8(&result.stdout)?.lines() {
-            let (path, caps) = line
-                .split_once('\t')
-                .context("invalid RPM capability record")?;
-            if caps.is_empty() || caps == "(none)" {
-                continue;
-            }
-            let path = target::relative(Path::new(path.trim_start_matches('/')))?;
-            let resolved = target::resolve_member(root, &path)?;
-            let name = resolved
-                .strip_prefix(root)?
-                .to_str()
-                .context("non-UTF8 RPM path")?;
-            if let Some(entry) = manifest.entries.get_mut(name) {
-                entry
-                    .xattrs
-                    .insert("security.capability".into(), hex::encode(file_caps(caps)?));
-            } else {
-                bail!("RPM capability has no payload: {name}");
-            }
-        }
-        target::save(root, &manifest)
-    })())
+/// The staging mode a directory this process creates gets: made and removed
+/// beside `record`, so the root it describes stays untouched.
+fn created_dir_mode(record: &Path) -> Result<u32> {
+    let probe = record
+        .parent()
+        .context("member record has no directory")?
+        .join(format!(".recipe-dir-mode-{}", std::process::id()));
+    fs::create_dir(&probe)?;
+    let mode = fs::symlink_metadata(&probe)?.mode() & 0o7777;
+    fs::remove_dir(&probe)?;
+    Ok(mode)
 }
 
 pub fn extract_tar(archive: &str, root: &str) -> Result<(), Box<EvalAltResult>> {
@@ -213,7 +203,7 @@ pub fn extract_tar(archive: &str, root: &str) -> Result<(), Box<EvalAltResult>> 
         let root = Path::new(root);
         fs::create_dir_all(root)?;
         let mut manifest = target::load(root)?;
-        read_tar(File::open(archive)?, root, &mut manifest, true)?;
+        read_tar(File::open(archive)?, root, &mut manifest, true, None)?;
         target::save(root, &manifest)
     })())
 }
@@ -341,7 +331,7 @@ pub fn capture_apks(root: &str, paths: rhai::Array) -> Result<(), Box<EvalAltRes
             let mut source = BufReader::new(File::open(archive)?);
             while !source.fill_buf()?.is_empty() {
                 let mut gz = flate2::bufread::GzDecoder::new(source);
-                read_tar(&mut gz, root, &mut manifest, false)
+                read_tar(&mut gz, root, &mut manifest, false, None)
                     .with_context(|| format!("reading metadata from {name}"))?;
                 std::io::copy(&mut gz, &mut std::io::sink())?;
                 source = gz.into_inner();
@@ -367,4 +357,32 @@ pub fn finalize(root: &str) -> Result<(), Box<EvalAltResult>> {
 
 pub fn remove(root: &str, path: &str) -> Result<(), Box<EvalAltResult>> {
     recipe_result(target::remove(Path::new(root), Path::new(path)))
+}
+
+pub fn unpack_tree(archive: &str, root: &str) -> Result<(), Box<EvalAltResult>> {
+    recipe_result((|| {
+        let root = Path::new(root);
+        fs::create_dir_all(root)?;
+        let file = File::open(archive).with_context(|| format!("opening {archive}"))?;
+        let total = file.metadata()?.len();
+        target::unpack_tree(BufReader::new(file), root, &mut |done| {
+            crate::core::output::progress_report(done, total, "bytes of the tree")
+        })
+    })())
+}
+
+pub fn pack_tree(root: &str, archive: &str) -> Result<(), Box<EvalAltResult>> {
+    recipe_result((|| {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(archive)
+            .with_context(|| format!("creating {archive}"))?;
+        let mut out = std::io::BufWriter::new(file);
+        target::write_tree(Path::new(root), &mut out, true)?;
+        out.into_inner()
+            .map_err(|e| anyhow::anyhow!("writing {archive}: {e}"))?
+            .sync_all()?;
+        Ok(())
+    })())
 }

@@ -25,6 +25,20 @@ The native recipe helpers are:
 - `target_extract_rpm(archive, root)`: use the build image's `rpm2archive` and `rpm`
   on a verified RPM, recording payload metadata and RPM file capabilities. The
   helper does not run package scriptlets. Recipes verify their pinned inputs.
+- `target_extract_rpm(archive, root, members)`: the same, and write the record of
+  the extraction (`target::Members`: every member in archive order with its header
+  metadata and where its bytes are in `root`, the file capabilities, and the mode
+  extraction gives directories it creates) to `members`, outside `root`.
+  `target::replay` applies such a record to another root exactly as extracting the
+  archive there would (the OS builder composes system trees from per-package trees
+  this way); `target::Extraction` is the one implementation both use.
+- `target_pack_tree(root, archive)`: move the staging tree under `root` into a new
+  tar `archive` (`target::write_tree`): every path with its kind, staging mode,
+  modification time and link target, hardlinks kept, the manifest as a plain file.
+  `root` is removed as it is written, so a domain never holds the tree twice.
+- `target_unpack_tree(archive, root)`: make that tree again under an empty `root`
+  (`target::unpack_tree`); each member's parent must be a directory an earlier
+  member made.
 - `target_capture_apks(root, archive_directories)`: read the installed APK database
   and the exact selected package archives, including their concatenated gzip/tar
   members. Every installed package must have an available archive. Collect these

@@ -265,7 +265,13 @@ target_extract_tar(archive, root), target_extract_rpm(archive, root),
 target_capture_apks(root, archive_directories), target_mode(root, relative_path, mode)
 and target_finalize(root). RPM extraction requires the image's rpm/rpm2archive;
 it does not run package scriptlets. Capture package metadata before policy,
-then finalize the tree after policy changes. See docs/target-metadata.md.
+then finalize the tree after policy changes.
+target_extract_rpm(archive, root, members) also writes the record of the
+extraction to members, from which a package is composed into another root.
+target_pack_tree(root, archive) moves a staging tree, its modes, times, links
+and target metadata manifest, into a new tar archive, removing root;
+target_unpack_tree(archive, root) makes that tree again under an empty root.
+See docs/target-metadata.md.
 exec returns a status; exec_checked and exec_output fail on nonzero exit.
 Their optional options map accepts child-only cwd and env. Shell strings need
 proper quoting and checked pipelines. Diagnostics go to stderr.

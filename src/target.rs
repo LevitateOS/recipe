@@ -81,6 +81,9 @@ pub fn resolve_member(root: &Path, member: &Path) -> Result<PathBuf> {
 pub struct Resolver<'a> {
     root: &'a Path,
     dirs: HashSet<PathBuf>,
+    /// The staging mode `ensure_dir` gives a directory it creates; `None`
+    /// leaves it to the process umask.
+    create_mode: Option<u32>,
 }
 
 impl<'a> Resolver<'a> {
@@ -88,6 +91,7 @@ impl<'a> Resolver<'a> {
         Self {
             root,
             dirs: HashSet::new(),
+            create_mode: None,
         }
     }
 
@@ -156,13 +160,18 @@ impl<'a> Resolver<'a> {
                     cur.display()
                 ),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    if let Err(e) = fs::create_dir(&full) {
-                        ensure!(
+                    match fs::create_dir(&full) {
+                        Ok(()) => {
+                            if let Some(mode) = self.create_mode {
+                                fs::set_permissions(&full, fs::Permissions::from_mode(mode))?;
+                            }
+                        }
+                        Err(e) => ensure!(
                             e.kind() == std::io::ErrorKind::AlreadyExists
                                 && fs::symlink_metadata(&full).is_ok_and(|m| m.is_dir()),
                             "cannot create {}: {e}",
                             full.display()
-                        );
+                        ),
                     }
                 }
                 Err(e) => return Err(e.into()),
@@ -594,4 +603,539 @@ pub fn remove(root: &Path, path: &Path) -> Result<()> {
     }
     manifest.version = 2;
     save(root, &manifest)
+}
+
+/// Archive extraction into a target root, one member at a time: the one place
+/// that decides where a member lands (through the root's links, as
+/// [`Resolver`] resolves them at that moment), what it replaces (a
+/// non-directory is replaced, a directory is merged and takes the member's
+/// staging mode), and what the manifest records for it (the member's metadata
+/// under its canonical path, a hardlink's target canonical too). Hardlinks
+/// are made at [`finish`](Extraction::finish), once every member is in place.
+///
+/// The package helpers feed it archive entries (`target_extract_rpm`,
+/// `target_extract_tar`, `target_capture_apks`); [`replay`] feeds it a
+/// package's recorded members, so a tree composed from per-package trees is
+/// the tree sequential extraction makes.
+pub struct Extraction<'a> {
+    root: &'a Path,
+    resolver: Resolver<'a>,
+    hardlinks: Vec<(PathBuf, String)>,
+}
+
+impl<'a> Extraction<'a> {
+    pub fn new(root: &'a Path) -> Self {
+        Self {
+            root,
+            resolver: Resolver::new(root),
+            hardlinks: Vec::new(),
+        }
+    }
+
+    /// Parent directories this extraction creates get the staging mode `mode`
+    /// rather than the process umask's.
+    pub fn with_dir_mode(mut self, mode: u32) -> Self {
+        self.resolver.create_mode = Some(mode);
+        self
+    }
+
+    /// A hardlink member's target as a plain relative archive path, as
+    /// extraction records it before resolving it. Idempotent.
+    pub fn normalize(entry: &mut Entry) -> Result<()> {
+        if entry.kind == "hardlink" {
+            entry.link = Some(
+                relative(Path::new(
+                    entry.link.as_deref().context("missing hardlink target")?,
+                ))?
+                .to_str()
+                .context("non-UTF8 hardlink")?
+                .into(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Apply the member `rel` with the (normalized) metadata `entry`. With
+    /// `extract` the root changes too, and `write(dest, mode)` creates a file
+    /// member's bytes at `dest`, with the staging mode `mode`. Records
+    /// `entry` in `manifest` and returns the member's canonical path and
+    /// whether it replaced a non-directory there.
+    pub fn member(
+        &mut self,
+        manifest: &mut Manifest,
+        rel: &Path,
+        mut entry: Entry,
+        extract: bool,
+        write: impl FnOnce(&Path, u32) -> Result<()>,
+    ) -> Result<(String, bool)> {
+        let name = rel.display();
+        let resolved = self.resolver.resolve(rel)?;
+        let mut replaced = false;
+        if extract {
+            let dest = resolved.clone();
+            if let Some(parent) = dest.parent() {
+                ensure!(
+                    self.resolver.ensure_dir(parent)?,
+                    "package parent is not a directory: {name}"
+                );
+            }
+            if entry.kind == "dir" {
+                ensure!(
+                    self.resolver.ensure_dir(&dest)?,
+                    "package directory conflict: {name}"
+                );
+                fs::set_permissions(
+                    &dest,
+                    fs::Permissions::from_mode((entry.mode & 0o777) | 0o700),
+                )?;
+            } else {
+                if fs::symlink_metadata(&dest).is_ok() {
+                    fs::remove_file(&dest)?;
+                    replaced = true;
+                }
+                match entry.kind.as_str() {
+                    "file" => write(&dest, (entry.mode & 0o777) | 0o600)?,
+                    "symlink" => {
+                        std::os::unix::fs::symlink(
+                            entry.link.as_ref().context("missing symlink target")?,
+                            &dest,
+                        )?;
+                    }
+                    "hardlink" => self.hardlinks.push((
+                        dest,
+                        entry.link.clone().context("missing hardlink target")?,
+                    )),
+                    _ => bail!("unsupported package inode"),
+                }
+            }
+        }
+        let canonical = resolved
+            .strip_prefix(self.root)?
+            .to_str()
+            .context("non-UTF8 package path")?
+            .to_owned();
+        if entry.kind == "hardlink" {
+            let resolved = self.resolver.resolve(Path::new(
+                entry.link.as_deref().context("missing hardlink target")?,
+            ))?;
+            entry.link = Some(
+                resolved
+                    .strip_prefix(self.root)?
+                    .to_str()
+                    .context("non-UTF8 hardlink")?
+                    .into(),
+            );
+        }
+        manifest.entries.insert(canonical.clone(), entry);
+        Ok((canonical, replaced))
+    }
+
+    /// Make the hardlink members, each to what its target resolves to now.
+    pub fn finish(mut self) -> Result<()> {
+        for (dest, link) in std::mem::take(&mut self.hardlinks) {
+            let source = self.resolver.resolve(Path::new(&link))?;
+            ensure!(
+                fs::symlink_metadata(&source)?.is_file(),
+                "hardlink target is not a regular file"
+            );
+            fs::hard_link(source, dest)?;
+        }
+        Ok(())
+    }
+}
+
+/// A file capability of an RPM payload path: the path as the package names it
+/// (without its leading `/`) and the raw `security.capability` bytes, hex.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Capability {
+    pub path: String,
+    pub xattr: String,
+}
+
+/// Add `capabilities` to the manifest entries of the payload paths they name,
+/// as those resolve in `root` now. A capability without a payload entry is an
+/// error.
+pub fn apply_capabilities(
+    root: &Path,
+    manifest: &mut Manifest,
+    capabilities: &[Capability],
+) -> Result<()> {
+    for capability in capabilities {
+        let path = relative(Path::new(&capability.path))?;
+        let resolved = resolve_member(root, &path)?;
+        let name = resolved
+            .strip_prefix(root)?
+            .to_str()
+            .context("non-UTF8 RPM path")?;
+        if let Some(entry) = manifest.entries.get_mut(name) {
+            entry
+                .xattrs
+                .insert("security.capability".into(), capability.xattr.clone());
+        } else {
+            bail!("RPM capability has no payload: {name}");
+        }
+    }
+    Ok(())
+}
+
+/// The version of the [`Members`] format.
+pub const MEMBERS_VERSION: u32 = 1;
+const MAX_MEMBERS: u64 = 256 * 1024 * 1024;
+
+/// One archive member as extraction applied it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Member {
+    /// The archive path, relative, as [`relative`] makes it.
+    pub path: String,
+    /// The metadata from the archive header ([`Extraction::normalize`]d).
+    pub entry: Entry,
+    /// A file member: where its bytes are in the package's own root (its
+    /// canonical path there).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+}
+
+/// One package's extraction into an empty root of its own, recorded so that
+/// [`replay`] can apply the same extraction to another root without the
+/// archive: every member in archive order and the file capabilities applied
+/// after them. `target_extract_rpm(archive, root, members)` writes it beside
+/// the package's root.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Members {
+    pub version: u32,
+    /// The staging mode a directory got when extraction created it as a
+    /// parent (the extracting process's umask applied to 0777).
+    pub dir_mode: u32,
+    pub members: Vec<Member>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<Capability>,
+}
+
+pub fn save_members(path: &Path, members: &Members) -> Result<()> {
+    let bytes = serde_json::to_vec(members)?;
+    ensure!(bytes.len() as u64 <= MAX_MEMBERS, "member record exceeds bound");
+    fs::write(path, bytes)?;
+    Ok(())
+}
+
+pub fn load_members(path: &Path) -> Result<Members> {
+    ensure!(
+        fs::symlink_metadata(path)?.is_file(),
+        "member record must be a regular file"
+    );
+    let mut bytes = Vec::new();
+    File::open(path)?
+        .take(MAX_MEMBERS + 1)
+        .read_to_end(&mut bytes)?;
+    ensure!(bytes.len() as u64 <= MAX_MEMBERS, "member record exceeds bound");
+    let members: Members = serde_json::from_slice(&bytes)?;
+    ensure!(
+        members.version == MEMBERS_VERSION,
+        "unsupported member record version"
+    );
+    ensure!(members.dir_mode <= 0o7777, "invalid member directory mode");
+    Ok(members)
+}
+
+/// Where [`replay`] put one non-directory member.
+#[derive(Clone, Debug)]
+pub struct Placed {
+    /// Its canonical path in the root.
+    pub path: String,
+    /// Its metadata as the manifest records it (before capabilities).
+    pub entry: Entry,
+    /// A file: the package-root file its bytes came from.
+    pub source: Option<PathBuf>,
+    /// Whether it replaced a non-directory already there.
+    pub replaced: bool,
+}
+
+/// Apply a package to `root` as extracting its archive into `root` would: the
+/// recorded members in archive order through [`Extraction`] (with the
+/// package's own directory mode for created parents), its hardlinks, then its
+/// file capabilities, all resolved against `root` as it is at that point.
+/// Each file's bytes come from `package_root` (its record's `data`): a
+/// hardlink to that file when `link` is set and its staging mode is the one
+/// extraction gives it, else a copy with that mode. `manifest` is `root`'s,
+/// updated in memory; the caller saves it. Returns the non-directory members
+/// in order.
+pub fn replay(
+    package_root: &Path,
+    members: &Members,
+    root: &Path,
+    manifest: &mut Manifest,
+    link: bool,
+) -> Result<Vec<Placed>> {
+    let mut extraction = Extraction::new(root).with_dir_mode(members.dir_mode);
+    let mut placed = Vec::new();
+    for member in &members.members {
+        let rel = relative(Path::new(&member.path))?;
+        ensure!(
+            rel == Path::new(&member.path) && !member.path.is_empty(),
+            "noncanonical package member: {}",
+            member.path
+        );
+        ensure!(
+            member.path != MANIFEST,
+            "package uses reserved metadata path"
+        );
+        let mut entry = member.entry.clone();
+        Extraction::normalize(&mut entry)?;
+        let source = match entry.kind.as_str() {
+            "file" => {
+                let data = member
+                    .data
+                    .as_deref()
+                    .with_context(|| format!("file member without data: {}", member.path))?;
+                let source = package_root.join(relative(Path::new(data))?);
+                ensure!(
+                    fs::symlink_metadata(&source).is_ok_and(|m| m.is_file()),
+                    "package tree lacks the file {data}"
+                );
+                Some(source)
+            }
+            _ => None,
+        };
+        let recorded = entry.clone();
+        let (path, replaced) = extraction.member(manifest, &rel, entry, true, |dest, mode| {
+            place_file(source.as_deref().expect("file source"), dest, mode, link)
+        })?;
+        if recorded.kind != "dir" {
+            placed.push(Placed {
+                entry: manifest.entries.get(&path).cloned().unwrap_or(recorded),
+                path,
+                source,
+                replaced,
+            });
+        }
+    }
+    extraction.finish()?;
+    apply_capabilities(root, manifest, &members.capabilities)?;
+    Ok(placed)
+}
+
+/// `source`'s bytes at `dest` with the staging mode `mode`: a hardlink when
+/// allowed and the modes agree (never across filesystems), else a copy.
+fn place_file(source: &Path, dest: &Path, mode: u32, link: bool) -> Result<()> {
+    if link && fs::symlink_metadata(source)?.mode() & 0o7777 == mode {
+        match fs::hard_link(source, dest) {
+            Ok(()) => return Ok(()),
+            Err(e) if matches!(e.raw_os_error(), Some(libc::EXDEV | libc::EMLINK)) => {}
+            Err(e) => return Err(e).with_context(|| format!("linking {}", dest.display())),
+        }
+    }
+    fs::copy(source, dest).with_context(|| format!("copying {}", source.display()))?;
+    fs::set_permissions(dest, fs::Permissions::from_mode(mode))?;
+    Ok(())
+}
+
+/// Write the staging tree under `root` as a tar stream [`unpack_tree`] turns
+/// back into the same tree: every entry below `root` in name order with its
+/// kind, staging mode (all 12 bits), modification time and link target; a
+/// file whose inode an earlier entry has, as a hardlink to that entry; the
+/// target metadata manifest as the plain file it is. `root` itself and
+/// ownership are not recorded. With `consume`, each entry is removed once it
+/// is written, and `root` at the end, so the tree and its archive never take
+/// the room of two trees (a Ginux domain keeps its files in memory).
+pub fn write_tree(root: &Path, output: impl Write, consume: bool) -> Result<()> {
+    let mut writer = tar::Builder::new(output);
+    writer.follow_symlinks(false);
+    let mut inodes = HashMap::<(u64, u64), String>::new();
+    let mut dirs = Vec::new();
+    for item in walkdir::WalkDir::new(root)
+        .follow_links(false)
+        .min_depth(1)
+        .sort_by_file_name()
+    {
+        let item = item?;
+        let name = item
+            .path()
+            .strip_prefix(root)?
+            .to_str()
+            .context("non-UTF8 tree path")?
+            .to_owned();
+        let md = fs::symlink_metadata(item.path())?;
+        let mut header = tar::Header::new_gnu();
+        header.set_mode(md.mode() & 0o7777);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_mtime(md.mtime().max(0) as u64);
+        if md.is_dir() {
+            header.set_entry_type(tar::EntryType::Directory);
+            header.set_size(0);
+            writer.append_data(&mut header, &name, std::io::empty())?;
+            if consume {
+                // Its entries are removed next; its mode is in the archive.
+                if md.mode() & 0o700 != 0o700 {
+                    fs::set_permissions(item.path(), fs::Permissions::from_mode(md.mode() | 0o700))?;
+                }
+                dirs.push(item.path().to_path_buf());
+            }
+            continue;
+        } else if md.file_type().is_symlink() {
+            header.set_entry_type(tar::EntryType::Symlink);
+            header.set_size(0);
+            writer.append_link(&mut header, &name, fs::read_link(item.path())?)?;
+        } else if md.is_file() {
+            if let Some(first) = inodes.get(&(md.dev(), md.ino())) {
+                header.set_entry_type(tar::EntryType::Link);
+                header.set_size(0);
+                writer.append_link(&mut header, &name, first)?;
+            } else {
+                // A file its owner cannot read (a setuid helper with mode 4111,
+                // say) is readable once its mode is in the header; only a tree
+                // that is consumed is changed so.
+                if consume && md.mode() & 0o400 == 0 {
+                    fs::set_permissions(item.path(), fs::Permissions::from_mode(md.mode() | 0o400))?;
+                }
+                let mut file = File::open(item.path())
+                    .with_context(|| format!("reading {}", item.path().display()))?;
+                header.set_entry_type(tar::EntryType::Regular);
+                header.set_size(file.metadata()?.len());
+                writer.append_data(&mut header, &name, &mut file)?;
+                inodes.insert((md.dev(), md.ino()), name);
+            }
+        } else {
+            bail!("unsupported tree inode: {}", item.path().display());
+        }
+        if consume {
+            fs::remove_file(item.path())?;
+        }
+    }
+    writer.into_inner()?.flush()?;
+    if consume {
+        for dir in dirs.iter().rev() {
+            fs::remove_dir(dir)?;
+        }
+        fs::remove_dir(root)?;
+    }
+    Ok(())
+}
+
+/// Reads through an inner reader, counting the bytes.
+struct Counted<'c, R> {
+    inner: R,
+    count: &'c std::cell::Cell<u64>,
+}
+
+impl<R: Read> Read for Counted<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.count.set(self.count.get() + n as u64);
+        Ok(n)
+    }
+}
+
+/// Make the tree [`write_tree`] wrote under `root`, which must be an empty
+/// directory: the same paths, kinds, staging modes, modification times, link
+/// targets, hardlinks and target metadata manifest. `root`'s own mode is left
+/// as it is. Every member's parent must be a directory an earlier member made,
+/// so nothing is written through a link. `progress` gets the bytes read so far.
+pub fn unpack_tree(input: impl Read, root: &Path, progress: &mut dyn FnMut(u64)) -> Result<()> {
+    ensure!(
+        fs::symlink_metadata(root).is_ok_and(|m| m.is_dir()),
+        "tree root is not a directory: {}",
+        root.display()
+    );
+    ensure!(
+        fs::read_dir(root)?.next().is_none(),
+        "tree root is not empty: {}",
+        root.display()
+    );
+    let count = std::cell::Cell::new(0);
+    let mut archive = tar::Archive::new(Counted {
+        inner: input,
+        count: &count,
+    });
+    let mut dirs = HashSet::<PathBuf>::from([PathBuf::new()]);
+    let mut files = HashSet::<PathBuf>::new();
+    let mut modes = Vec::<(PathBuf, u32, u64)>::new();
+    let time = |seconds: u64| std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let rel = relative(&entry.path()?)?;
+        ensure!(!rel.as_os_str().is_empty(), "tree member names the root");
+        let parent = rel.parent().unwrap_or(Path::new("")).to_path_buf();
+        ensure!(
+            dirs.contains(&parent),
+            "tree member before its directory: {}",
+            rel.display()
+        );
+        let dest = root.join(&rel);
+        let mode = entry.header().mode()? & 0o7777;
+        let mtime = entry.header().mtime()?;
+        match entry.header().entry_type() {
+            tar::EntryType::Directory => {
+                fs::create_dir(&dest)?;
+                fs::set_permissions(&dest, fs::Permissions::from_mode(0o700))?;
+                modes.push((dest, mode, mtime));
+                dirs.insert(rel);
+            }
+            tar::EntryType::Regular => {
+                let mut file = fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&dest)?;
+                std::io::copy(&mut entry, &mut file)?;
+                file.set_permissions(fs::Permissions::from_mode(mode))?;
+                file.set_modified(time(mtime))?;
+                files.insert(rel);
+            }
+            tar::EntryType::Link => {
+                let target = relative(&entry.link_name()?.context("hardlink without target")?)?;
+                ensure!(
+                    files.contains(&target),
+                    "tree hardlink before its file: {}",
+                    rel.display()
+                );
+                fs::hard_link(root.join(&target), &dest)?;
+                files.insert(rel);
+            }
+            tar::EntryType::Symlink => {
+                let target = entry
+                    .link_name()?
+                    .context("symlink without target")?
+                    .into_owned();
+                std::os::unix::fs::symlink(&target, &dest)?;
+                let path = std::ffi::CString::new(dest.as_os_str().as_encoded_bytes())?;
+                let times = [
+                    libc::timespec {
+                        tv_sec: 0,
+                        tv_nsec: libc::UTIME_OMIT,
+                    },
+                    libc::timespec {
+                        tv_sec: mtime.try_into().context("invalid symlink time")?,
+                        tv_nsec: 0,
+                    },
+                ];
+                // SAFETY: the path is NUL-terminated and `times` has two entries.
+                if unsafe {
+                    libc::utimensat(
+                        libc::AT_FDCWD,
+                        path.as_ptr(),
+                        times.as_ptr(),
+                        libc::AT_SYMLINK_NOFOLLOW,
+                    )
+                } != 0
+                {
+                    return Err(std::io::Error::last_os_error())
+                        .with_context(|| format!("setting the time of {}", dest.display()));
+                }
+            }
+            other => bail!("unsupported tree member {:?}: {}", other, rel.display()),
+        }
+        progress(count.get());
+    }
+    // Directory times and modes after every child is in place.
+    for (dest, mode, mtime) in modes.iter().rev() {
+        File::open(dest)?.set_modified(time(*mtime))?;
+        fs::set_permissions(dest, fs::Permissions::from_mode(*mode))?;
+    }
+    progress(count.get());
+    // The manifest the tree carried must be one Recipe reads.
+    load(root)?;
+    Ok(())
 }
