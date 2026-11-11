@@ -48,6 +48,7 @@ pub mod needs;
 mod options;
 pub mod packages;
 mod process;
+mod progress_file;
 mod publication;
 mod recipes;
 mod retained;

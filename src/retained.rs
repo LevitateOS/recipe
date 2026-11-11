@@ -200,6 +200,7 @@ impl Retained {
             // Presentation, deadlines and main-recipe force flags do not change
             // what the saved files mean.
             machine_events: _,
+            progress_file: _,
             timeout_secs: _,
             force_acquire: _,
             force_build: _,

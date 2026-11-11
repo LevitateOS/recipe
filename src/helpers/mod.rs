@@ -106,6 +106,12 @@ pub fn register_all(engine: &mut Engine) {
         util::debug(&format!("{}:{position}: {msg}", source.unwrap_or("recipe")));
     });
     engine.register_fn("warn", |msg: &str| util::warn(msg));
+    engine.register_fn("progress", |done: i64, total: i64, what: &str| {
+        util::log::progress(done, total, what)
+    });
+    engine.register_fn("progress", |done: i64, total: i64| {
+        util::log::progress(done, total, "")
+    });
 
     // Shell utilities (util/shell)
     helper!(engine, "shell", |cmd: &str| util::shell(cmd));

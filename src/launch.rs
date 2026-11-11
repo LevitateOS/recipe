@@ -353,6 +353,17 @@ fn run_domain_inner(
             .map(|state| state.states().clone())
             .unwrap_or_default(),
     };
+    let mut progress = options.execution.progress_file.as_deref().map(|path| {
+        crate::progress_file::ProgressFile::start(
+            path,
+            &invocation,
+            recipe
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or_default(),
+            &operation.to_string(),
+        )
+    });
     let pump = pump_protocol(
         request,
         (stdin, stdout),
@@ -361,7 +372,11 @@ fn run_domain_inner(
         &mut worker_diagnostics,
         &mut worker_started,
         timeout,
+        &mut progress,
     );
+    if let Some(progress) = progress.as_mut() {
+        progress.finish(pump.as_ref().is_ok_and(|stream| stream.result.ok));
+    }
     let mut stream = match pump {
         Ok(stream) => stream,
         Err(err) => {
@@ -489,6 +504,7 @@ struct WorkerStream {
 /// result. Transport errors before the result frame are returned with a
 /// `protocol` or `startup` category (see [`classify_stream_error`]); the
 /// caller enriches them with launcher/result-file state.
+#[allow(clippy::too_many_arguments)]
 fn pump_protocol(
     request: RequestPayload,
     pipes: (std::process::ChildStdin, std::process::ChildStdout),
@@ -497,6 +513,7 @@ fn pump_protocol(
     worker_diagnostics: &mut std::fs::File,
     worker_started: &mut bool,
     timeout: Duration,
+    progress: &mut Option<crate::progress_file::ProgressFile>,
 ) -> Result<WorkerStream> {
     let (stdin, stdout) = pipes;
     let mut stdin = DeadlinePipe::new(stdin, timeout)?;
@@ -561,6 +578,11 @@ fn pump_protocol(
                         crate::diagnostics::Stream::Recipe,
                         &payload.data,
                     );
+                }
+            }
+            FramePayload::Progress(report) => {
+                if let Some(progress) = progress.as_mut() {
+                    progress.report(&report);
                 }
             }
             FramePayload::Checkpoint(point) => {

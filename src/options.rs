@@ -12,6 +12,10 @@ pub struct ExecutionOptions {
     pub narrowing: crate::needs::Narrowing,
     /// Emit lifecycle JSON events through the worker diagnostic channel.
     pub machine_events: bool,
+    /// Host file the coordinator keeps current with the running recipe's
+    /// `progress()` reports. Coordinator only: never sent to the worker.
+    #[serde(skip)]
+    pub progress_file: Option<std::path::PathBuf>,
     /// Maximum supervised execution time, separate from frame transport stalls.
     pub(crate) timeout_secs: u64,
     /// Domain memory and writable filesystem bounds.
@@ -37,6 +41,7 @@ impl Default for ExecutionOptions {
             jobs: 1,
             narrowing: crate::needs::Narrowing::default(),
             machine_events: false,
+            progress_file: None,
             timeout_secs: 3600,
             memory_mib: 2048,
             storage_max_objects: 16384,

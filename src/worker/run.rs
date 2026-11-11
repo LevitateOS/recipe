@@ -33,7 +33,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use crate::core::executor::{EngineError, ExecutionContext, Load};
 use crate::worker::protocol::{
     CheckpointPayload, Direction, FailureInfo, FailureKind, FramePayload, FrameReceiver,
-    FrameSender, Operation, RequestPayload, ResultPayload,
+    FrameSender, Operation, ProgressPayload, RequestPayload, ResultPayload,
 };
 
 struct WorkerChannel {
@@ -75,6 +75,31 @@ fn install_diagnostics(channel: &SharedChannel) -> Result<()> {
         }
         Ok(())
     }))
+}
+
+fn install_progress(channel: &SharedChannel) {
+    let channel = Arc::clone(channel);
+    crate::core::output::install_progress_sink(Box::new(move |report| {
+        let Ok(mut state) = channel.lock() else {
+            return;
+        };
+        if state.failed || state.terminal {
+            return;
+        }
+        let payload = FramePayload::Progress(ProgressPayload {
+            recipe: report.recipe.clone(),
+            phase: report.phase.clone(),
+            what: report.what.clone(),
+            done: report.done,
+            total: report.total,
+        });
+        let mut output = std::io::stdout();
+        // Progress is best effort: a failed write is left for the next
+        // diagnostic or the result to report.
+        if state.sender.send(&mut output, &payload).is_err() || output.flush().is_err() {
+            state.failed = true;
+        }
+    }));
 }
 
 fn request_failure(message: String) -> FailureInfo {
@@ -158,9 +183,11 @@ pub fn run_worker() -> Result<()> {
         terminal: false,
     }));
     install_diagnostics(&channel)?;
+    install_progress(&channel);
     crate::core::output::set_machine_events(request.options.execution.machine_events);
     crate::diagnostics::line("recipe: managed worker started");
     let outcome = run_operation(&request, &mut rx, &mut input, &channel, &mut output);
+    crate::core::output::flush_progress();
     let mut channel = channel
         .lock()
         .map_err(|_| anyhow!("worker channel poisoned"))?;

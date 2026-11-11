@@ -406,6 +406,7 @@ Run `recipe --help` and `recipe install --help` for the complete current syntax.
 | `--network-host HOST:PORT` | Select a subset of `NEEDS.network`, repeatable; `--no-network` selects none. |
 | `--network-max-bytes N` | Lower `NEEDS.network_max_bytes` (default declaration 8 GiB). |
 | `--json-output FILE` | Final context result, separate from stderr diagnostics. |
+| `--progress-file PATH` | Keep PATH current with the recipe's `progress(done, total, what)` reports: one JSON object (`version`, `invocation`, `recipe`, `phase`, `what`, `done`, `total`, `started`, `updated`, `state` = `running`/`finished`/`failed`), replaced atomically at most once a second. |
 
 Storage accounts hardlink data once. Inputs, restored snapshots and publications
 are bounded and validated; increasing a bound does not add a missing syscall or

@@ -256,6 +256,16 @@ Disable state/files recovery. Managed execution and output publication still run
 .B --json-output FILE
 Write final context JSON to this file. Diagnostics go to stderr.
 .TP
+.B --progress-file PATH
+Keep PATH current with the running recipe's progress() reports: one JSON object,
+replaced atomically (temporary file in the same directory, then rename) at most
+once a second, and at once on the first report, on a change of phase and when the
+invocation ends. Fields: version (1), invocation, recipe, phase (acquire, build,
+install, ...), what, done, total (0 when unknown), started and updated (RFC 3339,
+UTC) and state (running, finished or failed). It is written once at the start
+with done 0, total 0 and an empty what. With --machine-events a progress event
+(recipe, phase, what, done, total) is also emitted.
+.TP
 .B --machine-events
 Emit machine-readable events alongside stderr progress, one JSON object per
 line with an "event" field. recipe-hook: one lifecycle step of a recipe (recipe,

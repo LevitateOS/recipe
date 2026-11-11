@@ -14,3 +14,8 @@ pub fn debug(msg: &str) {
 pub fn warn(msg: &str) {
     crate::diagnostics::diag!("[recipe:warn] {}", msg);
 }
+
+/// Report progress: `done` of `total` (0 when unknown) `what` is counted.
+pub fn progress(done: i64, total: i64, what: &str) {
+    crate::core::output::progress_report(done.max(0) as u64, total.max(0) as u64, what);
+}

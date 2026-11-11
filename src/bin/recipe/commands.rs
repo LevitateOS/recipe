@@ -88,6 +88,7 @@ fn run(cli: Cli) -> Result<()> {
     execution.target_arch = cli.target_arch;
     execution.jobs = cli.jobs;
     execution.machine_events = cli.machine_events;
+    execution.progress_file = cli.progress_file.clone();
     execution.force_acquire = cli.force_acquire;
     execution.force_build = cli.force_build;
     execution.force_install = cli.force_install;
@@ -1536,6 +1537,9 @@ fn system_route(cli: &Cli) -> Result<bool> {
         }
         if cli.machine_events {
             cmd.arg("--machine-events");
+        }
+        if let Some(path) = &cli.progress_file {
+            cmd.arg("--progress-file").arg(std::path::absolute(path)?);
         }
         if let Commands::Install {
             autofix: true,

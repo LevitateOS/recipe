@@ -172,6 +172,11 @@ rule to recover the parent's exact saved state/files. A missing or changed cache
 fails before the main hook; dependencies are never installed or removed by the
 parent's operation. See [the runtime limits](docs/runtime-limits.md).
 
+A long step can report how far it is with `progress(done, total, what)` (or
+`progress(done, total)`; `total` 0 means unknown, `what` is a short unit such as
+`"packages"`). It is cheap to call in a loop and shows only when the run was
+started with `--progress-file PATH`, which keeps PATH current with the latest report.
+
 `--force-install`, `--force-build` and `--force-acquire` select progressively more
 work for the main recipe. Dependencies retain their own readiness. Current force
 options are available under `ctx.runtime.options` if a recipe needs to refresh

@@ -188,6 +188,11 @@ strips v/release-/version-
 \fBprint(value) -> ()\fR
 stderr; keeps JSON/protocol stdout intact
 .TP
+\fBprogress(done, total[, what]) -> ()\fR
+Report how far a long step is: done of total (0 when unknown) what is counted,
+for example "packages". The coordinator writes it to --progress-file; without
+that option it does nothing. Callable from any hook, cheap to call in a loop.
+.TP
 \fBread_file(path) -> String\fR
 
 .TP

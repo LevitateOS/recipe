@@ -74,6 +74,7 @@ check unless the recipe explicitly handles them. Phase hooks return context.
 | `needs_work` | `core readiness` | `needs_work(ctx, reason) -> Map` | Check requests work with a nonempty reason. |
 | `parse_version` | ``helpers/acquire/http.rs`` | `parse_version(s) -> String` | strips v/release-/version- |
 | `print` | `Rhai built-in; callback in `helpers/mod.rs`` | `print(value) -> ()` | stderr; keeps JSON/protocol stdout intact |
+| `progress` | ``helpers/util/log.rs`` | `progress(done, total[, what]) -> ()` | reports to the coordinator's `--progress-file`; `total` 0 is unknown |
 | `read_file` | ``helpers/install/io.rs`` | `read_file(path) -> String` |  |
 | `read_file_or_empty` | ``helpers/install/io.rs`` | `read_file_or_empty(path) -> String` |  |
 | `ready` | `core readiness` | `ready(ctx) -> Map` | Check succeeds with updated context. |

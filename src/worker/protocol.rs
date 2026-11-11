@@ -21,7 +21,7 @@
 //!   expects exactly the next sequence number; any gap or replay is a
 //!   `protocol` failure.
 //! - `op` selects the payload schema: 1 = request, 2 = checkpoint, 3 = ack,
-//!   5 = result, 6 = diagnostic (4 is retired).
+//!   5 = result, 6 = diagnostic, 7 = progress (4 is retired).
 //! - `payload` is JSON, UTF-8, and together with the header the frame is at
 //!   most [`MAX_FRAME_LEN`] (4 MiB) total.
 //!
@@ -85,6 +85,7 @@ pub enum Op {
     Ack = 3,
     Result = 5,
     Diagnostic = 6,
+    Progress = 7,
 }
 
 impl Op {
@@ -95,6 +96,7 @@ impl Op {
             Self::Ack => "ack",
             Self::Result => "result",
             Self::Diagnostic => "diagnostic",
+            Self::Progress => "progress",
         }
     }
 
@@ -106,6 +108,7 @@ impl Op {
             3 => Ok(Op::Ack),
             5 => Ok(Op::Result),
             6 => Ok(Op::Diagnostic),
+            7 => Ok(Op::Progress),
             other => Err(ProtocolError::UnknownOp(other)),
         }
     }
@@ -114,7 +117,7 @@ impl Op {
     pub fn direction(self) -> Direction {
         match self {
             Op::Request | Op::Ack => Direction::HostToWorker,
-            Op::Checkpoint | Op::Result | Op::Diagnostic => Direction::WorkerToHost,
+            Op::Checkpoint | Op::Result | Op::Diagnostic | Op::Progress => Direction::WorkerToHost,
         }
     }
 }
@@ -450,6 +453,36 @@ fn check_diagnostic(p: &DiagnosticPayload) -> Result<(), ProtocolError> {
     Ok(())
 }
 
+/// Op 7 (worker→host): how far the running recipe says it is, for the
+/// coordinator's `--progress-file`. Carries no authority and is outside the
+/// diagnostic budget; the worker sends at most a few per second.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProgressPayload {
+    pub recipe: String,
+    /// The lifecycle step running (`acquire`, `build`, `install`, ...).
+    pub phase: String,
+    /// What is being counted (`packages`); may be empty.
+    pub what: String,
+    pub done: u64,
+    /// 0 when unknown.
+    pub total: u64,
+}
+
+const MAX_PROGRESS_TEXT: usize = 256;
+
+fn check_progress(p: &ProgressPayload) -> Result<(), ProtocolError> {
+    if p.recipe.len() > MAX_PROGRESS_TEXT
+        || p.phase.len() > MAX_PROGRESS_TEXT
+        || p.what.len() > MAX_PROGRESS_TEXT
+    {
+        return Err(ProtocolError::PayloadInvalid(format!(
+            "progress text exceeds {MAX_PROGRESS_TEXT} bytes"
+        )));
+    }
+    Ok(())
+}
+
 /// A typed frame payload. The op code is derived from the variant, so an
 /// encoded frame can never carry a mismatched op/payload pair.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -459,6 +492,7 @@ pub enum FramePayload {
     Ack(AckPayload),
     Result(ResultPayload),
     Diagnostic(DiagnosticPayload),
+    Progress(ProgressPayload),
 }
 
 impl FramePayload {
@@ -469,6 +503,7 @@ impl FramePayload {
             FramePayload::Ack(_) => Op::Ack,
             FramePayload::Result(_) => Op::Result,
             FramePayload::Diagnostic(_) => Op::Diagnostic,
+            FramePayload::Progress(_) => Op::Progress,
         }
     }
 }
@@ -697,6 +732,10 @@ fn serialize_payload(payload: &FramePayload) -> Result<Vec<u8>, ProtocolError> {
             check_diagnostic(p)?;
             serde_json::to_vec(p)
         }
+        FramePayload::Progress(p) => {
+            check_progress(p)?;
+            serde_json::to_vec(p)
+        }
     }
     .map_err(|e| ProtocolError::PayloadInvalid(format!("cannot serialize payload: {e}")))?;
     if HEADER_LEN.saturating_add(json.len()) > MAX_FRAME_LEN {
@@ -737,6 +776,13 @@ fn parse_payload(op: Op, seq: u32, json: &[u8]) -> Result<Frame, ProtocolError> 
             })?;
             check_diagnostic(&p)?;
             FramePayload::Diagnostic(p)
+        }
+        Op::Progress => {
+            let p: ProgressPayload = serde_json::from_str(text).map_err(|e| {
+                ProtocolError::PayloadInvalid(format!("progress payload malformed: {e}"))
+            })?;
+            check_progress(&p)?;
+            FramePayload::Progress(p)
         }
         Op::Result => {
             let p: ResultPayload = serde_json::from_str(text).map_err(|e| {

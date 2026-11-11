@@ -139,6 +139,11 @@ pub(crate) struct Cli {
     #[arg(help_heading = "Output")]
     pub(crate) machine_events: bool,
 
+    /// Keep this file current with the running recipe's `progress()` reports (one JSON object, replaced atomically at most once a second).
+    #[arg(long, global = true, value_name = "PATH")]
+    #[arg(help_heading = "Output")]
+    pub(crate) progress_file: Option<PathBuf>,
+
     /// Select an LLM profile from XDG `recipe/llm.toml` (under `[profiles.<name>]`) for autofix/LLM features.
     #[arg(long, global = true)]
     #[arg(help_heading = "AI-assisted repair")]

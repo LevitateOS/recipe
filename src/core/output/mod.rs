@@ -6,5 +6,8 @@
 mod logging;
 mod narration;
 
-pub use logging::{fetch_event, hook_event, machine_event, set_event_recipe, set_machine_events};
+pub use logging::{
+    fetch_event, flush_progress, hook_event, install_progress_sink, machine_event, progress_report,
+    set_event_recipe, set_machine_events,
+};
 pub use narration::{action, detail, error, info, skip, sub_action, success, warning};
