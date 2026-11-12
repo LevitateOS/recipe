@@ -277,14 +277,30 @@ pub fn save(root: &Path, manifest: &Manifest) -> Result<()> {
     Ok(())
 }
 
+/// A file's SHA-256, read in 1 MiB pieces: inside Ginux each `read` is one
+/// supervised round trip, so `io::copy`'s 8 KiB buffer cost 128 of them per
+/// MiB of a 3.3 GB tree.
 fn hash(path: &Path) -> Result<String> {
     let mut digest = Sha256::new();
-    std::io::copy(&mut File::open(path)?, &mut digest)?;
+    let mut file = File::open(path)?;
+    let mut buffer = vec![0u8; 1 << 20];
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => digest.update(&buffer[..n]),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
     Ok(hex::encode(digest.finalize()))
 }
 
 fn current(path: &Path) -> Result<Entry> {
-    let md = fs::symlink_metadata(path)?;
+    observed(path, &fs::symlink_metadata(path)?)
+}
+
+/// The entry `path` has now, from its `lstat` metadata `md`.
+fn observed(path: &Path, md: &fs::Metadata) -> Result<Entry> {
     let (kind, link) = if md.is_dir() {
         ("dir", None)
     } else if md.file_type().is_symlink() {
@@ -343,7 +359,7 @@ fn snapshot(root: &Path, grant_staging: bool) -> Result<Manifest> {
     let users = accounts("etc/passwd")?;
     let groups = accounts("etc/group")?;
     let mut entries = BTreeMap::new();
-    let mut inodes = HashMap::<(u64, u64), String>::new();
+    let mut inodes = HashMap::<(u64, u64), (String, String)>::new();
     for item in walkdir::WalkDir::new(root)
         .follow_links(false)
         .sort_by_file_name()
@@ -358,14 +374,20 @@ fn snapshot(root: &Path, grant_staging: bool) -> Result<Manifest> {
         if rel == MANIFEST {
             continue;
         }
-        let observed = current(item.path())?;
+        // One `lstat` per entry: inside Ginux every call is a supervised
+        // round trip, and a desktop tree has some 136,000 entries.
+        let md = item.metadata()?;
+        let observed = observed(item.path(), &md)?;
         // Installation clients may leave unreadable or non-writable inodes.
         // Grant access only to staging, after observing the authored metadata.
         // Target permissions remain the independent package/recipe entry.
+        // Most entries already allow it; only the others are changed.
         if grant_staging && observed.kind != "symlink" {
             let grant = if observed.kind == "dir" { 0o700 } else { 0o600 };
-            let staged = fs::metadata(item.path())?.mode() & 0o777;
-            fs::set_permissions(item.path(), fs::Permissions::from_mode(staged | grant))?;
+            let staged = md.mode() & 0o777;
+            if staged & grant != grant {
+                fs::set_permissions(item.path(), fs::Permissions::from_mode(staged | grant))?;
+            }
         }
 
         let mut entry = manifest
@@ -390,15 +412,18 @@ fn snapshot(root: &Path, grant_staging: bool) -> Result<Manifest> {
             entry.link = observed.link;
         }
         if observed.kind == "file" {
-            entry.sha256 = Some(hash(item.path())?);
-            let md = fs::symlink_metadata(item.path())?;
-            if let Some(first) = inodes.get(&(md.dev(), md.ino())) {
+            // A further name of an inode already seen is a hardlink to the
+            // first name, with its digest: its bytes are not read again.
+            if let Some((first, digest)) = inodes.get(&(md.dev(), md.ino())) {
+                entry.sha256 = Some(digest.clone());
                 entry.kind = "hardlink".into();
                 entry.link = Some(first.clone());
             } else {
+                let digest = hash(item.path())?;
+                entry.sha256 = Some(digest.clone());
                 entry.kind = "file".into();
                 entry.link = None;
-                inodes.insert((md.dev(), md.ino()), rel.clone());
+                inodes.insert((md.dev(), md.ino()), (rel.clone(), digest));
             }
         }
         entries.insert(rel, entry);

@@ -240,10 +240,10 @@ pub(crate) fn prepare(
                 if synced_payloads.insert(payload.clone()) {
                     // Unselected payloads are discarded. Keep them private and
                     // readable until a selected name needs their inode, then
-                    // sync once, including aliases of an earlier unselected file.
-                    let file = File::open(payload)?;
-                    file.set_permissions(fs::Permissions::from_mode(mode))?;
-                    file.sync_all()?;
+                    // give it its mode once, including aliases of an earlier
+                    // unselected file. Its bytes reach the disk with the one
+                    // `syncfs` before publishing.
+                    fs::set_permissions(payload, fs::Permissions::from_mode(mode))?;
                 }
                 fs::hard_link(payload, destination)?;
             }
@@ -291,21 +291,19 @@ pub(crate) fn prepare(
                 .context("cannot preserve symlink timestamp");
         }
     }
-    // Rootfs products may contain absolute links meaningful inside their future
-    // root. Preserve their bytes; never follow them while publishing.
-    for entry in walkdir::WalkDir::new(staging.0.path()).follow_links(false) {
-        let entry = entry?;
-        if entry.file_type().is_dir() {
-            File::open(entry.path())?.sync_all()?;
-        }
-    }
     // Apply directory modes after all children and links have been created.
     for (directory, (mode, modified)) in directories.iter().rev() {
         File::open(directory)?.set_modified(*modified)?;
-        File::open(directory)?.sync_all()?;
         fs::set_permissions(directory, fs::Permissions::from_mode(*mode))?;
     }
-    File::open(staging.0.path())?.sync_all()?;
+    // Everything staged reaches the disk before `publish` renames it into
+    // place: one `syncfs` of the staging filesystem instead of an fsync per
+    // file and directory (91,199 files and 9,707 directories in a desktop
+    // tree, 20 ms each on a busy disk: half an hour per published tree).
+    let staged = File::open(staging.0.path())?;
+    if unsafe { libc::syncfs(std::os::fd::AsRawFd::as_raw_fd(&staged)) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("cannot sync the staged outputs");
+    }
     Ok(Some(Publication {
         base,
         staging,
