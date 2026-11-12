@@ -26,6 +26,7 @@
 mod config;
 mod discover;
 mod env;
+mod image_cache;
 mod network;
 mod root;
 
@@ -150,10 +151,13 @@ pub fn prepare_invocation(
         let mut source = crate::fsx::open_regular(&input.host_path)
             .with_context(|| format!("input changed kind: {}", input.name))?;
         let mut target = std::fs::OpenOptions::new()
+            .read(true)
             .write(true)
             .create_new(true)
             .open(&dest)?;
-        let (size, digest) = crate::fsx::copy_hashed(&mut source, &mut target, input.size)
+        // A copy-on-write clone where the filesystem can; either way the
+        // digest checked is that of the staged bytes.
+        let (size, digest) = crate::fsx::snapshot_hashed(&mut source, &mut target, input.size)
             .with_context(|| format!("input changed size: {}", input.name))?;
         if size != input.size || digest != hex::encode(input.sha256) {
             bail!("input changed after discovery: {}", input.name);

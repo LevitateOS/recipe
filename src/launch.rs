@@ -24,9 +24,11 @@
 //!   report after the supervisor snapshot and matching state record are durable.
 //!   Disabled persistence acknowledges with no generation: nothing will be recovered.
 //!
-//! Before launch, the input owner snapshots and verifies the selected assembled
-//! rootfs tar once per command, creates a fresh domain root, and copies the worker
-//! plus staged inputs into `/inputs`. The root is private to this invocation and
+//! Before launch, the input owner creates a fresh domain root from the selected
+//! assembled rootfs tar, verified against its digest (cloned from a verified
+//! per-digest cache where the filesystem has reflinks, see
+//! `crate::inputs::image_cache`), and copies the worker plus staged inputs into
+//! `/inputs`. The root is private to this invocation and
 //! is kept alive until the launcher is reaped.
 //!
 //! Every failure carries a [`crate::failure::Category`]. Storage joins retain
@@ -55,7 +57,9 @@ use crate::worker::protocol::{
 
 /// Startup and complete-frame transport bound. Once the worker has started,
 /// a silent phase can run until the separate total execution deadline; the
-/// first byte of each frame starts a bounded complete-frame read.
+/// first byte of each frame starts a bounded complete-frame read. A snapshot
+/// acknowledgement waits this long after the launcher's last visible progress
+/// (see [`SnapshotWait`]).
 const FRAME_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Bound on checkpoint chatter: more than this many checkpoints in one
@@ -365,6 +369,7 @@ fn run_domain_inner(
     let pump = pump_protocol(
         request,
         (stdin, stdout),
+        child.id(),
         &mut retained,
         &mut control,
         &mut worker_diagnostics,
@@ -385,9 +390,6 @@ fn run_domain_inner(
                     None
                 },
             );
-            if let Err(error) = worker_diagnostics.sync_all() {
-                crate::diagnostics::diag!("recipe: warning: cannot sync the worker log: {error}");
-            }
             let drained = join_drain(drain);
             return Err(enrich_stream_error(
                 &invocation,
@@ -405,7 +407,8 @@ fn run_domain_inner(
     // valid exports still belong to execution, not short error teardown.
     let reaped = reap_launcher(&mut child, stream.execution_deadline);
     let drained = join_drain(drain);
-    worker_diagnostics.sync_all()?;
+    // Diagnostics are not fsynced (see `crate::invocation_log`).
+    drop(worker_diagnostics);
     let exit = reaped?;
 
     let record = crate::ginux::ResultRecord::read(&result_path, &invocation)?;
@@ -506,6 +509,7 @@ struct WorkerStream {
 fn pump_protocol(
     request: RequestPayload,
     pipes: (std::process::ChildStdin, std::process::ChildStdout),
+    launcher: u32,
     retained: &mut Option<crate::retained::Retained>,
     control: &mut Option<DeadlinePipe<UnixStream>>,
     worker_diagnostics: &mut std::fs::File,
@@ -602,7 +606,17 @@ fn pump_protocol(
                         crate::failure::Category::Startup.error("missing snapshot control socket"),
                     )?;
                     Some(
-                        capture_checkpoint(state, control, &point, timeout).map_err(|error| {
+                        capture_checkpoint(
+                            state,
+                            control,
+                            &point,
+                            SnapshotWait {
+                                launcher,
+                                idle: timeout,
+                                cap: execution_deadline,
+                            },
+                        )
+                        .map_err(|error| {
                             crate::failure::Category::Storage
                                 .wrap(error, format!("cannot keep checkpoint {seq}"))
                         })?,
@@ -642,15 +656,39 @@ fn pump_protocol(
     })
 }
 
+/// How long the coordinator waits for a filesystem snapshot. Its duration
+/// grows with the domain's storage and with disk load, so a fixed frame
+/// timeout fails large checkpoints on a busy disk. Instead the launcher's
+/// progress extends the wait: while its written bytes (`wchar` in
+/// `/proc/<launcher>/io`; the supervisor writes nothing else while every
+/// task is stopped for the snapshot) grow, the deadline moves to `idle`
+/// after the latest growth, plus time to flush what was written at
+/// [`SNAPSHOT_FLUSH_FLOOR`] (the snapshot ends with an fsync). A launcher that
+/// writes nothing for `idle` still times out, and `cap` (the invocation's
+/// execution deadline) bounds the whole wait, so a stuck launcher cannot hang
+/// a build forever. Where `/proc` does not show the launcher's I/O, the wait
+/// is the fixed `idle` window, as before.
+struct SnapshotWait {
+    launcher: u32,
+    idle: Duration,
+    cap: Instant,
+}
+
+/// Slowest flush rate assumed for snapshot bytes already written.
+const SNAPSHOT_FLUSH_FLOOR: u64 = 8 * 1024 * 1024;
+
 fn capture_checkpoint(
     retained: &mut crate::retained::Retained,
     control: &mut DeadlinePipe<UnixStream>,
     point: &crate::worker::protocol::CheckpointPayload,
-    timeout: Duration,
+    wait: SnapshotWait,
 ) -> Result<u64> {
     let pending = retained.begin()?;
-    control.reset(timeout);
-    crate::ginux::request_snapshot(control, pending.generation, &pending.path)?;
+    control.reset(wait.idle);
+    control.progress = Some(Progress::new(wait));
+    let snapshot = crate::ginux::request_snapshot(control, pending.generation, &pending.path);
+    control.progress = None;
+    snapshot?;
     retained
         .commit(pending, &point.recipe, point.state.clone())
         .context("cannot persist checkpoint state/files pair")
@@ -664,6 +702,60 @@ struct DeadlinePipe<T> {
     deadline: Instant,
     frame_start: Option<(Duration, Instant)>,
     execution_deadline: Option<Instant>,
+    /// Set while a snapshot is awaited: launcher progress extends `deadline`.
+    progress: Option<Progress>,
+}
+
+/// The launcher's write progress during one snapshot (see [`SnapshotWait`]).
+struct Progress {
+    wait: SnapshotWait,
+    io: PathBuf,
+    /// `wchar` when first read, and at the latest growth.
+    first: Option<u64>,
+    last: u64,
+    next_check: Instant,
+}
+
+impl Progress {
+    fn new(wait: SnapshotWait) -> Self {
+        let mut progress = Self {
+            io: PathBuf::from(format!("/proc/{}/io", wait.launcher)),
+            wait,
+            first: None,
+            last: 0,
+            next_check: Instant::now(),
+        };
+        progress.first = progress.written();
+        progress.last = progress.first.unwrap_or(0);
+        progress
+    }
+
+    fn written(&self) -> Option<u64> {
+        let text = std::fs::read_to_string(&self.io).ok()?;
+        text.lines()
+            .find_map(|line| line.strip_prefix("wchar:"))?
+            .trim()
+            .parse()
+            .ok()
+    }
+
+    /// A later deadline when the launcher wrote more since the last check.
+    fn extend(&mut self, deadline: Instant) -> Instant {
+        let now = Instant::now();
+        if now < self.next_check {
+            return deadline;
+        }
+        self.next_check = now + Duration::from_secs(1);
+        let (Some(first), Some(written)) = (self.first, self.written()) else {
+            return deadline;
+        };
+        if written <= self.last {
+            return deadline;
+        }
+        self.last = written;
+        let flush = Duration::from_secs((written - first) / SNAPSHOT_FLUSH_FLOOR);
+        deadline.max((now + self.wait.idle + flush).min(self.wait.cap))
+    }
 }
 
 fn frame_timeout() -> Result<Duration> {
@@ -698,6 +790,7 @@ impl<T: AsRawFd> DeadlinePipe<T> {
             deadline: Instant::now() + timeout,
             frame_start: None,
             execution_deadline: None,
+            progress: None,
         })
     }
     fn begin_frame(&mut self, idle: Duration, frame: Duration, execution_deadline: Instant) {
@@ -708,14 +801,23 @@ impl<T: AsRawFd> DeadlinePipe<T> {
     fn reset(&mut self, timeout: Duration) {
         self.deadline = Instant::now() + timeout;
     }
-    fn wait(&self, events: i16) -> std::io::Result<()> {
+    fn wait(&mut self, events: i16) -> std::io::Result<()> {
         loop {
             crate::cancellation::check_io()?;
+            if let Some(progress) = self.progress.as_mut() {
+                self.deadline = progress.extend(self.deadline);
+            }
             let left = self.deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::TimedOut,
-                    if self
+                    if let Some(progress) = &self.progress {
+                        if Instant::now() >= progress.wait.cap {
+                            "supervised execution deadline expired during the snapshot"
+                        } else {
+                            "filesystem snapshot made no visible progress within the frame timeout"
+                        }
+                    } else if self
                         .execution_deadline
                         .is_some_and(|deadline| Instant::now() >= deadline)
                     {

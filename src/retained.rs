@@ -166,7 +166,9 @@ impl Retained {
             scope.update(bytes);
         }
         let scope = root.join(hex::encode(scope.finalize()));
-        crate::fsx::private_dir(&scope, true)?;
+        // A new scope or identity directory becomes durable with the first
+        // commit inside it (see `commit`); until then it holds nothing durable.
+        crate::fsx::private_dir(&scope, false)?;
         let mut defines = options.defines.clone();
         defines.sort();
         // Saved state must fit the next invocation's request frame.
@@ -239,7 +241,7 @@ impl Retained {
             storage_max_bytes,
         ))?));
         let directory = scope.join(&identity);
-        crate::fsx::private_dir(&directory, true)?;
+        crate::fsx::private_dir(&directory, false)?;
         let allowed = prepared
             .inputs
             .iter()
@@ -309,12 +311,13 @@ impl Retained {
         }
         let mut source = crate::fsx::open_regular(&self.directory.join(&self.current.archive))?;
         let mut output = OpenOptions::new()
+            .read(true)
             .write(true)
             .create_new(true)
             .mode(0o600)
             .open(path)?;
         let (bytes, digest) =
-            crate::fsx::copy_hashed(&mut source, &mut output, self.archive_bound)?;
+            crate::fsx::snapshot_hashed(&mut source, &mut output, self.archive_bound)?;
         if bytes != self.current.bytes || digest != self.current.sha256 {
             bail!("saved filesystem snapshot digest mismatch");
         }
@@ -368,22 +371,35 @@ impl Retained {
         if data.len() > self.state_budget {
             bail!("runtime state exceeds byte bound");
         }
+        let record_path = pending.directory.path().join(RECORD);
         let mut history = OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(pending.directory.path().join(RECORD))?;
+            .open(&record_path)?;
         history.write_all(&data)?;
-        history.sync_all()?;
-        File::open(pending.directory.path())?.sync_all()?;
+        drop(history);
+        let mut current = tempfile::NamedTempFile::new_in(&self.directory)?;
+        current.write_all(&data)?;
+        // Two barriers per commit. First the generation (snapshot, record and
+        // their directory) and the new pointer's bytes, as one batch: nothing
+        // is renamed before all of it is durable.
+        crate::fsx::sync_files(&[
+            (&pending.path, None),
+            (&record_path, None),
+            (current.path(), None),
+        ])?;
+        crate::fsx::sync_directories(&[pending.directory.path()])?;
         // Preserve every complete previous generation, including if publishing
         // the current pointer or delivering the worker acknowledgement fails.
         let _history_directory = pending.directory.keep();
-        let mut current = tempfile::NamedTempFile::new_in(&self.directory)?;
-        current.write_all(&data)?;
-        current.as_file().sync_all()?;
         current.persist(self.directory.join(CURRENT))?;
-        File::open(&self.directory)?.sync_all()?;
+        // Then the pointer, plus the identity and scope directories' own
+        // entries the first time they hold a commit (otherwise already clean,
+        // and their fsync returns without waiting).
+        let scope = self.directory.parent().context("identity has no scope")?;
+        let root = scope.parent().context("scope has no state root")?;
+        crate::fsx::sync_directories(&[&self.directory, scope, root])?;
         self.current = record;
         self.prune_best_effort();
         Ok(self.current.generation)
@@ -397,8 +413,11 @@ impl Retained {
             .create_new(true)
             .mode(0o600)
             .open(&pending.path)?;
-        crate::fsx::copy_hashed(&mut input, &mut output, self.archive_bound)?;
-        output.sync_all()?;
+        // `commit` hashes the snapshot within the archive bound and makes it
+        // durable with the rest of the generation.
+        if !crate::fsx::reflink(&input, &output)? {
+            crate::fsx::copy_hashed(&mut input, &mut output, self.archive_bound)?;
+        }
         drop(output);
         self.commit(pending, crate::domain::MAIN_RECIPE, state)
     }
@@ -567,8 +586,8 @@ impl Retained {
             fs::remove_file(path.join(CURRENT))?;
             fs::remove_dir(path)?;
         }
-        File::open(&self.directory)?.sync_all()?;
-        File::open(scope)?.sync_all()?;
+        // No barrier: removals that a crash undoes are repeated by the next
+        // prune, and the pointer they depend on was made durable by `commit`.
         Ok(())
     }
 }

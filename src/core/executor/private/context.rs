@@ -67,11 +67,26 @@ impl<'a> ExecutionContext<'a> {
 
     /// A recipe that is already installed can still discover state in its
     /// check. Save it, with the matching filesystem, before the parent goes on;
-    /// without persistence there is nothing to save.
+    /// without persistence there is nothing to save. When its state equals the
+    /// state already saved for it (restored, or checkpointed earlier in this
+    /// invocation), the newest saved generation already pairs that state with
+    /// a filesystem a resume can continue from, so there is nothing new to
+    /// save: no snapshot of the whole domain storage is taken again.
     pub(crate) fn checkpoint_reused(&mut self, recipe: &Path, ctx: &rhai::Map) -> Result<()> {
-        if self.resumable {
-            self.checkpoint(recipe, ctx)?;
+        if !self.resumable {
+            return Ok(());
         }
-        Ok(())
+        // A state that does not convert is left to `checkpoint`, which
+        // reports exactly what cannot be saved.
+        let json =
+            |value: &rhai::Dynamic| rhai::serde::from_dynamic::<serde_json::Value>(value).ok();
+        if let (Some(saved), Some(state)) = (self.states.get(recipe), ctx.get("state"))
+            && let (Some(saved), Some(state)) =
+                (json(&rhai::Dynamic::from_map(saved.clone())), json(state))
+            && saved == state
+        {
+            return Ok(());
+        }
+        self.checkpoint(recipe, ctx)
     }
 }

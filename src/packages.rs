@@ -794,6 +794,7 @@ fn copy_package(source: &Path, destination: &Path, retained: bool) -> Result<Vec
     );
     create_directory(destination)?;
     let mut files = Vec::new();
+    let mut copied = Vec::new();
     for entry in walkdir::WalkDir::new(source)
         .follow_links(false)
         .min_depth(1)
@@ -856,11 +857,20 @@ fn copy_package(source: &Path, destination: &Path, retained: bool) -> Result<Vec
                     .open(&output)?;
                 std::io::copy(&mut input, &mut target)?;
                 target.set_permissions(fs::Permissions::from_mode(mode))?;
-                target.sync_all()?;
+                copied.push(output);
             }
             files.push(relative_text.to_owned());
         }
     }
+    // Copied bytes are durable before the generation's directories are synced
+    // and its profile is switched (`finish_generation`): one batch instead of
+    // one fsync per file. Hardlinked files are a durable generation's already.
+    crate::fsx::sync_files(
+        &copied
+            .iter()
+            .map(|path| (path.as_path(), None))
+            .collect::<Vec<_>>(),
+    )?;
     files.sort();
     Ok(files)
 }

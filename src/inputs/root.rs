@@ -15,7 +15,8 @@ use super::PreparedInvocation;
 const MAX_WORKER_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Verified image bytes owned by one command's sequential dependency graph.
-/// Only this anonymous archive is reused; every domain gets a fresh root.
+/// Only this anonymous archive and the verified cache made from it
+/// (`image_cache`) are reused; every domain gets a fresh root.
 pub(crate) struct VerifiedImage {
     root_reference: String,
     snapshot: File,
@@ -25,8 +26,9 @@ impl VerifiedImage {
     fn open(root_reference: &str) -> Result<Self> {
         let digest = crate::runtime::root_digest(root_reference)?;
         let archive_path = crate::runtime::rootfs_path(root_reference)?;
-        // Copy and hash the same bytes into an unlinked snapshot. Later nodes
-        // read these verified bytes, never a potentially changed source path.
+        // Snapshot and hash the same bytes into an unlinked file (a
+        // copy-on-write clone where the filesystem can). Later nodes read
+        // these verified bytes, never a potentially changed source path.
         let mut archive = crate::fsx::open_regular(&archive_path).with_context(|| {
             format!(
                 "cannot open Ginux rootfs image {}; set GINUX_ROOTFS to the assembled tar matching {}",
@@ -35,8 +37,11 @@ impl VerifiedImage {
             )
         })?;
         let mut snapshot = tempfile::tempfile().context("cannot snapshot the rootfs image")?;
-        let (_, actual) =
-            crate::fsx::copy_hashed(&mut archive, &mut snapshot, crate::image::MAX_ARCHIVE_BYTES)?;
+        let (_, actual) = crate::fsx::snapshot_hashed(
+            &mut archive,
+            &mut snapshot,
+            crate::image::MAX_ARCHIVE_BYTES,
+        )?;
         if actual != digest {
             bail!("Ginux rootfs digest mismatch: expected {digest}, got {actual}");
         }
@@ -45,6 +50,23 @@ impl VerifiedImage {
             snapshot,
         })
     }
+}
+
+/// The verified bytes of `root_reference`, verified now unless `image` already
+/// holds them, positioned at their start.
+pub(super) fn verified_snapshot<'a>(
+    image: &'a mut Option<VerifiedImage>,
+    root_reference: &str,
+) -> Result<&'a mut File> {
+    if image
+        .as_ref()
+        .is_none_or(|image| image.root_reference != root_reference)
+    {
+        *image = Some(VerifiedImage::open(root_reference)?);
+    }
+    let image = image.as_mut().expect("verified image initialized");
+    image.snapshot.seek(SeekFrom::Start(0))?;
+    Ok(&mut image.snapshot)
 }
 
 /// Owns the isolated root until the launcher and worker have been reaped.
@@ -69,19 +91,18 @@ pub(crate) fn prepare_root(
     if std::env::consts::OS != "linux" || std::env::consts::ARCH != "x86_64" {
         bail!("Ginux execution currently requires Linux x86_64");
     }
-    if image
-        .as_ref()
-        .is_none_or(|image| image.root_reference != invocation.root_reference)
-    {
-        *image = Some(VerifiedImage::open(&invocation.root_reference)?);
-    }
-    let image = image.as_mut().expect("verified image initialized");
-    image.snapshot.seek(SeekFrom::Start(0))?;
     let mut root = PreparedRoot {
         worker_digest: String::new(),
         directory: crate::temporary::TemporaryDirectory::new()?,
     };
-    unpack_image(&mut image.snapshot, root.path())?;
+    // A clone of the verified image's cached tree where the filesystem can
+    // clone; otherwise the verified image unpacked here (see image_cache).
+    if !super::image_cache::populate(&invocation.root_reference, image, root.path())? {
+        unpack_image(
+            verified_snapshot(image, &invocation.root_reference)?,
+            root.path(),
+        )?;
+    }
 
     super::network::install_hosts(&invocation.network, root.path())?;
     let inputs = root
@@ -109,10 +130,12 @@ pub(crate) fn prepare_root(
         let mut source =
             crate::fsx::open_regular(&invocation.staging_dir().join(format!("input-{index}")))?;
         let mut destination = OpenOptions::new()
+            .read(true)
             .write(true)
             .create_new(true)
             .open(inputs.join(&input.name))?;
-        let (size, digest) = crate::fsx::copy_hashed(&mut source, &mut destination, input.size)?;
+        let (size, digest) =
+            crate::fsx::snapshot_hashed(&mut source, &mut destination, input.size)?;
         if size != input.size || digest != hex::encode(input.sha256) {
             bail!(
                 "staged input changed after discovery: /inputs/{}",
@@ -152,11 +175,12 @@ pub(crate) fn prepare_root(
     }
     worker.seek(SeekFrom::Start(0))?;
     let mut destination = OpenOptions::new()
+        .read(true)
         .write(true)
         .create_new(true)
         .open(inputs.join(crate::domain::WORKER_NAME))?;
     root.worker_digest =
-        crate::fsx::copy_hashed(&mut worker, &mut destination, MAX_WORKER_BYTES)?.1;
+        crate::fsx::snapshot_hashed(&mut worker, &mut destination, MAX_WORKER_BYTES)?.1;
     destination.set_permissions(std::fs::Permissions::from_mode(0o555))?;
 
     // No shared cached tree or mutable hardlinks are handed to the domain.
@@ -235,7 +259,7 @@ fn ensure_parents(root: &Path, relative: &Path) -> Result<()> {
     Ok(())
 }
 
-fn unpack_image(snapshot: &mut File, root: &Path) -> Result<()> {
+pub(super) fn unpack_image(snapshot: &mut File, root: &Path) -> Result<()> {
     let mut archive = tar::Archive::new(snapshot);
     let mut validator = crate::image::Validator::default();
     let mut directories = HashMap::new();
@@ -398,7 +422,8 @@ pub(crate) fn seed_target(
         }
     }
     archive.finish()?;
-    let file = archive.into_inner()?;
-    file.sync_all()?;
+    // Scratch for this launch only, read back from the page cache and
+    // removed with the run directory: nothing to make durable.
+    archive.into_inner()?;
     Ok(true)
 }

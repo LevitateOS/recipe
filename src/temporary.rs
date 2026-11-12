@@ -1,11 +1,30 @@
 //! Coordinator-owned scratch directories with leases for crash recovery.
-//! A later invocation removes only abandoned directories in this private pool.
+//! A later invocation removes only abandoned `invocation-*` directories in
+//! this private pool; the verified image cache (`crate::inputs::image_cache`)
+//! lives beside them.
 use anyhow::{Context, Result, bail};
 use fs2::FileExt;
 use std::fs::{self, File};
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// The coordinator's private scratch pool, `$TMPDIR/recipe-scratch-<uid>`,
+/// created on first use. Only this uid can enter it.
+pub(crate) fn pool() -> Result<PathBuf> {
+    let uid = unsafe { libc::geteuid() };
+    let pool = std::env::temp_dir().join(format!("recipe-scratch-{uid}"));
+    match fs::DirBuilder::new().mode(0o700).create(&pool) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error).context("cannot create recipe scratch pool"),
+    }
+    let metadata = fs::symlink_metadata(&pool)?;
+    if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o777 != 0o700 {
+        bail!("recipe scratch pool must be a private directory owned by the coordinator");
+    }
+    Ok(pool)
+}
 
 #[derive(Debug)]
 pub(crate) struct TemporaryDirectory {
@@ -18,17 +37,7 @@ pub(crate) struct TemporaryDirectory {
 
 impl TemporaryDirectory {
     pub(crate) fn new() -> Result<Self> {
-        let uid = unsafe { libc::geteuid() };
-        let pool = std::env::temp_dir().join(format!("recipe-scratch-{uid}"));
-        match fs::DirBuilder::new().mode(0o700).create(&pool) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error).context("cannot create recipe scratch pool"),
-        }
-        let metadata = fs::symlink_metadata(&pool)?;
-        if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o777 != 0o700 {
-            bail!("recipe scratch pool must be a private directory owned by the coordinator");
-        }
+        let pool = pool()?;
         let guard = crate::fsx::open_lease(&pool.join("pool.lock"), true)?;
         guard
             .lock_exclusive()

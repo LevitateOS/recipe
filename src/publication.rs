@@ -80,7 +80,10 @@ pub(crate) fn prepare(
     let payloads = staging.0.path().join(".payloads");
     fs::create_dir(&payloads)?;
     let mut regulars = BTreeMap::<String, (PathBuf, u32, u64)>::new();
+    // Selected payload inodes and their published modes, applied when they
+    // are synced (see below).
     let mut synced_payloads = HashSet::new();
+    let mut selected_payloads = Vec::new();
     for (raw_count, entry) in archive.entries()?.raw(true).enumerate() {
         if raw_count >= max_entries * 3 {
             bail!("excessive export headers");
@@ -239,16 +242,23 @@ pub(crate) fn prepare(
                 let payload = payload.as_ref().unwrap();
                 if synced_payloads.insert(payload.clone()) {
                     // Unselected payloads are discarded. Keep them private and
-                    // readable until a selected name needs their inode, then
-                    // give it its mode once, including aliases of an earlier
-                    // unselected file. Its bytes reach the disk with the one
-                    // `syncfs` before publishing.
-                    fs::set_permissions(payload, fs::Permissions::from_mode(mode))?;
+                    // readable until they are synced, then give each selected
+                    // inode its mode once, including aliases of an earlier
+                    // unselected file (an alias's mode equals its target's).
+                    selected_payloads.push((payload.clone(), mode));
                 }
                 fs::hard_link(payload, destination)?;
             }
         }
     }
+    // Only the selected bytes are made durable, in batches, while their
+    // payload names still exist; unselected payloads are removed unsynced.
+    crate::fsx::sync_files(
+        &selected_payloads
+            .iter()
+            .map(|(payload, mode)| (payload.as_path(), Some(*mode)))
+            .collect::<Vec<_>>(),
+    )?;
     fs::remove_dir_all(&payloads)?;
     if long_name.is_some() || long_link.is_some() {
         bail!("long export name without an entry");
@@ -291,19 +301,30 @@ pub(crate) fn prepare(
                 .context("cannot preserve symlink timestamp");
         }
     }
-    // Apply directory modes after all children and links have been created.
-    for (directory, (mode, modified)) in directories.iter().rev() {
-        File::open(directory)?.set_modified(*modified)?;
-        fs::set_permissions(directory, fs::Permissions::from_mode(*mode))?;
-    }
-    // Everything staged reaches the disk before `publish` renames it into
-    // place: one `syncfs` of the staging filesystem instead of an fsync per
-    // file and directory (91,199 files and 9,707 directories in a desktop
-    // tree, 20 ms each on a busy disk: half an hour per published tree).
-    let staged = File::open(staging.0.path())?;
-    if unsafe { libc::syncfs(std::os::fd::AsRawFd::as_raw_fd(&staged)) } != 0 {
-        return Err(std::io::Error::last_os_error()).context("cannot sync the staged outputs");
-    }
+    // Apply directory modes after all children and links have been created,
+    // children first, and make every staged directory durable (with the
+    // selected files above, everything staged reaches the disk before
+    // `publish` renames it into place). Only this tree is flushed: a `syncfs`
+    // also waited for every other writer's dirty data on the filesystem, and
+    // an fsync per path (91,199 files and 9,707 directories in a desktop
+    // tree) one journal commit each; batches commit once per chunk.
+    let staged = walkdir::WalkDir::new(staging.0.path())
+        .follow_links(false)
+        .contents_first(true)
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .map_or(true, |entry| entry.file_type().is_dir())
+        })
+        .map(|entry| entry.map(walkdir::DirEntry::into_path))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    crate::fsx::sync_new_directories(
+        &staged
+            .iter()
+            .map(|path| (path.as_path(), directories.get(path).copied()))
+            .collect::<Vec<_>>(),
+    )?;
     Ok(Some(Publication {
         base,
         staging,

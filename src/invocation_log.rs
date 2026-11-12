@@ -1,8 +1,14 @@
-//! The durable per-invocation diagnostics store: `<state>/logs/<invocation>/`.
+//! The retained per-invocation diagnostics store: `<state>/logs/<invocation>/`.
 //!
 //! This module owns the directory layout, the `result.json` status vocabulary,
 //! retention and reading a finished invocation back, so nothing else needs to
 //! know the file names or their bounds.
+//!
+//! Diagnostics are kept across invocations but never fsynced: nothing resumes
+//! from them, and a barrier per record cost seconds each on a busy disk. While
+//! the system runs, `result.json` is always whole (it is replaced by rename);
+//! after a crash a directory, record or log may be missing, empty or short,
+//! which `prune` and [`Recorded::read`] already treat as an unreadable record.
 
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -80,7 +86,6 @@ impl InvocationLog {
         }
         let directory = logs.join(invocation);
         std::fs::DirBuilder::new().mode(0o700).create(&directory)?;
-        std::fs::File::open(&logs)?.sync_all()?;
         let lease = crate::fsx::open_lease(&directory.join(LEASE), true)?;
         lease.lock_exclusive()?;
         let log = Self {
@@ -117,8 +122,6 @@ impl InvocationLog {
             .create_new(true)
             .open(self.file(AUTHORITY))?;
         file.write_all(&bytes)?;
-        file.sync_all()?;
-        std::fs::File::open(&self.directory)?.sync_all()?;
         Ok(())
     }
 
@@ -147,9 +150,7 @@ impl InvocationLog {
             .tempfile_in(&self.directory)?;
         serde_json::to_writer(&mut file, &record)?;
         file.write_all(b"\n")?;
-        file.as_file().sync_all()?;
         file.persist(self.directory.join(RESULT))?;
-        std::fs::File::open(&self.directory)?.sync_all()?;
         Ok(())
     }
 }
@@ -276,6 +277,5 @@ fn prune(root: &Path) -> Result<()> {
         }
         std::fs::remove_dir(path)?;
     }
-    std::fs::File::open(root)?.sync_all()?;
     Ok(())
 }

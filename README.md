@@ -386,14 +386,24 @@ The authority receipt saves the actual declaration, effective constraints, pinne
 endpoints, rendered config and catalog/digest used for this instance. Logs are bounded;
 active leases protect running invocations, and up to 32 recent completed
 invocations are retained. The coordinator prints the diagnostic directory.
-Private leased scratch is reclaimed after abandoned invocations; arbitrary
+Diagnostics are not fsynced: after a crash the last records may be missing or
+empty. Private leased scratch is reclaimed after abandoned invocations; arbitrary
 workspace directories are never cleanup candidates.
+
+Where the scratch pool (`$TMPDIR/recipe-scratch-<uid>`) is on a filesystem
+with reflinks (XFS, Btrfs), the compiler image is verified and unpacked once
+per digest and boot into a private cache there, and each domain root is a new
+tree of copy-on-write clones of it; the cache itself is never given to a
+domain. Elsewhere every root is unpacked from the verified image.
 
 SIGINT/SIGTERM cancel execution and await descendant teardown. Cancellation and
 deadline failure preserve the last complete checkpoint and do not publish failed
 work. `NEEDS.timeout_secs` bounds each recipe instance, including legitimate silent
 commands (default 3600, range 1–86400); `--timeout-secs` can only lower it. Transport partial-frame waits are bounded
-separately by `RECIPE_FRAME_TIMEOUT_SECS` (default 300, range 1–86400).
+separately by `RECIPE_FRAME_TIMEOUT_SECS` (default 300, range 1–86400). A
+checkpoint snapshot may take longer while the launcher keeps writing it: the
+wait ends that long after its last visible write (plus time to flush what it
+wrote), and never after the execution deadline.
 
 Where the Ginux launcher accepts `[storage] archive_import` (asked once per
 launcher digest with `instance-validate`), each invocation's config enables

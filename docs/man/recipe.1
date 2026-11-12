@@ -321,7 +321,9 @@ in-flight logs/scratch. Later invocations reclaim recognized abandoned scratch.
 .PP
 SIGINT/SIGTERM cancel execution and await descendant teardown without publishing
 failed work. RECIPE_FRAME_TIMEOUT_SECS bounds partial-frame transport waits,
-1 through 86400 seconds, default 300, independently of execution silence.
+1 through 86400 seconds, default 300, independently of execution silence. A
+checkpoint snapshot wait is extended while the launcher keeps writing it, up to
+the execution deadline.
 .PP
 Where the Ginux launcher accepts it, each invocation's config enables
 [storage] archive_import, so target_unpack_tree hands a whole tree to Ginux
