@@ -11,12 +11,15 @@ pub const CATALOG: u32 = 1002;
 // without an outbound grant. Reviewed after upstream cfebfdab: configured
 // rt_sigpending and sigaltstack affect only the calling thread. Reviewed again
 // for LevitateOS/ginux e5c781d7: tkill and tgkill reach only threads of the
-// caller's own process (others: the kill subset). Fixed exclusions remain.
+// caller's own process (others: the kill subset). Reviewed again for
+// LevitateOS/ginux 7cc8133e: preadv, readahead, fadvise64, sendfile,
+// copy_file_range and the xattr calls add no authority beyond read, write and
+// stat on the same descriptor or path. Fixed exclusions remain.
 // Both are part of `crate::identity::Declared`.
 pub(crate) const BASE_DIGEST_NETWORK: &str =
-    "d5a7f9cf31746b1f6fd1a1fb52393383763f28956c82aa57cbe975967efa72bb";
+    "568d96a885ce53deafe99055d51329da5b783256f1a477e63e071a2b2a9c4de2";
 pub(crate) const BASE_DIGEST_OFFLINE: &str =
-    "6b14395dfbfbacce041f03edf7d1446ad39fe2d551a860d68ca295bc55479872";
+    "89ea1c504cbcefe7b6cd1efb6d50c9eb82112648fd87f3ef32d56136d071edf3";
 /// The Ginux operation a `NEEDS.network` endpoint grants.
 pub(crate) const TCP_CONNECT: &str = "network.inet.tcp.connect";
 
