@@ -35,6 +35,10 @@ pub struct InstanceConfig {
     /// (`[storage] archive_import`); only for a launcher that accepts the field
     /// ([`crate::needs::contract::archive_import`]).
     archive_import: bool,
+    /// Assign `/dev/random` and `/dev/urandom` as well as `/dev/null`
+    /// (`[devices] assignments`); only for a launcher that accepts the names
+    /// ([`crate::needs::contract::random_devices`]).
+    random_devices: bool,
 }
 
 impl InstanceConfig {
@@ -47,6 +51,7 @@ impl InstanceConfig {
         options: &crate::ExecutionOptions,
         network: super::network::NetworkPolicy,
         archive_import: bool,
+        random_devices: bool,
     ) -> Result<Self> {
         let root = crate::runtime::root_reference()?;
         if env.len() > MAX_ENV {
@@ -83,6 +88,7 @@ impl InstanceConfig {
             network,
             contract: crate::needs::contract::Contract::of(options),
             archive_import,
+            random_devices,
         })
     }
 
@@ -90,17 +96,22 @@ impl InstanceConfig {
         &self.root
     }
 
-    /// Render the parser-accepted config text (≤ 4096 B). Archive import is
-    /// an optimization: a config that fits only without its field is rendered
-    /// without it, and the workload extracts member by member.
+    /// Render the parser-accepted config text (≤ 4096 B). Archive import and
+    /// the random devices are optional: a config that fits only without them is
+    /// rendered without archive import first (the workload extracts member by
+    /// member), then without the random devices too.
     pub fn render(&self) -> Result<String> {
-        match self.render_with(self.archive_import) {
-            Err(_) if self.archive_import => self.render_with(false),
-            result => result,
+        let mut result = self.render_with(self.archive_import, self.random_devices);
+        if result.is_err() && self.archive_import {
+            result = self.render_with(false, self.random_devices);
         }
+        if result.is_err() && self.random_devices {
+            result = self.render_with(false, false);
+        }
+        result
     }
 
-    fn render_with(&self, archive_import: bool) -> Result<String> {
+    fn render_with(&self, archive_import: bool, random_devices: bool) -> Result<String> {
         let mut out = String::from("schema_version = 1\n\n[instance]\n");
         out.push_str(&format!("id = {}\n", quote(&self.id)?));
         out.push_str(&format!("root = {}\n", quote(&self.root)?));
@@ -133,7 +144,11 @@ impl InstanceConfig {
         if archive_import {
             out.push_str("archive_import = true\n");
         }
-        out.push_str("\n[devices]\nassignments = [\"null\"]\n");
+        out.push_str(if random_devices {
+            "\n[devices]\nassignments = [\"null\", \"random\", \"urandom\"]\n"
+        } else {
+            "\n[devices]\nassignments = [\"null\"]\n"
+        });
         if self.network.endpoints.is_empty() {
             out.push_str("\n[network]\nbackend = \"none\"\n");
         } else {

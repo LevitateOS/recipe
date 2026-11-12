@@ -402,6 +402,12 @@ of about five mediated calls per file. `RECIPE_ARCHIVE_IMPORT=0` leaves it off
 for debugging (`1` or empty keeps the default; anything else is an error).
 Outputs are the same either way (`docs/target-metadata.md`).
 
+Where the launcher accepts the `random` and `urandom` device assignments
+(probed once per launcher digest the same way), each domain's `[devices]`
+assignments hold them next to `null`, so `/dev/random` and `/dev/urandom` exist
+in the domain. `RECIPE_RANDOM_DEVICES=0` leaves them off (`1` or empty keeps
+the default; anything else is an error).
+
 ## Options
 
 Run `recipe --help` and `recipe install --help` for the complete current syntax.

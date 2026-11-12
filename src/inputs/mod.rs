@@ -127,12 +127,14 @@ pub fn prepare_invocation(
 
     let network = network::NetworkPolicy::resolve(options)?;
     let archive_import = crate::needs::contract::archive_import(launcher, options)?;
+    let random_devices = crate::needs::contract::random_devices(launcher, options)?;
     let config = InstanceConfig::for_invocation(
         &invocation_id,
         &env,
         options,
         network.clone(),
         archive_import,
+        random_devices,
     )?;
     let config_text = config.render()?;
     let contract = crate::needs::contract::validate(launcher, &config_text, options)?;

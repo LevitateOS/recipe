@@ -328,6 +328,12 @@ Where the Ginux launcher accepts it, each invocation's config enables
 as one stream; the launcher is asked once per launcher digest with
 instance-validate. RECIPE_ARCHIVE_IMPORT=0 leaves it off (1 or empty keeps the
 default; any other value is an error). Outputs are the same either way.
+.PP
+Where the launcher accepts the assignment names, each domain's [devices]
+assignments also hold random and urandom, giving the workload /dev/random and
+/dev/urandom next to /dev/null; probed once per launcher digest like archive
+import. RECIPE_RANDOM_DEVICES=0 leaves them off (1 or empty keeps the default;
+any other value is an error).
 .SH EXAMPLE
 .nf
 recipe install ./tool.rhai --input source=./offline-source \
