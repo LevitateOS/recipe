@@ -9,12 +9,14 @@ use std::time::Duration;
 pub const CATALOG: u32 = 1002;
 // The build-base digests Ginux must report for the derived contract, with and
 // without an outbound grant. Reviewed after upstream cfebfdab: configured
-// rt_sigpending and sigaltstack affect only the calling thread. Fixed
-// exclusions remain. Both are part of `crate::identity::Declared`.
+// rt_sigpending and sigaltstack affect only the calling thread. Reviewed again
+// for LevitateOS/ginux e5c781d7: tkill and tgkill reach only threads of the
+// caller's own process (others: the kill subset). Fixed exclusions remain.
+// Both are part of `crate::identity::Declared`.
 pub(crate) const BASE_DIGEST_NETWORK: &str =
-    "cce1895cb6da15e246154bf0ee41dfe639a9a338508091da4edb762a64b8bbde";
+    "d5a7f9cf31746b1f6fd1a1fb52393383763f28956c82aa57cbe975967efa72bb";
 pub(crate) const BASE_DIGEST_OFFLINE: &str =
-    "0c8e73d32ee6d54ddfed2cc42a451f517f781dc1837b49555414b9ff7fe97359";
+    "6b14395dfbfbacce041f03edf7d1446ad39fe2d551a860d68ca295bc55479872";
 /// The Ginux operation a `NEEDS.network` endpoint grants.
 pub(crate) const TCP_CONNECT: &str = "network.inet.tcp.connect";
 
@@ -207,6 +209,7 @@ fn probe_feature(
     cache: &std::sync::Mutex<std::collections::BTreeMap<String, bool>>,
     anchor: &str,
     replacement: &str,
+    accepts: fn(&str) -> bool,
 ) -> Result<bool> {
     match std::env::var_os(env) {
         None => {}
@@ -224,7 +227,7 @@ fn probe_feature(
     let config = plain.replace(anchor, replacement);
     ensure!(config != plain, "{env} probe found no {anchor:?} in the config");
     let supported = command(launcher, &config, "instance-validate", None)
-        .is_ok_and(|text| text.starts_with("Contract valid:"));
+        .is_ok_and(|text| text.starts_with("Contract valid:") && accepts(&text));
     cache.lock().expect("probe cache").insert(digest, supported);
     Ok(supported)
 }
@@ -243,12 +246,17 @@ pub(crate) fn archive_import(launcher: &Path, options: &crate::ExecutionOptions)
         &SUPPORTED,
         "\n[storage]\nassignments = []\n",
         "\n[storage]\nassignments = []\narchive_import = true\n",
+        // An older launcher rejects the unknown field at validation.
+        |_| true,
     )
 }
 
 /// Whether invocation configs for `launcher` assign the `random` and
 /// `urandom` devices (`/dev/random`, `/dev/urandom`) next to `null`. Probed by
-/// [`probe_feature`]; an older launcher rejects the unknown assignment names.
+/// [`probe_feature`]. Validation does not check device names, so an older
+/// launcher accepts them and only fails when the launch starts: support is
+/// read from the `configured-devices=` list a launcher that serves them adds
+/// to its validation line.
 pub(crate) fn random_devices(launcher: &Path, options: &crate::ExecutionOptions) -> Result<bool> {
     use std::collections::BTreeMap;
     use std::sync::Mutex;
@@ -260,6 +268,14 @@ pub(crate) fn random_devices(launcher: &Path, options: &crate::ExecutionOptions)
         &SUPPORTED,
         "\n[devices]\nassignments = []\n",
         "\n[devices]\nassignments = [\"random\", \"urandom\"]\n",
+        |text| {
+            text.split_whitespace()
+                .find_map(|field| field.strip_prefix("configured-devices="))
+                .is_some_and(|list| {
+                    let names: Vec<&str> = list.split(',').collect();
+                    names.contains(&"random") && names.contains(&"urandom")
+                })
+        },
     )
 }
 
