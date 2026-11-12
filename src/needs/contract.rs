@@ -225,7 +225,10 @@ fn probe_feature(
     }
     let plain = inspection_config(options);
     let config = plain.replace(anchor, replacement);
-    ensure!(config != plain, "{env} probe found no {anchor:?} in the config");
+    ensure!(
+        config != plain,
+        "{env} probe found no {anchor:?} in the config"
+    );
     let supported = command(launcher, &config, "instance-validate", None)
         .is_ok_and(|text| text.starts_with("Contract valid:") && accepts(&text));
     cache.lock().expect("probe cache").insert(digest, supported);

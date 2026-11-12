@@ -116,7 +116,11 @@ pub fn extract_rpm_members(
     root: &str,
     members: &str,
 ) -> Result<(), Box<EvalAltResult>> {
-    recipe_result(extract_rpm_recorded(archive, root, Some(Path::new(members))))
+    recipe_result(extract_rpm_recorded(
+        archive,
+        root,
+        Some(Path::new(members)),
+    ))
 }
 
 fn extract_rpm_recorded(archive: &str, root: &str, record: Option<&Path>) -> Result<()> {

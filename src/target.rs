@@ -159,21 +159,19 @@ impl<'a> Resolver<'a> {
                     "target path component is not a directory: {}",
                     cur.display()
                 ),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    match fs::create_dir(&full) {
-                        Ok(()) => {
-                            if let Some(mode) = self.create_mode {
-                                fs::set_permissions(&full, fs::Permissions::from_mode(mode))?;
-                            }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => match fs::create_dir(&full) {
+                    Ok(()) => {
+                        if let Some(mode) = self.create_mode {
+                            fs::set_permissions(&full, fs::Permissions::from_mode(mode))?;
                         }
-                        Err(e) => ensure!(
-                            e.kind() == std::io::ErrorKind::AlreadyExists
-                                && fs::symlink_metadata(&full).is_ok_and(|m| m.is_dir()),
-                            "cannot create {}: {e}",
-                            full.display()
-                        ),
                     }
-                }
+                    Err(e) => ensure!(
+                        e.kind() == std::io::ErrorKind::AlreadyExists
+                            && fs::symlink_metadata(&full).is_ok_and(|m| m.is_dir()),
+                        "cannot create {}: {e}",
+                        full.display()
+                    ),
+                },
                 Err(e) => return Err(e.into()),
             }
             self.dirs.insert(cur.clone());
@@ -701,10 +699,9 @@ impl<'a> Extraction<'a> {
                             &dest,
                         )?;
                     }
-                    "hardlink" => self.hardlinks.push((
-                        dest,
-                        entry.link.clone().context("missing hardlink target")?,
-                    )),
+                    "hardlink" => self
+                        .hardlinks
+                        .push((dest, entry.link.clone().context("missing hardlink target")?)),
                     _ => bail!("unsupported package inode"),
                 }
             }
@@ -816,7 +813,10 @@ pub struct Members {
 
 pub fn save_members(path: &Path, members: &Members) -> Result<()> {
     let bytes = serde_json::to_vec(members)?;
-    ensure!(bytes.len() as u64 <= MAX_MEMBERS, "member record exceeds bound");
+    ensure!(
+        bytes.len() as u64 <= MAX_MEMBERS,
+        "member record exceeds bound"
+    );
     fs::write(path, bytes)?;
     Ok(())
 }
@@ -830,7 +830,10 @@ pub fn load_members(path: &Path) -> Result<Members> {
     File::open(path)?
         .take(MAX_MEMBERS + 1)
         .read_to_end(&mut bytes)?;
-    ensure!(bytes.len() as u64 <= MAX_MEMBERS, "member record exceeds bound");
+    ensure!(
+        bytes.len() as u64 <= MAX_MEMBERS,
+        "member record exceeds bound"
+    );
     let members: Members = serde_json::from_slice(&bytes)?;
     ensure!(
         members.version == MEMBERS_VERSION,
@@ -970,7 +973,10 @@ pub fn write_tree(root: &Path, output: impl Write, consume: bool) -> Result<()> 
             if consume {
                 // Its entries are removed next; its mode is in the archive.
                 if md.mode() & 0o700 != 0o700 {
-                    fs::set_permissions(item.path(), fs::Permissions::from_mode(md.mode() | 0o700))?;
+                    fs::set_permissions(
+                        item.path(),
+                        fs::Permissions::from_mode(md.mode() | 0o700),
+                    )?;
                 }
                 dirs.push(item.path().to_path_buf());
             }
@@ -989,7 +995,10 @@ pub fn write_tree(root: &Path, output: impl Write, consume: bool) -> Result<()> 
                 // say) is readable once its mode is in the header; only a tree
                 // that is consumed is changed so.
                 if consume && md.mode() & 0o400 == 0 {
-                    fs::set_permissions(item.path(), fs::Permissions::from_mode(md.mode() | 0o400))?;
+                    fs::set_permissions(
+                        item.path(),
+                        fs::Permissions::from_mode(md.mode() | 0o400),
+                    )?;
                 }
                 let mut file = File::open(item.path())
                     .with_context(|| format!("reading {}", item.path().display()))?;

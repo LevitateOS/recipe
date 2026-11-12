@@ -92,8 +92,7 @@ fn run(cli: Cli) -> Result<()> {
     execution.force_acquire = cli.force_acquire;
     execution.force_build = cli.force_build;
     execution.force_install = cli.force_install;
-    execution.exact_identity =
-        cli.exact_identity || levitate_recipe::identity::exact_from_env()?;
+    execution.exact_identity = cli.exact_identity || levitate_recipe::identity::exact_from_env()?;
     execution.narrowing = levitate_recipe::needs::Narrowing {
         timeout_secs: cli.timeout_secs,
         memory_mib: cli.memory_mib,

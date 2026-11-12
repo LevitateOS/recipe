@@ -100,12 +100,7 @@ pub fn declared() -> String {
     let d = Declared::current();
     format!(
         "recipe-engine-{} ginux-{} transport-{} catalog-{} base-{}-{}",
-        d.engine,
-        d.ginux,
-        d.transport,
-        d.catalog,
-        d.base_digest_offline,
-        d.base_digest_network
+        d.engine, d.ginux, d.transport, d.catalog, d.base_digest_offline, d.base_digest_network
     )
 }
 
