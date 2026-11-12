@@ -322,6 +322,12 @@ in-flight logs/scratch. Later invocations reclaim recognized abandoned scratch.
 SIGINT/SIGTERM cancel execution and await descendant teardown without publishing
 failed work. RECIPE_FRAME_TIMEOUT_SECS bounds partial-frame transport waits,
 1 through 86400 seconds, default 300, independently of execution silence.
+.PP
+Where the Ginux launcher accepts it, each invocation's config enables
+[storage] archive_import, so target_unpack_tree hands a whole tree to Ginux
+as one stream; the launcher is asked once per launcher digest with
+instance-validate. RECIPE_ARCHIVE_IMPORT=0 leaves it off (1 or empty keeps the
+default; any other value is an error). Outputs are the same either way.
 .SH EXAMPLE
 .nf
 recipe install ./tool.rhai --input source=./offline-source \

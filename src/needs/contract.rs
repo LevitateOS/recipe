@@ -180,6 +180,55 @@ pub(crate) fn command(
     String::from_utf8(output.stdout).context("Ginux contract output is not UTF-8")
 }
 
+/// The environment variable that turns Ginux archive import off: `0` off,
+/// `1` or empty on where the launcher supports it; anything else is an error.
+pub const ARCHIVE_IMPORT_ENV: &str = "RECIPE_ARCHIVE_IMPORT";
+
+/// Whether invocation configs for `launcher` enable `[storage]
+/// archive_import`, so a workload can unpack a whole tree as one stream
+/// (`crate::target::unpack_tree`).
+///
+/// A Ginux that predates the field rejects any config carrying it, so the
+/// launcher is asked once: `instance-validate` on the declaration-only config
+/// of `options` with the field added. It parses the whole config exactly as a
+/// launch would and starts no workload. Any failure of that probe reads as
+/// "not supported"; the invocation's own validation, without the field, then
+/// reports a launcher that is broken for other reasons. The answer is kept per
+/// launcher digest for the coordinator's lifetime.
+pub(crate) fn archive_import(launcher: &Path, options: &crate::ExecutionOptions) -> Result<bool> {
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+    static SUPPORTED: Mutex<BTreeMap<String, bool>> = Mutex::new(BTreeMap::new());
+    match std::env::var_os(ARCHIVE_IMPORT_ENV) {
+        None => {}
+        Some(value) => match value.to_str() {
+            Some("0") => return Ok(false),
+            Some("1" | "") => {}
+            _ => anyhow::bail!("{ARCHIVE_IMPORT_ENV} must be 1, 0 or empty"),
+        },
+    }
+    let digest = crate::retained::file_digest(launcher)?;
+    if let Some(known) = SUPPORTED.lock().expect("probe cache").get(&digest) {
+        return Ok(*known);
+    }
+    let plain = inspection_config(options);
+    let config = plain.replace(
+        "\n[storage]\nassignments = []\n",
+        "\n[storage]\nassignments = []\narchive_import = true\n",
+    );
+    ensure!(
+        config != plain,
+        "archive import probe found no [storage] table"
+    );
+    let supported = command(launcher, &config, "instance-validate", None)
+        .is_ok_and(|text| text.starts_with("Contract valid:"));
+    SUPPORTED
+        .lock()
+        .expect("probe cache")
+        .insert(digest, supported);
+    Ok(supported)
+}
+
 /// Validate the declaration-only contract of `options` ([`inspection_config`]).
 pub(crate) fn inspect(launcher: &Path, options: &crate::ExecutionOptions) -> Result<Receipt> {
     validate(launcher, &inspection_config(options), options)

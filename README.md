@@ -395,6 +395,13 @@ work. `NEEDS.timeout_secs` bounds each recipe instance, including legitimate sil
 commands (default 3600, range 1–86400); `--timeout-secs` can only lower it. Transport partial-frame waits are bounded
 separately by `RECIPE_FRAME_TIMEOUT_SECS` (default 300, range 1–86400).
 
+Where the Ginux launcher accepts `[storage] archive_import` (asked once per
+launcher digest with `instance-validate`), each invocation's config enables
+it, and `target_unpack_tree` hands a whole tree to Ginux as one stream instead
+of about five mediated calls per file. `RECIPE_ARCHIVE_IMPORT=0` leaves it off
+for debugging (`1` or empty keeps the default; anything else is an error).
+Outputs are the same either way (`docs/target-metadata.md`).
+
 ## Options
 
 Run `recipe --help` and `recipe install --help` for the complete current syntax.

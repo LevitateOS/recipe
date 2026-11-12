@@ -38,7 +38,9 @@ The native recipe helpers are:
   `root` is removed as it is written, so a domain never holds the tree twice.
 - `target_unpack_tree(archive, root)`: make that tree again under an empty `root`
   (`target::unpack_tree`); each member's parent must be a directory an earlier
-  member made.
+  member made, and each name appears once. Where the domain's owned storage
+  offers Ginux archive import (below), the tree goes to the supervisor as one
+  tar stream; elsewhere it is made member by member. Both leave the same tree.
 - `target_capture_apks(root, archive_directories)`: read the installed APK database
   and the exact selected package archives, including their concatenated gzip/tar
   members. Every installed package must have an available archive. Collect these
@@ -54,6 +56,61 @@ The native recipe helpers are:
   payload bytes. Call after recipe policy changes and before writing the recipe's
   success marker. Generated paths default to UID/GID zero and their authored
   ordinary permissions; use `target_mode` for restrictive or special modes.
+
+## Unpacking a tree through archive import
+
+A tree of 200,000 files costs about five mediated calls per member when it is
+made member by member (`openat`, `write`, `fchmod`, `futimens`, `close`).
+Ginux can instead take one tar stream for an owned directory and apply each
+member itself (Ginux `docs/archive-import.md`): one mediated `write` per MiB.
+Recipe enables it in each invocation's config (`[storage] archive_import =
+true`) when the launcher accepts the field; `RECIPE_ARCHIVE_IMPORT=0` turns it
+off. A Ginux that predates the field rejects the whole config, so the
+coordinator first asks the launcher, once per launcher digest for its
+lifetime: `instance-validate` on the declaration-only config with the field
+added, which parses the config as a launch would and starts nothing. Any
+failure of that probe means "not supported".
+
+`target::unpack_tree` asks for a stream on `root` (`ioctl` `0x40104701`, flag
+2, clear set-user-ID, set-group-ID and sticky bits). `ENOTTY` or `EINVAL`
+(not offered: field off, older Ginux, storage Ginux does not own, a plain
+host) selects the member-by-member path. Otherwise it writes the archive's
+members again as canonical tar, with ordinary 1 MiB writes and a final
+`fsync`:
+
+- in the archive's order, except that each directory member follows its
+  contents, so creating them does not move its time after it is set;
+- directories with their permission bits and the owner's `rwx`, files with
+  their permission bits; ownership is never sent;
+- hardlinks after their targets and symbolic links as written, the manifest
+  as the plain file it is. `target::write_tree` writes no extended
+  attributes, so the stream never carries any.
+
+After the stream, ordinary calls apply what it could not: symbolic links
+whose target is longer than its 255-byte long-link record are made one by
+one; the time of any directory that gained a name after its member is set
+again (only an archive out of `write_tree`'s order, or such a link, causes
+that); and every recorded mode the stream did not give (set-user-ID,
+set-group-ID and sticky bits, directories without the owner's `rwx`) is
+applied, children before their directory. Owned storage refuses special bits
+to an individual `chmod` as it does on the member-by-member path, so a tree
+recording them fails either way; staging trees made in a domain never carry
+them, as their real modes live in the manifest.
+
+The result matches the member-by-member path: the same names, kinds, modes,
+modification times (whole seconds), link targets, hardlinks and manifest
+bytes. Only access and change times, which no tree records, can differ. A
+failure in the stream is a hard error naming the stream's errno and the first
+member of the failed write that is not in place; it never falls back after a
+partial import, and members already applied remain, as on the other path.
+
+`target_extract_rpm` stays member by member. Its per-file extraction leaves
+creation-time modification times, which `target_pack_tree` then records,
+whereas an import always sets one; it resolves member paths through
+directory links an earlier member made (an import refuses those with
+`ELOOP`); and it makes hardlinks only at the end, to what their targets
+resolve to then. Per-package roots are small; the trees worth streaming are
+the ones `target_unpack_tree` makes.
 
 The compiler image must contain the selected package/extraction tools. Installing
 one only on the coordinator does not make it available in Ginux. The acquisition

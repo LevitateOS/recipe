@@ -1033,7 +1033,13 @@ impl<R: Read> Read for Counted<'_, R> {
 /// directory: the same paths, kinds, staging modes, modification times, link
 /// targets, hardlinks and target metadata manifest. `root`'s own mode is left
 /// as it is. Every member's parent must be a directory an earlier member made,
-/// so nothing is written through a link. `progress` gets the bytes read so far.
+/// so nothing is written through a link, and every name appears once.
+/// `progress` gets the bytes read so far.
+///
+/// Inside a Ginux domain whose owned storage offers archive import, the tree
+/// goes to the supervisor as one tar stream ([`import_tree`]) instead of about
+/// five mediated calls per member; elsewhere it is made member by member
+/// ([`extract_tree`]). Both leave the same tree.
 pub fn unpack_tree(input: impl Read, root: &Path, progress: &mut dyn FnMut(u64)) -> Result<()> {
     ensure!(
         fs::symlink_metadata(root).is_ok_and(|m| m.is_dir()),
@@ -1045,34 +1051,149 @@ pub fn unpack_tree(input: impl Read, root: &Path, progress: &mut dyn FnMut(u64))
         "tree root is not empty: {}",
         root.display()
     );
+    match open_import(root)? {
+        Some(stream) => import_tree(input, root, stream, progress)?,
+        None => extract_tree(input, root, progress)?,
+    }
+    // The manifest the tree carried must be one Recipe reads.
+    load(root)?;
+    Ok(())
+}
+
+fn tree_time(seconds: u64) -> std::time::SystemTime {
+    std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TreeKind {
+    Dir,
+    File,
+    Symlink,
+}
+
+/// One member of a [`write_tree`] archive, checked by [`TreeCheck`].
+struct TreeMember {
+    rel: PathBuf,
+    kind: tar::EntryType,
+    mode: u32,
+    mtime: u64,
+    /// A hardlink's root-relative target, or a symlink's target as written.
+    link: Option<PathBuf>,
+}
+
+/// What [`unpack_tree`] requires of its members, whichever way it applies
+/// them: a name below the root, once; a parent an earlier directory member
+/// made; a hardlink target an earlier file member made.
+struct TreeCheck {
+    kinds: HashMap<PathBuf, TreeKind>,
+}
+
+impl TreeCheck {
+    fn new() -> Self {
+        Self {
+            kinds: HashMap::from([(PathBuf::new(), TreeKind::Dir)]),
+        }
+    }
+
+    fn admit<R: Read>(&mut self, entry: &tar::Entry<'_, R>) -> Result<TreeMember> {
+        let rel = relative(&entry.path()?)?;
+        ensure!(!rel.as_os_str().is_empty(), "tree member names the root");
+        let parent = rel.parent().unwrap_or(Path::new(""));
+        ensure!(
+            self.kinds.get(parent) == Some(&TreeKind::Dir),
+            "tree member before its directory: {}",
+            rel.display()
+        );
+        ensure!(
+            !self.kinds.contains_key(&rel),
+            "tree member appears twice: {}",
+            rel.display()
+        );
+        let header = entry.header();
+        let kind = header.entry_type();
+        let (tree_kind, link) = match kind {
+            tar::EntryType::Directory => (TreeKind::Dir, None),
+            tar::EntryType::Regular => (TreeKind::File, None),
+            tar::EntryType::Link => {
+                let target = relative(&entry.link_name()?.context("hardlink without target")?)?;
+                ensure!(
+                    self.kinds.get(&target) == Some(&TreeKind::File),
+                    "tree hardlink before its file: {}",
+                    rel.display()
+                );
+                (TreeKind::File, Some(target))
+            }
+            tar::EntryType::Symlink => (
+                TreeKind::Symlink,
+                Some(
+                    entry
+                        .link_name()?
+                        .context("symlink without target")?
+                        .into_owned(),
+                ),
+            ),
+            other => bail!("unsupported tree member {:?}: {}", other, rel.display()),
+        };
+        let member = TreeMember {
+            rel,
+            kind,
+            mode: header.mode()? & 0o7777,
+            mtime: header.mtime()?,
+            link,
+        };
+        self.kinds.insert(member.rel.clone(), tree_kind);
+        Ok(member)
+    }
+}
+
+/// Give the symbolic link `dest` the modification time `mtime`, not following it.
+fn set_link_time(dest: &Path, mtime: u64) -> Result<()> {
+    let path = std::ffi::CString::new(dest.as_os_str().as_encoded_bytes())?;
+    let times = [
+        libc::timespec {
+            tv_sec: 0,
+            tv_nsec: libc::UTIME_OMIT,
+        },
+        libc::timespec {
+            tv_sec: mtime.try_into().context("invalid symlink time")?,
+            tv_nsec: 0,
+        },
+    ];
+    // SAFETY: the path is NUL-terminated and `times` has two entries.
+    if unsafe {
+        libc::utimensat(
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            times.as_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("setting the time of {}", dest.display()));
+    }
+    Ok(())
+}
+
+/// [`unpack_tree`] member by member, with ordinary calls.
+fn extract_tree(input: impl Read, root: &Path, progress: &mut dyn FnMut(u64)) -> Result<()> {
     let count = std::cell::Cell::new(0);
     let mut archive = tar::Archive::new(Counted {
         inner: input,
         count: &count,
     });
-    let mut dirs = HashSet::<PathBuf>::from([PathBuf::new()]);
-    let mut files = HashSet::<PathBuf>::new();
+    let mut check = TreeCheck::new();
     let mut modes = Vec::<(PathBuf, u32, u64)>::new();
-    let time = |seconds: u64| std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
     for entry in archive.entries()? {
         let mut entry = entry?;
-        let rel = relative(&entry.path()?)?;
-        ensure!(!rel.as_os_str().is_empty(), "tree member names the root");
-        let parent = rel.parent().unwrap_or(Path::new("")).to_path_buf();
-        ensure!(
-            dirs.contains(&parent),
-            "tree member before its directory: {}",
-            rel.display()
-        );
-        let dest = root.join(&rel);
-        let mode = entry.header().mode()? & 0o7777;
-        let mtime = entry.header().mtime()?;
-        match entry.header().entry_type() {
+        let member = check.admit(&entry)?;
+        let dest = root.join(&member.rel);
+        let (mode, mtime) = (member.mode, member.mtime);
+        match member.kind {
             tar::EntryType::Directory => {
                 fs::create_dir(&dest)?;
                 fs::set_permissions(&dest, fs::Permissions::from_mode(0o700))?;
                 modes.push((dest, mode, mtime));
-                dirs.insert(rel);
             }
             tar::EntryType::Regular => {
                 let mut file = fs::OpenOptions::new()
@@ -1081,61 +1202,475 @@ pub fn unpack_tree(input: impl Read, root: &Path, progress: &mut dyn FnMut(u64))
                     .open(&dest)?;
                 std::io::copy(&mut entry, &mut file)?;
                 file.set_permissions(fs::Permissions::from_mode(mode))?;
-                file.set_modified(time(mtime))?;
-                files.insert(rel);
+                file.set_modified(tree_time(mtime))?;
             }
             tar::EntryType::Link => {
-                let target = relative(&entry.link_name()?.context("hardlink without target")?)?;
-                ensure!(
-                    files.contains(&target),
-                    "tree hardlink before its file: {}",
-                    rel.display()
-                );
-                fs::hard_link(root.join(&target), &dest)?;
-                files.insert(rel);
+                let target = member.link.as_deref().expect("checked hardlink");
+                fs::hard_link(root.join(target), &dest)?;
             }
-            tar::EntryType::Symlink => {
-                let target = entry
-                    .link_name()?
-                    .context("symlink without target")?
-                    .into_owned();
-                std::os::unix::fs::symlink(&target, &dest)?;
-                let path = std::ffi::CString::new(dest.as_os_str().as_encoded_bytes())?;
-                let times = [
-                    libc::timespec {
-                        tv_sec: 0,
-                        tv_nsec: libc::UTIME_OMIT,
-                    },
-                    libc::timespec {
-                        tv_sec: mtime.try_into().context("invalid symlink time")?,
-                        tv_nsec: 0,
-                    },
-                ];
-                // SAFETY: the path is NUL-terminated and `times` has two entries.
-                if unsafe {
-                    libc::utimensat(
-                        libc::AT_FDCWD,
-                        path.as_ptr(),
-                        times.as_ptr(),
-                        libc::AT_SYMLINK_NOFOLLOW,
-                    )
-                } != 0
-                {
-                    return Err(std::io::Error::last_os_error())
-                        .with_context(|| format!("setting the time of {}", dest.display()));
-                }
+            _ => {
+                let target = member.link.as_deref().expect("checked symlink");
+                std::os::unix::fs::symlink(target, &dest)?;
+                set_link_time(&dest, mtime)?;
             }
-            other => bail!("unsupported tree member {:?}: {}", other, rel.display()),
         }
         progress(count.get());
     }
     // Directory times and modes after every child is in place.
     for (dest, mode, mtime) in modes.iter().rev() {
-        File::open(dest)?.set_modified(time(*mtime))?;
+        File::open(dest)?.set_modified(tree_time(*mtime))?;
         fs::set_permissions(dest, fs::Permissions::from_mode(*mode))?;
     }
     progress(count.get());
-    // The manifest the tree carried must be one Recipe reads.
-    load(root)?;
     Ok(())
+}
+
+/// `_IOW('G', 1, struct ginux_archive_import)`: open an archive import stream
+/// on an owned Ginux directory (Ginux `docs/archive-import.md`).
+const GINUX_ARCHIVE_IMPORT: u32 = 0x4010_4701;
+/// Clear set-user-ID, set-group-ID and sticky bits instead of refusing them.
+const GINUX_ARCHIVE_CLEAR_SPECIAL_MODES: u32 = 2;
+/// The most one `write` to an import stream applies.
+const IMPORT_CHUNK: usize = 1 << 20;
+/// The longest link target an import stream's GNU long-link record carries
+/// (its 256-byte bound includes the terminating NUL). An individual
+/// `symlinkat` accepts one byte more.
+const IMPORT_MAX_LINK: usize = 255;
+
+#[repr(C)]
+struct ArchiveImportRequest {
+    flags: u32,
+    reserved: [u32; 3],
+}
+
+/// An archive import stream onto `root`, or `None` where none is offered:
+/// Ginux answers `ENOTTY` when `[storage] archive_import` is off, on storage
+/// it does not own, and in older versions, as Linux does for a directory.
+fn open_import(root: &Path) -> Result<Option<File>> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::fs::OpenOptionsExt;
+    let directory = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(root)
+        .with_context(|| format!("opening {}", root.display()))?;
+    let request = ArchiveImportRequest {
+        flags: GINUX_ARCHIVE_CLEAR_SPECIAL_MODES,
+        reserved: [0; 3],
+    };
+    // SAFETY: the request is a live, properly laid out struct the call only reads.
+    let fd = unsafe {
+        libc::ioctl(
+            directory.as_raw_fd(),
+            GINUX_ARCHIVE_IMPORT as _,
+            &request as *const ArchiveImportRequest,
+        )
+    };
+    if fd < 0 {
+        let error = std::io::Error::last_os_error();
+        return match error.raw_os_error() {
+            Some(libc::ENOTTY | libc::EINVAL) => Ok(None),
+            _ => Err(error)
+                .with_context(|| format!("requesting an archive import onto {}", root.display())),
+        };
+    }
+    // SAFETY: a successful request returns a new descriptor this process owns.
+    Ok(Some(unsafe { File::from_raw_fd(fd) }))
+}
+
+/// What a member must look like once the import has applied it, to name the
+/// member a failed write stopped at.
+enum Applied {
+    Dir { mtime: u64 },
+    File { mode: u32, size: u64, mtime: u64 },
+    Link { target: PathBuf },
+    Symlink { mtime: u64 },
+}
+
+/// A member sent to an import stream that may not be applied yet.
+struct Sent {
+    start: u64,
+    end: u64,
+    rel: PathBuf,
+    applied: Applied,
+}
+
+/// An import stream with a write buffer of at most [`IMPORT_CHUNK`], so the
+/// supervisor gets one write per MiB; it remembers the members of the bytes
+/// not yet accepted.
+struct ImportStream {
+    file: File,
+    buffer: Vec<u8>,
+    /// Bytes the stream has accepted.
+    sent: u64,
+    /// Where the write that failed began.
+    failed: Option<u64>,
+    stopped: bool,
+    pending: std::collections::VecDeque<Sent>,
+}
+
+impl ImportStream {
+    fn new(file: File) -> Self {
+        Self {
+            file,
+            buffer: Vec::with_capacity(IMPORT_CHUNK),
+            sent: 0,
+            failed: None,
+            stopped: false,
+            pending: Default::default(),
+        }
+    }
+
+    /// Bytes handed to this writer so far.
+    fn offset(&self) -> u64 {
+        self.sent + self.buffer.len() as u64
+    }
+
+    fn send(&mut self) -> std::io::Result<()> {
+        let mut done = 0;
+        while done < self.buffer.len() {
+            match self.file.write(&self.buffer[done..]) {
+                Ok(0) => {
+                    self.failed = Some(self.sent);
+                    return Err(std::io::ErrorKind::WriteZero.into());
+                }
+                Ok(n) => {
+                    done += n;
+                    self.sent += n as u64;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => {
+                    self.failed = Some(self.sent);
+                    return Err(e);
+                }
+            }
+        }
+        self.buffer.clear();
+        while self.pending.front().is_some_and(|m| m.end <= self.sent) {
+            self.pending.pop_front();
+        }
+        Ok(())
+    }
+}
+
+impl Write for ImportStream {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        if self.stopped || self.failed.is_some() {
+            return Err(std::io::Error::other("the archive import has stopped"));
+        }
+        if self.buffer.len() == IMPORT_CHUNK {
+            self.send()?;
+        }
+        let n = data.len().min(IMPORT_CHUNK - self.buffer.len());
+        self.buffer.extend_from_slice(&data[..n]);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.stopped || self.failed.is_some() {
+            return Err(std::io::Error::other("the archive import has stopped"));
+        }
+        self.send()
+    }
+}
+
+/// The error of an import that stopped: the stream's errno and, when a write
+/// to it failed, the first member that write carried which is not in place.
+/// `error` is the stream's own error, or one reading the input or encoding
+/// a member before any write failed.
+fn import_stopped(stream: &mut ImportStream, root: &Path, error: std::io::Error) -> anyhow::Error {
+    stream.stopped = true;
+    let Some(start) = stream.failed else {
+        return anyhow::Error::new(error).context(format!(
+            "archive import into {} stopped reading or encoding a member",
+            root.display()
+        ));
+    };
+    let in_place = |sent: &Sent| -> bool {
+        let dest = root.join(&sent.rel);
+        let Ok(md) = fs::symlink_metadata(&dest) else {
+            return false;
+        };
+        match &sent.applied {
+            Applied::Dir { mtime } => md.is_dir() && md.mtime() == *mtime as i64,
+            Applied::File { mode, size, mtime } => {
+                md.is_file()
+                    && md.mode() & 0o7777 == *mode
+                    && md.len() == *size
+                    && md.mtime() == *mtime as i64
+            }
+            Applied::Link { target } => fs::symlink_metadata(root.join(target))
+                .is_ok_and(|t| (t.dev(), t.ino()) == (md.dev(), md.ino())),
+            Applied::Symlink { mtime } => {
+                md.file_type().is_symlink() && md.mtime() == *mtime as i64
+            }
+        }
+    };
+    let candidates = stream
+        .pending
+        .iter()
+        .filter(|sent| sent.end > start)
+        .collect::<Vec<_>>();
+    let at = match candidates.iter().find(|sent| !in_place(sent)) {
+        Some(sent) => format!("at member {}", sent.rel.display()),
+        None => match (candidates.first(), candidates.last()) {
+            (Some(first), Some(last)) => format!(
+                "at one of the members {} to {}",
+                first.rel.display(),
+                last.rel.display()
+            ),
+            _ => "at the end of the archive".to_owned(),
+        },
+    };
+    anyhow::Error::new(error).context(format!(
+        "archive import into {} stopped {at} (stream byte {start})",
+        root.display()
+    ))
+}
+
+/// A directory member held back until its contents are in the stream.
+struct OpenDir {
+    rel: PathBuf,
+    mode: u32,
+    mtime: u64,
+}
+
+/// What [`import_members`] leaves for ordinary calls after the stream.
+#[derive(Default)]
+struct AfterImport {
+    /// Directories already in the stream, with their recorded times.
+    closed: HashMap<PathBuf, u64>,
+    /// Directories whose time changed after their member was applied.
+    retime: HashSet<PathBuf>,
+    /// Symbolic links too long for the stream: name, target, time.
+    deferred: Vec<(PathBuf, PathBuf, u64)>,
+    /// Recorded modes the stream did not give, children before directories.
+    modes: Vec<(PathBuf, u32)>,
+}
+
+/// Write one member to the import stream; `applied` says what it leaves.
+fn send_member(
+    out: &mut tar::Builder<ImportStream>,
+    root: &Path,
+    rel: &Path,
+    header: &mut tar::Header,
+    link: Option<&Path>,
+    data: &mut dyn Read,
+    applied: Applied,
+) -> Result<()> {
+    let start = out.get_ref().offset();
+    out.get_mut().pending.push_back(Sent {
+        start,
+        end: u64::MAX,
+        rel: rel.to_path_buf(),
+        applied,
+    });
+    header.set_uid(0);
+    header.set_gid(0);
+    let written = match link {
+        Some(link) => out.append_link(header, rel, link),
+        None => out.append_data(header, rel, data),
+    };
+    if let Err(error) = written {
+        return Err(import_stopped(out.get_mut(), root, error));
+    }
+    let end = out.get_ref().offset();
+    let stream = out.get_mut();
+    if let Some(sent) = stream.pending.back_mut().filter(|s| s.start == start) {
+        sent.end = end;
+    }
+    // A send during the append may already have delivered all of it.
+    while stream.pending.front().is_some_and(|m| m.end <= stream.sent) {
+        stream.pending.pop_front();
+    }
+    Ok(())
+}
+
+/// Write a held directory member, now that its contents are in the stream.
+fn close_dir(
+    out: &mut tar::Builder<ImportStream>,
+    root: &Path,
+    dir: OpenDir,
+    after: &mut AfterImport,
+) -> Result<()> {
+    // The owner's rwx while the import runs, as `extract_tree` gives.
+    let stream_mode = (dir.mode & 0o777) | 0o700;
+    let mut header = tar::Header::new_gnu();
+    header.set_entry_type(tar::EntryType::Directory);
+    header.set_mode(stream_mode);
+    header.set_mtime(dir.mtime);
+    header.set_size(0);
+    let applied = Applied::Dir { mtime: dir.mtime };
+    send_member(
+        out,
+        root,
+        &dir.rel,
+        &mut header,
+        None,
+        &mut std::io::empty(),
+        applied,
+    )?;
+    if stream_mode != dir.mode {
+        after.modes.push((root.join(&dir.rel), dir.mode));
+    }
+    after.closed.insert(dir.rel, dir.mtime);
+    Ok(())
+}
+
+/// [`unpack_tree`] through an archive import `stream`.
+///
+/// The members are written again as a canonical tar stream: the same order,
+/// except that each directory follows its contents, so creating them does not
+/// change its time afterwards. The stream gives files and directories
+/// permission bits only, directories with the owner's `rwx` while the import
+/// runs, as [`extract_tree`] does. Afterwards, with ordinary calls: symbolic
+/// links whose target is too long for the stream are made, the times of
+/// directories that changed since their member are set again, and every
+/// recorded mode the stream did not give is applied, children before their
+/// directory. Any failure is a hard error; members already applied remain.
+fn import_tree(
+    input: impl Read,
+    root: &Path,
+    stream: File,
+    progress: &mut dyn FnMut(u64),
+) -> Result<()> {
+    let count = std::cell::Cell::new(0);
+    let archive = tar::Archive::new(Counted {
+        inner: input,
+        count: &count,
+    });
+    let mut out = tar::Builder::new(ImportStream::new(stream));
+    let after = match import_members(archive, root, &mut out, &count, progress) {
+        Ok(after) => after,
+        Err(error) => {
+            // Dropping the builder would end the archive; nothing more goes.
+            out.get_mut().stopped = true;
+            return Err(error);
+        }
+    };
+    // The end-of-archive marker, then everything buffered, then the verdict.
+    if let Err(error) = out.finish() {
+        return Err(import_stopped(out.get_mut(), root, error));
+    }
+    let mut stream = out.into_inner()?;
+    if let Err(error) = stream.flush() {
+        return Err(import_stopped(&mut stream, root, error));
+    }
+    if let Err(error) = stream.file.sync_all() {
+        stream.failed.get_or_insert(stream.sent);
+        return Err(import_stopped(&mut stream, root, error));
+    }
+    drop(stream);
+
+    let mut retime = after.retime;
+    for (rel, target, mtime) in &after.deferred {
+        let dest = root.join(rel);
+        std::os::unix::fs::symlink(target, &dest)
+            .with_context(|| format!("creating {}", dest.display()))?;
+        set_link_time(&dest, *mtime)?;
+        retime.insert(rel.parent().unwrap_or(Path::new("")).to_path_buf());
+    }
+    for rel in &retime {
+        // The root's own time is not part of the tree.
+        if let Some(mtime) = after.closed.get(rel) {
+            File::open(root.join(rel))?.set_modified(tree_time(*mtime))?;
+        }
+    }
+    for (dest, mode) in &after.modes {
+        fs::set_permissions(dest, fs::Permissions::from_mode(*mode))
+            .with_context(|| format!("setting the mode of {}", dest.display()))?;
+    }
+    progress(count.get());
+    Ok(())
+}
+
+/// Write every member of `archive` to `out`, directories after their contents.
+fn import_members<R: Read>(
+    mut archive: tar::Archive<R>,
+    root: &Path,
+    out: &mut tar::Builder<ImportStream>,
+    count: &std::cell::Cell<u64>,
+    progress: &mut dyn FnMut(u64),
+) -> Result<AfterImport> {
+    let mut check = TreeCheck::new();
+    let mut open = Vec::<OpenDir>::new();
+    let mut after = AfterImport::default();
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let member = check.admit(&entry)?;
+        let parent = member.rel.parent().unwrap_or(Path::new("")).to_path_buf();
+        // Every held directory this member is not inside is complete.
+        while open.last().is_some_and(|dir| !parent.starts_with(&dir.rel)) {
+            let dir = open.pop().expect("checked");
+            close_dir(out, root, dir, &mut after)?;
+        }
+        // Only an archive out of `write_tree`'s order reopens a directory.
+        if after.closed.contains_key(&parent) {
+            after.retime.insert(parent.clone());
+        }
+        let (rel, mode, mtime) = (member.rel, member.mode, member.mtime);
+        let mut header = tar::Header::new_gnu();
+        header.set_mtime(mtime);
+        header.set_size(0);
+        let mut empty = std::io::empty();
+        match member.kind {
+            tar::EntryType::Directory => open.push(OpenDir { rel, mode, mtime }),
+            tar::EntryType::Regular => {
+                let size = entry.header().size()?;
+                header.set_entry_type(tar::EntryType::Regular);
+                header.set_mode(mode & 0o777);
+                header.set_size(size);
+                let applied = Applied::File {
+                    mode: mode & 0o777,
+                    size,
+                    mtime,
+                };
+                send_member(out, root, &rel, &mut header, None, &mut entry, applied)?;
+                if mode & !0o777 != 0 {
+                    after.modes.push((root.join(&rel), mode));
+                }
+            }
+            tar::EntryType::Link => {
+                let target = member.link.expect("checked hardlink");
+                header.set_entry_type(tar::EntryType::Link);
+                header.set_mode(mode & 0o777);
+                let applied = Applied::Link {
+                    target: target.clone(),
+                };
+                send_member(
+                    out,
+                    root,
+                    &rel,
+                    &mut header,
+                    Some(&target),
+                    &mut empty,
+                    applied,
+                )?;
+            }
+            _ => {
+                let target = member.link.expect("checked symlink");
+                if target.as_os_str().len() > IMPORT_MAX_LINK {
+                    after.deferred.push((rel, target, mtime));
+                } else {
+                    header.set_entry_type(tar::EntryType::Symlink);
+                    header.set_mode(0o777);
+                    let applied = Applied::Symlink { mtime };
+                    send_member(
+                        out,
+                        root,
+                        &rel,
+                        &mut header,
+                        Some(&target),
+                        &mut empty,
+                        applied,
+                    )?;
+                }
+            }
+        }
+        progress(count.get());
+    }
+    while let Some(dir) = open.pop() {
+        close_dir(out, root, dir, &mut after)?;
+    }
+    Ok(after)
 }

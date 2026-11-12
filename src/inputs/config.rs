@@ -31,6 +31,10 @@ pub struct InstanceConfig {
     storage_max_bytes: Option<u64>,
     network: super::network::NetworkPolicy,
     contract: crate::needs::contract::Contract,
+    /// Offer Ginux archive import streams on owned storage
+    /// (`[storage] archive_import`); only for a launcher that accepts the field
+    /// ([`crate::needs::contract::archive_import`]).
+    archive_import: bool,
 }
 
 impl InstanceConfig {
@@ -42,6 +46,7 @@ impl InstanceConfig {
         env: &[(String, String)],
         options: &crate::ExecutionOptions,
         network: super::network::NetworkPolicy,
+        archive_import: bool,
     ) -> Result<Self> {
         let root = crate::runtime::root_reference()?;
         if env.len() > MAX_ENV {
@@ -77,6 +82,7 @@ impl InstanceConfig {
             storage_max_bytes: options.storage_max_bytes,
             network,
             contract: crate::needs::contract::Contract::of(options),
+            archive_import,
         })
     }
 
@@ -84,8 +90,17 @@ impl InstanceConfig {
         &self.root
     }
 
-    /// Render the parser-accepted config text (≤ 4096 B).
+    /// Render the parser-accepted config text (≤ 4096 B). Archive import is
+    /// an optimization: a config that fits only without its field is rendered
+    /// without it, and the workload extracts member by member.
     pub fn render(&self) -> Result<String> {
+        match self.render_with(self.archive_import) {
+            Err(_) if self.archive_import => self.render_with(false),
+            result => result,
+        }
+    }
+
+    fn render_with(&self, archive_import: bool) -> Result<String> {
         let mut out = String::from("schema_version = 1\n\n[instance]\n");
         out.push_str(&format!("id = {}\n", quote(&self.id)?));
         out.push_str(&format!("root = {}\n", quote(&self.root)?));
@@ -114,6 +129,9 @@ impl InstanceConfig {
         out.push_str(&format!("max_objects = {}\n", self.storage_max_objects));
         if let Some(bytes) = self.storage_max_bytes {
             out.push_str(&format!("max_bytes = {bytes}\n"));
+        }
+        if archive_import {
+            out.push_str("archive_import = true\n");
         }
         out.push_str("\n[devices]\nassignments = [\"null\"]\n");
         if self.network.endpoints.is_empty() {

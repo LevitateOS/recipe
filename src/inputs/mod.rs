@@ -126,7 +126,14 @@ pub fn prepare_invocation(
     let env = allowlisted_env(&invocation_id)?;
 
     let network = network::NetworkPolicy::resolve(options)?;
-    let config = InstanceConfig::for_invocation(&invocation_id, &env, options, network.clone())?;
+    let archive_import = crate::needs::contract::archive_import(launcher, options)?;
+    let config = InstanceConfig::for_invocation(
+        &invocation_id,
+        &env,
+        options,
+        network.clone(),
+        archive_import,
+    )?;
     let config_text = config.render()?;
     let contract = crate::needs::contract::validate(launcher, &config_text, options)?;
 
