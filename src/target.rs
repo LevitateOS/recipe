@@ -138,6 +138,31 @@ impl<'a> Resolver<'a> {
         bail!("target symlink loop")
     }
 
+    /// Where a directory member lands: `resolve`, except that a final
+    /// component which is a symlink to a directory inside the root is
+    /// followed too. apk, rpm and tar (`--keep-directory-symlink`) all keep
+    /// such a symlink (Alpine's `var/run -> ../run`, which avahi ships as a
+    /// directory) and give the directory's metadata to its target. Any other
+    /// final component is left as `resolve` returns it.
+    pub fn resolve_directory(&mut self, member: &Path) -> Result<PathBuf> {
+        let resolved = self.resolve(member)?;
+        if !fs::symlink_metadata(&resolved).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Ok(resolved);
+        }
+        // Every non-final component is followed, so resolving a child of
+        // `member` follows `member` itself, within the root. A link that
+        // escapes the root or loops keeps `resolve`'s answer.
+        let Ok(child) = self.resolve(&member.join("child")) else {
+            return Ok(resolved);
+        };
+        match child.parent() {
+            Some(target) if fs::symlink_metadata(target).is_ok_and(|m| m.is_dir()) => {
+                Ok(target.to_path_buf())
+            }
+            _ => Ok(resolved),
+        }
+    }
+
     /// Make `dir` (a resolved path under the root) and its ancestors real
     /// directories, creating missing ones. Returns false when the final
     /// component exists as something other than a directory; an intermediate
@@ -667,7 +692,11 @@ impl<'a> Extraction<'a> {
         write: impl FnOnce(&Path, u32) -> Result<()>,
     ) -> Result<(String, bool)> {
         let name = rel.display();
-        let resolved = self.resolver.resolve(rel)?;
+        let resolved = if entry.kind == "dir" {
+            self.resolver.resolve_directory(rel)?
+        } else {
+            self.resolver.resolve(rel)?
+        };
         let mut replaced = false;
         if extract {
             let dest = resolved.clone();
