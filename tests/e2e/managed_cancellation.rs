@@ -288,5 +288,5 @@ fn install(ctx) { write_file("/out/product","actual domain output"); ctx }
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("launcher exited with code 37"), "{stderr}");
-    assert!(!dir.path().join(".artifacts/ginux-export").exists());
+    assert!(!dir.path().join("retained/exports").exists());
 }

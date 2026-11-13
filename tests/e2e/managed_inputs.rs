@@ -1585,7 +1585,7 @@ fn install(ctx) {
         assert_eq!(std::fs::read(path).unwrap(), b"published-bytes");
     }
     assert_eq!(std::fs::read_dir(published).unwrap().count(), 3);
-    assert!(published.starts_with(dir.path().join(".artifacts/ginux-export")));
+    assert!(published.starts_with(dir.path().join("state/recipe/exports")));
     let before = std::fs::read_dir(published.parent().unwrap())
         .unwrap()
         .count();
@@ -1691,7 +1691,7 @@ with tarfile.open(path, 'w') as archive:
             "{error}"
         );
         assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");
-        let exports = dir.path().join(".artifacts/ginux-export");
+        let exports = dir.path().join("state/recipe/exports");
         assert!(
             !exports.exists() || std::fs::read_dir(&exports).unwrap().next().is_none(),
             "a failed publication left outputs behind"

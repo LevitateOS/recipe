@@ -9,11 +9,33 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
-/// The coordinator's private scratch pool, `$TMPDIR/recipe-scratch-<uid>`,
-/// created on first use. Only this uid can enter it.
+/// The coordinator's private scratch pool, created on first use: the absolute
+/// `RECIPE_SCRATCH_DIR` when set; else `$TMPDIR/recipe-scratch-<uid>` when
+/// `TMPDIR` is set (a caller that chose a temporary directory, as recab does);
+/// else `$XDG_CACHE_HOME/recipe/scratch` (`~/.cache/recipe/scratch`). The default
+/// is on disk, not in `/tmp`, which is RAM on many systems. Only this uid can
+/// enter it.
 pub(crate) fn pool() -> Result<PathBuf> {
     let uid = unsafe { libc::geteuid() };
-    let pool = std::env::temp_dir().join(format!("recipe-scratch-{uid}"));
+    let pool = match std::env::var_os("RECIPE_SCRATCH_DIR") {
+        Some(path) if !path.is_empty() => {
+            let path = PathBuf::from(path);
+            if !path.is_absolute() {
+                bail!("RECIPE_SCRATCH_DIR must be an absolute path");
+            }
+            path
+        }
+        _ if std::env::var_os("TMPDIR").is_some_and(|dir| !dir.is_empty()) => {
+            std::env::temp_dir().join(format!("recipe-scratch-{uid}"))
+        }
+        _ => dirs::cache_dir()
+            .context("cannot locate the cache directory; set RECIPE_SCRATCH_DIR")?
+            .join("recipe")
+            .join("scratch"),
+    };
+    if let Some(parent) = pool.parent() {
+        fs::create_dir_all(parent).context("cannot create recipe scratch parent directory")?;
+    }
     match fs::DirBuilder::new().mode(0o700).create(&pool) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -21,7 +43,11 @@ pub(crate) fn pool() -> Result<PathBuf> {
     }
     let metadata = fs::symlink_metadata(&pool)?;
     if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o777 != 0o700 {
-        bail!("recipe scratch pool must be a private directory owned by the coordinator");
+        bail!(
+            "recipe scratch pool {} must be a private directory owned by the coordinator; \
+             set RECIPE_SCRATCH_DIR to use another",
+            pool.display()
+        );
     }
     Ok(pool)
 }

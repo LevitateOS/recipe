@@ -21,6 +21,7 @@ pub(crate) fn prepare(
     archive: &Path,
     context: &Value,
     options: &crate::ExecutionOptions,
+    state_dir: Option<&Path>,
     needs: &crate::needs::Needs,
     complete: bool,
 ) -> Result<Option<Publication>> {
@@ -56,9 +57,9 @@ pub(crate) fn prepare(
     if !metadata.is_file() || metadata.len() > options.archive_bound() {
         bail!("invalid or oversized Ginux export");
     }
-    let base = std::env::current_dir()?.join(".artifacts");
-    crate::fsx::private_dir(&base, false)?;
-    let base = base.join("ginux-export");
+    let state = crate::retained::state_root(state_dir)?;
+    fs::create_dir_all(&state).context("cannot create recipe state directory")?;
+    let base = state.join("exports");
     crate::fsx::private_dir(&base, false)?;
     let base = base.canonicalize()?;
     let staging = Staging(

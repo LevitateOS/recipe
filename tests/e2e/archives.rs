@@ -173,7 +173,7 @@ fn cli_zip_rejects_unsafe_member_instead_of_silently_skipping_it() {
     );
     assert!(String::from_utf8_lossy(&output.stderr).contains("unsafe path"));
     assert!(output.stdout.is_empty());
-    assert!(!dir.path().join(".artifacts/ginux-export").exists());
+    assert!(!dir.path().join("state/recipe/exports").exists());
 }
 
 #[cfg(unix)]

@@ -50,7 +50,7 @@ fn cleanup(ctx,reason) {{ log("CLEANED " + reason); ctx }}
             "no structured failure: {error}"
         );
     }
-    assert!(!dir.path().join(".artifacts/ginux-export").exists());
+    assert!(!dir.path().join("state/recipe/exports").exists());
 }
 #[test]
 fn managed_failed_build_resumes_acquisition_and_failure_cleanup_state() {

@@ -1,7 +1,8 @@
 # Linux bootstrap and operator setup
 
 The verified host baseline is Rocky Linux 10.2, x86-64, kernel 6.12, glibc 2.39.
-The native Ginux coordinator currently needs root privileges. Image production,
+The Ginux coordinator runs as root or as an ordinary user; an ordinary user
+needs unprivileged user namespaces (Ginux `ccc492a2` or later). Image production,
 source compilation and package generation run as the ordinary operator.
 
 The maintained sources are [LevitateOS/recipe](https://github.com/LevitateOS/recipe)
@@ -132,6 +133,12 @@ If `GINUX_ROOTFS` is not set, Recipe looks for the tar its install ships, then i
 `$XDG_CACHE_HOME/recipe/images/<digest>.tar`, and downloads it there when it is absent
 (`recipe runtime fetch`; `RECIPE_RUNTIME_URL` names another address).
 
+Each run unpacks the image into a private scratch directory on disk,
+`~/.cache/recipe/scratch` (`/root/.cache/recipe/scratch` for root). It needs
+about 1.3 GB per run. Set `RECIPE_SCRATCH_DIR` to an absolute path to use
+another disk; it wins over `TMPDIR`, which, when set, keeps `$TMPDIR/recipe-scratch-<uid>`. Published
+outputs go to `<state-dir>/exports`, not into the current directory.
+
 Verify these source and artifact selections against the recorded release tuple. With `GINUX_ROOT` omitted, the default is the
 corrected bare Rocky base, which has no compiler. Explicit prepared images need
 their own provenance digest; a mismatched root identity is rejected.
@@ -158,7 +165,7 @@ state paths for that recipe. Keep Cargo locking and normal linker threading.
 ## Ownership and exported products
 
 The unprivileged image producer creates operator-owned image outputs. The
-privileged coordinator creates root-owned private state/logs/publication
+privileged coordinator creates root-owned private state/logs/exports/publication
 generations. Inspect those with the same privileged operator; ordinary users
 are not promised access through private generation directories. For a regular
 program, export explicitly into an ordinary-user directory:

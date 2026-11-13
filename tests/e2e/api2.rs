@@ -85,7 +85,7 @@ fn cleanup(ctx,reason) { log("FAILURE_CLEANUP " + reason); ctx }
         error.contains("FAILURE_CLEANUP auto.install.failure"),
         "{error}"
     );
-    assert!(!dir.path().join(".artifacts/ginux-export").exists());
+    assert!(!dir.path().join("state/recipe/exports").exists());
 }
 #[test]
 fn cli_resource_exhaustion_runs_failure_cleanup_and_bad_cleanup_cannot_pass() {

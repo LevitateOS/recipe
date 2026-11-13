@@ -444,6 +444,7 @@ fn run_domain_inner(
             &export_path,
             &stream.result.ctx_summary,
             &options.execution,
+            state_dir,
             &prepared.declaration.needs,
             matches!(
                 operation,

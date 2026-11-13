@@ -182,7 +182,7 @@ fn install(ctx) {{ {body} ctx.state.done=true; ctx }}
             assert!(result.stdout.is_empty());
         }
     }
-    let published = std::fs::read_dir(dir.path().join(".artifacts/ginux-export"))
+    let published = std::fs::read_dir(dir.path().join("state/recipe/exports"))
         .unwrap()
         .count();
     assert_eq!(published, 1, "only the validated product may publish");
@@ -539,7 +539,7 @@ sys.exit(child.returncode)
     );
     assert!(!error.contains("WORKER_SETUP_EXECUTED"), "{error}");
     assert!(result.stdout.is_empty());
-    assert!(!dir.path().join(".artifacts/ginux-export").exists());
+    assert!(!dir.path().join("state/recipe/exports").exists());
 }
 
 #[test]

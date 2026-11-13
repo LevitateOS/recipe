@@ -165,7 +165,7 @@ fn managed_autofix_rejects_protected_check_patch_without_modifying_source() {
         std::fs::read_to_string(dir.path().join("provider.calls")).unwrap(),
         "called\n"
     );
-    assert!(!dir.path().join(".artifacts/ginux-export").exists());
+    assert!(!dir.path().join("retained/exports").exists());
 }
 #[test]
 fn managed_execution_without_autofix_never_invokes_provider() {

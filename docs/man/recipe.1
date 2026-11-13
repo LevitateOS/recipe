@@ -207,7 +207,9 @@ Explicit --recipes-path or RECIPE_PATH uses that directory alone.
 .B --package-root DIR
 Package generations, installed receipts and active profile symlink. Defaults to
 /var/lib/recipe for root or XDG_DATA_HOME/recipe for an ordinary user.
-Add DIR/profile/bin to PATH. Old inactive generations remain after removal.
+Add DIR/profile/bin to PATH. Without an immutable system the login profile puts
+/var/lib/recipe/profile/bin on every user's PATH, after the user's own store.
+Old inactive generations remain after removal.
 .TP
 .B --no-activate
 Run the producer lifecycle only. Do not activate package outputs or remove active packages.
@@ -345,6 +347,9 @@ and result.json. The receipt preserves the actual declaration, config, pinned
 endpoints and compiled contract digest; completed contexts include runtime.contract and bounded runtime.network_usage and unused-grant warnings when observation is complete.
 Up to 32 recent completed diagnostic directories remain; active leases protect
 in-flight logs/scratch. Later invocations reclaim recognized abandoned scratch.
+Scratch is a private directory on disk, ~/.cache/recipe/scratch; RECIPE_SCRATCH_DIR
+(absolute path) replaces it; a set TMPDIR selects TMPDIR/recipe-scratch-UID. Published outputs
+go to STATE/exports, not the current directory.
 .PP
 SIGINT/SIGTERM cancel execution and await descendant teardown without publishing
 failed work. RECIPE_FRAME_TIMEOUT_SECS bounds partial-frame transport waits,

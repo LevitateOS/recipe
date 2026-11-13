@@ -420,7 +420,7 @@ fn install(ctx) {{ throw "stalled acquisition reached install"; }}
             .unwrap()
             .contains("GIT_STALL_STARTED")
     );
-    assert!(!dir.path().join(".artifacts/ginux-export").exists());
+    assert!(!dir.path().join("retained/exports").exists());
     assert_eq!(
         std::fs::read_to_string(recipes.join("git-payload.rhai")).unwrap(),
         source

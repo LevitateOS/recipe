@@ -85,7 +85,7 @@ the previous profile.
 Outside the immutable system route, root's package root is `/var/lib/recipe`; an ordinary user's is
 `$XDG_DATA_HOME/recipe` (normally `~/.local/share/recipe`). `--package-root PATH`
 selects another store. Its `profile/bin` contains active commands; installed login
-profiles add the booted slot system path and ordinary user paths to PATH. `remove` uses the installed receipt
+profiles add the booted slot system path and ordinary user paths to PATH. On a host without an immutable system, software installed for this computer (`/var/lib/recipe/profile/bin`) is on every user's PATH, and a user's own store comes first. `remove` uses the installed receipt
 without the recipe or runtime. `installed` only reads, so an ordinary user may
 also read a store root owns (`recipe installed --package-root /var/lib/recipe`);
 changing a store still requires owning it. `isinstalled` checks active files and links. Removed
@@ -201,12 +201,13 @@ another address (`{digest}` and `{short}`, the first 16 digits, are replaced); t
 `recipe-runtime-{short}` release of `LevitateOS/prebuilt`. The launcher and the shipped sources
 are found the same way under the prefix, then under `/usr`. The worker is staged
 separately; changing Recipe does not require rebuilding an unchanged image.
-The current native launcher requires Linux x86_64 and privileges for its chroot
-bootstrap. Run the configured coordinator/launcher with those privileges; a
-plain `sudo` wrapper around only the launcher closes required inherited channels.
-Unavailable launch capabilities fail explicitly.
-The invocation examples below assume those privileges are available. When using
-sudo, pass the declared image/worker selections to the whole coordinator command:
+The native launcher requires Linux x86_64. It runs as root or as an ordinary
+user: an ordinary user's launch enters a private user namespace for its chroot
+(Ginux `ccc492a2` or later), so the host must allow unprivileged user
+namespaces; Ginux names the setting when it refuses. To run as root, run the
+whole coordinator with root; a plain `sudo` wrapper around only the launcher
+closes required inherited channels. When using sudo, pass the declared
+image/worker selections to the whole coordinator command:
 
 ```sh
 sudo env GINUX_BIN="$GINUX_BIN" GINUX_ROOTFS="$GINUX_ROOTFS" \
@@ -397,7 +398,12 @@ Diagnostics are not fsynced: after a crash the last records may be missing or
 empty. Private leased scratch is reclaimed after abandoned invocations; arbitrary
 workspace directories are never cleanup candidates.
 
-Where the scratch pool (`$TMPDIR/recipe-scratch-<uid>`) is on a filesystem
+The scratch pool is a private directory on disk, `~/.cache/recipe/scratch`
+(`$XDG_CACHE_HOME/recipe/scratch`), because `/tmp` is RAM on many systems. Set
+`RECIPE_SCRATCH_DIR` to an absolute path to put it elsewhere. A set `TMPDIR`
+still selects `$TMPDIR/recipe-scratch-<uid>`, as recab uses it. Published outputs are kept in
+`<state-root>/exports` (normally `~/.local/state/recipe/exports`), not in the
+current directory. Where the scratch pool is on a filesystem
 with reflinks (XFS, Btrfs), the compiler image is verified and unpacked once
 per digest and boot into a private cache there, and each domain root is a new
 tree of copy-on-write clones of it; the cache itself is never given to a
