@@ -51,8 +51,14 @@ Probe current domain PATH.
 Trial. Copies into package/lib/ the loader and every shared library that
 the programs in package/bin/, and the programs and plug-ins the recipe put
 under package/lib/, load, from the search folders and then the build image,
-and writes into each file its loader and library folder under prefix.
-It refuses a program that was not linked with carry_link_flags().
+and writes into each file its loader and library folder under prefix
+(pass RUNTIME.paths.prefix). A file linked with carry_link_flags() is
+settled in its reserved room; any other (an upstream prebuilt release) is
+rewritten with a new loadable segment holding the loader path and
+$ORIGIN-relative library folders. The C library comes whole from the first
+search folder holding its loader, else the build image. Fails unless every
+program and file under package/lib/ then finds each library it needs, with
+the symbol versions it asks for, inside the package. 64-bit x86_64 only.
 .TP
 \fBcarry_link_flags() -> String\fR
 Trial. Linker flags for every program and library of a package: a long

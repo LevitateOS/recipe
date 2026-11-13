@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `RUNTIME.paths.prefix`: the folder a package output will live in once
+  activated (unit with `--no-activate`); it keys saved state, so a build
+  belongs to its store.
+- `carry_libraries` rewrites files linked elsewhere (upstream prebuilt
+  releases) with a new loadable segment for their loader and `$ORIGIN`
+  library folders, takes the C library whole from the folder of its loader,
+  and checks that the package holds everything it loads.
+
 ### Changed
 
 - Every executable operation runs in a Ginux domain (API 2 recipes, coordinator-

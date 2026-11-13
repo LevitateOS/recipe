@@ -30,6 +30,14 @@ Immutable direct dependency products at /inputs/recipe-dependencies/DEP/OUTPUT.
 .TP
 .B paths.recipe_dir, paths.base_recipe_dir
 Staged current/base recipe directories.
+.TP
+.B paths.prefix
+The folder the package output will live in once activated:
+PROFILE/.packages/NAME, through the profile symlink of the selected store.
+Unit with --no-activate, for a dependency, or when the recipe's name is not
+a literal. It is part of the saved-state identity, so a build belongs to the
+store it was made for, and activation refuses a package built for another
+folder.
 .PP
 runtime.target.os and .arch describe the selected execution target.
 runtime.options includes jobs, force_acquire, force_build, force_install and

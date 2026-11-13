@@ -152,6 +152,7 @@ fn run(cli: Cli) -> Result<()> {
         inputs: &cli.inputs,
         no_persist_state: cli.no_persist_state,
         llm_profile: cli.llm_profile,
+        activate_into: (!no_activate).then_some(&package_store),
     };
 
     let command_name = match &cli.command {
@@ -651,6 +652,18 @@ fn activate_package(
             "update recipe names {name}, expected {expected}"
         );
     }
+    // What was carried was told this folder; it must be where it lands.
+    if let Some(prefix) = ctx
+        .pointer("/runtime/paths/prefix")
+        .and_then(|value| value.as_str())
+    {
+        let expected = store.package_prefix(name)?;
+        anyhow::ensure!(
+            Path::new(prefix) == expected,
+            "the package was built for {prefix} but would be activated at {}",
+            expected.display()
+        );
+    }
     // What the recipe may use is kept with the package, so that a later
     // recipe can be compared with it ('recipe updates').
     let needs = levitate_recipe::needs::declaration(recipe, Some(search))
@@ -827,6 +840,9 @@ struct EngineOptions<'a> {
     inputs: &'a [String],
     no_persist_state: bool,
     llm_profile: Option<String>,
+    /// The store a package output will be activated in; None with
+    /// --no-activate. It decides RUNTIME.paths.prefix.
+    activate_into: Option<&'a PackageStore>,
 }
 
 fn create_engine(
@@ -843,7 +859,10 @@ fn create_engine(
         inputs,
         no_persist_state,
         llm_profile,
+        activate_into,
     } = options;
+    let mut execution = execution.clone();
+    execution.package_prefix = package_prefix(*activate_into, recipe, *recipes_path)?;
     execution.validate()?;
     let launcher = GinuxLauncher::from_env()?;
     let engine = match build_dir {
@@ -859,7 +878,7 @@ fn create_engine(
         .with_launcher(launcher)
         .with_state_persistence(!*no_persist_state)
         .with_state_dir(state_dir.map(Path::to_owned))
-        .with_execution_options(execution.clone())
+        .with_execution_options(execution)
         .with_llm_profile(llm_profile.clone())
         .with_autofix(autofix);
 
@@ -880,6 +899,35 @@ fn create_engine(
     }
 
     Ok(engine)
+}
+
+/// RUNTIME.paths.prefix for a recipe whose package output will be activated
+/// in `store`: the folder the package will live in. It needs the package's
+/// name before anything runs, so the recipe's `name` must be a literal;
+/// otherwise there is no prefix (and carrying refuses to start).
+fn package_prefix(
+    store: Option<&PackageStore>,
+    recipe: &Path,
+    search: Option<&Path>,
+) -> Result<Option<String>> {
+    let Some(store) = store else {
+        return Ok(None);
+    };
+    let declared = levitate_recipe::declared_metadata(recipe, search)?;
+    let Some(name) = declared
+        .fields
+        .get("name")
+        .filter(|_| !declared.dynamic_fields.contains("name"))
+    else {
+        return Ok(None);
+    };
+    let Ok(prefix) = store.package_prefix(name) else {
+        return Ok(None); // activation refuses the name with its own message
+    };
+    let prefix = prefix
+        .to_str()
+        .with_context(|| format!("package folder {} is not UTF-8", prefix.display()))?;
+    Ok(Some(prefix.to_owned()))
 }
 
 fn resolve_recipe_path(recipe: &Path, lookup: &Lookup) -> Result<PathBuf> {

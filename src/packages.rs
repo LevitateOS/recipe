@@ -119,6 +119,14 @@ impl PackageStore {
         self.root.join("profile")
     }
 
+    /// The folder package `name` lives in once activated, through the profile
+    /// symlink, so it is the same in every generation. A recipe sees it as
+    /// `RUNTIME.paths.prefix`.
+    pub fn package_prefix(&self, name: &str) -> Result<PathBuf> {
+        valid_name(name)?;
+        Ok(self.profile_path().join(PACKAGES).join(name))
+    }
+
     /// Read the active receipt. No recipe evaluation or runtime is needed.
     /// Reading changes nothing, so an ordinary user may also read a store
     /// root owns (the system's software, shown by a desktop front end).

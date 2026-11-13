@@ -39,6 +39,13 @@ pub struct ExecutionOptions {
     /// never sent to the worker.
     #[serde(skip)]
     pub exact_identity: bool,
+    /// The folder the package will live in once activated
+    /// (`PROFILE/.packages/NAME`, through the profile symlink of the store
+    /// installed into), shown to the recipe as `RUNTIME.paths.prefix`. None
+    /// with `--no-activate` and for dependencies, which are never activated.
+    /// Part of the saved-state identity when set (`crate::retained`).
+    #[serde(default)]
+    pub package_prefix: Option<String>,
 }
 impl Default for ExecutionOptions {
     fn default() -> Self {
@@ -59,6 +66,7 @@ impl Default for ExecutionOptions {
             force_build: false,
             force_install: false,
             exact_identity: false,
+            package_prefix: None,
         }
     }
 }
@@ -73,6 +81,20 @@ impl ExecutionOptions {
                 "unsupported target {}/{}: this Ginux worker supports native linux/x86_64",
                 self.target_os,
                 self.target_arch
+            );
+        }
+        if let Some(prefix) = &self.package_prefix
+            && (!prefix.starts_with('/')
+                || prefix.len() < 2
+                || prefix.len() > 1024
+                || prefix.ends_with('/')
+                || prefix.contains("//")
+                || prefix.split('/').any(|part| part == "." || part == "..")
+                || prefix.contains(':')
+                || prefix.chars().any(char::is_control))
+        {
+            bail!(
+                "package prefix {prefix:?} must be a normal absolute folder of at most 1024 bytes without ':'"
             );
         }
         if !(1..=16).contains(&self.jobs) {
@@ -127,6 +149,7 @@ impl ExecutionOptions {
             force_acquire: false,
             force_build: false,
             force_install: false,
+            package_prefix: None,
             ..self.clone()
         }
     }

@@ -164,6 +164,12 @@ pub fn register_all(engine: &mut Engine) {
             install::carry::carry_libraries(package, prefix, search)
         }
     );
+    // RUNTIME.paths.prefix is unit when the package will not be activated.
+    helper!(
+        engine,
+        "carry_libraries",
+        |_package: &str, _prefix: (), _search: rhai::Array| install::carry::carry_without_prefix()
+    );
     helper!(engine, "copy_file_reflink", |src: &str, dst: &str| {
         install::copy_file_reflink(src, dst)
     });

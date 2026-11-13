@@ -93,6 +93,27 @@ carries the shared libraries it loads (`carry_libraries`, a trial of the
 self-contained packages design in the LevitateOS superproject). See the workspace's
 `recipes/ripgrep.rhai` for a complete pinned package producer.
 
+A package that carries libraries calls, at the end of `install`,
+`carry_libraries(package_root, RUNTIME.paths.prefix, search)`, with `search` the
+`sdk` folders of its `build_deps` (under `RUNTIME.paths.dependencies`). It copies
+into `lib/` the loader and every library the package's programs and plug-ins
+load, and tells each file where they are once activated. A program built here
+with `carry_link_flags()` has room reserved for that; one somebody else linked (an
+upstream prebuilt release) is rewritten: its loader becomes
+`PREFIX/lib/ld-linux-x86-64.so.2` and its library folders become `$ORIGIN`-relative
+(its own `$ORIGIN` folders first, then the way to `lib/`), so only the loader path
+names the store. The C library comes whole from the first `search` folder holding
+its loader, else from the build image, so an `sdk` that brings its own glibc gives
+its own loader and C library. Afterwards every program and every file under `lib/`
+must find each library it needs, with the symbol versions it asks for, inside the
+package, or the install fails naming the file and what it misses. Only 64-bit
+x86_64 files are handled.
+
+Because that prefix is written into what is built, it is part of what a kept
+build is matched by: the same recipe installed into another store is built again,
+while `--no-activate` producers keep the identity they had. The package must then
+be activated where it was built for; activation refuses another folder.
+
 `recipe install` activates this output atomically unless `--no-activate` is set.
 `recipe update NAME` consumes the selected recipe's current pin. `recipe remove
 NAME` deactivates a recorded package without running its recipe; its `remove(ctx)`
@@ -117,6 +138,7 @@ setup on a later invocation.
 | `runtime.paths.temp` | `/work/tmp`, owned scratch. |
 | `runtime.paths.output` | `/out`, selectable product files/directories. |
 | `runtime.paths.target` | `/out`, the owned installed-target view. |
+| `runtime.paths.prefix` | The folder the `package` output will live in once activated, `PROFILE/.packages/NAME` through the profile symlink of the store installed into (the same in every generation). Unit (`()`) with `--no-activate`, for a dependency, and when `name` is not a literal. |
 | `runtime.target.os`, `.arch` | Explicit supported execution target. |
 | `runtime.host.os`, `.arch` | The worker's own platform. |
 | `runtime.operation` | The running operation (`install`, `remove`, `cleanup`, `is_installed`, `is_built`, `is_acquired`). |

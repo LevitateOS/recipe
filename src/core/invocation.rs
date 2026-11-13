@@ -65,6 +65,16 @@ fn runtime_map(inputs: &RuntimeInputs<'_>) -> Map {
         ("output".into(), crate::domain::OUT.into()),
         ("target".into(), crate::domain::OUT.into()),
         ("temp".into(), crate::domain::TMP.into()),
+        // Where the package will live once activated; unit when it will not
+        // be activated (--no-activate, a dependency).
+        (
+            "prefix".into(),
+            inputs
+                .options
+                .package_prefix
+                .clone()
+                .map_or(Dynamic::UNIT, Into::into),
+        ),
     ]
     .into();
     let options = &inputs.options;

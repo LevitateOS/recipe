@@ -208,6 +208,7 @@ impl Retained {
             force_build: _,
             force_install: _,
             exact_identity,
+            package_prefix,
         } = &options.execution;
         // The executing tools are named by their declared behaviour versions
         // (`crate::identity`); exact identity also names their bytes. The two
@@ -221,7 +222,7 @@ impl Retained {
         };
         // Requested hosts, not their resolved addresses: a DNS change must
         // not silently discard saved state.
-        let identity = hex::encode(Sha256::digest(serde_json::to_vec(&(
+        let identity = Sha256::digest(serde_json::to_vec(&(
             // v2: tools by declared versions (v1 hashed their bytes always).
             "recipe-state-v2",
             crate::identity::Declared::current(),
@@ -239,7 +240,20 @@ impl Retained {
             memory_mib,
             storage_max_objects,
             storage_max_bytes,
-        ))?));
+        ))?);
+        // The package's folder is written into what a build carries
+        // (RUNTIME.paths.prefix), so a build belongs to the store it was
+        // made for: installing the same recipe into another store builds
+        // again. Without a prefix (--no-activate, dependencies) the identity
+        // is the one it always was, so producer states stay valid.
+        let identity = hex::encode(match package_prefix {
+            None => identity,
+            Some(prefix) => Sha256::digest(serde_json::to_vec(&(
+                "recipe-state-v2-prefix",
+                hex::encode(identity),
+                prefix,
+            ))?),
+        });
         let directory = scope.join(&identity);
         crate::fsx::private_dir(&directory, false)?;
         let allowed = prepared
