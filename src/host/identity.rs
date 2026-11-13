@@ -349,9 +349,16 @@ fn last_error() -> std::io::Error {
     std::io::Error::last_os_error()
 }
 
+/// The `getrlimit`/`setrlimit` resource argument: `__rlimit_resource_t` on
+/// glibc, a plain `c_int` on musl (which has no such named type).
+#[cfg(target_env = "musl")]
+type RlimitResource = libc::c_int;
+#[cfg(not(target_env = "musl"))]
+type RlimitResource = libc::__rlimit_resource_t;
+
 /// Set the soft and hard limit of `resource` to `value`, or to the current
 /// hard limit when that is lower (an ordinary user cannot raise it).
-unsafe fn limit(resource: libc::__rlimit_resource_t, value: u64) -> std::io::Result<()> {
+unsafe fn limit(resource: RlimitResource, value: u64) -> std::io::Result<()> {
     let mut current = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
