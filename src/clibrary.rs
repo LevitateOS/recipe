@@ -211,8 +211,7 @@ pub struct Verdict {
 }
 
 /// Compare `recipe` and its runtime dependencies (not `build_deps`, which run
-/// in the sandbox image) with `host`. `command` is the install command line
-
+/// in the sandbox image) with `host`.
 pub fn check(
     recipe: &Path,
     search_path: Option<&Path>,
