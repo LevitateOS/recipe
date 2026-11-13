@@ -191,8 +191,15 @@ export RECIPE_WORKER_BIN=/absolute/path/to/recipe
 ```
 
 `GINUX_ROOTFS` must match the digest in `GINUX_ROOT`. Without `GINUX_ROOT`, the
-pinned bare Rocky base (no compiler) is selected. If `GINUX_ROOTFS` is omitted, the image tar is
-looked up at `$XDG_CACHE_HOME/recipe/images/<digest>.tar`. The worker is staged
+pinned bare Rocky base (no compiler) is selected. If `GINUX_ROOTFS` is omitted, Recipe uses the
+tar its install ships (`<prefix>/share/recipe/runtime/rootfs.tar`, where the prefix is the
+parent of the directory holding the `recipe` binary, for example `/usr`), else
+`$XDG_CACHE_HOME/recipe/images/<digest>.tar`. When neither exists, Recipe downloads the
+image on first use, checks its SHA-256 and stores it there. `recipe runtime fetch` does
+this now; `recipe runtime status` shows what is selected. `RECIPE_RUNTIME_URL` names
+another address (`{digest}` and `{short}`, the first 16 digits, are replaced); the default is a
+`recipe-runtime-{short}` release of `LevitateOS/prebuilt`. The launcher and the shipped sources
+are found the same way under the prefix, then under `/usr`. The worker is staged
 separately; changing Recipe does not require rebuilding an unchanged image.
 The current native launcher requires Linux x86_64 and privileges for its chroot
 bootstrap. Run the configured coordinator/launcher with those privileges; a

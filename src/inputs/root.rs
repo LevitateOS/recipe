@@ -25,7 +25,7 @@ pub(crate) struct VerifiedImage {
 impl VerifiedImage {
     fn open(root_reference: &str) -> Result<Self> {
         let digest = crate::runtime::root_digest(root_reference)?;
-        let archive_path = crate::runtime::rootfs_path(root_reference)?;
+        let archive_path = crate::runtime::ensure_rootfs(root_reference)?;
         // Snapshot and hash the same bytes into an unlinked file (a
         // copy-on-write clone where the filesystem can). Later nodes read
         // these verified bytes, never a potentially changed source path.

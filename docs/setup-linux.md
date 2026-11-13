@@ -128,6 +128,10 @@ export GINUX_ROOT="oci:recipe-compiler@sha256:$(jq -er .sha256 /absolute/path/to
 export RECIPE_WORKER_BIN="$RECIPE_BIN"
 ```
 
+If `GINUX_ROOTFS` is not set, Recipe looks for the tar its install ships, then in
+`$XDG_CACHE_HOME/recipe/images/<digest>.tar`, and downloads it there when it is absent
+(`recipe runtime fetch`; `RECIPE_RUNTIME_URL` names another address).
+
 Verify these source and artifact selections against the recorded release tuple. With `GINUX_ROOT` omitted, the default is the
 corrected bare Rocky base, which has no compiler. Explicit prepared images need
 their own provenance digest; a mismatched root identity is rejected.

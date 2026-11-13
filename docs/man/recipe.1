@@ -33,9 +33,13 @@ The builder composes OS images from published outputs; recab manages image updat
 The CLI activates directory outputs named package through an atomic profile switch.
 The library and builder (--no-activate) continue to consume outputs only.
 .SH PREPARATION
-Installed defaults are /usr/libexec/recipe/ginux and
-/usr/share/recipe/runtime/rootfs.tar with its root-reference file. Explicit
-environment selections override these defaults.
+Installed defaults are libexec/recipe/ginux and
+share/recipe/runtime/rootfs.tar with its root-reference file, under the prefix of
+the recipe binary (/usr for /usr/bin/recipe), else under /usr. Explicit
+environment selections override these defaults. When the image tar is neither
+installed nor in $XDG_CACHE_HOME/recipe/images, Recipe downloads it on first use
+and checks its SHA-256. RECIPE_RUNTIME_URL names another address; {digest} and
+{short} (the first 16 digits) are replaced.
 Set GINUX_BIN to the actual launcher executable, GINUX_ROOTFS to an assembled
 rootfs tar and GINUX_ROOT to oci:name@sha256:digest matching that tar. Set
 RECIPE_WORKER_BIN when the worker cannot be resolved from the current CLI/PATH.
@@ -186,6 +190,12 @@ Compare typed inputs/outputs, endpoints, raised/lowered limits and digests.
 .TP
 .B hash FILE
 Compute SHA256, SHA512 and BLAKE3 for a local file.
+.TP
+.B runtime status | fetch | stage
+status shows the selected runtime image, the launcher and the shipped sources
+(JSON when piped or with --json). fetch downloads the image now. stage writes a
+runtime tree into --root (--launcher, --reference, --catalog, optional --image
+and --prefix); packagers use it.
 .SH OPTIONS
 .TP
 .B -r, --recipes-path DIR

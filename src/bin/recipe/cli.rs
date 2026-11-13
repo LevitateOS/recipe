@@ -369,6 +369,15 @@ pub(crate) enum Commands {
         check: bool,
     },
 
+    /// Show, fetch or stage the runtime Recipe runs recipes in (Ginux and its image)
+    #[command(
+        after_help = "Examples:\n  recipe runtime status\n  recipe runtime fetch\n  recipe runtime stage --root ./pkg --launcher ./ginux --reference oci:NAME@sha256:DIGEST --catalog ./recipes\n\nThe image is downloaded on first use when it is not on this computer; 'fetch'\ndoes it now. RECIPE_RUNTIME_URL names another address ({digest} and {short} are\nreplaced). GINUX_ROOTFS selects a local image; its SHA-256 must match."
+    )]
+    Runtime {
+        #[command(subcommand)]
+        command: RuntimeCommands,
+    },
+
     /// Show recipe information
     #[command(after_help = "Examples:\n  recipe info kitty\n  recipe info ./recipes/kitty.rhai")]
     Info {
@@ -408,4 +417,33 @@ pub(crate) enum SourceCommands {
     },
     /// Remove a source; a source the image ships is switched off
     Remove { name: String },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum RuntimeCommands {
+    /// Show the selected runtime image, the launcher and the shipped sources
+    Status,
+    /// Download the selected runtime image now, unless it is already here
+    Fetch,
+    /// Write a runtime tree (launcher, reference, sources, profile snippet) into a staging root
+    Stage {
+        /// The staging root; it may already hold other files.
+        #[arg(long, value_name = "DIR")]
+        root: PathBuf,
+        /// Where the runtime lives under the root, as installed.
+        #[arg(long, default_value = "/usr", value_name = "PREFIX")]
+        prefix: PathBuf,
+        /// The Ginux launcher to ship.
+        #[arg(long, value_name = "FILE")]
+        launcher: PathBuf,
+        /// The runtime image reference, oci:NAME@sha256:DIGEST.
+        #[arg(long, value_name = "REF")]
+        reference: String,
+        /// The image tar to ship; without it packages download the image on first use.
+        #[arg(long, value_name = "FILE")]
+        image: Option<PathBuf>,
+        /// The official recipes folder, with its index.json.
+        #[arg(long, value_name = "DIR")]
+        catalog: PathBuf,
+    },
 }

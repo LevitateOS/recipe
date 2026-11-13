@@ -26,7 +26,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
-/// The sources an image ships. `$RECIPE_SHIPPED_SOURCES` names another
+/// The sources an image ships when no install prefix holds them. `$RECIPE_SHIPPED_SOURCES` names another
 /// folder, for trying an image's sources without being that image.
 pub const SHIPPED: &str = "/usr/share/recipe/sources";
 /// The name of the recipe folder: `--recipes-path` or the default.
@@ -294,7 +294,7 @@ impl Sources {
             store: package_root.join("sources"),
             fetched: package_root.join("fetched"),
             shipped: std::env::var_os("RECIPE_SHIPPED_SOURCES")
-                .map_or_else(|| PathBuf::from(SHIPPED), PathBuf::from),
+                .map_or_else(crate::runtime::shipped_sources, PathBuf::from),
             cache: dirs::cache_dir().map(|cache| cache.join("recipe/sources")),
         }
     }

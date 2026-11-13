@@ -35,6 +35,7 @@ impl GinuxLauncher {
             .options
             .validate_for(invocation.operation)
             .context(crate::failure::Category::Startup.error("invalid invocation options"))?;
+        crate::runtime::set_fetch_events(invocation.options.execution.machine_events);
         let graph = crate::needs::declarations(invocation.recipe, invocation.search_path)?;
         if invocation.options.execution.machine_events
             && invocation.operation == crate::worker::protocol::Operation::Install
@@ -330,7 +331,7 @@ impl GinuxLauncher {
 fn resolve_launcher() -> Result<PathBuf> {
     let raw = match std::env::var("GINUX_BIN") {
         Ok(value) => value,
-        Err(std::env::VarError::NotPresent) => crate::runtime::LAUNCHER.to_owned(),
+        Err(std::env::VarError::NotPresent) => crate::runtime::launcher().to_string_lossy().into_owned(),
         Err(error) => return Err(error).context("GINUX_BIN is not valid UTF-8"),
     };
     let trimmed = raw.trim();

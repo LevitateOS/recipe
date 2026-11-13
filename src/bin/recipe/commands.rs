@@ -9,6 +9,7 @@ use levitate_recipe::sources::{self, Sources};
 
 use super::{
     cli::{Cli, Commands, SourceCommands},
+    runtime,
     metadata::{RecipeMetadata, enumerate_recipes},
 };
 
@@ -57,6 +58,10 @@ fn changed_package(command: &Commands) -> Option<String> {
 }
 
 pub(crate) fn execute(cli: Cli) -> Result<()> {
+    // The runtime commands need no package root, recipes or Ginux.
+    if let Commands::Runtime { command } = &cli.command {
+        return runtime::execute(command, &cli);
+    }
     // A change delegated to recab is reported by the run that makes it.
     if system_route(&cli)? {
         return Ok(());
@@ -580,6 +585,7 @@ fn run(cli: Cli) -> Result<()> {
             show_info(&recipe_path, Some(recipes_path))?;
         }
 
+        Commands::Runtime { .. } => unreachable!("handled before the engine is set up"),
         Commands::Hash { file } => {
             use owo_colors::OwoColorize;
 
