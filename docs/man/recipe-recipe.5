@@ -40,6 +40,14 @@ store it was made for, and activation refuses a package built for another
 folder.
 .PP
 runtime.target.os and .arch describe the selected execution target.
+runtime.host.libc is the C library of the system the package will be installed on:
+"glibc", "musl" or "unknown". Recipe decides it from the system's dynamic loaders,
+not the worker's image; both or neither present is "unknown". A recipe declares
+the C libraries its build works with in ABOUT.libc, a list from "glibc" and "musl"
+(absent means any); ABOUT.libc_carried true says its package brings its own C
+library and loader. Before an install, Recipe compares the two and, when they
+differ, states the facts and the flag that installs anyway, \fB\-\-any\-libc\fR.
+The comparison is advice with that override.
 runtime.options includes jobs, force_acquire, force_build, force_install and
 persist_state. Package versions, URLs and digests remain ordinary recipe facts.
 .PP

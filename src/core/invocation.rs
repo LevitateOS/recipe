@@ -84,7 +84,12 @@ fn runtime_map(inputs: &RuntimeInputs<'_>) -> Map {
     [
         (
             "host".into(),
-            platform(std::env::consts::OS, std::env::consts::ARCH),
+            Map::from([
+                ("os".into(), std::env::consts::OS.into()),
+                ("arch".into(), std::env::consts::ARCH.into()),
+                ("libc".into(), options.host_libc.clone().into()),
+            ])
+            .into(),
         ),
         (
             "target".into(),

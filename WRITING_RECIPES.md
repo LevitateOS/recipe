@@ -141,6 +141,7 @@ setup on a later invocation.
 | `runtime.paths.prefix` | The folder the `package` output will live in once activated, `PROFILE/.packages/NAME` through the profile symlink of the store installed into (the same in every generation). Unit (`()`) with `--no-activate`, for a dependency, and when `name` is not a literal. |
 | `runtime.target.os`, `.arch` | Explicit supported execution target. |
 | `runtime.host.os`, `.arch` | The worker's own platform. |
+| `runtime.host.libc` | The C library of the system the package will be installed on: `"glibc"`, `"musl"` or `"unknown"`. Recipe decides it in the coordinator from the system's dynamic loaders (glibc: the architecture's `ld-linux` loader, e.g. `/lib64/ld-linux-x86-64.so.2`; musl: `/lib/ld-musl-<arch>.so.1`), not from the worker's image. Both loaders present, or neither, is `"unknown"`. |
 | `runtime.operation` | The running operation (`install`, `remove`, `cleanup`, `is_installed`, `is_built`, `is_acquired`). |
 | `runtime.options.jobs` | Requested job count. |
 | `runtime.options.force_acquire`, `.force_build`, `.force_install` | Current force selection for the main recipe. |
@@ -395,6 +396,28 @@ A recipe may also say what a front end should show about it, in a literal
 `docs/recipe-front-end-format.md` has the fields). Like NEEDS it holds no helper
 calls or variables. `recipe list --json` passes it through as written; it is the
 author's claim and is not enforced. `recipes/ripgrep.rhai` has one.
+
+`ABOUT.libc` is a list from `"glibc"` and `"musl"`: the C libraries the recipe's
+build works with, e.g. `libc: ["glibc"]` for a package wrapping an upstream build
+linked against glibc. Absent means any (static builds, or builds made for the
+host). Other values are rejected where ABOUT is read. `recipe info`,
+`recipe list --json` and `recipe index` show it. Before `install` or `update`
+acquires anything, Recipe compares it with `RUNTIME.host.libc` for the recipe and
+its runtime `deps` (not `build_deps`, which run in the sandbox image). When the
+host's C library is known and not listed, Recipe states the facts (what the build
+is linked against, what this system's C library is, that as packaged the loader
+would be missing) and the flag that installs it anyway, `--any-libc`, and exits
+nonzero; `--json` adds a record `{"failure": {"kind": "libc_mismatch", "recipe",
+"build_libc", "host_libc", "carried_libc", "override_flag", "needed_by",
+"message"}}`. With `--any-libc` the install goes ahead with one note line.
+`ABOUT.libc_carried: true`
+says the package brings its own C library and loader (it carries them from a
+library recipe with `carry_libraries`, as `antigravity` does from
+`desktop-runtime`): its program finds its loader on any system, so the facts say
+instead that it was made and tried on the listed C library and not yet on this
+one; the record has `"carried_libc": true`. The check is advice with
+that override. Write the recipe's own `details` and comments the same way: state
+what the build is linked against and the way forward.
 
 Compile syntax before runtime, then exercise the real CLI with representative
 inputs, reuse, changed input, remove and failure paths. A successful compile is

@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ABOUT.libc` (a list from `"glibc"` and `"musl"`) names the C libraries a
+  recipe's build works with, and `RUNTIME.host.libc` gives the C library of the
+  system the package is installed on, decided from its dynamic loaders (`"unknown"`
+  when both or neither are present). `install` and `update` compare them for the
+  recipe and its runtime dependencies before acquiring anything, and on a
+  difference state the facts and the flag that installs anyway, `--any-libc`
+  (JSON failure kind `libc_mismatch`). `ABOUT.libc_carried: true` marks a
+  package that brings its own C library and loader; the facts then say where it
+  was made and tried. `recipe info` shows both; `list --json` and `index` carry
+  them in `about`.
 - `RUNTIME.paths.prefix`: the folder a package output will live in once
   activated (unit with `--no-activate`); it keys saved state, so a build
   belongs to its store.

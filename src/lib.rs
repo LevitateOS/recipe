@@ -29,6 +29,7 @@ mod backend;
 mod cancellation;
 /// What a front end may show about a recipe, read without running it.
 pub mod catalog;
+pub mod clibrary;
 mod core;
 mod diagnostics;
 mod domain;

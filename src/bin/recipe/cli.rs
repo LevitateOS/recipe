@@ -87,6 +87,10 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     #[arg(help_heading = "Rerun phases")]
     pub(crate) force_install: bool,
+    /// Install or update a package whose build is linked against a C library other than this system's.
+    #[arg(long, global = true)]
+    #[arg(help_heading = "Target")]
+    pub(crate) any_libc: bool,
 
     /// Cap NEEDS.timeout_secs across the dependency graph (including silent work).
     #[arg(long, global = true)]

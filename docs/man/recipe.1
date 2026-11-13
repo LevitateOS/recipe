@@ -56,6 +56,12 @@ Run necessary acquisition, build and installation into the owned output tree,
 with custom readiness checks, and publish the named products.
 A directory output named package activates regular bin/COMMAND and share/PATH
 files in the selected package root's profile, unless --no-activate is set.
+Before anything is acquired, Recipe compares the C library the recipe declares
+(ABOUT.libc) with this system's, for the recipe and its runtime dependencies.
+When they differ, Recipe prints what the build is linked against, what this
+system's C library is, and the command that installs it anyway
+(\fB\-\-any\-libc\fR), and exits with a nonzero status; with \fB\-\-json\fR it
+also prints a record whose kind is libc_mismatch.
 .TP
 .B update RECIPE
 Update an already installed package using the current selected recipe's pin.
@@ -125,7 +131,7 @@ prepare them. The checked products preserve the parent's installed input identit
 List declared recipe metadata without evaluating setup/helper code.
 This lists available recipe files, not installed applications.
 With \fB\-\-json\fR, print one entry per recipe for a front end: name, version,
-description, path, ABOUT, NEEDS, dependency names and defined hooks.
+description, path, ABOUT (including its libc list), NEEDS, dependency names and defined hooks.
 .TP
 .B index [FOLDER] [\-\-check]
 Write index.json in a folder of recipes (default: the current directory): the
@@ -161,6 +167,8 @@ refresh leaves the index kept from before in use.
 .TP
 .B info RECIPE
 Show loader-owned declared/inherited metadata. Dynamic metadata is unavailable.
+A recipe with ABOUT.libc also gets a C library line: what its build is linked
+against and what this system's C library is.
 .TP
 .B validate RECIPE [--input NAME=PATH]
 Check literal declarations, typed bindings, dependencies and compiled contracts
@@ -215,6 +223,15 @@ Currently supported native execution target.
 .TP
 .B -j, --jobs N
 Requested job count, 1 through 16, default 1. Ginux task limits still apply.
+.TP
+.B --any-libc
+For install and update: go ahead when the recipe's declared C library (ABOUT.libc)
+differs from this system's. One note line names the recipe, its C library and
+this system's. Recipe learns this system's C library from its dynamic loaders
+(glibc: the architecture's ld-linux loader, e.g. /lib64/ld-linux-x86-64.so.2; musl:
+/lib/ld-musl-ARCH.so.1); with both or neither present it is unknown and
+nothing is compared. The environment variable RECIPE_HOST_LIBC_ROOT names a
+folder to look in instead of /.
 .TP
 .B --force-install
 Rerun installation for the main recipe.

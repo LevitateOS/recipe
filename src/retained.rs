@@ -208,6 +208,9 @@ impl Retained {
             force_build: _,
             force_install: _,
             exact_identity,
+            // Shown to recipes as RUNTIME.host.libc; the saved files of one
+            // store belong to one system.
+            host_libc: _,
             package_prefix,
         } = &options.execution;
         // The executing tools are named by their declared behaviour versions

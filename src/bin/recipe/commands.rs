@@ -139,6 +139,11 @@ fn run(cli: Cli) -> Result<()> {
         },
     };
     let no_activate = cli.no_activate;
+    let any_libc = cli.any_libc;
+    anyhow::ensure!(
+        !any_libc || matches!(&cli.command, Commands::Install { .. } | Commands::Update { .. }),
+        "--any-libc applies to install and update"
+    );
 
     let json_output = cli.json_output;
     let list_json = cli.json;
@@ -246,6 +251,14 @@ fn run(cli: Cli) -> Result<()> {
             } else {
                 None
             };
+            check_libc(
+                &recipe_path,
+                recipes_path,
+                "install",
+                &recipe,
+                any_libc,
+                (json_output.as_deref(), json),
+            )?;
             let engine = create_engine(&recipe_path, &engine_options, autofix_cfg)?;
             let mut ctx = engine.execute(&recipe_path)?;
             if !no_activate {
@@ -290,6 +303,14 @@ fn run(cli: Cli) -> Result<()> {
                 emit_result(&result, json_output.as_deref(), json, "Package is current")?;
                 return Ok(());
             }
+            check_libc(
+                &recipe_path,
+                recipes_path,
+                "update",
+                &PathBuf::from(&installed.name),
+                any_libc,
+                (json_output.as_deref(), json),
+            )?;
             let engine = create_engine(&recipe_path, &engine_options, None)?;
             let mut ctx = engine.execute(&recipe_path)?;
             activate_package(
@@ -620,6 +641,41 @@ fn installed_package(store: &PackageStore, requested: &Path) -> Result<Option<In
             .as_ref()
             .is_some_and(|path| path == &installed.recipe)
     }))
+}
+
+/// Before anything is acquired: compare the C library the recipe (and its
+/// runtime dependencies) declare with this system's. A mismatch ends the
+/// command with the facts and the flag that installs anyway, and a JSON
+/// failure record when the caller asked for JSON; with `--any-libc` it is one
+/// note line.
+fn check_libc(
+    recipe: &Path,
+    search: &Path,
+    verb: &str,
+    requested: &Path,
+    any_libc: bool,
+    (json_output, json): (Option<&Path>, bool),
+) -> Result<()> {
+    let host = levitate_recipe::clibrary::detect();
+    let requested = requested.to_string_lossy();
+    let verdict =
+        levitate_recipe::clibrary::check(recipe, Some(search), &host, verb, &requested)?;
+    for note in &verdict.notes {
+        eprintln!("{note}");
+    }
+    if any_libc {
+        for mismatch in &verdict.mismatches {
+            eprintln!("{}", mismatch.note());
+        }
+        return Ok(());
+    }
+    if let Some(mismatch) = verdict.mismatches.into_iter().next() {
+        if json_output.is_some() || json {
+            emit_result(&mismatch.json(), json_output, json, "Not installed")?;
+        }
+        return Err(mismatch.into());
+    }
+    Ok(())
 }
 
 fn activate_package(
@@ -1436,6 +1492,23 @@ fn show_info(recipe_path: &Path, search_path: Option<&Path>) -> Result<()> {
         "Recipe:".bold(),
         recipe_path.display().to_string().dimmed()
     );
+    if let Some(declared) = levitate_recipe::catalog::declared_libc(recipe_path, search_path)? {
+        let host = levitate_recipe::clibrary::detect();
+        let build = declared.libc.join(" or ");
+        let carried = if declared.carried {
+            format!(", and its package brings its own {build} and loader")
+        } else {
+            String::new()
+        };
+        println!(
+            "{:<12} {}",
+            "C library:".bold(),
+            format!(
+                "its build is linked against {build}{carried}; this system's C library is {} ({})",
+                host.libc, host.found
+            )
+        );
+    }
 
     Ok(())
 }

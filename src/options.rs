@@ -46,6 +46,14 @@ pub struct ExecutionOptions {
     /// Part of the saved-state identity when set (`crate::retained`).
     #[serde(default)]
     pub package_prefix: Option<String>,
+    /// The C library of the system the package will be installed on
+    /// (`crate::clibrary`), shown to the recipe as `RUNTIME.host.libc`. Decided
+    /// by the coordinator: the worker runs in an image with a C library of its own.
+    #[serde(default = "unknown_libc")]
+    pub host_libc: String,
+}
+fn unknown_libc() -> String {
+    "unknown".into()
 }
 impl Default for ExecutionOptions {
     fn default() -> Self {
@@ -67,6 +75,7 @@ impl Default for ExecutionOptions {
             force_install: false,
             exact_identity: false,
             package_prefix: None,
+            host_libc: crate::clibrary::detect().libc.into(),
         }
     }
 }

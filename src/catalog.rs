@@ -30,22 +30,7 @@ pub fn entry(recipe: &Path, search_path: Option<&Path>) -> Result<serde_json::Va
     let compiled =
         crate::core::executor::compile_recipe(&engine, &declaration.recipe, search_path)?;
 
-    let mut about = None;
-    for statement in compiled.source_ast.statements() {
-        if let Stmt::Var(binding, flags, _) = statement
-            && binding.0.name == "ABOUT"
-        {
-            ensure!(about.is_none(), "recipe must declare ABOUT at most once");
-            ensure!(
-                flags.contains(ASTFlags::CONSTANT) && matches!(&binding.1, Expr::Map(..)),
-                "ABOUT must be a const literal map"
-            );
-            about = Some(
-                crate::needs::literal(&binding.1)
-                    .context("ABOUT must be literal data, without helper calls or variables")?,
-            );
-        }
-    }
+    let about = about_of(&compiled.source_ast)?;
 
     let field = |name: &str| {
         (!metadata.dynamic_fields.contains(name))
@@ -89,6 +74,47 @@ pub fn entry(recipe: &Path, search_path: Option<&Path>) -> Result<serde_json::Va
         "build_deps": names(true),
         "hooks": hooks,
     }))
+}
+
+/// The literal `ABOUT` map of a compiled recipe, checked: `libc` and
+/// `libc_carried`, when present, are well formed.
+fn about_of(ast: &rhai::AST) -> Result<Option<serde_json::Value>> {
+    let mut about = None;
+    for statement in ast.statements() {
+        if let Stmt::Var(binding, flags, _) = statement
+            && binding.0.name == "ABOUT"
+        {
+            ensure!(about.is_none(), "recipe must declare ABOUT at most once");
+            ensure!(
+                flags.contains(ASTFlags::CONSTANT) && matches!(&binding.1, Expr::Map(..)),
+                "ABOUT must be a const literal map"
+            );
+            about = Some(
+                crate::needs::literal(&binding.1)
+                    .context("ABOUT must be literal data, without helper calls or variables")?,
+            );
+        }
+    }
+    if let Some(about) = &about {
+        crate::clibrary::declared(about)?;
+    }
+    Ok(about)
+}
+
+/// What `recipe` declares about its C library (`ABOUT.libc`,
+/// `ABOUT.libc_carried`); None when it declares none, meaning any.
+pub fn declared_libc(
+    recipe: &Path,
+    search_path: Option<&Path>,
+) -> Result<Option<crate::clibrary::Declared>> {
+    let declaration = crate::needs::declaration(recipe, search_path)?;
+    let engine = crate::core::invocation::compile_engine();
+    let compiled =
+        crate::core::executor::compile_recipe(&engine, &declaration.recipe, search_path)?;
+    match about_of(&compiled.source_ast)? {
+        Some(about) => crate::clibrary::declared(&about),
+        None => Ok(None),
+    }
 }
 
 /// The file a source of recipes describes itself in, beside its recipes.
