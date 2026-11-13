@@ -271,10 +271,18 @@ fn visit(
                 .unwrap_or_default()
                 .to_owned()
         });
+    // A recipe this check cannot read is left to the command itself, which
+    // reports why in its own order (options first, then the recipe).
+    let (Ok(libc), Ok(declaration)) = (
+        crate::catalog::declared_libc(recipe, search_path),
+        crate::needs::declaration(recipe, search_path),
+    ) else {
+        return Ok(());
+    };
     if let Some(crate::clibrary::Declared {
         libc: build,
         carried,
-    }) = crate::catalog::declared_libc(recipe, search_path)?
+    }) = libc
     {
         if host.libc == "unknown" {
             verdict.notes.push(format!(
@@ -294,7 +302,7 @@ fn visit(
             });
         }
     }
-    for dependency in crate::needs::declaration(recipe, search_path)?.dependencies {
+    for dependency in declaration.dependencies {
         if !dependency.build_only {
             visit(
                 &dependency.recipe,

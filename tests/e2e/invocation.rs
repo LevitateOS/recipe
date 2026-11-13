@@ -50,7 +50,15 @@ fn remove(ctx) { rm(ctx.product); ctx.state.removed = !is_file(ctx.product); ctx
         let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(ctx["runtime"]["operation"], operation);
         assert_eq!(ctx["runtime"]["host"]["os"], "linux");
-        assert_eq!(ctx["runtime"]["target"], ctx["runtime"]["host"]);
+        assert_eq!(ctx["runtime"]["target"]["os"], ctx["runtime"]["host"]["os"]);
+        assert_eq!(
+            ctx["runtime"]["target"]["arch"],
+            ctx["runtime"]["host"]["arch"]
+        );
+        assert!(
+            ["glibc", "musl", "unknown"]
+                .contains(&ctx["runtime"]["host"]["libc"].as_str().unwrap())
+        );
         assert_eq!(ctx["runtime"]["host"]["arch"], std::env::consts::ARCH);
         assert!(ctx["runtime"]["options"]["jobs"].as_u64().unwrap() > 0);
         assert_eq!(ctx["runtime"]["options"]["persist_state"], true);

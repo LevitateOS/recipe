@@ -1495,7 +1495,8 @@ fn show_info(recipe_path: &Path, search_path: Option<&Path>) -> Result<()> {
         "Recipe:".bold(),
         recipe_path.display().to_string().dimmed()
     );
-    if let Some(declared) = levitate_recipe::catalog::declared_libc(recipe_path, search_path)? {
+    // A recipe without a readable API-2 declaration has no C library to show.
+    if let Ok(Some(declared)) = levitate_recipe::catalog::declared_libc(recipe_path, search_path) {
         let host = levitate_recipe::clibrary::detect();
         let build = declared.libc.join(" or ");
         let carried = if declared.carried {
