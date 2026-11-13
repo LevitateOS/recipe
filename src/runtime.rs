@@ -281,10 +281,13 @@ fn fetch_image(digest: &str, destination: &Path) -> Result<()> {
     let total = response
         .header("Content-Length")
         .and_then(|value| value.parse::<u64>().ok());
-    let bar = indicatif::ProgressBar::with_draw_target(total, crate::diagnostics::progress_target());
+    let bar =
+        indicatif::ProgressBar::with_draw_target(total, crate::diagnostics::progress_target());
     bar.set_style(
-        indicatif::ProgressStyle::with_template("{bar:40} {bytes}/{total_bytes} {bytes_per_sec} eta {eta}")
-            .unwrap_or_else(|_| indicatif::ProgressStyle::default_bar()),
+        indicatif::ProgressStyle::with_template(
+            "{bar:40} {bytes}/{total_bytes} {bytes_per_sec} eta {eta}",
+        )
+        .unwrap_or_else(|_| indicatif::ProgressStyle::default_bar()),
     );
     let counting = Counting {
         inner: response.into_reader(),
@@ -294,9 +297,8 @@ fn fetch_image(digest: &str, destination: &Path) -> Result<()> {
         bar: bar.clone(),
         last_event: std::time::Instant::now(),
     };
-    let mut decoder = zstd::stream::read::Decoder::new(counting).map_err(|error| {
-        Startup.error(format!("cannot start decompressing {url}: {error}"))
-    })?;
+    let mut decoder = zstd::stream::read::Decoder::new(counting)
+        .map_err(|error| Startup.error(format!("cannot start decompressing {url}: {error}")))?;
 
     let partial_path = directory.join(format!(".partial-{digest}-{}", std::process::id()));
     let mut partial = Partial {

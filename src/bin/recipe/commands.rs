@@ -9,8 +9,8 @@ use levitate_recipe::sources::{self, Sources};
 
 use super::{
     cli::{Cli, Commands, SourceCommands},
-    runtime,
     metadata::{RecipeMetadata, enumerate_recipes},
+    runtime,
 };
 
 /// Where a recipe named on the command line is looked for.

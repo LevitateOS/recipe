@@ -33,19 +33,13 @@ pub(crate) fn execute(command: &RuntimeCommands, cli: &Cli) -> Result<()> {
             reference,
             image,
             catalog,
-        } => stage(
-            root,
-            prefix,
-            launcher,
-            reference,
-            image.as_deref(),
-            catalog,
-        ),
+        } => stage(root, prefix, launcher, reference, image.as_deref(), catalog),
     }
 }
 
 fn executable(path: &Path) -> bool {
-    std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    std::fs::metadata(path)
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
 fn status(cli: &Cli) -> Result<()> {
@@ -118,7 +112,10 @@ fn status(cli: &Cli) -> Result<()> {
 
 /// Create `path` and any missing parents as 0755.
 fn mkdirs(path: &Path) -> Result<()> {
-    let mut missing: Vec<&Path> = path.ancestors().take_while(|p| !p.as_os_str().is_empty() && !p.exists()).collect();
+    let mut missing: Vec<&Path> = path
+        .ancestors()
+        .take_while(|p| !p.as_os_str().is_empty() && !p.exists())
+        .collect();
     missing.reverse();
     for directory in missing {
         std::fs::DirBuilder::new()
@@ -132,7 +129,11 @@ fn mkdirs(path: &Path) -> Result<()> {
 
 /// Replace `destination` with `content` at `mode`.
 fn put(destination: &Path, content: &[u8], mode: u32) -> Result<()> {
-    mkdirs(destination.parent().context("destination has no directory")?)?;
+    mkdirs(
+        destination
+            .parent()
+            .context("destination has no directory")?,
+    )?;
     remove_if_present(destination)?;
     std::fs::write(destination, content)
         .with_context(|| format!("cannot write {}", destination.display()))?;
@@ -143,17 +144,30 @@ fn put(destination: &Path, content: &[u8], mode: u32) -> Result<()> {
 
 fn remove_if_present(path: &Path) -> Result<()> {
     match std::fs::symlink_metadata(path) {
-        Ok(meta) if meta.is_dir() => bail!("{} is a directory; cannot replace it with a file", path.display()),
-        Ok(_) => std::fs::remove_file(path).with_context(|| format!("cannot replace {}", path.display())),
+        Ok(meta) if meta.is_dir() => bail!(
+            "{} is a directory; cannot replace it with a file",
+            path.display()
+        ),
+        Ok(_) => {
+            std::fs::remove_file(path).with_context(|| format!("cannot replace {}", path.display()))
+        }
         Err(_) => Ok(()),
     }
 }
 
 fn copy_file(source: &Path, destination: &Path, mode: u32) -> Result<()> {
-    mkdirs(destination.parent().context("destination has no directory")?)?;
+    mkdirs(
+        destination
+            .parent()
+            .context("destination has no directory")?,
+    )?;
     remove_if_present(destination)?;
     std::fs::copy(source, destination).with_context(|| {
-        format!("cannot copy {} to {}", source.display(), destination.display())
+        format!(
+            "cannot copy {} to {}",
+            source.display(),
+            destination.display()
+        )
     })?;
     std::fs::set_permissions(destination, std::fs::Permissions::from_mode(mode))?;
     eprintln!("wrote {}", destination.display());
@@ -180,8 +194,8 @@ fn sha256_file(path: &Path) -> Result<String> {
 fn copy_tree(source: &Path, destination: &Path) -> Result<usize> {
     mkdirs(destination)?;
     let mut count = 0;
-    for entry in std::fs::read_dir(source)
-        .with_context(|| format!("cannot read {}", source.display()))?
+    for entry in
+        std::fs::read_dir(source).with_context(|| format!("cannot read {}", source.display()))?
     {
         let entry = entry?;
         if entry.file_name().as_bytes() == b".git" {
@@ -198,7 +212,11 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<usize> {
                 .with_context(|| format!("cannot link {}", to.display()))?;
             count += 1;
         } else if meta.is_file() {
-            let mode = if meta.mode() & 0o111 != 0 { 0o755 } else { 0o644 };
+            let mode = if meta.mode() & 0o111 != 0 {
+                0o755
+            } else {
+                0o644
+            };
             remove_if_present(&to)?;
             std::fs::copy(&from, &to)
                 .with_context(|| format!("cannot copy {} to {}", from.display(), to.display()))?;
@@ -258,18 +276,31 @@ fn stage(
     }
     let sources = base.join("share/recipe/sources");
     let files = copy_tree(catalog, &sources.join("levitate"))?;
-    eprintln!("wrote {} ({files} files)", sources.join("levitate").display());
-    put(&sources.join("levitate.toml"), OFFICIAL_SOURCE.as_bytes(), 0o644)?;
+    eprintln!(
+        "wrote {} ({files} files)",
+        sources.join("levitate").display()
+    );
+    put(
+        &sources.join("levitate.toml"),
+        OFFICIAL_SOURCE.as_bytes(),
+        0o644,
+    )?;
 
     let mut profile = PROFILE.to_owned();
     if prefix_text.trim_end_matches('/') != "/usr" {
         let bin = format!("{}/bin", prefix_text.trim_end_matches('/'));
         profile = profile.replacen(
             "export PATH\n",
-            &format!("case \":$PATH:\" in *:{bin}:*) ;; *) PATH=\"{bin}:$PATH\" ;; esac\nexport PATH\n"),
+            &format!(
+                "case \":$PATH:\" in *:{bin}:*) ;; *) PATH=\"{bin}:$PATH\" ;; esac\nexport PATH\n"
+            ),
             1,
         );
     }
-    put(&root.join("etc/profile.d/recipe.sh"), profile.as_bytes(), 0o644)?;
+    put(
+        &root.join("etc/profile.d/recipe.sh"),
+        profile.as_bytes(),
+        0o644,
+    )?;
     Ok(())
 }
