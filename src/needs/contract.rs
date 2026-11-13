@@ -19,7 +19,9 @@ pub const CATALOG: u32 = 1002;
 // getsid report the virtual process group and session. Reviewed again for
 // LevitateOS/ginux d777b0ad (upstream Gates 20 to 22 merged): getrandom,
 // sysinfo, pidfd and waitid changes alter results, not the catalog; digests
-// unchanged. Fixed exclusions remain.
+// unchanged. Reviewed again for LevitateOS/ginux abcc3337 (upstream Gates 23
+// and 24 merged): sysinfo memory and reaped-sender credentials alter results,
+// not the catalog; digests unchanged. Fixed exclusions remain.
 // Both are part of `crate::identity::Declared`.
 pub(crate) const BASE_DIGEST_NETWORK: &str =
     "47900868bf6c28509a7ce6169eddbfecab6a229835e0f788f19545e3251c2f24";
