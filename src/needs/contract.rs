@@ -16,7 +16,10 @@ pub const CATALOG: u32 = 1002;
 // copy_file_range and the xattr calls add no authority beyond read, write and
 // stat on the same descriptor or path. Reviewed again for
 // LevitateOS/ginux 8afe55a6 (upstream Gates 18 and 19 merged): getpgid and
-// getsid report the virtual process group and session. Fixed exclusions remain.
+// getsid report the virtual process group and session. Reviewed again for
+// LevitateOS/ginux d777b0ad (upstream Gates 20 to 22 merged): getrandom,
+// sysinfo, pidfd and waitid changes alter results, not the catalog; digests
+// unchanged. Fixed exclusions remain.
 // Both are part of `crate::identity::Declared`.
 pub(crate) const BASE_DIGEST_NETWORK: &str =
     "47900868bf6c28509a7ce6169eddbfecab6a229835e0f788f19545e3251c2f24";
