@@ -15,9 +15,10 @@ recipe \- execute Rhai package recipes through Ginux
 [options] validate|inspect|explain|diff [arguments]
 .SH DESCRIPTION
 Recipe imports explicitly selected immutable inputs, runs API 2 recipes in a
-configured Ginux domain and publishes named outputs after successful execution
-and independent archive validation. Recipe code and payload commands never run
-on the coordinator host.
+configured Ginux domain, or on the host when a recipe starts no program, and
+publishes named outputs after successful execution and independent archive
+validation. Payload commands never run on the coordinator host; see
+EXECUTION MODES.
 .PP
 Executable recipes declare const RECIPE_API = 2 and literal const NEEDS.
 NEEDS owns typed input/output names, network endpoints and upper limits; callers
@@ -53,6 +54,23 @@ docs/setup-linux.md. Later local consumer corrections require their recorded
 final source pair; the bootstrap baseline does not certify that final release.
 Build the image explicitly with recipe-image; ordinary execution consumes it.
 See bootstrap/README.md for the pinned manifest producer.
+.SH EXECUTION MODES
+Before a run, Recipe compiles (never runs) each recipe of the graph, the base
+it extends and every module it imports. A recipe that can reach exec,
+exec_checked, exec_output, shell*, git_checkout, target_extract_rpm, target_extract_tar,
+command_exists, rpm_installed, rpm_version, dnf_*, apk_*, carry_link_flags or
+carry_libraries, or that uses eval, Fn with a computed name or a dynamic import,
+runs in Ginux. Every other recipe runs on the host as an ordinary process of the
+invoking user (run by root: under a uid and gid of its own from 1879048192 up,
+without groups or capabilities, in /var/lib/recipe/host-runs): no launcher, image or namespace is
+needed. There Recipe's helpers resolve every path beneath the run's inputs
+(read-only), work and out and refuse paths using .., the HTTP client reaches
+only NEEDS.network at pinned addresses (a host name resolving to a loopback or
+private address is refused) within network_max_bytes, the program helpers are
+not registered, and a seccomp filter refuses execve and new processes.
+RUNTIME.paths name the host directories. Checkpoints, restore, publication and
+the deadline work as in Ginux; storage bounds are checked at checkpoints and at
+the end. Each run states which way every recipe went and why.
 .SH COMMANDS
 .TP
 .B install RECIPE
@@ -283,6 +301,12 @@ the caller subset. No restriction lends another recipe an endpoint.
 .TP
 .B --no-persist-state
 Disable state/files recovery. Managed execution and output publication still run.
+.TP
+.B --execution auto|ginux|host
+Where recipes run. auto (the default) runs a recipe on the host when it starts
+no program and in Ginux otherwise. ginux keeps every recipe in Ginux. host
+requires the host and refuses a recipe that is not eligible, naming the call
+that keeps it in Ginux. See EXECUTION MODES.
 .TP
 .B --exact-identity
 Name the worker's and the Ginux launcher's bytes in the saved-state identity, on

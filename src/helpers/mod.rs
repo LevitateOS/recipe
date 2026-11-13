@@ -42,12 +42,68 @@ pub mod internal;
 // Recipe-facing helper modules organized by lifecycle phase
 pub mod acquire;
 pub mod build;
+pub(crate) mod confine;
 pub mod install;
 mod rpm_package;
 mod target;
 pub mod util;
 
+use confine::{entry, look, read, write};
 use rhai::Engine;
+
+/// Every helper that starts a program or depends on the image (reads the root
+/// image, or the running system's own files, instead of only the run's
+/// directories). This list is the one place that says so:
+///
+/// - `crate::execution` puts a recipe that can reach any of these names
+///   (directly, through `extends`, through an imported module, or through
+///   `Fn("...")`) in a Ginux run, and runs the rest on the host;
+/// - a host-mode worker does not register them at all ([`register_all`]), so
+///   a call the analysis missed fails as an unknown function;
+/// - [`register_programs`] registers exactly these names and checks it.
+///
+/// A new helper that starts a program or depends on the image is registered
+/// in [`register_programs`] and named here.
+pub(crate) const PROGRAM_HELPERS: &[&str] = &[
+    // Any program the recipe names.
+    "exec",
+    "exec_checked",
+    "exec_output",
+    "shell",
+    "shell_in",
+    "shell_status",
+    "shell_status_in",
+    "shell_output",
+    "shell_output_in",
+    // Fixed tools from the image.
+    "git_checkout",
+    "target_extract_rpm",
+    // Map package owner names to ids through the running system's
+    // /etc/passwd and /etc/group (the image's, in a Ginux run).
+    "target_extract_tar",
+    "command_exists",
+    "rpm_installed",
+    "rpm_version",
+    "dnf_package_available",
+    "dnf_install",
+    "dnf_install_allow_erasing",
+    "dnf_add_repo",
+    "dnf_download",
+    "apk_installed",
+    "apk_version",
+    "apk_package_available",
+    "apk_install",
+    "apk_add_repo",
+    "apk_download",
+    // Read the image's shared libraries.
+    "carry_link_flags",
+    "carry_libraries",
+];
+
+/// Whether `name` is one of [`PROGRAM_HELPERS`].
+pub(crate) fn is_program_helper(name: &str) -> bool {
+    PROGRAM_HELPERS.contains(&name)
+}
 
 /// Register a fallible helper under `name`; its errors name the same function.
 macro_rules! helper {
@@ -56,8 +112,11 @@ macro_rules! helper {
     };
 }
 
-/// Register all helper functions with the Rhai engine
-pub fn register_all(engine: &mut Engine) {
+/// Register the helper functions with the Rhai engine. A host-mode worker
+/// passes `programs = false` and gets none of [`PROGRAM_HELPERS`]. Path
+/// arguments go through [`confine`], which in a host run resolves them
+/// beneath the run's directories and in a Ginux run passes them on unchanged.
+pub fn register_all(engine: &mut Engine, programs: bool) {
     engine.register_fn("ready", |ctx: rhai::Map| -> rhai::Map {
         [
             ("status".into(), "ready".into()),
@@ -114,201 +173,203 @@ pub fn register_all(engine: &mut Engine) {
         util::log::progress(done, total, "")
     });
 
-    // Shell utilities (util/shell)
-    helper!(engine, "shell", |cmd: &str| util::shell(cmd));
-    helper!(engine, "shell_in", |dir: &str, cmd: &str| util::shell_in(
-        dir, cmd
-    ));
-    engine.register_fn("shell_status", |cmd: &str| util::shell_status(cmd));
-    engine.register_fn("shell_status_in", |dir: &str, cmd: &str| {
-        util::shell_status_in(dir, cmd)
-    });
-    helper!(engine, "shell_output", |cmd: &str| util::shell_output(cmd));
-    helper!(engine, "shell_output_in", |dir: &str, cmd: &str| {
-        util::shell_output_in(dir, cmd)
-    });
-
     // I/O utilities (install/io)
-    helper!(engine, "read_file", |path: &str| install::read_file(path));
-    engine.register_fn("read_file_or_empty", |path: &str| {
-        install::read_file_or_empty(path)
-    });
+    helper!(engine, "read_file", |path: &str| install::read_file(&read(
+        path
+    )?));
+    // A path outside a host run's directories is an error, never "empty".
+    helper!(engine, "read_file_or_empty", |path: &str| Ok(
+        install::read_file_or_empty(&read(path)?)
+    ));
     helper!(engine, "write_file", |path: &str, content: &str| {
-        install::write_file(path, content)
+        install::write_file(&write(path)?, content)
     });
     helper!(engine, "append_file", |path: &str, content: &str| {
-        install::append_file(path, content)
+        install::append_file(&write(path)?, content)
     });
     helper!(
         engine,
         "append_line_if_missing",
-        |path: &str, line: &str| install::append_line_if_missing(path, line)
+        |path: &str, line: &str| install::append_line_if_missing(&write(path)?, line)
     );
     helper!(engine, "glob_list", |pattern: &str| install::glob_list(
-        pattern
+        &confine::pattern(pattern)?
     ));
     helper!(engine, "glob_exists", |pattern: &str| install::glob_exists(
-        pattern
+        &confine::pattern(pattern)?
     ));
     helper!(engine, "copy_into_dir", |pattern: &str, dest_dir: &str| {
-        install::copy_into_dir(pattern, dest_dir)
+        install::copy_into_dir(&confine::pattern(pattern)?, &write(dest_dir)?)
     });
     helper!(engine, "copy_file", |src: &str, dst: &str| {
-        install::copy_file(src, dst)
+        install::copy_file(&read(src)?, &write(dst)?)
     });
-    // Self-contained packages (trial): a package carries its shared libraries.
-    engine.register_fn("carry_link_flags", install::carry::carry_link_flags);
-    helper!(
-        engine,
-        "carry_libraries",
-        |package: &str, prefix: &str, search: rhai::Array| {
-            install::carry::carry_libraries(package, prefix, search)
-        }
-    );
-    // RUNTIME.paths.prefix is unit when the package will not be activated.
-    helper!(
-        engine,
-        "carry_libraries",
-        |_package: &str, _prefix: (), _search: rhai::Array| install::carry::carry_without_prefix()
-    );
     helper!(engine, "copy_file_reflink", |src: &str, dst: &str| {
-        install::copy_file_reflink(src, dst)
+        install::copy_file_reflink(&read(src)?, &write(dst)?)
     });
     helper!(
         engine,
         "copy_tree_contents",
-        |src_dir: &str, dst_dir: &str| install::copy_tree_contents(src_dir, dst_dir)
+        |src_dir: &str, dst_dir: &str| install::copy_tree_contents(
+            &read(src_dir)?,
+            &write(dst_dir)?
+        )
     );
     helper!(
         engine,
         "copy_first_existing",
-        |sources: rhai::Array, dst: &str| install::copy_first_existing(sources, dst)
+        |sources: rhai::Array, dst: &str| install::copy_first_existing(sources, &write(dst)?)
     );
 
     // Filesystem utilities (install/filesystem)
-    engine.register_fn("exists", |path: &str| install::exists(path));
-    engine.register_fn("is_file", |path: &str| install::is_file(path));
-    engine.register_fn("is_dir", |path: &str| install::is_dir(path));
-    helper!(engine, "mkdir", |path: &str| install::mkdir(path));
-    helper!(engine, "rm", |pattern: &str| install::rm_files(pattern));
+    helper!(engine, "exists", |path: &str| Ok(install::exists(&look(
+        path
+    )?)));
+    helper!(engine, "is_file", |path: &str| Ok(install::is_file(&read(
+        path
+    )?)));
+    helper!(engine, "is_dir", |path: &str| Ok(install::is_dir(&read(
+        path
+    )?)));
+    helper!(engine, "mkdir", |path: &str| install::mkdir(&write(path)?));
+    helper!(engine, "rm", |pattern: &str| install::rm_files(
+        &confine::pattern(pattern)?
+    ));
     helper!(engine, "mv", |src: &str, dst: &str| install::move_file(
-        src, dst
+        &entry(src)?,
+        &entry(dst)?
     ));
     helper!(engine, "ln", |target: &str, link: &str| install::symlink(
-        target, link
+        target,
+        &entry(link)?
     ));
     helper!(engine, "ln_force", |target: &str, link: &str| {
-        install::symlink_force(target, link)
+        install::symlink_force(target, &entry(link)?)
     });
     helper!(
         engine,
         "chmod",
-        |path: &str, mode: i64| install::chmod_file(path, mode)
+        |path: &str, mode: i64| install::chmod_file(&write(path)?, mode)
     );
     helper!(
         engine,
         "replace_in_file",
-        |path: &str, from: &str, to: &str| install::replace_in_file(path, from, to)
+        |path: &str, from: &str, to: &str| install::replace_in_file(&write(path)?, from, to)
     );
 
     // Acquire helpers (acquire/download, acquire/verify)
     // download(url, dest, sha256[, resume]) -> path string
     // verify_sha256(path, expected) -> () (throws on mismatch)
     helper!(engine, "download", |url: &str, dest: &str, sha256: &str| {
-        acquire::download(url, dest, sha256, false)
+        acquire::download(url, &write(dest)?, sha256, false)
     });
     helper!(
         engine,
         "download",
         |url: &str, dest: &str, sha256: &str, resume: bool| acquire::download(
-            url, dest, sha256, resume
+            url,
+            &write(dest)?,
+            sha256,
+            resume
         )
     );
     helper!(
         engine,
         "fetch_bounded",
-        |url: &str, dest: &str, limit: i64| acquire::download::fetch_bounded(url, dest, limit)
+        |url: &str, dest: &str, limit: i64| acquire::download::fetch_bounded(
+            url,
+            &write(dest)?,
+            limit
+        )
     );
     helper!(
         engine,
         "download_exact",
         |url: &str, dest: &str, sha: &str, size: i64| acquire::download::download_exact(
-            url, dest, sha, size
+            url,
+            &write(dest)?,
+            sha,
+            size
         )
     );
     helper!(
         engine,
         "fetch_bounded",
         |url: &str, dest: &str, limit: i64, prefixes: rhai::Array| {
-            acquire::download::fetch_bounded_scoped(url, dest, limit, prefixes)
+            acquire::download::fetch_bounded_scoped(url, &write(dest)?, limit, prefixes)
         }
     );
     helper!(
         engine,
         "download_exact",
         |url: &str, dest: &str, sha: &str, size: i64, prefixes: rhai::Array| {
-            acquire::download::download_exact_scoped(url, dest, sha, size, prefixes)
+            acquire::download::download_exact_scoped(url, &write(dest)?, sha, size, prefixes)
         }
     );
     helper!(engine, "verify_sha256", |path: &str, expected: &str| {
-        acquire::verify_sha256(path, expected)
+        acquire::verify_sha256(&read(path)?, expected)
     });
     helper!(engine, "verify_sha512", |path: &str, expected: &str| {
-        acquire::verify_sha512(path, expected)
+        acquire::verify_sha512(&read(path)?, expected)
     });
     helper!(engine, "verify_blake3", |path: &str, expected: &str| {
-        acquire::verify_blake3(path, expected)
+        acquire::verify_blake3(&read(path)?, expected)
     });
     helper!(engine, "fetch_sha256", |url: &str, filename: &str| {
         acquire::fetch_sha256(url, filename)
     });
 
-    helper!(engine, "target_extract_tar", |archive: &str, root: &str| {
-        target::extract_tar(archive, root)
-    });
-    helper!(engine, "target_extract_rpm", |archive: &str, root: &str| {
-        target::extract_rpm(archive, root)
-    });
-    helper!(
-        engine,
-        "target_extract_rpm",
-        |archive: &str, root: &str, members: &str| target::extract_rpm_members(
-            archive, root, members
-        )
-    );
+    // Target tree helpers: the archive is read, the tree root is written.
+    // Members stay inside the root by the target model's own resolver
+    // (`crate::target`), which never follows a link out of it.
+    // (`target_extract_tar` is a program helper: it reads the image's
+    // account files.)
     helper!(engine, "target_unpack_tree", |archive: &str, root: &str| {
-        target::unpack_tree(archive, root)
+        target::unpack_tree(&read(archive)?, &write(root)?)
     });
     helper!(engine, "target_pack_tree", |root: &str, archive: &str| {
-        target::pack_tree(root, archive)
+        target::pack_tree(&read(root)?, &write(archive)?)
     });
     helper!(
         engine,
         "target_capture_apks",
-        |root: &str, paths: rhai::Array| target::capture_apks(root, paths)
+        |root: &str, paths: rhai::Array| {
+            let mut confined = rhai::Array::new();
+            for path in paths {
+                let path = path
+                    .into_string()
+                    .map_err(|_| "target_capture_apks paths must be strings")?;
+                confined.push(read(&path)?.into());
+            }
+            target::capture_apks(&write(root)?, confined)
+        }
     );
     helper!(
         engine,
         "target_mode",
-        |root: &str, path: &str, mode: i64| target::mode(root, path, mode)
+        |root: &str, path: &str, mode: i64| target::mode(&write(root)?, path, mode)
     );
     helper!(engine, "target_remove", |root: &str, path: &str| {
-        target::remove(root, path)
+        target::remove(&write(root)?, path)
     });
     helper!(engine, "target_finalize", |root: &str| target::finalize(
-        root
+        &write(root)?
     ));
 
     // Build helpers (build/extract)
     // extract(archive, dest) -> ()
     // extract_with_format(archive, dest, format) -> ()
     helper!(engine, "extract", |archive: &str, dest: &str| {
-        build::extract(archive, dest)
+        build::extract(&read(archive)?, &write(dest)?)
     });
     helper!(
         engine,
         "extract_with_format",
-        |archive: &str, dest: &str, format: &str| build::extract_with_format(archive, dest, format)
+        |archive: &str, dest: &str, format: &str| build::extract_with_format(
+            &read(archive)?,
+            &write(dest)?,
+            format
+        )
     );
 
     // Environment utilities (util/env)
@@ -325,16 +386,46 @@ pub fn register_all(engine: &mut Engine) {
         engine,
         "github_download_release",
         |repo: &str, pattern: &str, dest: &str, sha256: &str| acquire::github_download_release(
-            repo, pattern, dest, sha256
+            repo,
+            pattern,
+            &write(dest)?,
+            sha256
         )
     );
     engine.register_fn(
         "check_disk_space",
         |path: &str, required: i64| -> Result<(), Box<rhai::EvalAltResult>> {
-            install::disk::check_disk_space(std::path::Path::new(path), required as u64)
+            let path = read(path)?;
+            install::disk::check_disk_space(std::path::Path::new(&path), required as u64)
                 .map_err(|e| helper_error("check_disk_space", e.to_string().into()))
         },
     );
+    if programs {
+        register_programs(engine);
+    }
+}
+
+/// Register [`PROGRAM_HELPERS`], and check that this is exactly that list.
+fn register_programs(engine: &mut Engine) {
+    let mut registered = std::collections::BTreeSet::new();
+    let mut engine = Programs {
+        engine,
+        registered: &mut registered,
+    };
+    let engine = &mut engine;
+    // Shell utilities (util/shell)
+    helper!(engine, "shell", |cmd: &str| util::shell(cmd));
+    helper!(engine, "shell_in", |dir: &str, cmd: &str| util::shell_in(
+        dir, cmd
+    ));
+    engine.register_fn("shell_status", |cmd: &str| util::shell_status(cmd));
+    engine.register_fn("shell_status_in", |dir: &str, cmd: &str| {
+        util::shell_status_in(dir, cmd)
+    });
+    helper!(engine, "shell_output", |cmd: &str| util::shell_output(cmd));
+    helper!(engine, "shell_output_in", |dir: &str, cmd: &str| {
+        util::shell_output_in(dir, cmd)
+    });
 
     // Process execution utilities (util/process)
     helper!(engine, "exec", |cmd: &str, args: rhai::Array| util::exec(
@@ -421,6 +512,65 @@ pub fn register_all(engine: &mut Engine) {
         "git_checkout",
         |url: &str, dest: &str, commit: &str| acquire::git_checkout(url, dest, commit)
     );
+    // Self-contained packages (trial): a package carries its shared libraries.
+    engine.register_fn("carry_link_flags", install::carry::carry_link_flags);
+    helper!(
+        engine,
+        "carry_libraries",
+        |package: &str, prefix: &str, search: rhai::Array| {
+            install::carry::carry_libraries(package, prefix, search)
+        }
+    );
+    // RUNTIME.paths.prefix is unit when the package will not be activated.
+    helper!(
+        engine,
+        "carry_libraries",
+        |_package: &str, _prefix: (), _search: rhai::Array| install::carry::carry_without_prefix()
+    );
+    helper!(engine, "target_extract_rpm", |archive: &str, root: &str| {
+        target::extract_rpm(archive, root)
+    });
+    helper!(engine, "target_extract_tar", |archive: &str, root: &str| {
+        target::extract_tar(archive, root)
+    });
+    helper!(
+        engine,
+        "target_extract_rpm",
+        |archive: &str, root: &str, members: &str| target::extract_rpm_members(
+            archive, root, members
+        )
+    );
+    let expected: std::collections::BTreeSet<&str> = PROGRAM_HELPERS.iter().copied().collect();
+    assert_eq!(
+        registered, expected,
+        "register_programs must register exactly PROGRAM_HELPERS"
+    );
+}
+
+/// The engine as [`register_programs`] sees it: every registration names a
+/// listed helper and is recorded.
+struct Programs<'e> {
+    engine: &'e mut Engine,
+    registered: &'e mut std::collections::BTreeSet<&'static str>,
+}
+
+impl Programs<'_> {
+    fn register_fn<A: 'static, const N: usize, const X: bool, R, const F: bool>(
+        &mut self,
+        name: &'static str,
+        function: impl rhai::RhaiNativeFunc<A, N, X, R, F> + Send + Sync + 'static,
+    ) -> &mut Self
+    where
+        R: rhai::Variant + Clone,
+    {
+        assert!(
+            is_program_helper(name),
+            "{name} is registered as a program helper but missing from PROGRAM_HELPERS"
+        );
+        self.registered.insert(name);
+        self.engine.register_fn(name, function);
+        self
+    }
 }
 
 // Keep native failures catchable in Rhai, but distinguish them from a recipe's

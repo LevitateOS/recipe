@@ -30,7 +30,9 @@ mod image_cache;
 mod network;
 mod root;
 
-pub(crate) use root::{VerifiedImage, prepare_root, seed_target};
+pub(crate) use root::{
+    VerifiedImage, prepare_root, seal_inputs, seed_target, stage_inputs, worker_binary,
+};
 
 pub(crate) use config::InstanceConfig;
 
@@ -59,7 +61,9 @@ pub struct PreparedInvocation {
     pub(crate) network: network::NetworkPolicy,
     pub(crate) execution: crate::ExecutionOptions,
     pub(crate) declaration: crate::needs::Declaration,
-    pub(crate) contract: crate::needs::contract::Receipt,
+    /// The Ginux contract the launcher validated; None for a host run, which
+    /// has no Ginux configuration (`crate::execution`).
+    pub(crate) contract: Option<crate::needs::contract::Receipt>,
     staging: crate::temporary::TemporaryDirectory,
 }
 
@@ -86,12 +90,16 @@ impl PreparedInvocation {
 /// Preparation fails explicitly on unsupported discovery (absolute host
 /// paths in `extends:`/`import`, missing/unreadable inputs, secret-bearing
 /// or non-regular files) and on any §2 limit overflow.
+///
+/// `launcher` is the Ginux launcher for a Ginux run; None prepares a host
+/// run, which stages the same inputs and resolves the same network grant but
+/// renders no Ginux configuration.
 pub fn prepare_invocation(
     recipe: &Path,
     search_path: Option<&Path>,
     extra_inputs: &[ExtraInput],
     options: &crate::ExecutionOptions,
-    launcher: &Path,
+    launcher: Option<&Path>,
     dependency_inputs: &[ExtraInput],
 ) -> Result<PreparedInvocation> {
     let graph = crate::needs::declarations(recipe, search_path)?;
@@ -127,18 +135,23 @@ pub fn prepare_invocation(
     let env = allowlisted_env(&invocation_id)?;
 
     let network = network::NetworkPolicy::resolve(options)?;
-    let archive_import = crate::needs::contract::archive_import(launcher, options)?;
-    let random_devices = crate::needs::contract::random_devices(launcher, options)?;
-    let config = InstanceConfig::for_invocation(
-        &invocation_id,
-        &env,
-        options,
-        network.clone(),
-        archive_import,
-        random_devices,
-    )?;
-    let config_text = config.render()?;
-    let contract = crate::needs::contract::validate(launcher, &config_text, options)?;
+    let ginux = launcher
+        .map(|launcher| -> Result<_> {
+            let archive_import = crate::needs::contract::archive_import(launcher, options)?;
+            let random_devices = crate::needs::contract::random_devices(launcher, options)?;
+            let config = InstanceConfig::for_invocation(
+                &invocation_id,
+                &env,
+                options,
+                network.clone(),
+                archive_import,
+                random_devices,
+            )?;
+            let config_text = config.render()?;
+            let contract = crate::needs::contract::validate(launcher, &config_text, options)?;
+            Ok((config, config_text, contract))
+        })
+        .transpose()?;
 
     let staging = crate::temporary::TemporaryDirectory::new()
         .context("input preparation failure: cannot create staging dir")?;
@@ -165,14 +178,19 @@ pub fn prepare_invocation(
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(input.mode))?;
     }
-    std::fs::write(staging.path().join(CONFIG_FILE), &config_text)?;
-
-    reject_host_leak(&config_text, &env, staging.path(), &discovered.host_dirs)?;
+    let (root_reference, contract) = match ginux {
+        Some((config, config_text, contract)) => {
+            std::fs::write(staging.path().join(CONFIG_FILE), &config_text)?;
+            reject_host_leak(&config_text, &env, staging.path(), &discovered.host_dirs)?;
+            (config.root_reference().to_owned(), Some(contract))
+        }
+        None => (String::new(), None),
+    };
 
     Ok(PreparedInvocation {
         invocation_id,
         inputs: discovered.inputs,
-        root_reference: config.root_reference().to_owned(),
+        root_reference,
         network,
         execution,
         declaration,

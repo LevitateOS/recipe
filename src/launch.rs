@@ -73,7 +73,7 @@ const LOG_CAP_BYTES: u64 = crate::invocation_log::MAX_LOG_BYTES;
 
 /// Grace for teardown after failure/cancellation. Successful final export uses
 /// the remaining supervised execution deadline instead.
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+pub(crate) const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
 /// Bytes of log tail attached to failure diagnostics.
 const LOG_TAIL_BYTES: usize = 4096;
@@ -131,6 +131,18 @@ pub(crate) fn run_domain(
     launcher: &Path,
     image: &mut Option<crate::inputs::VerifiedImage>,
 ) -> Result<LaunchReport> {
+    recorded(prepared, invocation, |diagnostics| {
+        run_domain_inner(prepared, invocation, launcher, diagnostics, image)
+    })
+}
+
+/// Keep an invocation's log: its authority before the run, and its outcome
+/// (worker result, checkpoints, network use) after, for either mode.
+pub(crate) fn recorded(
+    prepared: &PreparedInvocation,
+    invocation: &Invocation<'_>,
+    run: impl FnOnce(&crate::invocation_log::InvocationLog) -> Result<LaunchReport>,
+) -> Result<LaunchReport> {
     let state_dir = invocation.state_dir;
     let diagnostics = crate::retained::state_root(state_dir)
         .and_then(|root| crate::invocation_log::InvocationLog::new(&root, &prepared.invocation_id))
@@ -138,7 +150,7 @@ pub(crate) fn run_domain(
             crate::failure::Category::Storage.wrap(error, "cannot create the invocation log")
         })?;
     diagnostics.authority(prepared)?;
-    let outcome = run_domain_inner(prepared, invocation, launcher, &diagnostics, image);
+    let outcome = run(&diagnostics);
     use crate::invocation_log::Status;
     let (status, details) = match &outcome {
         Ok(report) => (
@@ -172,12 +184,16 @@ pub(crate) fn run_domain(
             .get("runtime")
             .and_then(|runtime| runtime.get("network_usage"))
             .cloned()
-            .unwrap_or_else(|| {
-                crate::needs::report::network_usage(
+            .unwrap_or_else(|| match &report.result.network_usage {
+                Some(usage) => crate::needs::report::host_network_usage(
+                    &prepared.network.host_endpoints,
+                    usage,
+                ),
+                None => crate::needs::report::network_usage(
                     &prepared.network.host_endpoints,
                     &diagnostics,
                     report.log_discarded_bytes,
-                )
+                ),
             }),
         Err(_) => {
             serde_json::json!({"status":"unobserved","reason":"invocation failed before complete log accounting","warnings":[]})
@@ -234,8 +250,9 @@ fn run_domain_inner(
                 recipe,
                 prepared,
                 &domain_root.worker_digest,
-                launcher,
+                Some(launcher),
                 options,
+                None,
             )
             .map_err(|error| {
                 crate::failure::Category::Storage.wrap(error, "cannot open saved state")
@@ -354,6 +371,7 @@ fn run_domain_inner(
             .as_ref()
             .map(|state| state.states().clone())
             .unwrap_or_default(),
+        host: None,
     };
     let mut progress = options.execution.progress_file.as_deref().map(|path| {
         crate::progress_file::ProgressFile::start(
@@ -366,17 +384,41 @@ fn run_domain_inner(
             &operation.to_string(),
         )
     });
-    let pump = pump_protocol(
-        request,
-        (stdin, stdout),
-        child.id(),
-        &mut retained,
-        &mut control,
-        &mut worker_diagnostics,
-        &mut worker_started,
-        timeout,
-        &mut progress,
-    );
+    let launcher_pid = child.id();
+    let pump = {
+        // A checkpoint: the supervisor snapshots the domain storage over the
+        // control socket, and the snapshot is paired with the state.
+        let mut capture = |point: &crate::worker::protocol::CheckpointPayload,
+                           deadline: Instant|
+         -> Result<Option<u64>> {
+            let Some(state) = retained.as_mut() else {
+                return Ok(None);
+            };
+            let control = control.as_mut().context(
+                crate::failure::Category::Startup.error("missing snapshot control socket"),
+            )?;
+            capture_checkpoint(
+                state,
+                control,
+                point,
+                SnapshotWait {
+                    launcher: launcher_pid,
+                    idle: timeout,
+                    cap: deadline,
+                },
+            )
+            .map(Some)
+        };
+        pump_protocol(
+            request,
+            (stdin, stdout),
+            &mut capture,
+            &mut worker_diagnostics,
+            &mut worker_started,
+            timeout,
+            &mut progress,
+        )
+    };
     if let Some(progress) = progress.as_mut() {
         progress.finish(pump.as_ref().is_ok_and(|stream| stream.result.ok));
     }
@@ -415,70 +457,22 @@ fn run_domain_inner(
     check_agreement(&invocation, &stream.result, &record)?;
     check_launcher_exit(&invocation, &stream.result, &record, exit)?;
     if stream.result.ok {
-        // Completion metadata belongs to the engine-owned runtime namespace;
-        // ordinary top-level recipe facts must never be overwritten.
-        let runtime = stream
-            .result
-            .ctx_summary
-            .get_mut("runtime")
-            .and_then(serde_json::Value::as_object_mut)
-            .context(
-                crate::failure::Category::Protocol
-                    .error("successful API-2 result is missing ctx.runtime"),
-            )?;
-        runtime.insert("contract".into(), serde_json::to_value(&prepared.contract)?);
         let usage = crate::needs::report::network_usage(
             &prepared.network.host_endpoints,
             diagnostics,
             drained.discarded_bytes,
         );
-        if let Some(warnings) = usage["warnings"].as_array() {
-            for warning in warnings {
-                if let Some(warning) = warning.as_str() {
-                    crate::diagnostics::diag!("recipe: warning: {warning}");
-                }
-            }
-        }
-        runtime.insert("network_usage".into(), usage);
-        let publication = crate::publication::prepare(
+        finish_outputs(
+            &mut stream.result,
             &export_path,
-            &stream.result.ctx_summary,
-            &options.execution,
+            &mut retained,
+            prepared,
+            &invocation,
+            operation,
+            options,
             state_dir,
-            &prepared.declaration.needs,
-            matches!(
-                operation,
-                crate::worker::protocol::Operation::Install
-                    | crate::worker::protocol::Operation::IsInstalled
-            ),
-        )
-        .context(
-            crate::failure::Category::Storage.error("cannot validate completed domain outputs"),
+            usage,
         )?;
-        if let Some(state) = retained.as_mut() {
-            let runtime_state = stream
-                .result
-                .ctx_summary
-                .get("state")
-                .filter(|value| value.is_object())
-                .context(
-                    crate::failure::Category::Protocol
-                        .error("successful resumable recipe did not return ctx.state"),
-                )?
-                .clone();
-            state.finish(&export_path, runtime_state).map_err(|error| {
-                crate::failure::Category::Storage
-                    .wrap(error, "cannot persist final state/files pair")
-            })?;
-        }
-        if let Some(publication) = publication {
-            publication
-                .publish(&invocation, &mut stream.result.ctx_summary)
-                .context(
-                    crate::failure::Category::Storage
-                        .error("cannot publish completed domain outputs"),
-                )?;
-        }
     }
 
     Ok(LaunchReport {
@@ -493,26 +487,100 @@ fn run_domain_inner(
     })
 }
 
-/// Completed worker stream: exactly one result plus the relayed checkpoints.
-struct WorkerStream {
-    result: ResultPayload,
-    checkpoints: u64,
-    generations: Vec<(u64, Option<u64>)>,
-    stdin: DeadlinePipe<std::process::ChildStdin>,
-    execution_deadline: Instant,
+/// After a successful worker result: record the contract and network use in
+/// `ctx.runtime`, validate the export archive against the declared outputs
+/// and bounds, keep it as the final saved generation, and publish the named
+/// outputs. The same for a Ginux export and a host run's archive.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn finish_outputs(
+    result: &mut ResultPayload,
+    export_path: &Path,
+    retained: &mut Option<crate::retained::Retained>,
+    prepared: &PreparedInvocation,
+    invocation: &str,
+    operation: crate::worker::protocol::Operation,
+    options: &crate::worker::protocol::InvocationOptions,
+    state_dir: Option<&Path>,
+    usage: serde_json::Value,
+) -> Result<()> {
+    // Completion metadata belongs to the engine-owned runtime namespace;
+    // ordinary top-level recipe facts must never be overwritten.
+    let runtime = result
+        .ctx_summary
+        .get_mut("runtime")
+        .and_then(serde_json::Value::as_object_mut)
+        .context(
+            crate::failure::Category::Protocol
+                .error("successful API-2 result is missing ctx.runtime"),
+        )?;
+    if let Some(contract) = &prepared.contract {
+        runtime.insert("contract".into(), serde_json::to_value(contract)?);
+    }
+    if let Some(warnings) = usage["warnings"].as_array() {
+        for warning in warnings {
+            if let Some(warning) = warning.as_str() {
+                crate::diagnostics::diag!("recipe: warning: {warning}");
+            }
+        }
+    }
+    runtime.insert("network_usage".into(), usage);
+    let publication = crate::publication::prepare(
+        export_path,
+        &result.ctx_summary,
+        &options.execution,
+        state_dir,
+        &prepared.declaration.needs,
+        matches!(
+            operation,
+            crate::worker::protocol::Operation::Install
+                | crate::worker::protocol::Operation::IsInstalled
+        ),
+    )
+    .context(crate::failure::Category::Storage.error("cannot validate completed outputs"))?;
+    if let Some(state) = retained.as_mut() {
+        let runtime_state = result
+            .ctx_summary
+            .get("state")
+            .filter(|value| value.is_object())
+            .context(
+                crate::failure::Category::Protocol
+                    .error("successful resumable recipe did not return ctx.state"),
+            )?
+            .clone();
+        state.finish(export_path, runtime_state).map_err(|error| {
+            crate::failure::Category::Storage.wrap(error, "cannot persist final state/files pair")
+        })?;
+    }
+    if let Some(publication) = publication {
+        publication
+            .publish(invocation, &mut result.ctx_summary)
+            .context(crate::failure::Category::Storage.error("cannot publish completed outputs"))?;
+    }
+    Ok(())
 }
+
+/// Completed worker stream: exactly one result plus the relayed checkpoints.
+pub(crate) struct WorkerStream {
+    pub result: ResultPayload,
+    pub checkpoints: u64,
+    pub generations: Vec<(u64, Option<u64>)>,
+    pub stdin: DeadlinePipe<std::process::ChildStdin>,
+    pub execution_deadline: Instant,
+}
+
+/// What the coordinator does at a checkpoint, while the worker waits for its
+/// ack: make the files durable with the state, and name the generation.
+pub(crate) type Capture<'a> =
+    dyn FnMut(&crate::worker::protocol::CheckpointPayload, Instant) -> Result<Option<u64>> + 'a;
 
 /// Send the request, relay checkpoint→ack, and collect the exactly-once
 /// result. Transport errors before the result frame are returned with a
 /// `protocol` or `startup` category (see [`classify_stream_error`]); the
 /// caller enriches them with launcher/result-file state.
-#[allow(clippy::too_many_arguments)]
-fn pump_protocol(
+pub(crate) fn pump_protocol(
     request: RequestPayload,
     pipes: (std::process::ChildStdin, std::process::ChildStdout),
-    launcher: u32,
-    retained: &mut Option<crate::retained::Retained>,
-    control: &mut Option<DeadlinePipe<UnixStream>>,
+    capture: &mut Capture<'_>,
     worker_diagnostics: &mut std::fs::File,
     worker_started: &mut bool,
     timeout: Duration,
@@ -602,29 +670,10 @@ fn pump_protocol(
                         "invocation {invocation} sent checkpoint {seq} where {checkpoints} was due"
                     )));
                 }
-                let generation = if let Some(state) = retained.as_mut() {
-                    let control = control.as_mut().context(
-                        crate::failure::Category::Startup.error("missing snapshot control socket"),
-                    )?;
-                    Some(
-                        capture_checkpoint(
-                            state,
-                            control,
-                            &point,
-                            SnapshotWait {
-                                launcher,
-                                idle: timeout,
-                                cap: execution_deadline,
-                            },
-                        )
-                        .map_err(|error| {
-                            crate::failure::Category::Storage
-                                .wrap(error, format!("cannot keep checkpoint {seq}"))
-                        })?,
-                    )
-                } else {
-                    None
-                };
+                let generation = capture(&point, execution_deadline).map_err(|error| {
+                    crate::failure::Category::Storage
+                        .wrap(error, format!("cannot keep checkpoint {seq}"))
+                })?;
                 generations.push((seq, generation));
                 stdin.reset(timeout);
                 tx.send(
@@ -698,7 +747,7 @@ fn capture_checkpoint(
 /// One absolute deadline covers the complete frame, including partial headers,
 /// payloads and blocked writes. Nonblocking descriptors prevent a poll/read race
 /// from accidentally turning the next operation into an unbounded wait.
-struct DeadlinePipe<T> {
+pub(crate) struct DeadlinePipe<T> {
     inner: T,
     deadline: Instant,
     frame_start: Option<(Duration, Instant)>,
@@ -759,7 +808,7 @@ impl Progress {
     }
 }
 
-fn frame_timeout() -> Result<Duration> {
+pub(crate) fn frame_timeout() -> Result<Duration> {
     match std::env::var("RECIPE_FRAME_TIMEOUT_SECS") {
         Err(std::env::VarError::NotPresent) => Ok(FRAME_TIMEOUT),
         value => {
@@ -908,7 +957,7 @@ impl<T: AsRawFd + Write> Write for DeadlinePipe<T> {
 /// Categorize a transport error: failures delivering the request mean the
 /// launcher never came up as a worker endpoint (`startup`); anything later
 /// on a live stream is `protocol`.
-fn classify_stream_error(
+pub(crate) fn classify_stream_error(
     invocation: &str,
     what: &str,
     err: impl std::fmt::Display,
@@ -989,7 +1038,7 @@ fn enrich_stream_error(
     }
 }
 
-fn exit_message(exit: Option<i32>) -> String {
+pub(crate) fn exit_message(exit: Option<i32>) -> String {
     match exit {
         Some(code) => format!("code {code}"),
         None => "no exit code (killed or signaled)".to_string(),
@@ -1002,7 +1051,7 @@ fn exit_message(exit: Option<i32>) -> String {
 
 /// Await actual launcher completion, including its final export. Failure and
 /// interruption use short teardown; successful work keeps its execution budget.
-fn reap_launcher(child: &mut Child, mut deadline: Instant) -> Result<Option<i32>> {
+pub(crate) fn reap_launcher(child: &mut Child, mut deadline: Instant) -> Result<Option<i32>> {
     let mut interrupted = false;
     loop {
         let signal = crate::cancellation::signal();
@@ -1049,21 +1098,21 @@ fn reap_launcher(child: &mut Child, mut deadline: Instant) -> Result<Option<i32>
 // ---------------------------------------------------------------------------
 
 /// Outcome of the stderr drain thread.
-struct DrainedLog {
-    total_bytes: u64,
-    discarded_bytes: u64,
-    tail: String,
+pub(crate) struct DrainedLog {
+    pub total_bytes: u64,
+    pub discarded_bytes: u64,
+    pub tail: String,
 }
 
 /// Drain launcher stderr to a log file with a retention cap, so a chatty
 /// worker can never block on a full stderr pipe. Bytes past the cap are
 /// still consumed (and counted) but discarded. The log is never parsed.
-struct Drain {
+pub(crate) struct Drain {
     stop: Arc<AtomicBool>,
     thread: std::thread::JoinHandle<DrainedLog>,
 }
 
-fn spawn_stderr_drain(stderr: std::process::ChildStderr, log_path: PathBuf) -> Drain {
+pub(crate) fn spawn_stderr_drain(stderr: std::process::ChildStderr, log_path: PathBuf) -> Drain {
     let stop = Arc::new(AtomicBool::new(false));
     let stopping = stop.clone();
     let thread = std::thread::spawn(move || {
@@ -1143,7 +1192,7 @@ fn spawn_stderr_drain(stderr: std::process::ChildStderr, log_path: PathBuf) -> D
 }
 
 /// Join the drain thread; a dead drain is reported, never silent.
-fn join_drain(handle: Drain) -> DrainedLog {
+pub(crate) fn join_drain(handle: Drain) -> DrainedLog {
     handle.stop.store(true, Ordering::Relaxed);
     handle.thread.join().unwrap_or(DrainedLog {
         total_bytes: 0,

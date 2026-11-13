@@ -184,6 +184,138 @@ fn resolve_host(host: &str) -> Result<BTreeSet<IpAddr>> {
     Ok(addresses)
 }
 
+/// The host-run counterpart of [`install_hosts`]: what a host worker's
+/// resolver may answer (`crate::helpers::acquire::net`).
+impl NetworkPolicy {
+    pub(crate) fn host_grants(&self) -> BTreeMap<String, Vec<String>> {
+        self.host_endpoints.clone()
+    }
+
+    /// Refuse a host run whose pinned addresses reach this machine or its
+    /// private networks: loopback, link-local, private, CGNAT and
+    /// unique-local addresses (and their IPv4-mapped forms), unless the
+    /// `NEEDS.network` entry is that address itself. A Ginux run keeps its
+    /// own rules.
+    pub(crate) fn check_host_reachable(&self) -> Result<()> {
+        for (grant, pins) in &self.host_endpoints {
+            let literal = grant.parse::<SocketAddr>().ok();
+            for pin in pins {
+                let address: SocketAddr = pin
+                    .parse()
+                    .with_context(|| format!("invalid pinned address {pin} for {grant}"))?;
+                if literal == Some(address) {
+                    continue;
+                }
+                if let Some(rule) = internal_address(address.ip()) {
+                    bail!(
+                        "network endpoint {grant} resolves to {}, which is {rule}; a recipe running \
+                         on the host may reach such an address only when NEEDS.network names it \
+                         as that address itself (e.g. \"{address}\")",
+                        address.ip()
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Which internal or special range `address` lies in, if any. IPv6 forms
+/// that carry an IPv4 address (mapped, compatible, NAT64, 6to4) are judged by
+/// that address.
+fn internal_address(address: IpAddr) -> Option<&'static str> {
+    let v4 = |ip: std::net::Ipv4Addr| -> Option<&'static str> {
+        let [a, b, c, _] = ip.octets();
+        if a == 0 {
+            Some("a \"this network\" address (0.0.0.0/8)")
+        } else if ip.is_loopback() {
+            Some("a loopback address (127.0.0.0/8)")
+        } else if ip.is_link_local() {
+            Some("a link-local address (169.254.0.0/16)")
+        } else if a == 10 {
+            Some("a private address (10.0.0.0/8)")
+        } else if a == 172 && (16..32).contains(&b) {
+            Some("a private address (172.16.0.0/12)")
+        } else if a == 192 && b == 168 {
+            Some("a private address (192.168.0.0/16)")
+        } else if a == 100 && (64..128).contains(&b) {
+            Some("a carrier-grade NAT address (100.64.0.0/10)")
+        } else if a == 198 && (b == 18 || b == 19) {
+            Some("a benchmarking address (198.18.0.0/15)")
+        } else if a == 192 && b == 0 && c == 0 {
+            Some("an IETF protocol assignment (192.0.0.0/24)")
+        } else if a >= 240 {
+            Some("a reserved address (240.0.0.0/4)")
+        } else {
+            None
+        }
+    };
+    let embedded = |ip: std::net::Ipv4Addr, form: &'static str| -> Option<&'static str> {
+        v4(ip).map(|_| form)
+    };
+    match address {
+        IpAddr::V4(ip) => v4(ip),
+        IpAddr::V6(ip) => {
+            let s = ip.segments();
+            let low = std::net::Ipv4Addr::new(
+                (s[6] >> 8) as u8,
+                s[6] as u8,
+                (s[7] >> 8) as u8,
+                s[7] as u8,
+            );
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return embedded(
+                    mapped,
+                    "an IPv4-mapped form of an internal or reserved address",
+                );
+            }
+            if ip.is_loopback() {
+                return Some("the IPv6 loopback address (::1)");
+            }
+            if s[..6] == [0; 6] {
+                // ::a.b.c.d, IPv4-compatible (deprecated); `::` is unspecified.
+                return embedded(
+                    low,
+                    "an IPv4-compatible form of an internal or reserved address",
+                );
+            }
+            if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+                return embedded(
+                    low,
+                    "a NAT64 form (64:ff9b::/96) of an internal or reserved address",
+                );
+            }
+            if s[0] == 0x64 && s[1] == 0xff9b && s[2] == 1 {
+                // 64:ff9b:1::/48, local-use NAT64: any embedding is local.
+                return Some("a local-use NAT64 address (64:ff9b:1::/48)");
+            }
+            if s[0] == 0x2002 {
+                let inner = std::net::Ipv4Addr::new(
+                    (s[1] >> 8) as u8,
+                    s[1] as u8,
+                    (s[2] >> 8) as u8,
+                    s[2] as u8,
+                );
+                return embedded(
+                    inner,
+                    "a 6to4 form (2002::/16) of an internal or reserved address",
+                );
+            }
+            if s[0] == 0x2001 && s[1] == 0 {
+                Some("a Teredo address (2001::/32)")
+            } else if s[0] & 0xffc0 == 0xfe80 {
+                Some("a link-local address (fe80::/10)")
+            } else if s[0] & 0xffc0 == 0xfec0 {
+                Some("a site-local address (fec0::/10)")
+            } else if s[0] & 0xfe00 == 0xfc00 {
+                Some("a unique-local address (fc00::/7)")
+            } else {
+                None
+            }
+        }
+    }
+}
+
 pub(crate) fn install_hosts(policy: &NetworkPolicy, root: &Path) -> Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};

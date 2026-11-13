@@ -157,6 +157,49 @@ are recorded in the superproject's
 separately authorized for delivery. Do not substitute baseline receipts for
 that combination or claim complete product/security acceptance.
 
+## Execution modes
+
+Each recipe of a run goes one of two ways, chosen from its source before
+anything runs:
+
+- **On the host.** When no code in the recipe, the base it `extends` or a
+  module it imports can call a helper that starts a program or reads the root
+  image, the recipe runs as an ordinary process of the invoking user (when
+  Recipe runs as root, under a uid/gid of its own from 0x70000000 up, with no
+  groups and no capabilities; its directories are then under
+  `/var/lib/recipe/host-runs`). It needs
+  no Ginux launcher, no image, no user namespace and no particular kernel.
+  Recipe confines it: every file helper resolves its path beneath the run's
+  own directories (inputs read-only, work and out read-write; no `..`) and
+  refuses anything else; the HTTP client reaches only the `NEEDS.network`
+  host:port pairs, at the addresses Recipe pinned (never a loopback or
+  private address a host name resolved to), within `network_max_bytes`; the
+  program helpers are not registered at all; and a seccomp filter refuses
+  `execve` and new processes. `RUNTIME.paths` name the run's host directories
+  there.
+- **In Ginux.** Everything else runs in a Ginux domain exactly as before.
+
+The helpers that put a recipe in Ginux are `exec`, `exec_checked`,
+`exec_output`, `shell*`, `git_checkout`, `target_extract_rpm`, `target_extract_tar`,
+`command_exists`, `rpm_installed`, `rpm_version`, `dnf_*`, `apk_*`,
+`carry_link_flags` and `carry_libraries` (one list: `PROGRAM_HELPERS` in
+`src/helpers/mod.rs`). So does anything the analysis cannot read: `eval`, a
+function pointer built from a computed name (`Fn(name)`) or a dynamic
+`import`. The run says which way each recipe went and why, and `recipe info`
+shows it:
+
+```text
+recipe: ripgrep: runs on the host (starts no program)
+recipe: cmake: runs in Ginux (calls exec_checked at cmake.rhai:8873)
+```
+
+`--execution auto` (the default) applies this rule. `--execution ginux` keeps
+every recipe in Ginux. `--execution host` requires the host and refuses a
+recipe that is not eligible, naming the call that keeps it in Ginux. A host
+run checkpoints, restores, publishes and enforces its deadline like a Ginux
+run; its storage bounds are checked at each checkpoint and at the end. Its
+saved state has an identity of its own.
+
 ## Build and prepare the environment
 
 [Linux setup and bootstrap](docs/setup-linux.md) records the verified host,
@@ -446,6 +489,7 @@ Run `recipe --help` and `recipe install --help` for the complete current syntax.
 | `--input NAME=PATH` | Explicit immutable file/tree input. |
 | `--define KEY=VALUE` | Recipe-specific constant; not a runtime path substitute. |
 | `--target-os linux --target-arch x86_64` | Currently supported native execution platform. |
+| `--execution auto\|ginux\|host` | Where recipes run (see Execution modes); default `auto`. |
 | `-j, --jobs N` | Requested jobs, 1–16, default 1; Ginux task limits still apply. |
 | `--force-install` | Rerun installation for the main recipe. |
 | `--force-build` | Rerun build and installation for the main recipe. |

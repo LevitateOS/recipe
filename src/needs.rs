@@ -287,6 +287,12 @@ impl Needs {
                 "undeclared ctx.outputs.{name}; edit NEEDS.outputs"
             );
             let path = path.as_str().context("ctx.outputs paths must be strings")?;
+            // A host worker names its outputs by host path; they stand for
+            // the same domain paths (`crate::domain::local`).
+            let path =
+                crate::domain::domain_path(std::path::Path::new(path)).with_context(|| {
+                    format!("ctx.outputs.{name} = {path} is outside this run's directories")
+                })?;
             let relative = path
                 .strip_prefix('/')
                 .context("ctx.outputs must use absolute domain paths")?;

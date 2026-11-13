@@ -342,11 +342,25 @@ pub fn inspect(root: &Path) -> Result<Manifest> {
     snapshot(root, false)
 }
 
+/// The target's own account file, or None. In a host run it is resolved and
+/// opened like any helper path, so a link there cannot reach outside the
+/// run's directories.
+fn read_account_file(path: &Path) -> Option<String> {
+    use crate::helpers::confine;
+    if !confine::active() {
+        return fs::read_to_string(path).ok();
+    }
+    let path = confine::derived(path, confine::Access::Read).ok()?;
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut confine::open_read(&path).ok()?, &mut text).ok()?;
+    Some(text)
+}
+
 fn snapshot(root: &Path, grant_staging: bool) -> Result<Manifest> {
     let mut manifest = load(root)?;
     let accounts = |file: &str| -> Result<BTreeMap<String, u32>> {
         let mut ids = BTreeMap::from([("root".into(), 0)]);
-        if let Ok(text) = fs::read_to_string(root.join(file)) {
+        if let Some(text) = read_account_file(&root.join(file)) {
             for line in text.lines() {
                 let fields = line.split(':').collect::<Vec<_>>();
                 if fields.len() >= 3 {

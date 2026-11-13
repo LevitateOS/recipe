@@ -108,6 +108,46 @@ pub(crate) fn prepare_root(
     let inputs = root
         .path()
         .join(crate::domain::INPUTS.trim_start_matches('/'));
+    stage_inputs(invocation, &inputs)?;
+    let worker_path = worker_binary()?;
+    let mut worker = crate::fsx::open_regular(&worker_path)
+        .with_context(|| format!("cannot open worker {}", worker_path.display()))?;
+    let mut header = [0u8; 20];
+    worker
+        .read_exact(&mut header)
+        .context("worker is not an x86_64 ELF executable")?;
+    if &header[..7] != b"\x7fELF\x02\x01\x01" || header[18..20] != [62, 0] {
+        bail!("worker must be a Linux x86_64 ELF executable");
+    }
+    worker.seek(SeekFrom::Start(0))?;
+    let mut destination = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(inputs.join(crate::domain::WORKER_NAME))?;
+    root.worker_digest =
+        crate::fsx::snapshot_hashed(&mut worker, &mut destination, MAX_WORKER_BYTES)?.1;
+    destination.set_permissions(std::fs::Permissions::from_mode(0o555))?;
+
+    // No shared cached tree or mutable hardlinks are handed to the domain.
+    // Write syscalls still require Ginux storage mediation; these directories
+    // do not grant native host filesystem access.
+    for path in crate::domain::WRITABLE_DIRS {
+        let directory = root.path().join(path.trim_start_matches('/'));
+        std::fs::create_dir(&directory)?;
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o777))?;
+    }
+    seal_inputs(&inputs)?;
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o555))?;
+    Ok(root)
+}
+
+/// Copy the staged inputs into `inputs` (created here), checking every byte
+/// against its discovery digest, and write the input permission manifest.
+/// [`seal_inputs`] then makes them read-only. Shared by the Ginux root and
+/// the host run.
+pub(crate) fn stage_inputs(invocation: &PreparedInvocation, inputs: &Path) -> Result<()> {
+    let inputs = inputs.to_path_buf();
     std::fs::create_dir(&inputs)?;
     for (index, input) in invocation.inputs.iter().enumerate() {
         crate::domain::validate_input_name(&input.name)?;
@@ -163,34 +203,6 @@ pub(crate) fn prepare_root(
             std::os::unix::fs::symlink(target, inputs.join(&input.name))?;
         }
     }
-    let worker_path = worker_binary()?;
-    let mut worker = crate::fsx::open_regular(&worker_path)
-        .with_context(|| format!("cannot open worker {}", worker_path.display()))?;
-    let mut header = [0u8; 20];
-    worker
-        .read_exact(&mut header)
-        .context("worker is not an x86_64 ELF executable")?;
-    if &header[..7] != b"\x7fELF\x02\x01\x01" || header[18..20] != [62, 0] {
-        bail!("worker must be a Linux x86_64 ELF executable");
-    }
-    worker.seek(SeekFrom::Start(0))?;
-    let mut destination = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(inputs.join(crate::domain::WORKER_NAME))?;
-    root.worker_digest =
-        crate::fsx::snapshot_hashed(&mut worker, &mut destination, MAX_WORKER_BYTES)?.1;
-    destination.set_permissions(std::fs::Permissions::from_mode(0o555))?;
-
-    // No shared cached tree or mutable hardlinks are handed to the domain.
-    // Write syscalls still require Ginux storage mediation; these directories
-    // do not grant native host filesystem access.
-    for path in crate::domain::WRITABLE_DIRS {
-        let directory = root.path().join(path.trim_start_matches('/'));
-        std::fs::create_dir(&directory)?;
-        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o777))?;
-    }
     // Preserve logical input permissions independently from the readability
     // required to consume immutable inputs. Tree copying uses this coordinator-
     // authored metadata instead of publishing the snapshot's read grants.
@@ -206,17 +218,21 @@ pub(crate) fn prepare_root(
     }
     std::fs::write(&manifest, modes)?;
     std::fs::set_permissions(manifest, std::fs::Permissions::from_mode(0o444))?;
-    for entry in walkdir::WalkDir::new(&inputs).follow_links(false) {
+    Ok(())
+}
+
+/// Make every directory of the staged inputs read-only.
+pub(crate) fn seal_inputs(inputs: &Path) -> Result<()> {
+    for entry in walkdir::WalkDir::new(inputs).follow_links(false) {
         let entry = entry?;
         if entry.file_type().is_dir() {
             std::fs::set_permissions(entry.path(), std::fs::Permissions::from_mode(0o555))?;
         }
     }
-    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o555))?;
-    Ok(root)
+    Ok(())
 }
 
-fn worker_binary() -> Result<PathBuf> {
+pub(crate) fn worker_binary() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("RECIPE_WORKER_BIN") {
         if path.is_empty() {
             bail!("RECIPE_WORKER_BIN is empty");

@@ -1,4 +1,5 @@
-//! The required Ginux launcher for executable recipe operations.
+//! Runs a recipe graph: each recipe in a Ginux domain through the launcher,
+//! or on the host (`crate::execution`, `crate::host`).
 use anyhow::{Context, Result, bail};
 use sha2::Digest;
 use std::path::{Path, PathBuf};
@@ -21,16 +22,44 @@ impl GinuxLauncher {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
 
-    /// Route one executable recipe operation through Ginux.
-    ///
-    /// Prepare immutable inputs, execute in Ginux, and return the final context
-    /// only after successful completion and validated publication. Persistence
-    /// retains separate state/files pairs; there is no host execution callback.
-    pub(crate) fn run(
-        &self,
-        invocation: &crate::launch::Invocation<'_>,
-    ) -> Result<serde_json::Value> {
+/// Run one executable recipe operation and its dependency graph.
+///
+/// Each recipe runs where `crate::execution` places it: in Ginux through
+/// `explicit` (or the launcher `GINUX_BIN` names, resolved only when some
+/// recipe needs Ginux), or on the host. Prepare immutable inputs, execute,
+/// and return the final context only after successful completion and
+/// validated publication. Persistence retains separate state/files pairs.
+pub(crate) fn run(
+    explicit: Option<&GinuxLauncher>,
+    invocation: &crate::launch::Invocation<'_>,
+) -> Result<serde_json::Value> {
+    Runner {
+        explicit,
+        launcher: None,
+    }
+    .run(invocation)
+}
+
+struct Runner<'l> {
+    explicit: Option<&'l GinuxLauncher>,
+    launcher: Option<GinuxLauncher>,
+}
+
+impl Runner<'_> {
+    /// The Ginux launcher, resolved the first time a recipe needs it.
+    fn launcher(&mut self) -> Result<PathBuf> {
+        if self.launcher.is_none() {
+            self.launcher = Some(match self.explicit {
+                Some(launcher) => launcher.clone(),
+                None => GinuxLauncher::from_env()?,
+            });
+        }
+        Ok(self.launcher.as_ref().unwrap().path.clone())
+    }
+
+    fn run(&mut self, invocation: &crate::launch::Invocation<'_>) -> Result<serde_json::Value> {
         invocation
             .options
             .validate_for(invocation.operation)
@@ -78,7 +107,15 @@ impl GinuxLauncher {
         // force flags apply to the main recipe only.
         let main_recipe = &graph.last().context("empty recipe graph")?.recipe;
         let mut executions = Vec::with_capacity(graph.len());
+        let mut placements = Vec::with_capacity(graph.len());
         for node in &graph {
+            let eligibility = crate::execution::eligibility(&node.recipe, invocation.search_path)?;
+            let placement = crate::execution::Placement::choose(
+                invocation.options.execution.execution,
+                &eligibility,
+            )
+            .with_context(|| format!("placing {}", node.recipe.display()))?;
+            placements.push(placement);
             let mut execution = invocation.options.execution.clone();
             if node.recipe != *main_recipe {
                 execution = execution.for_dependency();
@@ -87,13 +124,21 @@ impl GinuxLauncher {
                     .dependency_narrowing(&invocation.options.execution.narrowing)?;
             }
             let effective = node.needs.resolve(&execution.narrowing, &execution)?;
-            crate::needs::contract::inspect(&self.path, &effective)?;
+            if !placements.last().unwrap().host {
+                crate::needs::contract::inspect(&self.launcher()?, &effective)?;
+            }
             executions.push(execution);
         }
         let mut results = std::collections::BTreeMap::<PathBuf, serde_json::Value>::new();
         let mut image = None;
-        for (node, execution) in graph.iter().zip(executions) {
+        for ((node, execution), placement) in graph.iter().zip(executions).zip(&placements) {
             let main = node.recipe == *main_recipe;
+            let name = node
+                .recipe
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            crate::diagnostics::diag!("recipe: {name}: {}", placement.reason);
             // Every non-install operation reconstructs the installed input
             // identity from checked cached products, without installing them.
             let cached_only = invocation.operation != crate::worker::protocol::Operation::Install;
@@ -185,7 +230,7 @@ impl GinuxLauncher {
                 },
                 ..*invocation
             };
-            let result = self.run_single(&child, &internal, node, &mut image).with_context(|| {
+            let result = self.run_single(&child, &internal, node, placement.host, &mut image).with_context(|| {
                 if !main && cached_only {
                     format!(
                         "manual {} requires matching cached products from dependency {}; run install explicitly to prepare them",
@@ -236,12 +281,19 @@ impl GinuxLauncher {
     }
 
     fn run_single(
-        &self,
+        &mut self,
         invocation: &crate::launch::Invocation<'_>,
         dependency_inputs: &[crate::inputs::ExtraInput],
         expected: &crate::needs::Declaration,
+        host: bool,
         image: &mut Option<crate::inputs::VerifiedImage>,
     ) -> Result<serde_json::Value> {
+        let launcher = if host { None } else { Some(self.launcher()?) };
+        let place = if host {
+            "on the host"
+        } else {
+            "in the Ginux domain"
+        };
         let operation = invocation.operation;
         invocation
             .options
@@ -252,12 +304,12 @@ impl GinuxLauncher {
             invocation.search_path,
             invocation.inputs,
             &invocation.options.execution,
-            &self.path,
+            launcher.as_deref(),
             dependency_inputs,
         )
         .map_err(|err| {
             anyhow::Error::new(crate::failure::Category::Startup.error(format!(
-                "ginux input preparation failed for `{operation}` ({}): {err:#}",
+                "input preparation failed for `{operation}` ({}): {err:#}",
                 invocation.recipe.display(),
             )))
         })?;
@@ -275,10 +327,13 @@ impl GinuxLauncher {
             },
             ..*invocation
         };
-        let report = crate::launch::run_domain(&prepared, &invocation, &self.path, image)?;
+        let report = match &launcher {
+            Some(launcher) => crate::launch::run_domain(&prepared, &invocation, launcher, image)?,
+            None => crate::host::run_host(&prepared, &invocation)?,
+        };
         crate::diagnostics::diag!(
-            "recipe: invocation {} finished in the Ginux domain: ok={} ({} checkpoint{} \
-                 acked; launcher exit {}; result {})",
+            "recipe: invocation {} finished {place}: ok={} ({} checkpoint{} \
+                 acked; {} exit {}; result {})",
             prepared.invocation_id,
             report.result.ok,
             report.checkpoints_acked,
@@ -287,6 +342,7 @@ impl GinuxLauncher {
             } else {
                 "s"
             },
+            if host { "worker" } else { "launcher" },
             report
                 .launcher_code
                 .map(|code| code.to_string())
@@ -307,7 +363,7 @@ impl GinuxLauncher {
             return Err(
                 anyhow::Error::new(WorkloadFailure(failure, diagnostics)).context(
                     crate::failure::Category::Workload.error(format!(
-                        "`{operation}` failed in the Ginux domain (invocation {})",
+                        "`{operation}` failed {place} (invocation {})",
                         prepared.invocation_id
                     )),
                 ),
@@ -315,7 +371,7 @@ impl GinuxLauncher {
         }
         if !report.result.ctx_summary.is_object() {
             bail!(crate::failure::Category::Protocol.error(format!(
-                "`{operation}` succeeded in the Ginux domain (invocation {}) but its ctx summary \
+                "`{operation}` succeeded {place} (invocation {}) but its ctx summary \
                  is not a JSON object",
                 prepared.invocation_id,
             )));

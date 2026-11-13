@@ -338,6 +338,27 @@ archive helper. Archive extraction remains subject to domain storage ownership,
 path validation and supported runtime operations. A helper existing in the
 registry is not evidence that every external package's executable works.
 
+## Host or Ginux
+
+A recipe whose code cannot start a program runs on the host, without the root
+image; everything else runs in Ginux. These helpers put a recipe in Ginux:
+`exec`, `exec_checked`, `exec_output`, `shell*`, `git_checkout`,
+`target_extract_rpm`, `target_extract_tar`, `command_exists`, `rpm_installed`, `rpm_version`,
+`dnf_*`, `apk_*`, `carry_link_flags` and `carry_libraries`. So do `eval`,
+`Fn(name)` with a computed name and a dynamic `import`. The rule covers the
+recipe, its `extends` base and every module it imports, and any code in them,
+called or not. `recipe info NAME` shows where a recipe runs and, for Ginux, the
+first call that keeps it there.
+
+On the host, spell paths with `RUNTIME.paths`: helpers reach only the run's
+inputs, build/work and output directories, and refuse a literal `/work/...`,
+`/out/...` or any other path, including through a symbolic link that leads
+out. Paths may not use `..`; build them from `RUNTIME.paths`. Downloads reach
+only `NEEDS.network`, and a host name there that resolves to a loopback,
+link-local, private, CGNAT or unique-local address is refused unless the entry
+is that address itself (`"127.0.0.1:8080"`). A recipe that downloads, checks
+digests, unpacks and copies needs nothing else.
+
 ## Dependencies and inheritance
 
 Literal declarations are discovered before launch without evaluating Rhai:

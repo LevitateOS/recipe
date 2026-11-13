@@ -75,6 +75,10 @@ pub(crate) struct Cli {
     #[arg(short = 'j', long, global = true, default_value_t = defaults().jobs)]
     #[arg(help_heading = "Build and state")]
     pub(crate) jobs: u16,
+    /// Where recipes run: auto (on the host when a recipe starts no program, else in Ginux), ginux, or host (refuse a recipe that starts a program).
+    #[arg(long, global = true, default_value_t = defaults().execution, value_parser = clap::value_parser!(levitate_recipe::ExecutionMode))]
+    #[arg(help_heading = "Build and state")]
+    pub(crate) execution: levitate_recipe::ExecutionMode,
     /// Rerun acquisition, build and installation for the main recipe.
     #[arg(long, global = true)]
     #[arg(help_heading = "Rerun phases")]

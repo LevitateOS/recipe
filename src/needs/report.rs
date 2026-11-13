@@ -350,19 +350,51 @@ pub(crate) fn network_usage(
         Ok(usage)
     })();
     match observed {
-        Ok(usage) => {
-            let mut warnings = Vec::new();
-            let endpoints = host_endpoints.iter().map(|(declared, pins)| {
-                let attempted = pins.iter().any(|pin| usage[pin].0);
-                let connected = pins.iter().any(|pin| usage[pin].1);
-                if !attempted { warnings.push(format!("unused NEEDS.network endpoint {declared}")); }
-                serde_json::json!({"declared":declared,"pinned":pins,"attempted":attempted,"connected":connected})
-            }).collect::<Vec<_>>();
-            serde_json::json!({"status":"complete","endpoints":endpoints,"warnings":warnings})
-        }
+        Ok(usage) => usage_report(host_endpoints, |_, pins| {
+            (
+                pins.iter().any(|pin| usage[pin].0),
+                pins.iter().any(|pin| usage[pin].1),
+            )
+        }),
         Err(error) => {
             serde_json::json!({"status":"unobserved","reason":error.to_string(),"warnings":[],
             "declared":host_endpoints.keys().collect::<Vec<_>>() })
         }
     }
+}
+
+/// The same report from a host run, whose worker counted each declared
+/// endpoint itself (`crate::helpers::acquire::net`) instead of Ginux.
+pub(crate) fn host_network_usage(
+    host_endpoints: &BTreeMap<String, Vec<String>>,
+    usage: &BTreeMap<String, crate::helpers::acquire::net::EndpointUse>,
+) -> serde_json::Value {
+    usage_report(host_endpoints, |declared, _| {
+        let key = declared
+            .parse::<std::net::SocketAddr>()
+            .map(|address| address.to_string())
+            .unwrap_or_else(|_| declared.to_ascii_lowercase());
+        let seen = usage.get(&key).copied().unwrap_or_default();
+        (seen.attempted, seen.connected)
+    })
+}
+
+/// `network_usage` for a complete account: per declared endpoint, whether it
+/// was attempted and whether it connected; unused endpoints are warnings.
+fn usage_report(
+    host_endpoints: &BTreeMap<String, Vec<String>>,
+    seen: impl Fn(&str, &Vec<String>) -> (bool, bool),
+) -> serde_json::Value {
+    let mut warnings = Vec::new();
+    let endpoints = host_endpoints
+        .iter()
+        .map(|(declared, pins)| {
+            let (attempted, connected) = seen(declared, pins);
+            if !attempted {
+                warnings.push(format!("unused NEEDS.network endpoint {declared}"));
+            }
+            serde_json::json!({"declared":declared,"pinned":pins,"attempted":attempted,"connected":connected})
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({"status":"complete","endpoints":endpoints,"warnings":warnings})
 }

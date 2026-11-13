@@ -132,7 +132,7 @@ fn engine_failure(error: EngineError) -> FailureInfo {
 /// 0). Transport collapse (unwritable stdout) returns `Err` (binary exits
 /// nonzero; the host sees a worker exit without `result`).
 pub fn run_worker() -> Result<()> {
-    let invocation_id = ensure_internal_entry()?;
+    let (invocation_id, host_entry) = ensure_internal_entry()?;
 
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
@@ -156,9 +156,9 @@ pub fn run_worker() -> Result<()> {
             );
         }
     };
-    if request.invocation_id != invocation_id {
+    if request.invocation_id != invocation_id || request.host.is_some() != host_entry {
         let failure =
-            request_failure("request invocation id does not match worker bootstrap".into());
+            request_failure("request invocation id or mode does not match worker bootstrap".into());
         return send_result(
             &mut tx,
             &mut output,
@@ -174,6 +174,22 @@ pub fn run_worker() -> Result<()> {
         request.persist_state,
         crate::domain::MAIN_RECIPE
     ));
+
+    // A host-mode worker sets up its confinement before any recipe code:
+    // its directories, its network grant, and a kernel filter that refuses
+    // to start any program at all.
+    if let Some(host) = &request.host
+        && let Err(error) = enter_host_mode(host)
+    {
+        let failure = request_failure(format!("cannot enter host mode: {error:#}"));
+        return send_result(
+            &mut tx,
+            &mut output,
+            false,
+            Some(failure),
+            serde_json::json!({}),
+        );
+    }
 
     let channel = Arc::new(Mutex::new(WorkerChannel {
         sender: tx,
@@ -204,10 +220,11 @@ pub fn run_worker() -> Result<()> {
 
 /// Require the private argv entry, the coordinator's bootstrap flag, and an
 /// invocation id. Public backend selection never uses these environment values.
-fn ensure_internal_entry() -> Result<String> {
-    if !std::env::args_os()
-        .skip(1)
-        .eq(crate::domain::WORKER_ARGS.map(std::ffi::OsString::from))
+/// Also says whether the coordinator started a host-mode worker.
+fn ensure_internal_entry() -> Result<(String, bool)> {
+    let args = || std::env::args_os().skip(1);
+    let host = args().eq(crate::domain::WORKER_HOST_ARGS.map(std::ffi::OsString::from));
+    if !(host || args().eq(crate::domain::WORKER_ARGS.map(std::ffi::OsString::from)))
         || std::env::var(crate::domain::ENV_WORKER).as_deref()
             != Ok(crate::domain::ENV_WORKER_VALUE)
     {
@@ -218,7 +235,160 @@ fn ensure_internal_entry() -> Result<String> {
     if !crate::domain::valid_name(&id) {
         bail!("private worker entry has an invalid invocation id");
     }
-    Ok(id)
+    Ok((id, host))
+}
+
+/// Take the host run's directories and network grant, then forbid `execve`.
+fn enter_host_mode(host: &crate::worker::protocol::HostRun) -> Result<()> {
+    shed_privileges()?;
+    let root = PathBuf::from(&host.root);
+    for directory in [
+        crate::domain::INPUTS,
+        crate::domain::BUILD,
+        crate::domain::OUT,
+    ] {
+        let path = root.join(directory.trim_start_matches('/'));
+        anyhow::ensure!(
+            std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_dir()),
+            "host directory {} is missing",
+            path.display()
+        );
+    }
+    crate::domain::set_host_root(root)?;
+    crate::helpers::acquire::net::install(&host.network, host.network_max_bytes)?;
+    forbid_programs()
+}
+
+/// The worker's own part of the host run's identity rule (the coordinator
+/// already set it up before `exec`, `crate::host`): a host worker never runs
+/// as root, holds no capability (ambient, effective, permitted or
+/// inheritable), cannot be traced or dumped by other processes of its user,
+/// and writes no core file.
+fn shed_privileges() -> Result<()> {
+    let (mut real, mut effective, mut saved) = (0, 0, 0);
+    if unsafe { libc::getresuid(&mut real, &mut effective, &mut saved) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("cannot read the worker's identity");
+    }
+    anyhow::ensure!(
+        real != 0 && effective != 0 && saved != 0,
+        "a host worker must not run as root (the coordinator starts it as an unprivileged user)"
+    );
+    unsafe {
+        libc::prctl(
+            libc::PR_CAP_AMBIENT,
+            libc::PR_CAP_AMBIENT_CLEAR_ALL as libc::c_ulong,
+            0,
+            0,
+            0,
+        );
+    }
+    crate::host::clear_capabilities().context("cannot drop the worker's capabilities")?;
+    watch_coordinator()?;
+    if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("cannot make the worker non-dumpable");
+    }
+    let none = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &none) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("cannot disable core files");
+    }
+    Ok(())
+}
+
+/// End the worker as soon as the coordinator that started it is gone, on two
+/// independent paths: the parent-death signal, armed again here (the
+/// coordinator armed it before `exec`, but a secure exec, such as an SELinux
+/// domain transition, clears it), and a thread that checks every quarter
+/// second that the worker's parent is still that coordinator.
+fn watch_coordinator() -> Result<()> {
+    let coordinator: libc::pid_t = std::env::var(crate::domain::ENV_COORDINATOR)
+        .ok()
+        .and_then(|pid| pid.parse().ok())
+        .context("a host worker needs its coordinator's pid")?;
+    if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("cannot arm the parent-death signal");
+    }
+    if unsafe { libc::getppid() } != coordinator {
+        unsafe { libc::_exit(137) };
+    }
+    std::thread::Builder::new()
+        .name("coordinator-watch".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_millis(250));
+                if unsafe { libc::getppid() } != coordinator {
+                    unsafe { libc::_exit(137) };
+                }
+            }
+        })
+        .context("cannot watch the coordinator")?;
+    Ok(())
+}
+
+/// A seccomp filter for the whole worker: `execve` and `execveat` fail with
+/// EPERM (as do x32 system calls), so no program starts in a host run even
+/// if a helper tried. Nor does a new process: `fork`, `vfork` and a `clone`
+/// without `CLONE_THREAD` fail with EPERM, and `clone3` (whose flags the
+/// filter cannot read) with ENOSYS, so the C library falls back to `clone`
+/// for threads. The worker therefore stays the one process the coordinator
+/// started, stops and kills. `no_new_privs` is required for an unprivileged
+/// filter.
+fn forbid_programs() -> Result<()> {
+    const LD_W_ABS: u16 = 0x20;
+    const JEQ_K: u16 = 0x15;
+    const JGE_K: u16 = 0x35;
+    const JSET_K: u16 = 0x45;
+    const RET_K: u16 = 0x06;
+    const AUDIT_ARCH_X86_64: u32 = 0xC000_003E;
+    const X32_BIT: u32 = 0x4000_0000;
+    const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
+    const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
+    let op = |code, jt, jf, k| libc::sock_filter { code, jt, jf, k };
+    let deny = libc::SECCOMP_RET_ERRNO | libc::EPERM as u32;
+    let unsupported = libc::SECCOMP_RET_ERRNO | libc::ENOSYS as u32;
+    // Jump offsets count from the next instruction; the three returns are
+    // at 13 (allow), 14 (deny) and 15 (unsupported).
+    let filter = [
+        op(LD_W_ABS, 0, 0, 4), // 0: seccomp_data.arch
+        op(JEQ_K, 1, 0, AUDIT_ARCH_X86_64),
+        op(RET_K, 0, 0, SECCOMP_RET_KILL_PROCESS),
+        op(LD_W_ABS, 0, 0, 0), // 3: seccomp_data.nr
+        op(JGE_K, 9, 0, X32_BIT),
+        op(JEQ_K, 8, 0, libc::SYS_execve as u32),
+        op(JEQ_K, 7, 0, libc::SYS_execveat as u32),
+        op(JEQ_K, 6, 0, libc::SYS_fork as u32),
+        op(JEQ_K, 5, 0, libc::SYS_vfork as u32),
+        op(JEQ_K, 5, 0, libc::SYS_clone3 as u32),
+        op(JEQ_K, 0, 2, libc::SYS_clone as u32), // 10
+        op(LD_W_ABS, 0, 0, 16),                  // 11: seccomp_data.args[0], low half (flags)
+        op(JSET_K, 0, 1, libc::CLONE_THREAD as u32),
+        op(RET_K, 0, 0, SECCOMP_RET_ALLOW), // 13
+        op(RET_K, 0, 0, deny),              // 14
+        op(RET_K, 0, 0, unsupported),       // 15
+    ];
+    let program = libc::sock_fprog {
+        len: filter.len() as u16,
+        filter: filter.as_ptr() as *mut libc::sock_filter,
+    };
+    if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("cannot set no_new_privs");
+    }
+    // TSYNC: every thread of the worker gets the filter.
+    if unsafe {
+        libc::syscall(
+            libc::SYS_seccomp,
+            libc::SECCOMP_SET_MODE_FILTER,
+            libc::SECCOMP_FILTER_FLAG_TSYNC,
+            &program as *const libc::sock_fprog,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error())
+            .context("cannot install the filter that forbids starting programs");
+    }
+    Ok(())
 }
 
 /// Read and validate the single request frame (host→worker direction).
@@ -243,9 +413,9 @@ fn run_operation(
     tx: &SharedChannel,
     output: &mut impl Write,
 ) -> std::result::Result<serde_json::Value, FailureInfo> {
-    let recipe = Path::new(crate::domain::MAIN_RECIPE);
-    let build_dir = Path::new(crate::domain::BUILD);
-    let search_path = Path::new(crate::domain::INPUTS);
+    let recipe = &crate::domain::local(crate::domain::MAIN_RECIPE);
+    let build_dir = &crate::domain::local(crate::domain::BUILD);
+    let search_path = &crate::domain::local(crate::domain::INPUTS);
     if !recipe.is_file() || !build_dir.is_dir() {
         return Err(request_failure(format!(
             "the domain lacks {} or {}",
@@ -253,17 +423,29 @@ fn run_operation(
             build_dir.display()
         )));
     }
-    let engine = build_engine(search_path);
+    let engine = build_engine(search_path, req.host.is_none());
     let mut checkpoint_no: u64 = 0;
     let mut sink = |recipe: &Path, ctx: &rhai::Map| -> Result<()> {
         report_checkpoint(tx, output, rx, input, &mut checkpoint_no, recipe, ctx)
             .map(drop)
             .map_err(|err| anyhow!("checkpoint #{checkpoint_no}: {err:#}"))
     };
+    // Saved states are keyed by domain path; a host worker knows its recipes
+    // by their host paths.
+    let restored = req
+        .restored_states
+        .iter()
+        .map(|(recipe, state)| {
+            (
+                crate::domain::local(recipe).to_string_lossy().into_owned(),
+                state.clone(),
+            )
+        })
+        .collect();
     let mut exec = ExecutionContext::new(
         &mut sink,
         req.options.execution.clone(),
-        &req.restored_states,
+        &restored,
         req.persist_state,
     )
     .map_err(|err| request_failure(format!("restoring saved state: {err:#}")))?;
@@ -287,7 +469,32 @@ fn run_operation(
         }
     }
     .map_err(engine_failure)?;
-    ctx_json(&final_ctx).map_err(|err| engine_failure(err.into()))
+    let mut summary = ctx_json(&final_ctx).map_err(|err| engine_failure(err.into()))?;
+    if req.host.is_some() {
+        domain_outputs(&mut summary).map_err(|err| engine_failure(err.into()))?;
+    }
+    Ok(summary)
+}
+
+/// A host run's outputs name host paths; the coordinator takes outputs by
+/// their domain paths (`/out/...`, `/work/...`), as from a Ginux run.
+fn domain_outputs(summary: &mut serde_json::Value) -> Result<()> {
+    let Some(outputs) = summary
+        .get_mut("outputs")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return Ok(());
+    };
+    for (name, value) in outputs.iter_mut() {
+        let Some(path) = value.as_str() else {
+            continue;
+        };
+        let domain = crate::domain::domain_path(Path::new(path)).with_context(|| {
+            format!("ctx.outputs.{name} = {path} is outside this run's directories")
+        })?;
+        *value = serde_json::Value::String(domain);
+    }
+    Ok(())
 }
 
 /// Resolve modules by [`crate::recipes::find_related`]: beside the importing
@@ -336,8 +543,8 @@ impl rhai::ModuleResolver for PreparedModules {
     }
 }
 
-fn build_engine(search_path: &Path) -> rhai::Engine {
-    let mut engine = crate::core::invocation::engine();
+fn build_engine(search_path: &Path, programs: bool) -> rhai::Engine {
+    let mut engine = crate::core::invocation::engine(programs);
     engine.set_module_resolver(PreparedModules {
         root: search_path.to_path_buf(),
         files: rhai::module_resolvers::FileModuleResolver::new(),
@@ -371,10 +578,8 @@ fn report_checkpoint(
             output,
             &FramePayload::Checkpoint(CheckpointPayload {
                 seq,
-                recipe: recipe
-                    .to_str()
-                    .context("recipe identity is not UTF-8")?
-                    .to_owned(),
+                recipe: crate::domain::domain_path(recipe)
+                    .context("recipe identity is not UTF-8 or outside the run")?,
                 state,
             }),
         )
@@ -479,6 +684,7 @@ fn send_result(
             ok,
             failure,
             ctx_summary,
+            network_usage: crate::helpers::acquire::net::usage(),
         }),
     )
     .map_err(|e| anyhow!("send result: {e}"))?;

@@ -7,13 +7,15 @@ use rhai::{
 };
 use std::path::Path;
 
-pub(crate) fn engine() -> Engine {
+/// The worker's engine. `programs` is false in a host-mode worker, which then
+/// has none of [`crate::helpers::PROGRAM_HELPERS`].
+pub(crate) fn engine(programs: bool) -> Engine {
     let mut engine = Engine::new();
     engine.set_max_operations(2_000_000);
     engine.set_max_call_levels(64);
     set_expr_depths(&mut engine);
     engine.set_max_string_size(64 * 1024 * 1024);
-    crate::helpers::register_all(&mut engine);
+    crate::helpers::register_all(&mut engine, programs);
     engine
 }
 
@@ -56,15 +58,34 @@ fn runtime_map(inputs: &RuntimeInputs<'_>) -> Map {
             inputs.base_dir.map_or_else(|| "".into(), text),
         ),
         ("build".into(), text(inputs.build_dir)),
-        ("tools".into(), crate::domain::TOOLS.into()),
-        ("inputs".into(), crate::domain::INPUTS.into()),
+        // The domain paths in Ginux; the same directories below the host
+        // root in a host run (`crate::domain::local`).
+        (
+            "tools".into(),
+            text(&crate::domain::local(crate::domain::TOOLS)),
+        ),
+        (
+            "inputs".into(),
+            text(&crate::domain::local(crate::domain::INPUTS)),
+        ),
         (
             "dependencies".into(),
-            crate::domain::input_path(crate::domain::DEPENDENCY_INPUT).into(),
+            text(&crate::domain::local(&crate::domain::input_path(
+                crate::domain::DEPENDENCY_INPUT,
+            ))),
         ),
-        ("output".into(), crate::domain::OUT.into()),
-        ("target".into(), crate::domain::OUT.into()),
-        ("temp".into(), crate::domain::TMP.into()),
+        (
+            "output".into(),
+            text(&crate::domain::local(crate::domain::OUT)),
+        ),
+        (
+            "target".into(),
+            text(&crate::domain::local(crate::domain::OUT)),
+        ),
+        (
+            "temp".into(),
+            text(&crate::domain::local(crate::domain::TMP)),
+        ),
         // Where the package will live once activated; unit when it will not
         // be activated (--no-activate, a dependency).
         (

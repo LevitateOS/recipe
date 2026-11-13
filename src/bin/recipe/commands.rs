@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use levitate_recipe::packages::{InstalledPackage, PackageStore};
-use levitate_recipe::{AutoFixConfig, GinuxLauncher, RecipeEngine, bin_support};
+use levitate_recipe::{AutoFixConfig, RecipeEngine, bin_support};
 use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::path::PathBuf;
@@ -98,6 +98,7 @@ fn run(cli: Cli) -> Result<()> {
     execution.force_build = cli.force_build;
     execution.force_install = cli.force_install;
     execution.exact_identity = cli.exact_identity || levitate_recipe::identity::exact_from_env()?;
+    execution.execution = cli.execution;
     execution.narrowing = levitate_recipe::needs::Narrowing {
         timeout_secs: cli.timeout_secs,
         memory_mib: cli.memory_mib,
@@ -929,7 +930,6 @@ fn create_engine(
     let mut execution = execution.clone();
     execution.package_prefix = package_prefix(*activate_into, recipe, *recipes_path)?;
     execution.validate()?;
-    let launcher = GinuxLauncher::from_env()?;
     let engine = match build_dir {
         Some(dir) => {
             std::fs::create_dir_all(dir)
@@ -939,8 +939,9 @@ fn create_engine(
         None if *no_persist_state => RecipeEngine::with_temporary_destination()?,
         None => RecipeEngine::new(levitate_recipe::default_destination(*state_dir, recipe)?),
     };
+    // The Ginux launcher is resolved when a recipe of the run needs Ginux;
+    // a run entirely on the host needs none.
     let mut engine = engine
-        .with_launcher(launcher)
         .with_state_persistence(!*no_persist_state)
         .with_state_dir(state_dir.map(Path::to_owned))
         .with_execution_options(execution)
@@ -1517,6 +1518,14 @@ fn show_info(recipe_path: &Path, search_path: Option<&Path>) -> Result<()> {
             host.found
         );
     }
+    // Where `--execution auto` runs it, from its source alone.
+    if let Ok(eligibility) = levitate_recipe::execution::eligibility(recipe_path, search_path) {
+        let runs = match &eligibility.blocker {
+            None => "on the host (it starts no program)".to_owned(),
+            Some(blocker) => format!("in Ginux (it {blocker})"),
+        };
+        println!("{:<12} {runs}", "Runs:".bold());
+    }
 
     Ok(())
 }
@@ -1629,6 +1638,11 @@ fn system_route(cli: &Cli) -> Result<bool> {
             "--jobs",
             &cli.jobs.to_string(),
         ]);
+        // Only a non-default choice is passed on, so a run through recab
+        // works with a recipe that predates --execution.
+        if cli.execution != levitate_recipe::ExecutionMode::Auto {
+            cmd.arg("--execution").arg(cli.execution.as_str());
+        }
         for (flag, value) in [
             ("--timeout-secs", cli.timeout_secs),
             ("--memory-mib", cli.memory_mib),

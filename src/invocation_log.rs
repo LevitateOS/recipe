@@ -110,7 +110,11 @@ impl InvocationLog {
         use std::io::Write;
         let record = serde_json::json!({"version":AUTHORITY_VERSION,"declaration":prepared.declaration,
             "execution":prepared.execution,"contract":prepared.contract,
-            "config":std::fs::read_to_string(prepared.config_path())?,
+            "config":match &prepared.contract {
+                Some(_) => serde_json::Value::String(std::fs::read_to_string(prepared.config_path())?),
+                None => serde_json::Value::Null,
+            },
+            "execution_mode": if prepared.contract.is_some() { "ginux" } else { "host" },
             "pinned_endpoints":prepared.network.endpoints, "host_endpoints":prepared.network.host_endpoints});
         let bytes = serde_json::to_vec(&record)?;
         anyhow::ensure!(

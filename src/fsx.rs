@@ -5,11 +5,12 @@
 
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
+use std::ffi::{CStr, CString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Open `path` for reading without following a final symlink or blocking on a
 /// FIFO, and require a regular file.
@@ -63,17 +64,216 @@ pub fn private_dir(path: &Path, durable: bool) -> Result<()> {
 }
 
 /// Make every directory under `path` owner-writable so the tree can be removed.
-/// Links are never followed. Best effort: removal reports what still fails.
+/// Links are never followed, by descriptor: each directory is opened with
+/// `O_NOFOLLOW` below the one before and changed through that descriptor, so
+/// a tree another process is still changing cannot redirect it. Best effort:
+/// removal reports what still fails.
 pub fn make_removable(path: &Path) {
-    for entry in walkdir::WalkDir::new(path)
-        .follow_links(false)
-        .into_iter()
-        .flatten()
-    {
-        if entry.file_type().is_dir() {
-            let _ = fs::set_permissions(entry.path(), fs::Permissions::from_mode(0o700));
+    let Ok(name) = cstring(path.as_os_str().as_encoded_bytes()) else {
+        return;
+    };
+    let Ok(fd) = check(unsafe {
+        libc::open(
+            name.as_ptr(),
+            libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    }) else {
+        return;
+    };
+    let _ = removable(unsafe { OwnedFd::from_raw_fd(fd) });
+}
+
+fn removable(directory: OwnedFd) -> std::io::Result<()> {
+    let _ = chmod_fd(directory.as_fd(), 0o700);
+    let readable = openat(
+        directory.as_fd(),
+        c".",
+        libc::O_RDONLY | libc::O_DIRECTORY,
+        0,
+    )?;
+    for name in list_at(readable.as_fd())? {
+        let Ok((child, metadata)) = lstat_at(readable.as_fd(), &name) else {
+            continue;
+        };
+        if metadata.is_dir() {
+            let _ = removable(child);
         }
     }
+    Ok(())
+}
+
+// ============================================================================
+// Descriptor walks: each step opens one name below an open directory, never
+// following a link, so a tree another process writes cannot redirect it.
+// ============================================================================
+
+/// `bytes` as a C string (an interior NUL is EINVAL).
+pub(crate) fn cstring(bytes: &[u8]) -> std::io::Result<CString> {
+    CString::new(bytes).map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))
+}
+
+/// A libc return value, or the error it reported.
+pub(crate) fn check(result: libc::c_int) -> std::io::Result<libc::c_int> {
+    if result < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(result)
+    }
+}
+
+/// `openat(dir, name, flags | O_CLOEXEC, mode)`.
+pub(crate) fn openat(
+    dir: BorrowedFd<'_>,
+    name: &CStr,
+    flags: libc::c_int,
+    mode: libc::mode_t,
+) -> std::io::Result<OwnedFd> {
+    let fd = check(unsafe {
+        libc::openat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            flags | libc::O_CLOEXEC,
+            mode as libc::c_uint,
+        )
+    })?;
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Open the directory `path` itself for reading, refusing a final link.
+pub(crate) fn open_dir(path: &Path) -> std::io::Result<OwnedFd> {
+    let name = cstring(path.as_os_str().as_encoded_bytes())?;
+    let fd = check(unsafe {
+        libc::open(
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    })?;
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Open the directory `name` below `dir` for reading, never through a link.
+pub(crate) fn open_dir_at(dir: BorrowedFd<'_>, name: &CStr) -> std::io::Result<OwnedFd> {
+    openat(
+        dir,
+        name,
+        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+        0,
+    )
+}
+
+/// The entry `name` below `dir` itself (`O_PATH | O_NOFOLLOW`: a link is the
+/// link) and its metadata, read from that descriptor.
+pub(crate) fn lstat_at(
+    dir: BorrowedFd<'_>,
+    name: &CStr,
+) -> std::io::Result<(OwnedFd, fs::Metadata)> {
+    let fd = openat(dir, name, libc::O_PATH | libc::O_NOFOLLOW, 0)?;
+    let metadata = File::from(fd.try_clone()?).metadata()?;
+    Ok((fd, metadata))
+}
+
+/// Open the regular file `name` below `dir` for reading: never through a
+/// link, never blocking on a FIFO, and checked by `fstat` after the open.
+pub(crate) fn open_regular_at(dir: BorrowedFd<'_>, name: &CStr) -> std::io::Result<File> {
+    let file = File::from(openat(
+        dir,
+        name,
+        libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        0,
+    )?);
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+/// The names in an open directory, without `.` and `..`, in byte order.
+pub(crate) fn list_at(dir: BorrowedFd<'_>) -> std::io::Result<Vec<CString>> {
+    let copy = check(unsafe { libc::fcntl(dir.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) })?;
+    let stream = unsafe { libc::fdopendir(copy) };
+    if stream.is_null() {
+        let error = std::io::Error::last_os_error();
+        unsafe { libc::close(copy) };
+        return Err(error);
+    }
+    // A duplicate shares the offset: start from the beginning.
+    unsafe { libc::rewinddir(stream) };
+    let mut names = Vec::new();
+    let result = loop {
+        unsafe { *libc::__errno_location() = 0 };
+        let entry = unsafe { libc::readdir(stream) };
+        if entry.is_null() {
+            let errno = unsafe { *libc::__errno_location() };
+            break if errno == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::from_raw_os_error(errno))
+            };
+        }
+        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
+        if name.to_bytes() != b"." && name.to_bytes() != b".." {
+            names.push(name.to_owned());
+        }
+    };
+    unsafe { libc::closedir(stream) };
+    names.sort();
+    result.map(|()| names)
+}
+
+/// The target of the link an `O_PATH | O_NOFOLLOW` descriptor names.
+pub(crate) fn read_link_fd(link: BorrowedFd<'_>) -> std::io::Result<PathBuf> {
+    let mut buffer = vec![0u8; libc::PATH_MAX as usize];
+    let length = unsafe {
+        libc::readlinkat(
+            link.as_raw_fd(),
+            c"".as_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+        )
+    };
+    if length < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    buffer.truncate(length as usize);
+    Ok(PathBuf::from(
+        <std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec(buffer),
+    ))
+}
+
+/// Change the mode of the inode an (`O_PATH`) descriptor names, which the
+/// caller has checked is not a link: `fchmodat2(fd, "", AT_EMPTY_PATH)`
+/// (Linux 6.6), else `chmod` of its `/proc/self/fd` entry, which applies to
+/// that inode.
+pub(crate) fn chmod_fd(fd: BorrowedFd<'_>, mode: u32) -> std::io::Result<()> {
+    const SYS_FCHMODAT2: libc::c_long = 452;
+    let changed = unsafe {
+        libc::syscall(
+            SYS_FCHMODAT2,
+            fd.as_raw_fd(),
+            c"".as_ptr(),
+            mode as libc::mode_t,
+            libc::AT_EMPTY_PATH,
+        )
+    };
+    if changed == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if !matches!(error.raw_os_error(), Some(libc::ENOSYS | libc::EINVAL)) {
+        return Err(error);
+    }
+    let path = cstring(format!("/proc/self/fd/{}", fd.as_raw_fd()).as_bytes())?;
+    check(unsafe { libc::chmod(path.as_ptr(), mode as libc::mode_t) })
+        .map(drop)
+        .map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("cannot change a mode by descriptor (needs Linux 6.6 or /proc): {error}"),
+            )
+        })
 }
 
 /// Copy at most `maximum` bytes from `input` to `output`, returning the byte

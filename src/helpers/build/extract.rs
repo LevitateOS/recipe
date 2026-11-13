@@ -19,7 +19,6 @@
 use crate::core::output;
 
 use rhai::EvalAltResult;
-use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read};
 use std::path::{Component, Path, PathBuf};
 
@@ -242,7 +241,7 @@ fn extract_tar_file(
     dest: &Path,
     format: &str,
 ) -> Result<(), Box<EvalAltResult>> {
-    let file = File::open(archive_path)
+    let file = crate::helpers::confine::open_read(archive_path)
         .map_err(|e| format!("cannot open {}: {}", archive_path.display(), e))?;
     let reader = BufReader::new(file);
     match format {
@@ -264,7 +263,7 @@ fn extract_tar_file(
 /// members (signature/control/data tar streams). We must iterate each gzip
 /// member and unpack every tar payload.
 fn extract_apk(archive_path: &Path, dest: &Path) -> Result<(), Box<EvalAltResult>> {
-    let file = File::open(archive_path)
+    let file = crate::helpers::confine::open_read(archive_path)
         .map_err(|e| format!("cannot open {}: {}", archive_path.display(), e))?;
     let mut source = BufReader::new(file);
 
@@ -301,7 +300,7 @@ fn extract_apk(archive_path: &Path, dest: &Path) -> Result<(), Box<EvalAltResult
 
 /// Extract a zip archive
 fn extract_zip(archive_path: &Path, dest: &Path) -> Result<(), Box<EvalAltResult>> {
-    let file = File::open(archive_path)
+    let file = crate::helpers::confine::open_read(archive_path)
         .map_err(|e| format!("cannot open {}: {}", archive_path.display(), e))?;
 
     let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("zip read error: {}", e))?;
@@ -419,8 +418,9 @@ pub fn extract_with_format(
     let dest_path = Path::new(dest);
 
     ensure_no_symlink_components(dest_path, dest_path)?;
-    // Create destination directory if needed, after validating existing ancestors.
-    std::fs::create_dir_all(dest_path)
+    // Create destination directory if needed, after validating existing
+    // ancestors; below the run's directories in a host run.
+    crate::helpers::confine::mkdir_all(dest_path)
         .map_err(|e| format!("cannot create destination directory: {}", e))?;
 
     let filename = archive_path

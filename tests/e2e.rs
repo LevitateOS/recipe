@@ -56,7 +56,18 @@ fn run_recipe(args: &[&str], recipes: &Path) -> std::process::Output {
         .expect("Failed to execute recipe command")
 }
 
+/// The CLI in Ginux mode: these suites exercise the Ginux domain (their
+/// recipes spell domain paths such as `/out` literally). Host runs are
+/// covered by [`host_command`].
 fn recipe_command(recipes: &Path) -> Command {
+    let mut command = host_command(recipes);
+    command.args(["--execution", "ginux"]);
+    command
+}
+
+/// The CLI with the default `--execution auto`: a recipe that starts no
+/// program runs on the host.
+fn host_command(recipes: &Path) -> Command {
     let root = recipes
         .parent()
         .expect("recipes directory has a fixture root");

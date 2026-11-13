@@ -19,7 +19,7 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const GITHUB_API_BASE: &str = "https://api.github.com";
 
 /// Create an unauthenticated GitHub API request (the worker holds no credentials).
-fn github_request(url: &str) -> Result<ureq::Request, Box<EvalAltResult>> {
+fn github_request(url: &str) -> Result<super::Fetch, Box<EvalAltResult>> {
     let request = super::http_request(url, HTTP_TIMEOUT)?
         .set("Accept", "application/vnd.github.v3+json")
         .set("User-Agent", "recipe-package-manager");
@@ -30,8 +30,7 @@ fn github_request(url: &str) -> Result<ureq::Request, Box<EvalAltResult>> {
 fn response_text(response: ureq::Response) -> Result<String, Box<EvalAltResult>> {
     const LIMIT: u64 = 8 * 1024 * 1024;
     let mut bytes = Vec::new();
-    response
-        .into_reader()
+    super::net::body(response)
         .take(LIMIT + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("cannot read HTTP metadata: {error}"))?;

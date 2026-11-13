@@ -196,6 +196,7 @@ pub fn restored_state_budget(options: &InvocationOptions) -> Result<usize, Proto
         cleanup_reason: Some("x".repeat(MAX_CLEANUP_REASON)),
         options: options.clone(),
         restored_states: Default::default(),
+        host: None,
     };
     let payload = serde_json::to_vec(&request)
         .map_err(|e| ProtocolError::PayloadInvalid(format!("measure request: {e}")))?;
@@ -222,6 +223,46 @@ pub struct RequestPayload {
     pub options: InvocationOptions,
     /// Matching per-recipe runtime state; the coordinator restores its files.
     pub restored_states: std::collections::BTreeMap<String, serde_json::Value>,
+    /// Present exactly for a host-mode worker (`crate::execution`): where its
+    /// directories are and what it may reach. Absent, and not serialized, for
+    /// a Ginux worker, whose frames are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<HostRun>,
+}
+
+/// What a host-mode worker needs that a Ginux domain would have provided.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostRun {
+    /// The host directory standing in for the domain root: it holds
+    /// `inputs`, `work/{build,tools,tmp}` and `out` (`crate::domain::local`).
+    pub root: String,
+    /// Declared `HOST:PORT` → the addresses the coordinator pinned for it.
+    pub network: std::collections::BTreeMap<String, Vec<String>>,
+    /// The run's received-byte budget (`NEEDS.network_max_bytes`).
+    pub network_max_bytes: u64,
+}
+
+/// Longest host root a request carries.
+const MAX_HOST_ROOT: usize = 4096;
+
+fn check_host(host: &HostRun) -> Result<(), ProtocolError> {
+    if !host.root.starts_with('/')
+        || host.root.len() > MAX_HOST_ROOT
+        || host.root.contains('\0')
+        || host.root.split('/').any(|part| part == "." || part == "..")
+        || host.network.len() > crate::domain::MAX_NETWORK_ENDPOINTS
+        || host
+            .network
+            .values()
+            .any(|pins| pins.is_empty() || pins.len() > crate::domain::MAX_NETWORK_ENDPOINTS)
+        || host.network_max_bytes == 0
+    {
+        return Err(ProtocolError::PayloadInvalid(
+            "invalid host run description".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -351,6 +392,11 @@ pub struct ResultPayload {
     pub failure: Option<FailureInfo>,
     /// Summary of the final `ctx` (plain JSON, no paths required).
     pub ctx_summary: serde_json::Value,
+    /// A host-mode worker's account of each declared endpoint (Ginux reports
+    /// it in its audit log instead). Absent from a Ginux worker's frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_usage:
+        Option<std::collections::BTreeMap<String, crate::helpers::acquire::net::EndpointUse>>,
 }
 
 /// Human bytes only: no lifecycle, output-path or result authority.
@@ -684,6 +730,9 @@ fn check_request(p: &RequestPayload) -> Result<(), ProtocolError> {
                 "invalid restored recipe state".into(),
             ));
         }
+    }
+    if let Some(host) = &p.host {
+        check_host(host)?;
     }
     if !crate::domain::valid_name(&p.invocation_id) {
         return Err(ProtocolError::PayloadInvalid(format!(

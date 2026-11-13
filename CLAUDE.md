@@ -1,9 +1,9 @@
 # CLAUDE.md - recipe
 
-Rhai-based recipe executor for LevitateOS. Every executable operation runs in a
-Ginux domain: the coordinator (`recipe` CLI / `RecipeEngine`) stages inputs,
-launches the Ginux supervisor, and a worker (the same binary) runs the recipe
-inside the domain.
+Rhai-based recipe executor for LevitateOS. The coordinator (`recipe` CLI /
+`RecipeEngine`) stages inputs and starts a worker (the same binary) that runs
+the recipe: inside a Ginux domain, or, for a recipe that starts no program, as
+a confined host process (`src/execution.rs`, `src/host.rs`).
 
 Read these instead of copies here; each fact has one home:
 
@@ -35,7 +35,8 @@ src/
 ├── bin/recipe.rs, bin/recipe/     CLI (and the private worker entry)
 ├── bin/recipe-image.rs            compiler-image producer
 ├── lib.rs                         RecipeEngine (library API)
-├── backend.rs, launch.rs          coordinator: invocation → Ginux run
+├── backend.rs, launch.rs, host.rs  coordinator: invocation → Ginux or host run
+├── execution.rs                   where each recipe runs (host or Ginux)
 ├── inputs/                        input discovery, staging, domain config, root
 ├── needs.rs, needs/               NEEDS declarations, derived Ginux contract, authority reports
 ├── target.rs                      target metadata manifest (helpers in helpers/target.rs)

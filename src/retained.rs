@@ -147,14 +147,16 @@ pub(crate) fn file_digest(path: &Path) -> Result<String> {
 }
 
 impl Retained {
+    #[allow(clippy::too_many_arguments)]
     pub fn open(
         root: Option<&Path>,
         destination: &Path,
         recipe: &Path,
         prepared: &PreparedInvocation,
         worker_digest: &str,
-        launcher: &Path,
+        launcher: Option<&Path>,
         options: &InvocationOptions,
+        host_root: Option<&Path>,
     ) -> Result<Self> {
         let root = state_root(root)?;
         durable_directory(&root)?;
@@ -172,7 +174,17 @@ impl Retained {
         let mut defines = options.defines.clone();
         defines.sort();
         // Saved state must fit the next invocation's request frame.
-        let state_budget = crate::worker::protocol::restored_state_budget(options)?;
+        let mut state_budget = crate::worker::protocol::restored_state_budget(options)?;
+        // A host run's request also carries its directory and network pins.
+        if let Some(host_root) = host_root {
+            let host = crate::worker::protocol::HostRun {
+                root: host_root.to_string_lossy().into_owned(),
+                network: prepared.network.host_grants(),
+                network_max_bytes: options.execution.network_max_bytes,
+            };
+            let reserve = serde_json::to_vec(&host)?.len() + r#","host":"#.len();
+            state_budget = state_budget.saturating_sub(reserve);
+        }
         let inputs = prepared
             .inputs
             .iter()
@@ -212,38 +224,71 @@ impl Retained {
             // store belong to one system.
             host_libc: _,
             package_prefix,
+            // The mode that ran enters below: a host run has an identity of
+            // its own, and a Ginux run's identity is the one it always was.
+            execution: _,
         } = &options.execution;
         // The executing tools are named by their declared behaviour versions
         // (`crate::identity`); exact identity also names their bytes. The two
         // never share an identity: `tools` is null in one and set in the other.
-        let tools = if *exact_identity {
-            let launcher_digest = file_digest(launcher)
-                .context("cannot read the ginux launcher for the exact identity")?;
-            Some((worker_digest.to_owned(), launcher_digest))
-        } else {
-            None
+        let tools = match (*exact_identity, launcher) {
+            (false, _) => None,
+            (true, Some(launcher)) => {
+                let launcher_digest = file_digest(launcher)
+                    .context("cannot read the ginux launcher for the exact identity")?;
+                Some((worker_digest.to_owned(), launcher_digest))
+            }
+            // A host run has no launcher; the worker alone executes it.
+            (true, None) => Some((worker_digest.to_owned(), String::new())),
         };
+        let inputs_value = serde_json::to_value(&inputs)?;
         // Requested hosts, not their resolved addresses: a DNS change must
         // not silently discard saved state.
-        let identity = Sha256::digest(serde_json::to_vec(&(
-            // v2: tools by declared versions (v1 hashed their bytes always).
-            "recipe-state-v2",
-            crate::identity::Declared::current(),
-            &tools,
-            network_hosts,
-            network_max_bytes,
-            &prepared.root_reference,
-            prepared.contract.catalog,
-            &prepared.contract.digest,
-            inputs,
-            defines,
-            target_os,
-            target_arch,
-            jobs,
-            memory_mib,
-            storage_max_objects,
-            storage_max_bytes,
-        ))?);
+        let identity = if let Some(host_root) = host_root {
+            // A host run: no root image and no Ginux contract, its own
+            // declared behaviour, and the directory its saved paths name.
+            Sha256::digest(serde_json::to_vec(&(
+                "recipe-state-v2-host",
+                crate::identity::Declared::current(),
+                crate::identity::HOST_BEHAVIOUR,
+                &tools,
+                host_root,
+                network_hosts,
+                network_max_bytes,
+                &inputs_value,
+                &defines,
+                target_os,
+                target_arch,
+                jobs,
+                memory_mib,
+                storage_max_objects,
+                storage_max_bytes,
+            ))?)
+        } else {
+            let contract = prepared
+                .contract
+                .as_ref()
+                .context("a Ginux run carries its contract")?;
+            Sha256::digest(serde_json::to_vec(&(
+                // v2: tools by declared versions (v1 hashed their bytes always).
+                "recipe-state-v2",
+                crate::identity::Declared::current(),
+                &tools,
+                network_hosts,
+                network_max_bytes,
+                &prepared.root_reference,
+                contract.catalog,
+                &contract.digest,
+                inputs,
+                defines,
+                target_os,
+                target_arch,
+                jobs,
+                memory_mib,
+                storage_max_objects,
+                storage_max_bytes,
+            ))?)
+        };
         // The package's folder is written into what a build carries
         // (RUNTIME.paths.prefix), so a build belongs to the store it was
         // made for: installing the same recipe into another store builds

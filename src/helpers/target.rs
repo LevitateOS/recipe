@@ -1,5 +1,6 @@
 //! Package metadata collection inside the managed domain. Extraction grants
 //! apply only to staging; package metadata stays in the target manifest.
+use super::confine;
 use super::rpm_package;
 use crate::target::{self, Entry, Manifest};
 use anyhow::{Context, Result, bail, ensure};
@@ -469,12 +470,22 @@ fn file_caps(text: &str) -> Result<Vec<u8>> {
 pub fn capture_apks(root: &str, paths: rhai::Array) -> Result<(), Box<EvalAltResult>> {
     recipe_result((|| {
         let root = Path::new(root);
-        let database = ["lib/apk/db/installed", "usr/lib/apk/db/installed"]
-            .iter()
-            .map(|p| root.join(p))
-            .find(|p| p.is_file())
-            .context("APK installed database missing")?;
-        let text = fs::read_to_string(database)?;
+        // Resolved like any helper path: a link on the way may not leave
+        // the run's directories in a host run, and the file is opened
+        // without following one.
+        let mut database = None;
+        for candidate in ["lib/apk/db/installed", "usr/lib/apk/db/installed"] {
+            let path = root.join(candidate);
+            let path = confine::derived(&path, confine::Access::Read)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            if confine::lstat(&path).is_ok_and(|m| m.is_file()) {
+                database = Some(path);
+                break;
+            }
+        }
+        let database = database.context("APK installed database missing")?;
+        let mut text = String::new();
+        confine::open_read(&database)?.read_to_string(&mut text)?;
         let mut archives = BTreeMap::new();
         for directory in paths {
             for item in walkdir::WalkDir::new(directory.to_string()).follow_links(false) {
@@ -498,7 +509,7 @@ pub fn capture_apks(root: &str, paths: rhai::Array) -> Result<(), Box<EvalAltRes
             };
             let name = format!("{}-{}.apk", field("P:")?, field("V:")?);
             let archive = archives.get(&name).with_context(|| format!("no pinned package archive for installed {name}; metadata cannot be reconstructed"))?;
-            let mut source = BufReader::new(File::open(archive)?);
+            let mut source = BufReader::new(confine::open_read(archive)?);
             while !source.fill_buf()?.is_empty() {
                 let mut gz = flate2::bufread::GzDecoder::new(source);
                 read_tar(&mut gz, root, &mut manifest, false, None)
@@ -515,8 +526,14 @@ pub fn mode(root: &str, path: &str, mode: i64) -> Result<(), Box<EvalAltResult>>
     recipe_result((|| {
         let mode: u32 = mode.try_into()?;
         let full = target::set_mode(Path::new(root), Path::new(path), mode)?;
-        let grant = if full.is_dir() { 0o700 } else { 0o600 };
-        fs::set_permissions(full, fs::Permissions::from_mode((mode & 0o777) | grant))?;
+        // The member itself: a link's mode is only recorded, never applied
+        // through it.
+        let metadata = confine::lstat(&full)?;
+        if metadata.file_type().is_symlink() {
+            return Ok(());
+        }
+        let grant = if metadata.is_dir() { 0o700 } else { 0o600 };
+        confine::chmod(&full, (mode & 0o777) | grant)?;
         Ok(())
     })())
 }
@@ -532,8 +549,9 @@ pub fn remove(root: &str, path: &str) -> Result<(), Box<EvalAltResult>> {
 pub fn unpack_tree(archive: &str, root: &str) -> Result<(), Box<EvalAltResult>> {
     recipe_result((|| {
         let root = Path::new(root);
-        fs::create_dir_all(root)?;
-        let file = File::open(archive).with_context(|| format!("opening {archive}"))?;
+        confine::mkdir_all(root)?;
+        let file =
+            confine::open_read(Path::new(archive)).with_context(|| format!("opening {archive}"))?;
         let total = file.metadata()?.len();
         target::unpack_tree(BufReader::new(file), root, &mut |done| {
             crate::core::output::progress_report(done, total, "bytes of the tree")
@@ -543,11 +561,13 @@ pub fn unpack_tree(archive: &str, root: &str) -> Result<(), Box<EvalAltResult>> 
 
 pub fn pack_tree(root: &str, archive: &str) -> Result<(), Box<EvalAltResult>> {
     recipe_result((|| {
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(archive)
-            .with_context(|| format!("creating {archive}"))?;
+        let file = confine::open(
+            Path::new(archive),
+            fs::OpenOptions::new().write(true).create_new(true),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+            0o666,
+        )
+        .with_context(|| format!("creating {archive}"))?;
         let mut out = std::io::BufWriter::new(file);
         target::write_tree(Path::new(root), &mut out, true)?;
         out.into_inner()

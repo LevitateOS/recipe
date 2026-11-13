@@ -33,11 +33,14 @@ pub mod clibrary;
 mod core;
 mod diagnostics;
 mod domain;
+/// Where a recipe runs: in a Ginux domain or on the host (`--execution`).
+pub mod execution;
 mod failure;
 #[doc(hidden)]
 pub mod fsx;
 mod ginux;
 mod helpers;
+mod host;
 /// Declared behaviour versions that name Recipe and Ginux in cache identities.
 pub mod identity;
 #[doc(hidden)]
@@ -67,6 +70,7 @@ mod worker;
 
 pub use backend::GinuxLauncher;
 pub use core::executor::{DeclaredMetadata, declared_metadata};
+pub use execution::ExecutionMode;
 pub use options::ExecutionOptions;
 
 /// The default destination (lock and saved-state scope) for `recipe` under
@@ -167,8 +171,8 @@ pub struct RecipeEngine {
     state_dir: Option<PathBuf>,
     llm_profile: Option<String>,
     autofix: Option<AutoFixConfig>,
-    /// Explicit launcher selection; None resolves mandatory Ginux from the
-    /// environment when an operation starts.
+    /// Explicit launcher selection; None resolves Ginux from the environment
+    /// when a recipe of the operation runs in Ginux (`crate::execution`).
     launcher: Option<GinuxLauncher>,
     /// Owns `build_dir` when it is a throwaway destination; removed on drop.
     _temporary: Option<tempfile::TempDir>,
@@ -276,15 +280,7 @@ impl RecipeEngine {
     ///
     /// Returns the final ctx map containing all recipe state.
     pub fn execute(&self, recipe_path: &Path) -> Result<serde_json::Value> {
-        let launcher = self.launcher()?;
-        let install = || {
-            self.invoke(
-                &launcher,
-                worker::protocol::Operation::Install,
-                None,
-                recipe_path,
-            )
-        };
+        let install = || self.invoke(worker::protocol::Operation::Install, None, recipe_path);
         let Some(cfg) = &self.autofix else {
             return install();
         };
@@ -359,12 +355,7 @@ impl RecipeEngine {
     ///
     /// Returns the final ctx map after removal.
     pub fn remove(&self, recipe_path: &Path) -> Result<serde_json::Value> {
-        self.invoke(
-            &self.launcher()?,
-            worker::protocol::Operation::Remove,
-            None,
-            recipe_path,
-        )
+        self.invoke(worker::protocol::Operation::Remove, None, recipe_path)
     }
 
     /// Clean up build artifacts with an explicit reason.
@@ -376,7 +367,6 @@ impl RecipeEngine {
         reason: &str,
     ) -> Result<serde_json::Value> {
         self.invoke(
-            &self.launcher()?,
             worker::protocol::Operation::Cleanup,
             Some(reason),
             recipe_path,
@@ -385,54 +375,41 @@ impl RecipeEngine {
 
     /// Execute `is_installed(ctx)` manually.
     pub fn is_installed(&self, recipe_path: &Path) -> Result<serde_json::Value> {
-        self.invoke(
-            &self.launcher()?,
-            worker::protocol::Operation::IsInstalled,
-            None,
-            recipe_path,
-        )
+        self.invoke(worker::protocol::Operation::IsInstalled, None, recipe_path)
     }
 
     /// Execute `is_built(ctx)` manually.
     pub fn is_built(&self, recipe_path: &Path) -> Result<serde_json::Value> {
-        self.invoke(
-            &self.launcher()?,
-            worker::protocol::Operation::IsBuilt,
-            None,
-            recipe_path,
-        )
+        self.invoke(worker::protocol::Operation::IsBuilt, None, recipe_path)
     }
 
     /// Execute `is_acquired(ctx)` manually.
     pub fn is_acquired(&self, recipe_path: &Path) -> Result<serde_json::Value> {
-        self.invoke(
-            &self.launcher()?,
-            worker::protocol::Operation::IsAcquired,
-            None,
-            recipe_path,
-        )
+        self.invoke(worker::protocol::Operation::IsAcquired, None, recipe_path)
     }
 
     fn invoke(
         &self,
-        launcher: &GinuxLauncher,
         operation: worker::protocol::Operation,
         cleanup_reason: Option<&str>,
         recipe: &Path,
     ) -> Result<serde_json::Value> {
-        launcher.run(&launch::Invocation {
-            operation,
-            cleanup_reason,
-            recipe,
-            search_path: self.recipes_path.as_deref(),
-            persist_state: self.persist_state,
-            options: worker::protocol::InvocationOptions {
-                defines: self.defines.clone(),
-                execution: self.execution.clone(),
+        backend::run(
+            self.launcher.as_ref(),
+            &launch::Invocation {
+                operation,
+                cleanup_reason,
+                recipe,
+                search_path: self.recipes_path.as_deref(),
+                persist_state: self.persist_state,
+                options: worker::protocol::InvocationOptions {
+                    defines: self.defines.clone(),
+                    execution: self.execution.clone(),
+                },
+                inputs: &self.inputs,
+                destination: &self.build_dir,
+                state_dir: self.state_dir.as_deref(),
             },
-            inputs: &self.inputs,
-            destination: &self.build_dir,
-            state_dir: self.state_dir.as_deref(),
-        })
+        )
     }
 }

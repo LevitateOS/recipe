@@ -62,7 +62,9 @@ pub fn verify_file_hash(
     algorithm: HashAlgorithm,
 ) -> Result<(), Box<EvalAltResult>> {
     let expected = expected_digest(expected, algorithm)?;
-    let mut f = std::fs::File::open(file).map_err(|e| format!("cannot open file: {}", e))?;
+    // Below the run's directories in a host run (the caller resolved it).
+    let mut f =
+        crate::helpers::confine::open_read(file).map_err(|e| format!("cannot open file: {}", e))?;
 
     // Size only decides whether to show progress.
     let file_size = f.metadata().map(|m| m.len()).unwrap_or(0);

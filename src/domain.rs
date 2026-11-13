@@ -83,10 +83,17 @@ pub const MAX_INPUT_NAME: usize = MAX_PATH - INPUTS.len() - 1;
 pub const WORKER_ENTRY_ARG: &str = "--__recipe-worker";
 /// Worker argv after argv[0] (the launcher supplies argv[0] from the init).
 pub const WORKER_ARGS: [&str; 2] = [WORKER_ENTRY_ARG, MAIN_RECIPE];
+/// Worker argv after argv[0] for a host-mode worker (`crate::execution`). A
+/// worker that predates host mode refuses it at its bootstrap check instead
+/// of running domain paths on the host.
+pub const WORKER_HOST_ARGS: [&str; 2] = [WORKER_ENTRY_ARG, "--host"];
 /// Environment flag that marks a coordinator-started worker.
 pub const ENV_WORKER: &str = "RECIPE_WORKER";
 /// Environment variable carrying the invocation id into the worker.
 pub const ENV_INVOCATION: &str = "RECIPE_INVOCATION";
+/// The pid of the coordinator that started a host-mode worker: the worker
+/// ends as soon as that is no longer its parent (`crate::worker`).
+pub const ENV_COORDINATOR: &str = "RECIPE_COORDINATOR_PID";
 /// The value of [`ENV_WORKER`] in a coordinator-started worker.
 pub const ENV_WORKER_VALUE: &str = "1";
 
@@ -170,4 +177,48 @@ pub fn validate_export_path(path: &str) -> anyhow::Result<()> {
         anyhow::bail!("output is outside the writable domain filesystem: {path:?}");
     }
     Ok(())
+}
+
+/// The host directory standing in for the domain root in a host-mode worker
+/// (`crate::execution`), set once from the request before recipe code runs.
+/// Unset in a Ginux worker, where the domain paths above are real.
+static HOST_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Select the host root of this worker process. Only the worker calls it,
+/// once, before it loads a recipe.
+pub fn set_host_root(root: std::path::PathBuf) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        root.is_absolute() && root.parent().is_some(),
+        "host root must be an absolute directory"
+    );
+    HOST_ROOT
+        .set(root)
+        .map_err(|_| anyhow::anyhow!("host root is already set"))
+}
+
+/// The host root when this worker runs on the host.
+pub fn host_root() -> Option<&'static std::path::Path> {
+    HOST_ROOT.get().map(std::path::PathBuf::as_path)
+}
+
+/// Where the worker reaches the domain path `path` (one of the constants
+/// above, or a path below them): the path itself in Ginux, the same path
+/// below the host root on the host.
+pub fn local(path: &str) -> std::path::PathBuf {
+    match host_root() {
+        Some(root) => root.join(path.trim_start_matches('/')),
+        None => std::path::PathBuf::from(path),
+    }
+}
+
+/// The domain path of a worker path, the inverse of [`local`]. None for a path
+/// outside the host root on the host.
+pub fn domain_path(path: &std::path::Path) -> Option<String> {
+    match host_root() {
+        Some(root) => {
+            let relative = path.strip_prefix(root).ok()?;
+            Some(format!("/{}", relative.to_str()?))
+        }
+        None => path.to_str().map(str::to_owned),
+    }
 }

@@ -20,6 +20,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::Duration;
 
+use super::super::confine;
 use super::super::internal::fs_utils;
 use super::super::internal::hash::{self, HashAlgorithm};
 use super::super::internal::progress::Spinner;
@@ -39,7 +40,7 @@ pub fn download(
     if path.file_name().is_none() {
         return Err("download destination must name a regular file".into());
     }
-    match std::fs::symlink_metadata(path) {
+    match confine::lstat(path) {
         Ok(metadata) if !metadata.is_file() => {
             return Err("download destination must be a regular file".into());
         }
@@ -76,7 +77,7 @@ fn download_impl(url: &str, dest: &str, sha256: &str) -> Result<String, Box<Eval
 // Internal helpers
 // ============================================================================
 
-fn request(url: &str) -> Result<ureq::Request, Box<EvalAltResult>> {
+fn request(url: &str) -> Result<super::Fetch, Box<EvalAltResult>> {
     Ok(super::http_request(url, Duration::from_secs(300))?.set("Accept-Encoding", "identity"))
 }
 
@@ -103,7 +104,7 @@ fn content_length(response: &ureq::Response) -> Result<Option<u64>, Box<EvalAltR
 
 fn resume_impl(url: &str, dest: &str, sha256: &str) -> Result<String, Box<EvalAltResult>> {
     let dest_path = Path::new(dest);
-    let prefix = match File::open(dest_path) {
+    let prefix = match confine::open_read(dest_path) {
         Ok(file) => {
             let metadata = file
                 .metadata()
@@ -205,20 +206,17 @@ fn save_response_with_prefix(
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        let mut file = tempfile::Builder::new()
-            .prefix(".recipe-download.")
-            .tempfile_in(parent)
-            .map_err(|e| {
-                format!(
-                    "cannot create partial download in {}: {}",
-                    parent.display(),
-                    e
-                )
-            })?;
+        let mut file = confine::Staged::new(parent, ".recipe-download.").map_err(|e| {
+            format!(
+                "cannot create partial download in {}: {}",
+                parent.display(),
+                e
+            )
+        })?;
 
         let mut total_bytes = 0u64;
         if let Some((prefix, length)) = prefix {
-            total_bytes = std::io::copy(&mut prefix.take(length), &mut file)
+            total_bytes = std::io::copy(&mut prefix.take(length), file.file())
                 .map_err(|e| format!("cannot stage resume prefix: {e}"))?;
             if total_bytes != length {
                 return Err("resume prefix changed while staging".into());
@@ -228,7 +226,7 @@ fn save_response_with_prefix(
         // A front end is told at the start, a few times a second, and at the end.
         crate::core::output::fetch_event(filename, total_bytes, expected_total);
         let mut told = std::time::Instant::now();
-        let mut reader = response.into_reader();
+        let mut reader = super::net::body(response);
         let mut buffer = [0u8; 8192];
         loop {
             let bytes_read = reader
@@ -243,7 +241,8 @@ fn save_response_with_prefix(
             if expected_total.is_some_and(|total| total_bytes > total) {
                 return Err("download exceeds declared length".into());
             }
-            file.write_all(&buffer[..bytes_read])
+            file.file()
+                .write_all(&buffer[..bytes_read])
                 .map_err(|e| format!("write error: {}", e))?;
             pb.set_position(total_bytes);
             if told.elapsed() >= std::time::Duration::from_millis(250) {
@@ -256,11 +255,11 @@ fn save_response_with_prefix(
             return Err("download ended before the declared length".into());
         }
         hash::verify_file_hash(file.path(), sha256, HashAlgorithm::Sha256)?;
-        file.as_file()
+        file.file()
             .sync_all()
             .map_err(|e| format!("cannot flush download: {}", e))?;
         file.persist(dest)
-            .map_err(|e| format!("cannot publish download to {}: {}", dest.display(), e.error))?;
+            .map_err(|e| format!("cannot publish download to {}: {}", dest.display(), e))?;
         Ok(total_bytes)
     })();
     drop(pb);
@@ -312,15 +311,16 @@ fn fetch_response(
     let path = Path::new(dest);
     fs_utils::ensure_parent_dir(path)?;
     let parent = path.parent().ok_or("metadata destination needs a parent")?;
-    let mut output =
-        tempfile::NamedTempFile::new_in(parent).map_err(|e| format!("metadata staging: {e}"))?;
-    let mut input = response.into_reader().take(limit as u64 + 1);
-    let size = std::io::copy(&mut input, &mut output).map_err(|e| format!("metadata read: {e}"))?;
+    let mut output = confine::Staged::new(parent, ".recipe-fetch.")
+        .map_err(|e| format!("metadata staging: {e}"))?;
+    let mut input = super::net::body(response).take(limit as u64 + 1);
+    let size =
+        std::io::copy(&mut input, output.file()).map_err(|e| format!("metadata read: {e}"))?;
     if size > limit as u64 || declared.is_some_and(|n| n != size) {
         return Err("metadata length differs from acquisition bound/Content-Length".into());
     }
     output
-        .as_file()
+        .file()
         .sync_all()
         .map_err(|e| format!("metadata flush: {e}"))?;
     output
@@ -422,13 +422,15 @@ fn scoped_response(
         }
         grants.push(u);
     }
-    let agent = ureq::AgentBuilder::new()
-        .try_proxy_from_env(false)
-        .https_only(true)
-        .redirects(0)
-        .timeout_connect(Duration::from_secs(30))
-        .timeout(Duration::from_secs(300))
-        .build();
+    let (agent, record) = super::net::agent(
+        ureq::AgentBuilder::new()
+            .try_proxy_from_env(false)
+            .https_only(true)
+            .redirects(0)
+            .timeout_connect(Duration::from_secs(30))
+            .timeout(Duration::from_secs(300)),
+    );
+    let agent = agent.build();
     let mut address = url::Url::parse(initial).map_err(|e| failure(e.to_string()))?;
     let mut redirects = 0;
     let mut retries = 0;
@@ -445,11 +447,12 @@ fn scoped_response(
                 "acquisition URL/redirect leaves installed HTTPS delivery authority".into(),
             );
         }
-        let response = match agent
-            .get(address.as_str())
-            .set("Accept-Encoding", "identity")
-            .call()
-        {
+        let response = match super::net::call(
+            agent
+                .get(address.as_str())
+                .set("Accept-Encoding", "identity"),
+            record.as_ref(),
+        ) {
             Ok(r) => r,
             Err(ureq::Error::Status(code, r))
                 if matches!(code, 429 | 502 | 503 | 504) && retries < 2 =>

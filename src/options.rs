@@ -51,6 +51,12 @@ pub struct ExecutionOptions {
     /// by the coordinator: the worker runs in an image with a C library of its own.
     #[serde(default = "unknown_libc")]
     pub host_libc: String,
+    /// Where each recipe of the graph runs (`crate::execution`): `auto` runs
+    /// a recipe that starts no program on the host, `ginux` keeps every
+    /// recipe in Ginux, `host` requires the host. Coordinator only: never
+    /// sent to the worker, which learns its mode from the request.
+    #[serde(skip)]
+    pub execution: crate::ExecutionMode,
 }
 fn unknown_libc() -> String {
     "unknown".into()
@@ -76,6 +82,7 @@ impl Default for ExecutionOptions {
             exact_identity: false,
             package_prefix: None,
             host_libc: crate::clibrary::detect().libc.into(),
+            execution: crate::ExecutionMode::Auto,
         }
     }
 }

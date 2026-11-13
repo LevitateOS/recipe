@@ -63,6 +63,14 @@ pub const ENGINE_BEHAVIOUR: u32 = 1;
 /// observable for cache reuse is this consumer's policy.
 pub const GINUX_BEHAVIOUR: u32 = 1;
 
+/// What a host run does differently from a Ginux run (`crate::execution`),
+/// beyond [`ENGINE_BEHAVIOUR`]: the host directories that stand in for the
+/// domain, the snapshot and export archives made from them, path confinement,
+/// and the network client's own grant. It enters only the saved-state
+/// identity of host runs, so Ginux runs and the OS builder's part keys
+/// ([`declared`]) are unaffected. Bump it with any change to those.
+pub const HOST_BEHAVIOUR: u32 = 1;
+
 /// The environment variable that selects exact identity in the CLI: `1` on,
 /// `0` or empty off; anything else is an error.
 pub const EXACT_ENV: &str = "RECIPE_EXACT_IDENTITY";
