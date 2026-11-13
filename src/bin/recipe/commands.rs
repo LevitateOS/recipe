@@ -141,7 +141,11 @@ fn run(cli: Cli) -> Result<()> {
     let no_activate = cli.no_activate;
     let any_libc = cli.any_libc;
     anyhow::ensure!(
-        !any_libc || matches!(&cli.command, Commands::Install { .. } | Commands::Update { .. }),
+        !any_libc
+            || matches!(
+                &cli.command,
+                Commands::Install { .. } | Commands::Update { .. }
+            ),
         "--any-libc applies to install and update"
     );
 
@@ -658,8 +662,7 @@ fn check_libc(
 ) -> Result<()> {
     let host = levitate_recipe::clibrary::detect();
     let requested = requested.to_string_lossy();
-    let verdict =
-        levitate_recipe::clibrary::check(recipe, Some(search), &host, verb, &requested)?;
+    let verdict = levitate_recipe::clibrary::check(recipe, Some(search), &host, verb, &requested)?;
     for note in &verdict.notes {
         eprintln!("{note}");
     }
@@ -1501,12 +1504,10 @@ fn show_info(recipe_path: &Path, search_path: Option<&Path>) -> Result<()> {
             String::new()
         };
         println!(
-            "{:<12} {}",
+            "{:<12} its build is linked against {build}{carried}; this system's C library is {} ({})",
             "C library:".bold(),
-            format!(
-                "its build is linked against {build}{carried}; this system's C library is {} ({})",
-                host.libc, host.found
-            )
+            host.libc,
+            host.found
         );
     }
 

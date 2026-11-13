@@ -102,9 +102,14 @@ pub fn declared(about: &serde_json::Value) -> Result<Option<Declared>> {
         Some(other) => bail!("ABOUT.libc_carried is true or false, not {other}"),
     };
     match about.get("libc") {
-        None if carried => bail!("ABOUT.libc_carried names no C library; add ABOUT.libc, e.g. libc: [\"glibc\"]"),
+        None if carried => {
+            bail!("ABOUT.libc_carried names no C library; add ABOUT.libc, e.g. libc: [\"glibc\"]")
+        }
         None => Ok(None),
-        Some(value) => Ok(Some(Declared { libc: parse_declared(value)?, carried })),
+        Some(value) => Ok(Some(Declared {
+            libc: parse_declared(value)?,
+            carried,
+        })),
     }
 }
 
@@ -224,7 +229,16 @@ pub fn check(
         notes: Vec::new(),
     };
     let mut seen = Vec::new();
-    visit(recipe, search_path, host, verb, requested, None, &mut seen, &mut verdict)?;
+    visit(
+        recipe,
+        search_path,
+        host,
+        verb,
+        requested,
+        None,
+        &mut seen,
+        &mut verdict,
+    )?;
     Ok(verdict)
 }
 
@@ -257,8 +271,10 @@ fn visit(
                 .unwrap_or_default()
                 .to_owned()
         });
-    if let Some(crate::clibrary::Declared { libc: build, carried }) =
-        crate::catalog::declared_libc(recipe, search_path)?
+    if let Some(crate::clibrary::Declared {
+        libc: build,
+        carried,
+    }) = crate::catalog::declared_libc(recipe, search_path)?
     {
         if host.libc == "unknown" {
             verdict.notes.push(format!(
