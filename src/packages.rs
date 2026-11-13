@@ -476,6 +476,19 @@ impl PackageStore {
             .recursive(true)
             .mode(0o755)
             .create(&self.root)?;
+        // A group-writable umask (002, Ubuntu's default) leaves the store
+        // group-writable when Recipe or a source fetch created it. The store
+        // is Recipe's own: tighten a real directory this user owns.
+        let metadata = fs::symlink_metadata(&self.root)?;
+        if metadata.is_dir()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o022 != 0
+        {
+            fs::set_permissions(
+                &self.root,
+                fs::Permissions::from_mode(metadata.mode() & 0o7755),
+            )?;
+        }
         real_owned_directory(&self.root)?;
         let root = self.root.canonicalize()?;
         let lock = crate::fsx::open_lease(&root.join(".packages.lock"), true)?;
