@@ -1,7 +1,7 @@
 {
   "version": 1,
   "ginux_repository": "LevitateOS/ginux",
-  "ginux_revision": "45c63beb3ffc155679418de26e8407b3e66084dd",
+  "ginux_revision": "8afe55a6a168f0d4a84c608b43abb5783a562ee7",
   "image_manifest": "ginux-acquisition-image.json",
   "image_sha256": "4ec20be0f93bdd650ba42b0fd08b18d5ae61494f83c805a6a714e2f361042eff",
   "rocky_signing_key": {

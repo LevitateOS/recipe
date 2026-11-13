@@ -14,12 +14,14 @@ pub const CATALOG: u32 = 1002;
 // caller's own process (others: the kill subset). Reviewed again for
 // LevitateOS/ginux 7cc8133e: preadv, readahead, fadvise64, sendfile,
 // copy_file_range and the xattr calls add no authority beyond read, write and
-// stat on the same descriptor or path. Fixed exclusions remain.
+// stat on the same descriptor or path. Reviewed again for
+// LevitateOS/ginux 8afe55a6 (upstream Gates 18 and 19 merged): getpgid and
+// getsid report the virtual process group and session. Fixed exclusions remain.
 // Both are part of `crate::identity::Declared`.
 pub(crate) const BASE_DIGEST_NETWORK: &str =
-    "568d96a885ce53deafe99055d51329da5b783256f1a477e63e071a2b2a9c4de2";
+    "47900868bf6c28509a7ce6169eddbfecab6a229835e0f788f19545e3251c2f24";
 pub(crate) const BASE_DIGEST_OFFLINE: &str =
-    "89ea1c504cbcefe7b6cd1efb6d50c9eb82112648fd87f3ef32d56136d071edf3";
+    "803489101bfced3b3f4e6d223301acd7415da3ed7a0e9e039af6fceec6bd3d9f";
 /// The Ginux operation a `NEEDS.network` endpoint grants.
 pub(crate) const TCP_CONNECT: &str = "network.inet.tcp.connect";
 
