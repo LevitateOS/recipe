@@ -269,7 +269,7 @@ explicit file
 Target filesystem helpers retain logical metadata separately from writable staging:
 target_extract_tar(archive, root), target_extract_rpm(archive, root),
 target_capture_apks(root, archive_directories), target_mode(root, relative_path, mode)
-and target_finalize(root). RPM extraction requires the image's rpm/rpm2archive;
+and target_finalize(root). RPM extraction reads the package natively (no rpm or rpm2archive);
 it does not run package scriptlets. Capture package metadata before policy,
 then finalize the tree after policy changes.
 target_extract_rpm(archive, root, members) also writes the record of the

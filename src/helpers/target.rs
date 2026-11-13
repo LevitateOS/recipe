@@ -1,14 +1,14 @@
 //! Package metadata collection inside the managed domain. Extraction grants
 //! apply only to staging; package metadata stays in the target manifest.
+use super::rpm_package;
 use crate::target::{self, Entry, Manifest};
 use anyhow::{Context, Result, bail, ensure};
 use rhai::EvalAltResult;
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Cursor, Read};
+use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::path::Path;
-use std::process::Command;
+use std::path::{Path, PathBuf};
 
 fn recipe_result(result: Result<()>) -> Result<(), Box<EvalAltResult>> {
     result.map_err(|e| format!("{e:#}").into())
@@ -54,6 +54,34 @@ fn metadata<R: Read>(entry: &mut tar::Entry<'_, R>) -> Result<Entry> {
     Ok(result)
 }
 
+/// Apply one package member through `extraction` and, when `members` is
+/// recording, note it as extraction applied it. Shared by the tar and RPM
+/// readers so both validate and record identically.
+#[allow(clippy::too_many_arguments)]
+fn apply_member(
+    extraction: &mut target::Extraction,
+    manifest: &mut Manifest,
+    rel: &Path,
+    name: String,
+    mut md: Entry,
+    extract: bool,
+    members: &mut Option<&mut Vec<target::Member>>,
+    write: impl FnOnce(&Path, u32) -> Result<()>,
+) -> Result<()> {
+    target::Extraction::normalize(&mut md)?;
+    let recorded = members.as_ref().map(|_| md.clone());
+    let (canonical, _) = extraction.member(manifest, rel, md, extract, write)?;
+    if let (Some(members), Some(entry)) = (members.as_deref_mut(), recorded) {
+        let data = (entry.kind == "file").then(|| canonical.clone());
+        members.push(target::Member {
+            path: name,
+            entry,
+            data,
+        });
+    }
+    Ok(())
+}
+
 /// Extract (or, without `extract`, only record) a tar stream's members into
 /// `root` through [`target::Extraction`]. With `members`, also record each
 /// member as extraction applied it ([`target::Member`]).
@@ -83,24 +111,190 @@ fn read_tar<R: Read>(
             name != target::MANIFEST,
             "package uses reserved metadata path"
         );
-        let mut md = metadata(&mut entry)?;
-        target::Extraction::normalize(&mut md)?;
-        let recorded = members.as_ref().map(|_| md.clone());
-        let (canonical, _) = extraction.member(manifest, &rel, md, extract, |dest, mode| {
-            let mut file = File::create(dest)?;
-            std::io::copy(&mut entry, &mut file)?;
-            file.set_permissions(fs::Permissions::from_mode(mode))?;
-            Ok(())
-        })?;
-        if let (Some(members), Some(entry)) = (members.as_deref_mut(), recorded) {
-            let data = (entry.kind == "file").then(|| canonical.clone());
-            members.push(target::Member {
-                path: name,
-                entry,
-                data,
-            });
+        let md = metadata(&mut entry)?;
+        apply_member(
+            &mut extraction,
+            manifest,
+            &rel,
+            name,
+            md,
+            extract,
+            &mut members,
+            |dest, mode| {
+                let mut file = File::create(dest)?;
+                std::io::copy(&mut entry, &mut file)?;
+                file.set_permissions(fs::Permissions::from_mode(mode))?;
+                Ok(())
+            },
+        )?;
+    }
+    extraction.finish()
+}
+
+/// The numeric ids for package owner names, from this environment's
+/// passwd/group files; names that do not resolve are 0, as RPM treats them.
+/// The names themselves are recorded alongside.
+struct Owners {
+    users: BTreeMap<String, u32>,
+    groups: BTreeMap<String, u32>,
+}
+
+impl Owners {
+    fn load() -> Self {
+        let table = |path: &str| -> BTreeMap<String, u32> {
+            fs::read_to_string(path)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| {
+                    let mut f = line.split(':');
+                    let name = f.next()?;
+                    let id = f.nth(1)?.parse().ok()?;
+                    Some((name.to_owned(), id))
+                })
+                .collect()
+        };
+        Owners {
+            users: table("/etc/passwd"),
+            groups: table("/etc/group"),
         }
     }
+}
+
+/// Extract an RPM payload (a cpio stream) into `root` through
+/// [`target::Extraction`], with metadata taken from the package header.
+/// Hardlink sets come out as RPM stores them in the payload (content on the
+/// last member): the first member of a set is written with the content and the
+/// others become hardlinks to it, which is how `rpm2archive` presented them.
+fn read_rpm_payload<R: Read + 'static>(
+    header: &rpm_package::Header,
+    reader: R,
+    root: &Path,
+    manifest: &mut Manifest,
+    mut members: Option<&mut Vec<target::Member>>,
+) -> Result<()> {
+    let owners = Owners::load();
+    let by_path = rpm_package::index(header);
+    let mut cpio = rpm_package::Cpio::new(rpm_package::payload(header, reader)?);
+    let mut extraction = target::Extraction::new(root);
+    let entry_for = |index: usize, kind: &str, link: Option<String>, mode: u32| -> Entry {
+        let user = header.users.get(index).filter(|s| !s.is_empty()).cloned();
+        let group = header.groups.get(index).filter(|s| !s.is_empty()).cloned();
+        Entry {
+            kind: kind.into(),
+            mode: mode & 0o7777,
+            uid: user
+                .as_ref()
+                .and_then(|u| owners.users.get(u))
+                .copied()
+                .unwrap_or(0),
+            gid: group
+                .as_ref()
+                .and_then(|g| owners.groups.get(g))
+                .copied()
+                .unwrap_or(0),
+            user,
+            group,
+            link,
+            xattrs: BTreeMap::new(),
+            sha256: None,
+        }
+    };
+    // Hardlink sets still waiting for their last member, by (device, inode):
+    // (relative path, name, header index, mode) per member seen so far.
+    type Set = Vec<(PathBuf, String, usize, u32)>;
+    let mut sets: BTreeMap<(u32, u32, u32), Set> = BTreeMap::new();
+    while let Some(item) = cpio.next()? {
+        let rel = target::relative(Path::new(item.name.trim_start_matches('/')))?;
+        let name = rel.to_str().context("non-UTF8 package path")?.to_owned();
+        if name.is_empty() {
+            continue;
+        }
+        ensure!(
+            name != target::MANIFEST,
+            "package uses reserved metadata path"
+        );
+        let index = *by_path.get(name.as_str()).with_context(|| {
+            format!(
+                "RPM payload member {name} is not in the package header; \
+                 the file is corrupt, fetch it again"
+            )
+        })?;
+        match item.mode & 0o170000 {
+            0o040000 => apply_member(
+                &mut extraction,
+                manifest,
+                &rel,
+                name,
+                entry_for(index, "dir", None, item.mode),
+                true,
+                &mut members,
+                |_, _| Ok(()),
+            )?,
+            0o120000 => {
+                ensure!(item.size <= 4096, "package symlink target too long");
+                let mut link = String::new();
+                cpio.data()
+                    .read_to_string(&mut link)
+                    .context("non-UTF8 package symlink")?;
+                apply_member(
+                    &mut extraction,
+                    manifest,
+                    &rel,
+                    name,
+                    entry_for(index, "symlink", Some(link), item.mode),
+                    true,
+                    &mut members,
+                    |_, _| Ok(()),
+                )?;
+            }
+            0o100000 => {
+                let mut set = vec![(rel, name, index, item.mode)];
+                if item.nlink > 1 {
+                    let key = (item.dev.0, item.dev.1, item.ino);
+                    let waiting = sets.entry(key).or_default();
+                    waiting.extend(set);
+                    if item.size == 0 && (waiting.len() as u32) < item.nlink {
+                        continue;
+                    }
+                    set = sets.remove(&key).unwrap_or_default();
+                }
+                let mut data = cpio.data();
+                let (first_rel, first_name, first_index, first_mode) = set[0].clone();
+                apply_member(
+                    &mut extraction,
+                    manifest,
+                    &first_rel,
+                    first_name.clone(),
+                    entry_for(first_index, "file", None, first_mode),
+                    true,
+                    &mut members,
+                    |dest, mode| {
+                        let mut file = File::create(dest)?;
+                        std::io::copy(&mut data, &mut file)?;
+                        file.set_permissions(fs::Permissions::from_mode(mode))?;
+                        Ok(())
+                    },
+                )?;
+                for (rel, name, index, mode) in set.into_iter().skip(1) {
+                    apply_member(
+                        &mut extraction,
+                        manifest,
+                        &rel,
+                        name,
+                        entry_for(index, "hardlink", Some(first_name.clone()), mode),
+                        true,
+                        &mut members,
+                        |_, _| Ok(()),
+                    )?;
+                }
+            }
+            _ => bail!("unsupported package inode"),
+        }
+    }
+    ensure!(
+        sets.is_empty(),
+        "RPM payload ends inside a hardlink set; the file is truncated, fetch it again"
+    );
     extraction.finish()
 }
 
@@ -127,45 +321,17 @@ fn extract_rpm_recorded(archive: &str, root: &str, record: Option<&Path>) -> Res
     let root = Path::new(root);
     fs::create_dir_all(root)?;
     let mut manifest = target::load(root)?;
-    let mut command = Command::new("rpm2archive");
-    command.args(["-n", archive]);
-    let result = crate::process::Run::new(command)
-        .keep(crate::process::Keep::Limit(512 * 1024 * 1024))
-        .run()?;
-    ensure!(
-        result.exit.success(),
-        "rpm2archive failed: {}",
-        String::from_utf8_lossy(&result.stderr)
-    );
+    let mut reader = BufReader::new(File::open(archive).with_context(|| {
+        format!("cannot open RPM {archive}; check the path the recipe acquired it to")
+    })?);
+    let header = rpm_package::read_header(&mut reader)?;
     let mut members = record.map(|_| Vec::new());
-    read_tar(
-        Cursor::new(result.stdout),
-        root,
-        &mut manifest,
-        true,
-        members.as_mut(),
-    )?;
-    // rpm2archive omits RPM file capabilities; query the verified package,
-    // then encode Linux v2 file capabilities as raw target xattr bytes.
-    let mut command = Command::new("rpm");
-    // Authentication is the recipe's pinned SHA256/signature acquisition
-    // contract. Reading metadata must not open the compiler image's RPM DB
-    // to search for signing keys.
-    command.args([
-        "-qp",
-        "--nosignature",
-        "--qf",
-        "[%{FILENAMES}\t%{FILECAPS}\n]",
-        archive,
-    ]);
-    let result = crate::helpers::internal::cmd::checked_capture(command)
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    read_rpm_payload(&header, reader, root, &mut manifest, members.as_mut())?;
+    // File capabilities live in the package header; encode Linux v2 file
+    // capabilities as raw target xattr bytes.
     let mut capabilities = Vec::new();
-    for line in std::str::from_utf8(&result.stdout)?.lines() {
-        let (path, caps) = line
-            .split_once('\t')
-            .context("invalid RPM capability record")?;
-        if caps.is_empty() || caps == "(none)" {
+    for (path, caps) in header.files.iter().zip(&header.caps) {
+        if caps.is_empty() {
             continue;
         }
         capabilities.push(target::Capability {

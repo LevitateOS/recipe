@@ -43,6 +43,7 @@ pub mod internal;
 pub mod acquire;
 pub mod build;
 pub mod install;
+mod rpm_package;
 mod target;
 pub mod util;
 

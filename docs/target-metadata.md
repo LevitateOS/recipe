@@ -22,8 +22,8 @@ The native recipe helpers are:
 
 - `target_extract_tar(archive, root)`: extract a tar payload using ordinary staging
   permissions; retain original target metadata, hardlinks and SCHILY xattrs.
-- `target_extract_rpm(archive, root)`: use the build image's `rpm2archive` and `rpm`
-  on a verified RPM, recording payload metadata and RPM file capabilities. The
+- `target_extract_rpm(archive, root)`: read a verified RPM natively (lead, headers, and the zstd, xz, lzma, gzip or
+  bzip2 cpio payload; no `rpm` or `rpm2archive` is started), recording payload metadata and RPM file capabilities. The
   helper does not run package scriptlets. Recipes verify their pinned inputs.
 - `target_extract_rpm(archive, root, members)`: the same, and write the record of
   the extraction (`target::Members`: every member in archive order with its header
