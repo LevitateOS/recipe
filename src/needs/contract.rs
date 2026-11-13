@@ -21,7 +21,10 @@ pub const CATALOG: u32 = 1002;
 // sysinfo, pidfd and waitid changes alter results, not the catalog; digests
 // unchanged. Reviewed again for LevitateOS/ginux abcc3337 (upstream Gates 23
 // and 24 merged): sysinfo memory and reaped-sender credentials alter results,
-// not the catalog; digests unchanged. Fixed exclusions remain.
+// not the catalog; digests unchanged. Reviewed again for LevitateOS/ginux
+// e3be44ce: a restarted task creation is settled apart from a signal
+// handler's calls; supervision only, digests unchanged. Fixed exclusions
+// remain.
 // Both are part of `crate::identity::Declared`.
 pub(crate) const BASE_DIGEST_NETWORK: &str =
     "47900868bf6c28509a7ce6169eddbfecab6a229835e0f788f19545e3251c2f24";
