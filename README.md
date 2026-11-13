@@ -203,8 +203,10 @@ are found the same way under the prefix, then under `/usr`. The worker is staged
 separately; changing Recipe does not require rebuilding an unchanged image.
 The native launcher requires Linux x86_64. It runs as root or as an ordinary
 user: an ordinary user's launch enters a private user namespace for its chroot
-(Ginux `ccc492a2` or later), so the host must allow unprivileged user
-namespaces; Ginux names the setting when it refuses. To run as root, run the
+(Ginux `7b9dec91` or later), so the host must allow unprivileged user
+namespaces; Ginux names the setting when it refuses. Ubuntu 23.10 and later
+allow them only to programs an AppArmor profile names: `recipe runtime stage
+--apparmor` writes that profile for the launcher (`etc/apparmor.d/recipe-ginux`). To run as root, run the
 whole coordinator with root; a plain `sudo` wrapper around only the launcher
 closes required inherited channels. When using sudo, pass the declared
 image/worker selections to the whole coordinator command:

@@ -445,5 +445,9 @@ pub(crate) enum RuntimeCommands {
         /// The official recipes folder, with its index.json.
         #[arg(long, value_name = "DIR")]
         catalog: PathBuf,
+        /// Also write etc/apparmor.d/recipe-ginux, which lets the launcher use
+        /// a user namespace on hosts that restrict them (Ubuntu 23.10 and later).
+        #[arg(long)]
+        apparmor: bool,
     },
 }

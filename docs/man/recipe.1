@@ -195,7 +195,9 @@ Compute SHA256, SHA512 and BLAKE3 for a local file.
 status shows the selected runtime image, the launcher and the shipped sources
 (JSON when piped or with --json). fetch downloads the image now. stage writes a
 runtime tree into --root (--launcher, --reference, --catalog, optional --image
-and --prefix); packagers use it.
+and --prefix); packagers use it. --apparmor also writes etc/apparmor.d/recipe-ginux,
+which hosts that restrict unprivileged user namespaces (Ubuntu 23.10 and later)
+need before an ordinary user can run recipes; load it with apparmor_parser -r.
 .SH OPTIONS
 .TP
 .B -r, --recipes-path DIR

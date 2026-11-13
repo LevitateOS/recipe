@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use super::cli::{Cli, RuntimeCommands};
 
 const PROFILE: &str = include_str!("../../../data/profile.sh");
+const APPARMOR: &str = include_str!("../../../data/apparmor-ginux");
 const OFFICIAL_SOURCE: &str = "files = \"https://raw.githubusercontent.com/LevitateOS/recipes/{rev}/{path}\"\nbranch = \"master\"\n";
 
 pub(crate) fn execute(command: &RuntimeCommands, cli: &Cli) -> Result<()> {
@@ -33,7 +34,16 @@ pub(crate) fn execute(command: &RuntimeCommands, cli: &Cli) -> Result<()> {
             reference,
             image,
             catalog,
-        } => stage(root, prefix, launcher, reference, image.as_deref(), catalog),
+            apparmor,
+        } => stage(
+            root,
+            prefix,
+            launcher,
+            reference,
+            image.as_deref(),
+            catalog,
+            *apparmor,
+        ),
     }
 }
 
@@ -234,6 +244,7 @@ fn stage(
     reference: &str,
     image: Option<&Path>,
     catalog: &Path,
+    apparmor: bool,
 ) -> Result<()> {
     runtime::validate_reference(reference)?;
     let digest = runtime::root_digest(reference)?;
@@ -302,5 +313,13 @@ fn stage(
         profile.as_bytes(),
         0o644,
     )?;
+    if apparmor {
+        let launcher = format!("{}/libexec/recipe/ginux", prefix_text.trim_end_matches('/'));
+        put(
+            &root.join("etc/apparmor.d/recipe-ginux"),
+            APPARMOR.replace("@LAUNCHER@", &launcher).as_bytes(),
+            0o644,
+        )?;
+    }
     Ok(())
 }

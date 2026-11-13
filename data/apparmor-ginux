@@ -1,0 +1,14 @@
+# Recipe runs every build inside Ginux. For an ordinary user the Ginux
+# launcher enters a private user namespace for its chroot and drops every
+# capability before the build runs. Ubuntu 23.10 and later refuse
+# capabilities in unprivileged user namespaces unless a profile allows them;
+# this profile allows that for the launcher only. Load it with
+# apparmor_parser -r /etc/apparmor.d/recipe-ginux (AppArmor 4).
+abi <abi/4.0>,
+include <tunables/global>
+
+profile recipe-ginux @LAUNCHER@ flags=(unconfined) {
+  userns,
+
+  include if exists <local/recipe-ginux>
+}
