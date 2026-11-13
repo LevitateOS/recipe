@@ -42,7 +42,7 @@ fn cli_target_metadata_survives_publication_reimport_and_erofs_production() {
             0o644,
             tar::EntryType::Regular,
             None,
-            "ID=levitate\nREC_PACKAGES=rpm\nREC_INIT=systemd\nREC_LIBC=glibc\nREC_PRIVILEGE=sudo\nREC_DESKTOP=plasma\nREC_KERNEL_LINE=lts\n",
+            "ID=levitate\nREC_PACKAGES=rpm\nREC_INIT=systemd\nREC_LIBC=glibc\nREC_PRIVILEGE=sudo\nREC_DESKTOP=plasma\nREC_KERNEL_LINE=lts\nREC_APPEARANCE=light\n",
         ),
         ("tmp", 0o1777, tar::EntryType::Directory, None, ""),
         ("bin", 0o777, tar::EntryType::Symlink, Some("/usr/bin"), ""),
