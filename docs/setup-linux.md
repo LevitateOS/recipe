@@ -59,7 +59,7 @@ git clone --branch main https://github.com/LevitateOS/ginux.git maintained-ginux
 git -C recipe-source checkout --detach e7bfc166343164989794c917e67f187d0ac49ba8
 git -C maintained-ginux checkout --detach 28f4368f6fd70d0e485386892a08d6734b5988dd
 git -C recipe-source rev-parse HEAD
-(cd maintained-ginux && make build)
+(cd maintained-ginux && cargo build -p ginux-init --bin ginux --release --target x86_64-unknown-linux-gnu)
 cd recipe-source
 cargo build --locked --release --bins
 cargo install --locked --path . --bins --root /absolute/path/to/recipe-tools

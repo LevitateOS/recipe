@@ -70,7 +70,9 @@ jobs:
         working-directory: .artifacts/ginux-source
         run: |
           test "$(git rev-parse HEAD)" = "$GINUX_SOURCE_SHA"
-          make build
+          # Only the launcher: `make build` also builds Ginux's operator CLI,
+          # which Recipe does not use and which needs a second Rust target.
+          cargo build -p ginux-init --bin ginux --release --target x86_64-unknown-linux-gnu
       - name: Produce pinned C/runtime image from public inputs
         run: |
           mkdir -p .artifacts/managed-ci
