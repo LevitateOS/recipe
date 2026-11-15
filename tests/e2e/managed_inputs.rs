@@ -1687,7 +1687,7 @@ with tarfile.open(path, 'w') as archive:
         assert!(!output.status.success(), "accepted {kind}");
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(
-            error.contains("cannot validate completed domain outputs"),
+            error.contains("cannot validate completed outputs"),
             "{error}"
         );
         assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");

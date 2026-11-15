@@ -7,7 +7,7 @@ a complete enumerated catalog, bounded execution and owned-process checks.
 --full-products also requires explicit builder binary/recipe/repository inputs.
 """
 from pathlib import Path
-import argparse,concurrent.futures,hashlib,json,os,re,signal,subprocess,sys,time
+import argparse,atexit,concurrent.futures,hashlib,json,os,re,shutil,signal,subprocess,sys,tempfile,time
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--build-json',type=Path,required=True)
 parser.add_argument('--ginux',type=Path,required=True)
@@ -48,6 +48,13 @@ environment={
  'GINUX_ROOTFS':artifacts['image']['path'],
  'GINUX_ROOT':'oci:recipe-compiler@sha256:'+args.image_sha256,
 }
+# A root run starts a host-side worker as an unprivileged uid, which must be able
+# to execute it. A build tree under a private home is out of its reach, so the
+# worker is a copy (the same bytes) in a directory every user can enter.
+worker_dir=Path(tempfile.mkdtemp(prefix='recipe-worker-',dir='/var/tmp'));worker_dir.chmod(0o755)
+atexit.register(shutil.rmtree,worker_dir,ignore_errors=True)
+shutil.copy2(artifacts['recipe']['path'],worker_dir/'recipe');(worker_dir/'recipe').chmod(0o755)
+environment['RECIPE_WORKER_BIN']=str(worker_dir/'recipe')
 if args.full_products:
  for key in ['RECIPE_TEST_BUILDER','RECIPE_TEST_BUILDER_RECIPES','RECIPE_TEST_REPO_ROOT']:
   environment[key]=str(Path(os.environ[key]).resolve(strict=True))
