@@ -565,8 +565,14 @@ fn remove_from(root: &Path, name: &str) -> Result<Written> {
         "{EFFECTS_PACKAGE} holds the root's caches, made by /{EFFECTS_RECIPE} after each system change; it is not removed by itself"
     );
     let plan = system::plan(root, &old, &mut [], Some(&name))?;
+    let had_session = has_session(root);
     system::apply(root, &[], &plan)?;
     tell(&plan, &[]);
+    if had_session && !has_session(root) {
+        eprintln!(
+            "{name} was the last desktop in this root: it now starts to a text login. Install a desktop with Recipe to get a graphical session back."
+        );
+    }
     Ok(Written {
         name,
         expects: BTreeMap::new(),
@@ -576,6 +582,19 @@ fn remove_from(root: &Path, name: &str) -> Result<Written> {
         seeded: Vec::new(),
         present: Vec::new(),
     })
+}
+
+/// Whether `root` holds a desktop session a login screen can start.
+fn has_session(root: &Path) -> bool {
+    ["usr/share/wayland-sessions", "usr/share/xsessions"]
+        .iter()
+        .any(|dir| {
+            std::fs::read_dir(root.join(dir)).is_ok_and(|entries| {
+                entries
+                    .flatten()
+                    .any(|entry| entry.path().extension().is_some_and(|x| x == "desktop"))
+            })
+        })
 }
 
 /// Produce `recipe` and write it, with the runtime dependencies it brings, into
