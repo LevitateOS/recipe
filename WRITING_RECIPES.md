@@ -23,9 +23,10 @@ neither a helper signature nor a granted catalog operation proves that it does.
 
 ## Runnable local example
 
-Save this as `hello.rhai`. With a configured Ginux launcher/image from the
-[README](README.md), `recipe install ./hello.rhai --build-dir ./hello-work`
-produces a named program without downloading or compiling anything on the host.
+Save this as `hello.rhai`. It starts no program, so Recipe runs it on the host
+(see [Host or Ginux](#host-or-ginux)) and needs no Ginux launcher:
+`recipe install ./hello.rhai --build-dir ./hello-work` produces a named program
+without downloading or compiling anything.
 
 ```rhai
 const RECIPE_API = 2;
@@ -89,8 +90,8 @@ files; commands need executable permission. The initial activation surface is
 `bin/COMMAND` and `share/PATH`; symlinks, special files and setuid/setgid permissions
 are rejected. There are no host installation hooks. A package may also hold
 `lib/`, which stays in the package and is linked nowhere: it is where a program
-carries the shared libraries it loads (`carry_libraries`, a trial of the
-self-contained packages design in the LevitateOS superproject). See the workspace's
+carries the shared libraries it loads (`carry_libraries`, an experimental
+feature of the self-contained packages design in the LevitateOS superproject). See the workspace's
 `recipes/ripgrep.rhai` for a complete pinned package producer.
 
 A package that carries libraries calls, at the end of `install`,
@@ -122,7 +123,7 @@ continues to publish outputs only. OS builders pass `--no-activate` explicitly.
 
 ## Runtime, package facts and resumable state
 
-Setup runs once per invocation inside Ginux. It can use immutable `RUNTIME` to
+Setup runs once per invocation, in the Ginux domain or on the host (see [Host or Ginux](#host-or-ginux)). It can use immutable `RUNTIME` to
 initialize recipe fields. Hooks receive the same engine-owned `ctx.runtime`.
 Never save runtime paths or package versions in `ctx.state` to override current
 setup on a later invocation.
@@ -328,7 +329,7 @@ exec_checked("cargo", ["build", "--release", "--locked", "--offline"], #{
 });
 ```
 
-Commands run inside Ginux and need binaries/libraries in the selected image or
+Commands only exist in a Ginux run, and need binaries/libraries in the selected image or
 shared tools. Use `shell` only when shell syntax is necessary and quote data.
 For pipelines, use a checked `bash -o pipefail -c ...` or separately checked
 producer/consumer steps. Do not discard extraction failures.

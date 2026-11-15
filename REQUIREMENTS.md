@@ -8,17 +8,29 @@ boundary; its implementation checkpoint records exact tested revisions and gaps.
 
 ## Execution ownership
 
-- Executable recipes declare `const RECIPE_API = 2;` and literal `NEEDS` and run inside the configured
-  Ginux domain. Coordinator discovery, metadata and input preparation never
-  evaluate arbitrary recipe setup or helper code.
-- The coordinator selects/verifies the environment image and worker, imports
-  explicit inputs, owns destination locking and durable records, and publishes
-  named products. Unavailable runtime capabilities fail explicitly.
+- Executable recipes declare `const RECIPE_API = 2;` and literal `NEEDS`.
+  Coordinator discovery, metadata and input staging never evaluate arbitrary
+  recipe setup or helper code.
+- Before anything runs, Recipe reads each recipe's source (and the base it
+  extends and the modules it imports) and picks where it runs. If nothing in it
+  can call a helper that starts a program or reads the root image, it runs on
+  the host as a confined process: files only beneath the run's own directories,
+  network only to the `NEEDS.network` endpoints at the addresses Recipe pinned,
+  no program helpers, and a seccomp filter that refuses `execve` and new
+  processes. Everything else, and anything the analysis cannot read, runs in
+  the configured Ginux domain. `--execution auto|ginux|host` selects the rule;
+  `recipe info` and the run say which way each recipe went and why. See
+  "Execution modes" in the [README](README.md).
+- The coordinator selects/verifies the environment image and worker (needed
+  only for runs in Ginux), imports explicit inputs, owns destination locking
+  and durable records, and publishes named products. Unavailable runtime
+  capabilities fail explicitly.
 - Recipes own package versions, source URLs/digests, build facts and lifecycle
   behavior, typed input/output schemas, endpoint authority and limits in NEEDS.
   Rust/TOML owns orchestration, path bindings and consumer validation.
-- External commands/helpers remain subject to the same domain assignments and
-  resource bounds. There is no native host execution/network fallback.
+- External commands/helpers remain subject to the same assignments and resource
+  bounds in either mode. There is no unconfined host execution and no network
+  access outside the declared endpoints.
 
 ## Recipe contract
 
@@ -36,7 +48,7 @@ boundary; its implementation checkpoint records exact tested revisions and gaps.
   the producer still fails without publication. Cleanup/checkpoint failures are
   reported without hiding the existing primary failure.
 - Literal modules, dependency declarations and base inheritance are resolved by
-  the existing loader. Dynamic declarations and cycles fail preparation.
+  the existing loader. Dynamic declarations and cycles fail before anything runs.
 
 ## Filesystem and products
 
@@ -58,8 +70,35 @@ boundary; its implementation checkpoint records exact tested revisions and gaps.
 - Publication requires successful managed execution and independent bounded
   archive/path/link validation. Failed/interrupted work cannot replace valid
   earlier publications. Imported inputs and previous generations stay immutable.
-- Removal changes owned selected-target files. Live-system activation is outside
-  this interface.
+- Removal changes owned selected-target files (the producer lifecycle,
+  `--no-activate`). Putting a package output into a profile is the CLI's job,
+  below.
+
+## Installed software
+
+- A directory output named `package` is activated by `install` and `update`
+  after publication, through one atomic profile switch into the selected package
+  root: root's `/var/lib/recipe`, a user's `~/.local/share/recipe`, or
+  `--package-root`. `remove` works from the receipt, without the recipe or a
+  runtime. The user profile's earlier generations (`go-back`, `storage`,
+  `hold`, `history`) are Recipe's own concept.
+- `recipe list --json` carries, for a front end, each recipe's `ABOUT`, `NEEDS`,
+  `runs_here` and `not_runnable_reason`, and at the top `host_libc`. A recipe
+  whose declared C library this system cannot run is refused at install, unless
+  `--any-libc` says otherwise.
+- **System scope** (`--system`, or root without `--package-root`) on an A/B
+  system (`recab.immutable` on the kernel command line): the booted root is
+  locked and Recipe never writes into, remounts or unlocks it. Changes go into
+  the unlocked other root, at the `other_mount` that `recab status --json`
+  reports, and are active when that root is booted. If the other root is not
+  mounted, Recipe stops and says so.
+- Recipe keeps `other-root.json` in its package root (`/var/lib/recipe`) to know
+  what it wrote there. `recab copy` overwrites the other root; before any
+  system-scope command Recipe finds the changes neither root holds and writes
+  exactly that system part again, never the whole install and never "for me"
+  software. Until it has, that part is reported as not done.
+- Without `recab.immutable` the system has one root and no recab: `--system`
+  means root's own package root and Recipe does not look for an other root.
 
 ## Acquisition
 

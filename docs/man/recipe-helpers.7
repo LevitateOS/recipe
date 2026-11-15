@@ -48,7 +48,7 @@ Probe current domain PATH.
 
 .TP
 \fBcarry_libraries(package, prefix, search:Array) -> Array\fR
-Trial. Copies into package/lib/ the loader and every shared library that
+Experimental. Copies into package/lib/ the loader and every shared library that
 the programs in package/bin/, and the programs and plug-ins the recipe put
 under package/lib/, load, from the search folders and then the build image,
 and writes into each file its loader and library folder under prefix
@@ -61,7 +61,7 @@ program and file under package/lib/ then finds each library it needs, with
 the symbol versions it asks for, inside the package. 64-bit x86_64 only.
 .TP
 \fBcarry_link_flags() -> String\fR
-Trial. Linker flags for every program and library of a package: a long
+Experimental. Linker flags for every program and library of a package: a long
 stand-in library folder that reserves the room carry_libraries writes into.
 .TP
 \fBcopy_file(src, dst) -> ()\fR

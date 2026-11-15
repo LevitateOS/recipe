@@ -4,7 +4,7 @@ recipe-recipe \- managed API 2 Rhai recipe contract
 .SH DESCRIPTION
 Every executable recipe declares const RECIPE_API = 2, its own literal const
 NEEDS map, and initializes ctx with
-current package facts. Setup executes once per invocation inside Ginux.
+current package facts. Setup executes once per invocation, in a Ginux domain or, for a recipe that starts no program, on the host (see recipe(1), EXECUTION MODES).
 Pure imported facts modules need no executable lifecycle.
 .SH RUNTIME AND STATE
 Setup reads immutable RUNTIME. Hooks receive the same ctx.runtime together with
@@ -104,10 +104,10 @@ defaults to 8 GiB.
 exec_checked and exec_output fail on nonzero; exec returns a status. Their
 argument arrays avoid shell parsing. Optional cwd/env maps affect only that
 child. Shell pipelines must check every producer/extractor failure. Commands
-and helpers execute inside Ginux and require suitable image/tools support.
+exist only in a Ginux run (see recipe(1), EXECUTION MODES) and require suitable image/tools support.
 .SH DEPENDENCIES AND INHERITANCE
 Literal deps and build_deps declarations select recipes from the search path.
-They use the same lifecycle in separate Ginux instances, retaining separate
+They use the same lifecycle in separate instances (Ginux or host, each by its own source), retaining separate
 state/files pairs and their own NEEDS. No parent grant is lent. Declared products
 are immutable consumer inputs; a tools directory output contributes to its
 private /work/tools prefix.
@@ -115,7 +115,7 @@ private /work/tools prefix.
 The leading declaration //! extends: base.rhai compiles/merges the base first;
 child functions of the same name/arity override it. Setup runs base-first.
 Literal module paths are preserved. Cycles and dynamic import/dependency
-declarations fail preparation. Discovery never evaluates setup on the host.
+declarations fail before anything runs. Discovery never evaluates setup.
 .SH EXAMPLE
 .nf
 const RECIPE_API = 2;

@@ -1,9 +1,10 @@
 # Recipe
 
-Recipe executes Rhai package recipes inside a configured Ginux domain. The
-coordinator imports explicit immutable inputs, retains matching state/filesystem
-checkpoints and publishes the recipe's named outputs. Recipe code and payload
-commands do not run on the coordinator host.
+Recipe executes Rhai package recipes. A recipe that can start a program runs
+inside a configured Ginux domain. A recipe that cannot runs as a confined host
+process (see "Execution modes"). Either way the coordinator imports explicit
+immutable inputs, retains matching state/filesystem checkpoints and publishes
+the recipe's named outputs, and no recipe code runs unconfined.
 
 ## One engine, two consumers
 
@@ -18,8 +19,8 @@ execution rules. Directory placement expresses ownership, not a new recipe type
 or permission boundary. This repository's `examples/` and `tests/` are engine
 examples and fixtures, not the application catalog.
 
-The OS builder assembles published products into images; `recab` handles system
-image activation and A/B updates. Apps bundled in a desktop image belong to that
+The OS builder assembles published products into images; `recab` owns the two
+roots of an A/B system (see "System software on A/B installations"). Apps bundled in a desktop image belong to that
 OS lifecycle. For user software, the CLI activates a directory output named
 `package` after managed execution and publication succeed. The engine's hooks
 still operate on their isolated output tree. `--no-activate` keeps product-only

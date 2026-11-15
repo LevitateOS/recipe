@@ -1,9 +1,12 @@
 # Recipe helper reference
 
 The executable contract is `const RECIPE_API = 2;`. This catalog follows
-`src/helpers/mod.rs::register_all`. Helpers with effects run inside Ginux, under
-its configured filesystem, task, memory and network assignments. They never
-select a native host execution path.
+`src/helpers/mod.rs::register_all`. A recipe that can reach a helper that starts
+a program (`PROGRAM_HELPERS` in the same file) runs in Ginux, under its
+configured filesystem, task, memory and network assignments. Any other recipe
+runs on the host, where the program helpers are not registered at all and
+every file helper is confined to the run's own directories. See "Execution
+modes" in the [README](README.md).
 
 Registration is an interface inventory, not successful execution of every
 package/tool variant. Use the actual compiler/acquisition image and preserve
@@ -31,8 +34,8 @@ check unless the recipe explicitly handles them. Phase hooks return context.
 | `check_disk_space` | ``helpers/install/disk.rs`` | `check_disk_space(path, required_bytes) -> ()` | `df -k` based |
 | `chmod` | ``helpers/install/filesystem.rs`` | `chmod(path, mode) -> ()` | unix mode |
 | `command_exists` | `helpers/util/process.rs` | `command_exists(name) -> bool` | Probe current domain PATH. |
-| `carry_libraries` | `helpers/install/carry.rs` | `carry_libraries(package, prefix, search:Array) -> Array` | Trial. Copies into `package/lib/` the loader and every shared library that the programs in `package/bin/`, and the programs and plug-ins the recipe put under `package/lib/`, load, from `search` then the build image (the C library whole from the first folder holding its loader), and writes into each file its loader and library folder under `prefix` (`RUNTIME.paths.prefix`): into the room `carry_link_flags()` reserved, or by rewriting a file linked elsewhere with a new loadable segment and `$ORIGIN`-relative folders; then checks that every program and file under `lib/` finds all it needs, with its symbol versions, inside the package. |
-| `carry_link_flags` | `helpers/install/carry.rs` | `carry_link_flags() -> String` | Trial. Linker flags for every program and library of a package: a long stand-in library folder that reserves the room `carry_libraries` writes into. |
+| `carry_libraries` | `helpers/install/carry.rs` | `carry_libraries(package, prefix, search:Array) -> Array` | Experimental. Copies into `package/lib/` the loader and every shared library that the programs in `package/bin/`, and the programs and plug-ins the recipe put under `package/lib/`, load, from `search` then the build image (the C library whole from the first folder holding its loader), and writes into each file its loader and library folder under `prefix` (`RUNTIME.paths.prefix`): into the room `carry_link_flags()` reserved, or by rewriting a file linked elsewhere with a new loadable segment and `$ORIGIN`-relative folders; then checks that every program and file under `lib/` finds all it needs, with its symbol versions, inside the package. |
+| `carry_link_flags` | `helpers/install/carry.rs` | `carry_link_flags() -> String` | Experimental. Linker flags for every program and library of a package: a long stand-in library folder that reserves the room `carry_libraries` writes into. |
 | `contains` | ``helpers/util/string.rs`` | `contains(s, pat) -> bool` |  |
 | `copy_file` | ``helpers/install/filesystem.rs`` | `copy_file(src, dst) -> ()` | exact destination path |
 | `copy_file_reflink` | `helpers/install/filesystem.rs` | `copy_file_reflink(src, dst) -> ()` | Attempts reflink; falls back to a checked copy. |

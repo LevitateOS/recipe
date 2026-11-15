@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
@@ -30,12 +30,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Every executable operation runs in a Ginux domain (API 2 recipes, coordinator-
-  owned state, checkpointing and publication); see `README.md`.
+- API 2 recipes run under coordinator-owned state, checkpointing and
+  publication, either in a Ginux domain or, when no code of the recipe can start
+  a program, as a confined host process (`--execution auto|ginux|host`); see
+  `README.md`, "Execution modes".
 - Worker protocol v7: one failure record per result, optional ack generations,
   cleanup reasons only on cleanup. Saved state from earlier versions is not reused.
 - Default destinations are per recipe under the state directory.
 - The library API returns the final context as JSON.
+
+- `--system` scope: on an A/B system, install, update and remove write into the
+  unlocked other root (found with `recab status --json`), keep
+  `other-root.json` in the package root, and write again only the system part
+  that `recab copy` wiped; `installed` and `isinstalled` say which software is
+  in the booted root and which in the other root.
 
 ### Fixed
 

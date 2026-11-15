@@ -32,7 +32,7 @@ Read these instead of copies here; each fact has one home:
 
 ```
 src/
-├── bin/recipe.rs, bin/recipe/     CLI (and the private worker entry)
+├── bin/recipe.rs, bin/recipe/     CLI (and the private worker entry); system_route.rs is `--system` scope
 ├── bin/recipe-image.rs            compiler-image producer
 ├── lib.rs                         RecipeEngine (library API)
 ├── backend.rs, launch.rs, host.rs  coordinator: invocation → Ginux or host run

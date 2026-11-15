@@ -1,4 +1,4 @@
-.TH RECIPE 1 "2026-11-08" "Recipe" "User Commands"
+.TH RECIPE 1 "2026-11-15" "Recipe" "User Commands"
 .SH NAME
 recipe \- execute Rhai package recipes through Ginux
 .SH SYNOPSIS
@@ -6,7 +6,19 @@ recipe \- execute Rhai package recipes through Ginux
 [options] install|update|remove|cleanup|isinstalled|isbuilt|isacquired recipe
 .br
 .B recipe
-[options] list|installed|history|hold|unhold|index|info|hash|refresh [argument]
+[options] list|installed|updates|storage|history|index|info|hash|refresh [argument]
+.br
+.B recipe
+[options] go-back|hold|unhold package
+.br
+.B recipe
+\-\-system [options] install|update|remove|isinstalled recipe
+.br
+.B recipe
+\-\-system [options] installed
+.br
+.B recipe
+runtime status|fetch|stage
 .br
 .B recipe
 [options] source list|add|remove [argument]
@@ -17,8 +29,8 @@ recipe \- execute Rhai package recipes through Ginux
 Recipe imports explicitly selected immutable inputs, runs API 2 recipes in a
 configured Ginux domain, or on the host when a recipe starts no program, and
 publishes named outputs after successful execution and independent archive
-validation. Payload commands never run on the coordinator host; see
-EXECUTION MODES.
+validation. A recipe that can start a program always runs in Ginux; a recipe
+that cannot runs as a confined host process. See EXECUTION MODES.
 .PP
 Executable recipes declare const RECIPE_API = 2 and literal const NEEDS.
 NEEDS owns typed input/output names, network endpoints and upper limits; callers
@@ -30,10 +42,10 @@ paths in ctx.outputs; hooks use domain paths.
 OS artifact producers and user-managed software use the same format and engine.
 In the LevitateOS workspace, distro/builder/os-recipes is the builder's collection
 and the top-level recipes directory is the user catalog (starting with ripgrep).
-The builder composes OS images from published outputs; recab manages image updates.
+The builder composes OS images from published outputs; recab owns the two roots of an A/B system.
 The CLI activates directory outputs named package through an atomic profile switch.
 The library and builder (--no-activate) continue to consume outputs only.
-.SH PREPARATION
+.SH RUNTIME SELECTION
 Installed defaults are libexec/recipe/ginux and
 share/recipe/runtime/rootfs.tar with its root-reference file, under the prefix of
 the recipe binary (/usr for /usr/bin/recipe), else under /usr. Explicit
@@ -71,6 +83,34 @@ not registered, and a seccomp filter refuses execve and new processes.
 RUNTIME.paths name the host directories. Checkpoints, restore, publication and
 the deadline work as in Ginux; storage bounds are checked at checkpoints and at
 the end. Each run states which way every recipe went and why.
+.SH SYSTEM SCOPE
+Software for the computer's root, not for one user: \fB\-\-system\fR with
+install, update, remove, installed or isinstalled. Without --package-root, root
+running install, update, remove, installed or isinstalled on an A/B system takes
+the same route.
+.PP
+An A/B system is one whose kernel command line has recab.immutable. Its booted
+root is locked and its other root is unlocked. Recipe asks \fBrecab status
+\-\-json\fR where the other root is mounted (other_mount; RECIPE_RECAB_BIN names
+another recab) and writes the change there, never into the booted root. The
+change becomes active when the other root is booted (recab boot-other, then a
+restart). If the other root is not mounted, Recipe says so and stops; recab copy
+recreates it. Packages go under the other root's usr/lib/recipe/profile, recorded
+in its usr/lib/recipe/system.json.
+.PP
+Recipe records what it wrote in other-root.json in its package root
+(/var/lib/recipe/other-root.json for root). recab copy makes the other root a
+copy of the booted root and so wipes those changes. Before any system-scope
+command, Recipe compares the record with both roots' receipts: a change the
+booted root now holds was booted into and is forgotten; a change neither root
+holds was wiped, and Recipe writes exactly that system part again, not the whole
+install and never software installed for one user. Until that succeeds the part is
+reported as not done.
+.PP
+With --json, --system installed prints the booted root's packages and the other
+root's, and the changes not done. On a system without recab.immutable there is one
+root and no recab: --system means root's own package root, /var/lib/recipe.
+--package-root DIR and --no-activate keep their own routes.
 .SH COMMANDS
 .TP
 .B install RECIPE
@@ -84,6 +124,7 @@ When they differ, Recipe prints what the build is linked against, what this
 system's C library is, and the command that installs it anyway
 (\fB\-\-any\-libc\fR), and exits with a nonzero status; with \fB\-\-json\fR it
 also prints a record whose kind is libc_mismatch.
+With \fB\-\-system\fR, see SYSTEM SCOPE.
 .TP
 .B update RECIPE
 Update an already installed package using the current selected recipe's pin.
@@ -153,7 +194,10 @@ prepare them. The checked products preserve the parent's installed input identit
 List declared recipe metadata without evaluating setup/helper code.
 This lists available recipe files, not installed applications.
 With \fB\-\-json\fR, print one entry per recipe for a front end: name, version,
-description, path, ABOUT (including its libc list), NEEDS, dependency names and defined hooks.
+description, path, ABOUT (including its libc list), NEEDS, dependency names and defined hooks,
+and for each recipe runs_here and not_runnable_reason (whether this system's C
+library can run it, and the message install would give, else null). The top
+level carries host_libc, this system's C library: glibc, musl or unknown.
 .TP
 .B index [FOLDER] [\-\-check]
 Write index.json in a folder of recipes (default: the current directory): the
@@ -223,6 +267,12 @@ Directory for name, module and dependency lookup. Defaults to RECIPE_PATH or
 the per-user application-data recipe directory, followed by the sources (see
 \fBsource\fR), of which an image ships its own in /usr/share/recipe/sources.
 Explicit --recipes-path or RECIPE_PATH uses that directory alone.
+.TP
+.B --system
+System scope (see SYSTEM SCOPE): install, update, remove, installed and isinstalled
+act on the computer's root. On an A/B system the change is written into the other
+(unlocked) root and becomes active when that root is booted; the booted root is
+never written.
 .TP
 .B --package-root DIR
 Package generations, installed receipts and active profile symlink. Defaults to
@@ -404,8 +454,10 @@ recipe isinstalled ./tool.rhai --input source=./offline-source \
 .SH LIMITATIONS
 Prepared tools, image libraries and required runtime operations must be present.
 Network grants do not isolate virtual hosts sharing an allowed IP and port.
-There is no native host execution/network fallback. Package activation copies
-verified publications into an owned profile; OS image activation belongs to recab.
+A recipe that starts no program runs on the host, confined as described in
+EXECUTION MODES; there is no network fallback outside the declared endpoints.
+Package activation copies verified publications into an owned profile; the two
+roots of an A/B system belong to recab.
 Raw clocks expose host realtime/monotonic time and vDSO clocks remain observable.
 Configured sysinfo returns zeros, not resource accounting. CPU selection exposes
 real eligible IDs, not virtual topology. Memory limits bound per-process address
