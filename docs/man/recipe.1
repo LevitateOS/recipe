@@ -18,6 +18,12 @@ recipe \- execute Rhai package recipes through Ginux
 \-\-system [options] installed
 .br
 .B recipe
+\-\-system [\-\-root DIR] apply\-release folder
+.br
+.B recipe
+\-\-system \-\-root TREE record\-base \-\-release FILE
+.br
+.B recipe
 runtime status|fetch|stage
 .br
 .B recipe
@@ -132,6 +138,22 @@ left empty by a removal are removed; directories the root had before are never
 recorded. One syncfs flushes each change before the receipt is written. The
 producer's published outputs are deleted once written (its saved state stays unless
 --no-persist-state; --state-dir and --build-dir choose where both live).
+.PP
+\fB\-\-system apply\-release FOLDER\fR applies a fetched release (release.json,
+base.tar.zst, recipes.tar.zst) to the root above. It refuses another os than the
+root's os-release ID and a serial lower than the root's
+/usr/lib/levitate/release.json, and checks the archives' SHA-256 first. The base
+tree replaces the reserved receipt entry base (edited etc/ files kept with
+NAME.recipe-new beside them; fstab, crypttab, hostname, machine-id, localtime,
+adjtime, mtab, resolv.conf, subuid, subgid and the account files never part of it;
+missing release accounts added), the manifest becomes
+usr/lib/levitate/release.json, every held package the release has NAME.rhai for
+is installed from it, and the effects run once. On the running root the running
+kernel's old modules stay as the hidden package previous-kernel. A root without
+base is refused. Without A/B, /var/lib/recipe/apply-release.json records the step,
+and the same command finishes an interrupted apply. \fBrecord\-base\fR writes base
+for an image tree at build time. base is listed by installed \-\-json only, and
+cannot be installed, updated or removed.
 .SH COMMANDS
 .TP
 .B install RECIPE

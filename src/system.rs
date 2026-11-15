@@ -19,6 +19,17 @@ pub const PROFILE: &str = "usr/lib/recipe/profile";
 /// The reserved package a root's effects recipe (`usr/lib/recipe/effects.rhai`)
 /// writes its caches as; no recipe installs under this name.
 pub const EFFECTS_PACKAGE: &str = "system-effects";
+/// The reserved package that is the root's base tree, the files of the system
+/// release it runs (see `crate::release`). Only `recipe --system apply-release`
+/// replaces it, and `record-base` writes it into an image tree at build time;
+/// no recipe installs under this name and it is never removed.
+pub const BASE_PACKAGE: &str = "base";
+/// The reserved package that keeps the modules of the kernel a running root
+/// booted when `apply-release` replaces its base (that kernel stays as the
+/// second boot entry). Only one kernel's modules are kept: the next apply
+/// gives them back to the base, which removes them unless they are the
+/// running kernel's again.
+pub const PREVIOUS_KERNEL_PACKAGE: &str = "previous-kernel";
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Package {
@@ -205,6 +216,10 @@ pub fn payloads(result: &serde_json::Value, target: &str) -> Result<Vec<Payload>
             "{EFFECTS_PACKAGE} is reserved for the root's effects recipe; rename the recipe"
         );
         ensure!(
+            name != BASE_PACKAGE && name != PREVIOUS_KERNEL_PACKAGE,
+            "{BASE_PACKAGE} is reserved for the root's base tree, which only `recipe --system apply-release` replaces; rename the recipe"
+        );
+        ensure!(
             !identities.values().any(|n| n == &name),
             "duplicate producer package name"
         );
@@ -366,6 +381,11 @@ pub struct Plan {
     /// still unchanged.
     #[serde(default)]
     pub stale_new: Vec<(String, String)>,
+    /// Kept configuration files the incoming version carries exactly as the
+    /// package's previous version did: nothing new to put beside them, so
+    /// they are neither written nor given a `.recipe-new`.
+    #[serde(default)]
+    pub untouched: BTreeSet<String>,
 }
 
 /// Where a configuration file the administrator changed is kept: a file or
@@ -428,6 +448,7 @@ pub fn reconcile(
         receipt.packages.remove(*name);
     }
     let mut beside = BTreeSet::new();
+    let mut untouched = BTreeSet::new();
     // A directory several packages of one change carry: a package that only
     // has it as the parent of its files carries it as root:root 0755 (what an
     // unpacked tree makes), while the package it belongs to states its owner
@@ -490,9 +511,30 @@ pub fn reconcile(
                 }
             } else if let Some(existing) = observed.get(path) {
                 let owned = old.packages.values().any(|p| p.files.contains_key(path));
-                ensure!(owned, "unowned administrator/base file conflict at {path}");
-                if kept.contains(path) && existing != entry {
-                    beside.insert(path.clone());
+                if !owned && package.name == BASE_PACKAGE {
+                    // A file no package owns where the base now carries one:
+                    // one the installation made or copied in (a service link,
+                    // a keyboard file, the installer's recab). Under etc/ the
+                    // machine's version stays and the base's goes beside it;
+                    // elsewhere the release's version replaces it.
+                    if path.starts_with("etc/") && existing != entry {
+                        kept.insert(path.clone());
+                        beside.insert(path.clone());
+                    }
+                } else {
+                    ensure!(owned, "unowned administrator/base file conflict at {path}");
+                    if kept.contains(path) && existing != entry {
+                        let same = old
+                            .packages
+                            .get(&package.name)
+                            .and_then(|p| p.files.get(path))
+                            == Some(&*entry);
+                        if same {
+                            untouched.insert(path.clone());
+                        } else {
+                            beside.insert(path.clone());
+                        }
+                    }
                 }
             }
             for other in receipt.packages.values() {
@@ -560,7 +602,7 @@ pub fn reconcile(
     // A kept file that is wanted again belongs to its package as before.
     let kept = kept
         .into_iter()
-        .filter(|p| !wanted.contains_key(p) || beside.contains(p))
+        .filter(|p| !wanted.contains_key(p) || beside.contains(p) || untouched.contains(p))
         .collect();
     Ok(Plan {
         receipt,
@@ -571,11 +613,12 @@ pub fn reconcile(
         dirs: dirs.into_iter().collect(),
         accounts: None,
         stale_new,
+        untouched,
     })
 }
 
 /// The account files of the root at `root` (empty text for a missing file).
-fn account_files(root: &Path) -> Result<accounts::Files> {
+pub(crate) fn account_files(root: &Path) -> Result<accounts::Files> {
     let read = |name: &str| -> Result<String> {
         let path = confined(root, name, false)?;
         match fs::read_to_string(&path) {
@@ -623,11 +666,21 @@ pub fn resolve_owners(root: &Path, payloads: &mut [Payload]) -> Result<Option<ac
     }
     files_lines.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()).then(a.1.cmp(&b.1)));
     let mut lines: Vec<(usize, String)> = Vec::new();
+    // The base's accounts come first: they are its own account files' lines,
+    // with the ids its files were made with, which a sysusers.d `-` line
+    // must not take first.
+    for (index, payload) in payloads.iter().enumerate() {
+        if payload.package.name == BASE_PACKAGE {
+            lines.extend(payload.accounts.iter().map(|l| (index, l.clone())));
+        }
+    }
     for (_, index, text) in &files_lines {
         lines.extend(text.split('\n').map(|l| (*index, l.to_owned())));
     }
     for (index, payload) in payloads.iter().enumerate() {
-        lines.extend(payload.accounts.iter().map(|l| (index, l.clone())));
+        if payload.package.name != BASE_PACKAGE {
+            lines.extend(payload.accounts.iter().map(|l| (index, l.clone())));
+        }
     }
     let named = payloads.iter().any(|p| {
         p.package
@@ -704,6 +757,175 @@ pub fn plan(
     Ok(plan)
 }
 
+/// What planning a new base did besides the plan itself.
+pub struct BasePlan {
+    pub plan: Plan,
+    /// Paths of the old base an interrupted apply had already brought to the
+    /// new release (written as the release has them, or removed when the
+    /// release drops them): taken as done instead of as damage.
+    pub adopted: Vec<String>,
+    /// Paths another package of the root owns with other contents: that
+    /// package keeps them, and the base's version is not written.
+    pub left_to_others: Vec<(String, String)>,
+    /// Files of the running kernel's modules kept as
+    /// [`PREVIOUS_KERNEL_PACKAGE`].
+    pub kept_modules: usize,
+}
+
+/// The plan that replaces the root's `base` with `payload` (the new release's
+/// base tree, see `crate::release`). Accounts and owners as for any change,
+/// then two things only a base has: a file an interrupted apply already wrote
+/// as the release has it (or removed as the release drops it) counts as done,
+/// so the same command finishes the job; and a file another package owns with
+/// other contents (the effects package's caches, a group's file) stays that
+/// package's.
+///
+/// `keep_modules` is the release of the running kernel when the root is the
+/// running one: the old base's files under `usr/lib/modules/RELEASE/` the
+/// new base does not carry move to [`PREVIOUS_KERNEL_PACKAGE`] and stay. The
+/// modules an earlier apply kept go back to the base first, so they are
+/// removed unless they are kept again.
+pub fn plan_base(
+    root: &Path,
+    old: &Receipt,
+    payload: &mut Payload,
+    keep_modules: Option<&str>,
+) -> Result<BasePlan> {
+    ensure!(
+        payload.package.name == BASE_PACKAGE,
+        "a base plan needs the base package"
+    );
+    let mut old = old.clone();
+    let mut kept_modules = 0;
+    if let Some(previous) = old.packages.remove(PREVIOUS_KERNEL_PACKAGE)
+        && let Some(base) = old.packages.get_mut(BASE_PACKAGE)
+    {
+        for (path, entry) in previous.files {
+            base.files.entry(path).or_insert(entry);
+        }
+    }
+    if let Some(release) = keep_modules
+        && !release.is_empty()
+        && !release.contains('/')
+        && let Some(base) = old.packages.get_mut(BASE_PACKAGE)
+    {
+        let dir = format!("usr/lib/modules/{release}");
+        let prefix = format!("{dir}/");
+        let keep: BTreeMap<String, Entry> = base
+            .files
+            .iter()
+            .filter(|(path, _)| {
+                (**path == dir || path.starts_with(&prefix))
+                    && !payload.package.files.contains_key(*path)
+            })
+            .map(|(p, e)| (p.clone(), e.clone()))
+            .collect();
+        if !keep.is_empty() {
+            kept_modules = keep.len();
+            for path in keep.keys() {
+                base.files.remove(path);
+            }
+            let package = Package {
+                name: PREVIOUS_KERNEL_PACKAGE.into(),
+                version: release.into(),
+                recipe: base.recipe.clone(),
+                recipe_digest: base.recipe_digest.clone(),
+                architecture: base.architecture.clone(),
+                target: "release".into(),
+                dependencies: Vec::new(),
+                files: keep,
+                accounts: Vec::new(),
+            };
+            old.packages.insert(PREVIOUS_KERNEL_PACKAGE.into(), package);
+        }
+    }
+    let accounts = resolve_owners(root, std::slice::from_mut(payload))?;
+    let mut left_to_others = Vec::new();
+    payload.package.files.retain(|path, entry| {
+        if entry.kind == "dir" {
+            return true;
+        }
+        match old
+            .packages
+            .values()
+            .filter(|p| p.name != BASE_PACKAGE)
+            .find(|p| p.files.get(path).is_some_and(|e| e != entry))
+        {
+            Some(other) => {
+                left_to_others.push((path.clone(), other.name.clone()));
+                false
+            }
+            None => true,
+        }
+    });
+    // A hardlink whose first name went with it goes too.
+    let files = payload.package.files.clone();
+    payload.package.files.retain(|_, entry| {
+        entry.kind != "hardlink" || entry.link.as_ref().is_some_and(|l| files.contains_key(l))
+    });
+    let adopted = adopt_written(root, &mut old, &payload.package)?;
+    let payloads = std::slice::from_ref(&*payload);
+    let observed = observe(root, &old, &old.affected(payloads, None))?;
+    let mut plan = reconcile(&old, payloads, None, &observed)?;
+    plan.accounts = accounts;
+    Ok(BasePlan {
+        plan,
+        adopted,
+        left_to_others,
+        kept_modules,
+    })
+}
+
+/// In `old`'s copy of `incoming`'s package, take every path the root already
+/// holds as `incoming` has it as recorded, and forget every path `incoming`
+/// drops that is already gone. Returns those paths. Only exact matches count,
+/// so nothing an administrator changed is taken; directories are left out.
+fn adopt_written(root: &Path, old: &mut Receipt, incoming: &Package) -> Result<Vec<String>> {
+    let Some(prior) = old.packages.get(&incoming.name) else {
+        return Ok(Vec::new());
+    };
+    let changed: BTreeSet<String> = incoming
+        .files
+        .iter()
+        .filter(|(path, entry)| entry.kind != "dir" && prior.files.get(*path) != Some(*entry))
+        .map(|(path, _)| path.clone())
+        .collect();
+    let dropped: BTreeSet<String> = prior
+        .files
+        .iter()
+        .filter(|(path, entry)| entry.kind != "dir" && !incoming.files.contains_key(*path))
+        .map(|(path, _)| path.clone())
+        .collect();
+    let mut probe = Receipt::default();
+    probe
+        .packages
+        .insert(incoming.name.clone(), incoming.clone());
+    let now = observe(root, &probe, &changed)?;
+    let still = observe(root, old, &dropped)?;
+    let package = old.packages.get_mut(&incoming.name).unwrap();
+    let mut adopted = Vec::new();
+    for path in changed {
+        let want = &incoming.files[&path];
+        let mut have = now.get(&path).cloned();
+        if !want.xattrs.contains_key("security.selinux")
+            && let Some(have) = &mut have
+        {
+            have.xattrs.remove("security.selinux");
+        }
+        if have.as_ref() == Some(want) {
+            package.files.insert(path.clone(), want.clone());
+            adopted.push(path);
+        }
+    }
+    for path in dropped {
+        if !still.contains_key(&path) {
+            package.files.remove(&path);
+            adopted.push(path);
+        }
+    }
+    Ok(adopted)
+}
+
 /// `relative` inside `root`, with every directory above it a real directory in
 /// that root (a link there could lead out of the root). With `create`, missing
 /// directories above it are made.
@@ -754,7 +976,7 @@ pub fn read_receipt(root: &Path) -> Result<Receipt> {
 }
 
 /// The value of the extended attribute `name` of `path` (not followed).
-fn xattr(path: &Path, name: &str) -> Result<Option<Vec<u8>>> {
+pub(crate) fn xattr(path: &Path, name: &str) -> Result<Option<Vec<u8>>> {
     let c = std::ffi::CString::new(path.as_os_str().as_bytes())?;
     let n = std::ffi::CString::new(name)?;
     let mut buffer = vec![0u8; 65536];
@@ -1029,6 +1251,9 @@ pub fn apply(root: &Path, payloads: &[Payload], plan: &Plan) -> Result<()> {
         .collect();
     let mut links = Vec::new();
     for (name, entry) in &plan.wanted {
+        if plan.untouched.contains(name) {
+            continue;
+        }
         let dest = if plan.beside.contains(name) {
             confined(root, &format!("{name}.recipe-new"), true)?
         } else {
@@ -1144,13 +1369,18 @@ pub fn apply(root: &Path, payloads: &[Payload], plan: &Plan) -> Result<()> {
             flushing.elapsed().as_secs_f64()
         );
     }
-    let receipt = confined(root, RECEIPT, true)?;
-    let temp = receipt.with_extension("json.new");
+    write_receipt(root, &plan.receipt)
+}
+
+/// Record `receipt` as the system receipt of the root at `root`, durably.
+pub fn write_receipt(root: &Path, receipt: &Receipt) -> Result<()> {
+    let path = confined(root, RECEIPT, true)?;
+    let temp = path.with_extension("json.new");
     let mut out = fs::File::create(&temp)?;
-    out.write_all(&serde_json::to_vec(&plan.receipt)?)?;
+    out.write_all(&serde_json::to_vec(receipt)?)?;
     out.sync_all()?;
-    fs::rename(temp, &receipt)?;
-    fs::File::open(receipt.parent().context("receipt has no directory")?)?.sync_all()?;
+    fs::rename(temp, &path)?;
+    fs::File::open(path.parent().context("receipt has no directory")?)?.sync_all()?;
     Ok(())
 }
 

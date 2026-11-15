@@ -21,6 +21,8 @@ mod cli;
 mod commands;
 #[path = "recipe/metadata.rs"]
 mod metadata;
+#[path = "recipe/release_route.rs"]
+mod release_route;
 #[path = "recipe/runtime.rs"]
 mod runtime;
 #[path = "recipe/system_route.rs"]

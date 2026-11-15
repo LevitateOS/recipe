@@ -59,6 +59,7 @@ mod process;
 mod progress_file;
 mod publication;
 mod recipes;
+pub mod release;
 mod retained;
 /// Installed runtime defaults shared with OS packaging.
 pub mod runtime;

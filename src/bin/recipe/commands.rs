@@ -66,6 +66,17 @@ pub(crate) fn execute(mut cli: Cli) -> Result<()> {
     if super::system_route::route(&mut cli)? {
         return Ok(());
     }
+    match &cli.command {
+        Commands::ApplyRelease { folder } => anyhow::bail!(
+            "apply-release changes a system root: recipe --system apply-release {}",
+            folder.display()
+        ),
+        Commands::RecordBase { release } => anyhow::bail!(
+            "record-base writes into an image tree: recipe --system --root TREE record-base --release {}",
+            release.display()
+        ),
+        _ => {}
+    }
     let changed = cli
         .machine_events
         .then(|| changed_package(&cli.command))
@@ -595,6 +606,9 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Commands::Runtime { .. } => unreachable!("handled before the engine is set up"),
+        Commands::ApplyRelease { .. } | Commands::RecordBase { .. } => {
+            unreachable!("system commands are handled by the system route")
+        }
         Commands::Hash { file } => {
             use owo_colors::OwoColorize;
 

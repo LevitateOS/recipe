@@ -118,6 +118,44 @@ which package scripts would have rebuilt; the OS provides it. Its contract:
   last change without it). JSON `effects.status` is `done`, `none` (no effects
   recipe), `skipped`, `unchanged` (nothing was written) or `failed`.
 
+**System releases.** `recipe --system [--root DIR] apply-release FOLDER` applies a
+fetched release (`docs/release-engineering.md` in LevitateOS; FOLDER holds
+`release.json`, `base.tar.zst`, `recipes.tar.zst`, as `recupdate fetch` leaves them)
+to the root a system change would write: the other root on A/B, the running root
+without A/B, or DIR. It refuses a release of another `os` than the root's os-release
+`ID` or with a lower `serial` than the root's `/usr/lib/levitate/release.json`, and
+checks both archives' size and SHA-256 against the manifest before anything changes
+(the signature is the caller's). Then:
+
+1. The base tree becomes the reserved receipt entry `base`, through the same engine:
+   files only the old base had are removed, changed ones replaced, configuration
+   edited under `etc/` kept with the release's version beside it as `NAME.recipe-new`
+   (and not even that when the release did not change the file). The machine's own
+   files (`etc/fstab`, `crypttab`, `hostname`, `machine-id`, `localtime`, `adjtime`,
+   `mtab`, `resolv.conf`, `subuid`, `subgid` and the account files) are never the
+   base's. The release's accounts the root lacks are created with the release's ids
+   where free (the users made at installation stay); file owners are resolved by
+   name. A file no package owns where the release now has one (made by the
+   installation) is kept beside under `etc/` and replaced elsewhere. The manifest
+   becomes the root's `/usr/lib/levitate/release.json`. On the running root the old
+   base's modules of the running kernel stay, as the hidden package
+   `previous-kernel` (at most one kernel's; the next apply removes them).
+2. Every package the receipt holds that the release has a recipe for
+   (`NAME.rhai` in `recipes.tar.zst`) is installed from it; one held from the same
+   recipe is skipped, one the release lacks stays and is reported.
+3. The effects run once.
+
+`base` is shown by `installed --json` with `version` and `serial`, not in the human
+list; it cannot be installed, updated or removed. A root without `base` was installed
+before releases and is refused (install the release from its ISO). Image builders
+write `base` as the last step: `recipe --system --root TREE record-base --release
+release.json`. Without A/B the step in progress is recorded in
+`/var/lib/recipe/apply-release.json`, and running the same command again finishes an
+interrupted apply. On A/B, waiting changes are written again first, and record
+entries the release replaced are dropped. With `--json`, step lines
+(`{"event":"step","n":2,"of":4,"text":...}`) and `{"event":"failed","error":...}`
+precede the result object.
+
 `RECIPE_TIMING=1` prints how long each stage of a system change and of each host
 run takes. A system change's producer outputs are moved, not copied: out of the run
 directory into publication, and from publication into the root, when the scratch

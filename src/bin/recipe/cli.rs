@@ -386,6 +386,27 @@ pub(crate) enum Commands {
         command: RuntimeCommands,
     },
 
+    /// With --system: apply a fetched system release to a root (its base, then its group recipes, then the root's effects)
+    #[command(
+        name = "apply-release",
+        after_help = "Examples:\n  recipe --system apply-release /var/cache/recupdate/7\n  recipe --system --root /mnt apply-release ./levitateos-7\n\nThe folder holds release.json, base.tar.zst and recipes.tar.zst as 'recupdate\nfetch' leaves them; the signature is checked by the caller, the archives'\nSHA-256 here. The root's entry `base` becomes the release's base tree (files the\nrelease drops are removed, configuration the administrator changed under /etc is\nkept with the new version beside it as NAME.recipe-new, the machine's own files\nand accounts stay), every package the root holds that the release has a recipe\nfor is installed from the release's revision of it, and the effects run once.\nOn an A/B system the other root is written; on a system without A/B, the\nrunning root (an interrupted run is finished by running it again)."
+    )]
+    ApplyRelease {
+        /// The fetched release folder.
+        folder: PathBuf,
+    },
+
+    /// With --system --root TREE: record TREE's base tree as the receipt entry `base` (image builders)
+    #[command(
+        name = "record-base",
+        after_help = "Example:\n  recipe --system --root ./rootfs record-base --release ./release.json\n\nCopies the manifest to TREE/usr/lib/levitate/release.json and records every\nfile of the tree's base (all but var/, mount points, machine files and what\nother packages of the receipt own) with its digest, mode, owner and attributes,\nso that a later 'apply-release' knows which files are the base's. Run it as the\nlast change to the tree before the image is made from it."
+    )]
+    RecordBase {
+        /// The release manifest of the image being built (os, version and serial are read).
+        #[arg(long, value_name = "FILE")]
+        release: PathBuf,
+    },
+
     /// Show recipe information
     #[command(after_help = "Examples:\n  recipe info kitty\n  recipe info ./recipes/kitty.rhai")]
     Info {
