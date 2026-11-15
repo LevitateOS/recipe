@@ -197,6 +197,29 @@ with the files' snapshot, and never taken as proof by itself.
 Rough size after it, by estimate: a prebuilt program about 40 lines, a group
 about 40, the whole catalog about 4,000 instead of 41,000.
 
+## The API number and the rewrite
+
+Decided by the owner on 2026-11-16. Written down first; not done by this note.
+
+- **No backwards compatibility.** Recipe has never been released and has no
+  users. Nothing has to keep working for anyone.
+- **The API number stays, and is reset to 0.** Every recipe keeps its first
+  line, now `const RECIPE_API = 0;`. The numbers 2 and 3 described steps of a
+  history nobody outside this project has seen, so they go. The engine accepts
+  exactly one number at a time. There is never a "2 or 3".
+- **All recipes are rewritten.** When the format changes, every recipe changes
+  in the same step, and the old form is deleted, not kept beside the new one:
+  the 72 catalog recipes (`LevitateOS/recipes`), the 34 OS-building recipes
+  (`distro/builder/os-recipes` in LevitateOS), and the examples and test
+  recipes in this repository. The same goes for everything that reads a
+  recipe: the engine, `recipe list --json` and the desktop app.
+- **The number goes up again only when it means something:** once Recipe is
+  released and a recipe written for one release must be refused by another.
+  Until then the format changes and the number stays 0.
+
+The new form in this note is therefore `RECIPE_API = 0`, not a fourth API.
+Its examples leave the line out only to stay short.
+
 ## What it would take
 
 - Engine work in Recipe: the declared sources, the built-in steps, the
@@ -213,10 +236,8 @@ about 40, the whole catalog about 4,000 instead of 41,000.
 
 1. One output folder (`out`) or several named outputs as today
    (`program`, `package`, `system`, `sdk`): how `FILES` and `build` name them.
-2. Settled by the owner on 2026-11-16: everything moves at once. Recipe has
-   never been released and has no users, so there is no backwards
-   compatibility: no old form beside the new one and no `RECIPE_API` number
-   to tell them apart.
+2. Settled by the owner on 2026-11-16: everything moves at once. See "The API
+   number and the rewrite" above.
 3. How a recipe with several sources names which one `FILES` reads from.
 4. What `verify` may do: read the output only, or also run its programs
    (which decides host or Ginux, see "Host or Ginux" in `WRITING_RECIPES.md`).
