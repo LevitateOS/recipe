@@ -41,7 +41,7 @@ mod snapshot;
 
 pub(crate) use identity::clear_capabilities;
 use identity::{Gate, Limits, Stopped};
-use snapshot::{check_storage, unpack_snapshot, write_snapshot};
+use snapshot::{check_storage, unpack_snapshot, write_snapshot, write_snapshot_of};
 
 use std::fs::{self, File};
 use std::os::unix::fs::PermissionsExt;
@@ -122,6 +122,7 @@ fn run_inner(
             "cannot prepare the host run of invocation {invocation_id}: {error:#}"
         )))
     };
+    let run_started = Instant::now();
     let inputs = root.join(crate::domain::INPUTS.trim_start_matches('/'));
     crate::inputs::stage_inputs(prepared, &inputs).map_err(startup)?;
     for path in crate::domain::WRITABLE_DIRS {
@@ -269,6 +270,8 @@ fn run_inner(
         )
     });
     let mut worker_started = false;
+    let started = Instant::now();
+    timing("inputs staged, worker starting", run_started);
     let pump = {
         // A checkpoint: the worker waits for the ack, so nothing writes while
         // work and out are archived.
@@ -277,6 +280,7 @@ fn run_inner(
         let mut capture = |point: &crate::worker::protocol::CheckpointPayload,
                            _deadline: Instant|
          -> Result<Option<u64>> {
+            timing("checkpoint (a phase ended)", started);
             // A root run reads the worker's files only while it is stopped.
             let _stopped = if unprivileged {
                 Some(Stopped::stop(worker_pid)?)
@@ -378,9 +382,42 @@ fn run_inner(
             crate::launch::exit_message(exit)
         )));
     }
+    timing("worker finished", started);
     if stream.result.ok {
-        write_snapshot(&root, &export_path, &options.execution)
-            .map_err(|error| Category::Storage.wrap(error, "cannot archive the run's outputs"))?;
+        // Publication keeps only the named outputs: when they all lie in
+        // `out` and no saved state keeps the export, `work` (downloads,
+        // build trees) is not archived at all.
+        let in_out = retained.is_none()
+            && stream.result.ctx_summary["outputs"]
+                .as_object()
+                .is_some_and(|outputs| {
+                    outputs.values().all(|path| {
+                        path.as_str()
+                            .is_some_and(|p| p == crate::domain::OUT || p.starts_with("/out/"))
+                    })
+                });
+        // A system change's producer (`EPHEMERAL_ENV`) with no saved state:
+        // its outputs are moved out of the run's directory, which is
+        // discarded, instead of archived and unpacked (bounds checked by the
+        // same walk as a checkpoint's).
+        let tree = (in_out
+            && std::env::var_os(crate::publication::EPHEMERAL_ENV).is_some()
+            && crate::publication::can_move(&root, &stream.result.ctx_summary, state_dir))
+        .then_some(root.as_path());
+        if tree.is_some() {
+            check_storage(&root, &options.execution).map_err(|error| {
+                Category::Storage.wrap(error, "cannot archive the run's outputs")
+            })?;
+        } else {
+            let tops: &[&str] = if in_out {
+                &["out"]
+            } else {
+                &crate::domain::WRITABLE_ROOTS
+            };
+            write_snapshot_of(&root, &export_path, &options.execution, tops).map_err(|error| {
+                Category::Storage.wrap(error, "cannot archive the run's outputs")
+            })?;
+        }
         let usage = match &stream.result.network_usage {
             Some(usage) => {
                 crate::needs::report::host_network_usage(&prepared.network.host_endpoints, usage)
@@ -388,9 +425,11 @@ fn run_inner(
             None => serde_json::json!({"status":"unobserved",
                 "reason":"the host worker reported no network use","warnings":[]}),
         };
+        timing("outputs archived", started);
         crate::launch::finish_outputs(
             &mut stream.result,
             &export_path,
+            tree,
             &mut retained,
             prepared,
             &invocation_id,
@@ -400,6 +439,7 @@ fn run_inner(
             usage,
         )?;
     }
+    timing("outputs published", started);
     Ok(LaunchReport {
         result: stream.result,
         checkpoints_acked: stream.checkpoints,
@@ -414,6 +454,16 @@ fn run_inner(
         log_total_bytes: drained.total_bytes,
         log_discarded_bytes: drained.discarded_bytes,
     })
+}
+
+/// With `RECIPE_TIMING` set, say how long the host run has taken at `what`.
+pub(crate) fn timing(what: &str, since: Instant) {
+    if std::env::var_os("RECIPE_TIMING").is_some() {
+        crate::diagnostics::diag!(
+            "recipe: timing: {what} after {:.1} s",
+            since.elapsed().as_secs_f64()
+        );
+    }
 }
 
 /// The worker environment of a host run: the variables a Ginux worker gets,

@@ -565,6 +565,9 @@ fn report_checkpoint(
     recipe: &Path,
     ctx_map: &rhai::Map,
 ) -> Result<Option<u64>> {
+    // The files a checkpoint snapshots include every manifest a package
+    // helper deferred.
+    crate::target::flush_pending()?;
     *checkpoint_no += 1;
     let seq = *checkpoint_no;
     let state = match ctx_map.get("state") {
@@ -681,6 +684,20 @@ fn send_result(
     failure: Option<FailureInfo>,
     ctx_summary: serde_json::Value,
 ) -> Result<()> {
+    // The result's outputs are read from disk: write deferred manifests first.
+    let (ok, failure) = match crate::target::flush_pending() {
+        Ok(()) => (ok, failure),
+        Err(error) => (
+            false,
+            failure.or_else(|| {
+                Some(FailureInfo {
+                    kind: FailureKind::Recipe,
+                    phase: None,
+                    message: format!("cannot write the target metadata: {error:#}"),
+                })
+            }),
+        ),
+    };
     tx.send(
         output,
         &FramePayload::Result(ResultPayload {

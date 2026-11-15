@@ -24,7 +24,14 @@ use crate::fsx::{check, cstring, list_at, lstat_at, open_dir, open_dir_at, opena
 
 /// Check the storage bounds over work and out without keeping an archive.
 pub(super) fn check_storage(root: &Path, options: &crate::ExecutionOptions) -> Result<()> {
-    write_snapshot_to(root, std::io::sink(), options)
+    // The same walk and the same checks, without reading any file's bytes.
+    write_snapshot_to(
+        root,
+        std::io::sink(),
+        options,
+        true,
+        &crate::domain::WRITABLE_ROOTS,
+    )
 }
 
 /// Archive `work` and `out` into `destination`, in the snapshot and export
@@ -38,13 +45,25 @@ pub(super) fn write_snapshot(
     destination: &Path,
     options: &crate::ExecutionOptions,
 ) -> Result<()> {
+    write_snapshot_of(root, destination, options, &crate::domain::WRITABLE_ROOTS)
+}
+
+/// `write_snapshot` of only the tops `tops` (`work`, `out`): the final export
+/// of a run whose named outputs all lie in `out` leaves `work` out, since
+/// publication would discard it.
+pub(super) fn write_snapshot_of(
+    root: &Path,
+    destination: &Path,
+    options: &crate::ExecutionOptions,
+    tops: &[&str],
+) -> Result<()> {
     let file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
         .open(destination)?;
-    write_snapshot_to(root, BufWriter::new(file), options)
+    write_snapshot_to(root, BufWriter::new(file), options, false, tops)
 }
 
 struct Archive<W: Write> {
@@ -54,14 +73,19 @@ struct Archive<W: Write> {
     max_bytes: u64,
     max_objects: u64,
     inodes: HashMap<(u64, u64), String>,
+    /// Only check the bounds and kinds (`check_storage`): no member is written.
+    count_only: bool,
 }
 
 fn write_snapshot_to(
     root: &Path,
     output: impl Write,
     options: &crate::ExecutionOptions,
+    count_only: bool,
+    tops: &[&str],
 ) -> Result<()> {
     let mut archive = Archive {
+        count_only,
         builder: tar::Builder::new(output),
         bytes: 0,
         objects: 0,
@@ -70,7 +94,7 @@ fn write_snapshot_to(
         inodes: HashMap::new(),
     };
     let root = open_dir(root).with_context(|| format!("cannot open {}", root.display()))?;
-    for top in crate::domain::WRITABLE_ROOTS {
+    for top in tops {
         archive_entry(root.as_fd(), &cstring(top.as_bytes())?, top, &mut archive)?;
     }
     archive.builder.into_inner()?.flush()?;
@@ -149,9 +173,11 @@ fn archive_entry<W: Write>(
     if kind.is_dir() {
         header.set_entry_type(tar::EntryType::Directory);
         header.set_size(0);
-        archive
-            .builder
-            .append_data(&mut header, member, std::io::empty())?;
+        if !archive.count_only {
+            archive
+                .builder
+                .append_data(&mut header, member, std::io::empty())?;
+        }
         let directory =
             open_dir_at(dir, name).map_err(|error| open_failed(member, "directory", error))?;
         let opened = File::from(directory.try_clone()?).metadata()?;
@@ -173,7 +199,9 @@ fn archive_entry<W: Write>(
         header.set_entry_type(tar::EntryType::Symlink);
         header.set_size(0);
         let target = read_link_fd(entry.as_fd())?;
-        archive.builder.append_link(&mut header, member, target)?;
+        if !archive.count_only {
+            archive.builder.append_link(&mut header, member, target)?;
+        }
     } else if kind.is_file() {
         let inode = (metadata.dev(), metadata.ino());
         if metadata.nlink() > 1
@@ -182,7 +210,9 @@ fn archive_entry<W: Write>(
             header.set_entry_type(tar::EntryType::Link);
             header.set_size(0);
             let first = first.clone();
-            archive.builder.append_link(&mut header, member, first)?;
+            if !archive.count_only {
+                archive.builder.append_link(&mut header, member, first)?;
+            }
             return Ok(());
         }
         archive.bytes = archive.bytes.saturating_add(metadata.len());
@@ -200,6 +230,9 @@ fn archive_entry<W: Write>(
         }
         if metadata.nlink() > 1 {
             archive.inodes.insert(inode, member.to_owned());
+        }
+        if archive.count_only {
+            return Ok(());
         }
         header.set_entry_type(tar::EntryType::Regular);
         header.set_size(metadata.len());

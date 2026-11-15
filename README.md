@@ -82,9 +82,49 @@ tree. It does what a change to the other root does, without recab and without th
 `other-root.json` record; `--root` given the booted root of an A/B system is refused.
 
 ```sh
-recipe --system --root /mnt install plasma-desktop   # written into /mnt, receipt in /mnt/usr/lib/recipe/system.json
+recipe --system --root /mnt install plasma printing firefox   # one run; each group written once
 recipe --system --root /mnt installed
 ```
+
+**Several recipes, each once.** A system-scope `install` takes any number of
+recipes and installs them in order in one run. Before producing anything, Recipe
+tells the producer what the root already holds; a recipe, or a dependency, that the
+root's receipt holds at the same recipe digest and version is not produced or written
+again, in the same run and across runs (with or without `--no-persist-state`). The
+JSON lists every package written (`packages`) and every one already there
+(`present`). A runtime dependency's `system` output is written into the root, not
+staged into its consumer's inputs. (`update` and `remove` take one recipe; an update
+to what the root already holds writes nothing.)
+
+**Root effects.** After a successful system change to a root, if the root ships
+`/usr/lib/recipe/effects.rhai`, Recipe runs it once against that root and writes its
+`system` output into the root as the reserved package `system-effects`, replacing that
+package's previous files. That recipe rebuilds whole-root caches (GSettings schemas,
+GIO modules, pixbuf loaders, MIME and icon caches, fonts, desktop database, ...),
+which package scripts would have rebuilt; the OS provides it. Its contract:
+
+- it receives the root, read-only, as its input `root`
+  (`NEEDS.inputs: #{ root: "directory" }`, at `RUNTIME.paths.inputs + "/root"`), and
+  runs where its helpers put it (in Ginux when it runs the root's own programs);
+- it returns one `system` output, finalized with `target_finalize`, holding only the
+  cache files; it has no runtime `deps`;
+- `system-effects` is in the receipt but not listed by `installed`, cannot be
+  removed by itself, and no recipe may take the name;
+- a failed effects run is reported (JSON `effects: {"status": "failed", "error"}`,
+  exit status nonzero, "the system change is written, but rebuilding the root's
+  caches ... failed") and does not undo the change; the next change runs it again;
+- `--no-effects` skips it, for a caller that runs it itself once at the end (an image
+  builder installing many groups: install them with `--no-effects`, then run one
+  last change without it). JSON `effects.status` is `done`, `none` (no effects
+  recipe), `skipped`, `unchanged` (nothing was written) or `failed`.
+
+`RECIPE_TIMING=1` prints how long each stage of a system change and of each host
+run takes. A system change's producer outputs are moved, not copied: out of the run
+directory into publication, and from publication into the root, when the scratch
+pool, the state directory and the root share a filesystem (the installer line
+above puts all three on the target); each file's digest is still checked against
+the recipe's record before it is moved, and the root is flushed once before its
+receipt is written.
 
 The producer runs under `--state-dir`/`--build-dir` (default
 `/var/lib/recipe/system-producer` for root) and unpacks in the scratch pool

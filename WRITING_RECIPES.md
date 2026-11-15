@@ -430,6 +430,27 @@ fn install(ctx) {
 - Pinned downloads come from the offline cache when it holds them (see the README),
   so the same recipe installs offline from an install medium.
 
+## A root's effects recipe
+
+An OS ships `/usr/lib/recipe/effects.rhai` in its base to rebuild whole-root
+caches after Recipe changes system software in that root (package scripts never
+run). After every successful system change Recipe runs it once against the root
+it changed:
+
+```rhai
+const RECIPE_API = 3;
+const NEEDS = #{ inputs: #{ root: "directory" }, outputs: #{ system: "directory" } };
+// RUNTIME.paths.inputs + "/root" is the changed root, read-only. Write only the
+// cache files (e.g. usr/lib64/gdk-pixbuf-2.0/2.10.0/loaders.cache) under a tree,
+// target_finalize it, and set ctx.outputs.system to it. No runtime deps.
+```
+
+Its `system` output is written into the root as the reserved package
+`system-effects`, which replaces its own previous files at each run. A recipe
+that runs the root's own programs runs in Ginux, like any recipe that starts a
+program. A failure is reported and does not undo the change; `--no-effects`
+skips the run (README, "Root effects").
+
 ## Dependencies and inheritance
 
 Literal declarations are discovered before launch without evaluating Rhai:

@@ -10,6 +10,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
+/// Set by a system change for the producer it starts: its published outputs
+/// are consumed and deleted at once, so publication does not flush them.
+pub const EPHEMERAL_ENV: &str = "RECIPE_EPHEMERAL_OUTPUTS";
+
 struct Staging(tempfile::TempDir);
 impl Drop for Staging {
     fn drop(&mut self) {
@@ -17,17 +21,8 @@ impl Drop for Staging {
     }
 }
 
-pub(crate) fn prepare(
-    archive: &Path,
-    context: &Value,
-    options: &crate::ExecutionOptions,
-    state_dir: Option<&Path>,
-    needs: &crate::needs::Needs,
-    complete: bool,
-) -> Result<Option<Publication>> {
-    needs.validate_output_names(context, complete)?;
-    let max_bytes = options.storage_byte_bound();
-    let max_entries = options.storage_max_objects as usize;
+/// The named outputs of `context`, as relative export paths, checked.
+fn selected_outputs(context: &Value) -> Result<Option<BTreeMap<String, String>>> {
     let Some(outputs) = context.get("outputs") else {
         return Ok(None);
     };
@@ -52,6 +47,174 @@ pub(crate) fn prepare(
         crate::domain::validate_export_path(relative)?;
         selected.insert(name.clone(), relative.to_owned());
     }
+    Ok(Some(selected))
+}
+
+/// Whether [`prepare_tree`] can publish the outputs of `context` from the run
+/// directory `run_root`: one filesystem with the exports, none inside another.
+pub(crate) fn can_move(run_root: &Path, context: &Value, state_dir: Option<&Path>) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(Some(selected)) = selected_outputs(context) else {
+        return false;
+    };
+    let Ok(state) = crate::retained::state_root(state_dir) else {
+        return false;
+    };
+    if fs::create_dir_all(&state).is_err() {
+        return false;
+    }
+    let (Ok(run), Ok(exports)) = (fs::metadata(run_root), fs::metadata(&state)) else {
+        return false;
+    };
+    run.dev() == exports.dev() && movable(&selected)
+}
+
+fn movable(selected: &BTreeMap<String, String>) -> bool {
+    selected.iter().all(|(a, ra)| {
+        selected
+            .iter()
+            .all(|(b, rb)| a == b || !(ra == rb || rb.starts_with(&format!("{ra}/"))))
+    })
+}
+
+/// Publish a finished host run's named outputs by moving them out of the
+/// run's directory (`run_root`, which is discarded after the run) instead of
+/// archiving and unpacking them: the same checks as [`prepare`] (output kinds,
+/// path names, entry kinds, link targets, storage bounds), with no copy.
+/// None when there are no outputs; the caller checks [`can_move`] first.
+pub(crate) fn prepare_tree(
+    run_root: &Path,
+    context: &Value,
+    options: &crate::ExecutionOptions,
+    state_dir: Option<&Path>,
+    needs: &crate::needs::Needs,
+    complete: bool,
+) -> Result<Option<Publication>> {
+    use std::os::unix::fs::MetadataExt;
+    needs.validate_output_names(context, complete)?;
+    let Some(selected) = selected_outputs(context)? else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        movable(&selected),
+        "outputs inside one another cannot be moved; archive them"
+    );
+    let state = crate::retained::state_root(state_dir)?;
+    fs::create_dir_all(&state).context("cannot create recipe state directory")?;
+    let base = state.join("exports");
+    crate::fsx::private_dir(&base, false)?;
+    let base = base.canonicalize()?;
+    let device = fs::metadata(&base)?.dev();
+    let max_bytes = options.storage_byte_bound();
+    let max_entries = options.storage_max_objects as usize;
+    let mut bytes = 0u64;
+    let mut entries = 0usize;
+    let root_user = unsafe { libc::geteuid() } == 0;
+    let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+    for (name, relative) in &selected {
+        // The walk below goes by path: no directory on the way to an output
+        // may be a link, or the output would be read from where it points.
+        let mut source = run_root.to_path_buf();
+        let mut parts = Path::new(relative).components().peekable();
+        while let Some(part) = parts.next() {
+            source.push(part);
+            if parts.peek().is_some() {
+                anyhow::ensure!(
+                    fs::symlink_metadata(&source).is_ok_and(|m| m.file_type().is_dir()),
+                    "a declared output is not under a plain directory: {relative}"
+                );
+            }
+        }
+        let metadata = fs::symlink_metadata(&source)
+            .with_context(|| format!("a declared output is absent: {relative}"))?;
+        anyhow::ensure!(
+            metadata.dev() == device,
+            "{relative} is on another filesystem than the published outputs"
+        );
+        let expected = needs.outputs[name];
+        anyhow::ensure!(
+            match expected {
+                crate::needs::PathKind::File => metadata.is_file(),
+                crate::needs::PathKind::Directory => metadata.is_dir(),
+            },
+            "NEEDS.outputs.{name} requires {} in completed export",
+            expected.as_str()
+        );
+        for item in walkdir::WalkDir::new(&source).follow_links(false) {
+            let item = item?;
+            entries += 1;
+            if entries > max_entries {
+                bail!("duplicate or excessive export entries");
+            }
+            let member = item
+                .path()
+                .strip_prefix(run_root)?
+                .to_str()
+                .context("export path is not UTF-8")?;
+            crate::domain::validate_export_path(member)?;
+            let kind = item.file_type();
+            let md = item.metadata()?;
+            if kind.is_symlink() {
+                let target = fs::read_link(item.path())?;
+                let bytes = target.as_os_str().as_bytes();
+                if bytes.is_empty() || bytes.len() > 255 || bytes.contains(&0) {
+                    bail!("invalid export link target");
+                }
+            } else if kind.is_file() {
+                bytes = bytes
+                    .checked_add(md.len())
+                    .context("export size overflow")?;
+                if bytes > max_bytes {
+                    bail!("invalid export size");
+                }
+            } else if !kind.is_dir() {
+                bail!("unsupported export entry kind at {member}");
+            }
+            anyhow::ensure!(
+                md.dev() == device,
+                "{member} is on another filesystem than the published outputs"
+            );
+            // A root run's files belong to its transient uid: published
+            // files belong to the coordinator, as unpacked ones do.
+            if root_user {
+                std::os::unix::fs::lchown(item.path(), Some(uid), Some(gid))?;
+            }
+            // Published permissions are the permission bits only.
+            if !kind.is_symlink() && md.mode() & 0o7000 != 0 {
+                fs::set_permissions(item.path(), fs::Permissions::from_mode(md.mode() & 0o777))?;
+            }
+        }
+    }
+    let staging = Staging(
+        tempfile::Builder::new()
+            .prefix(".pending-")
+            .tempdir_in(&base)?,
+    );
+    for (name, relative) in &selected {
+        fs::rename(run_root.join(relative), staging.0.path().join(name))
+            .with_context(|| format!("cannot move the output {relative} into publication"))?;
+    }
+    Ok(Some(Publication {
+        base,
+        staging,
+        selected,
+    }))
+}
+
+pub(crate) fn prepare(
+    archive: &Path,
+    context: &Value,
+    options: &crate::ExecutionOptions,
+    state_dir: Option<&Path>,
+    needs: &crate::needs::Needs,
+    complete: bool,
+) -> Result<Option<Publication>> {
+    needs.validate_output_names(context, complete)?;
+    let max_bytes = options.storage_byte_bound();
+    let max_entries = options.storage_max_objects as usize;
+    let Some(selected) = selected_outputs(context)? else {
+        return Ok(None);
+    };
     let file = crate::fsx::open_regular(archive).context("cannot open completed Ginux export")?;
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.len() > options.archive_bound() {
@@ -254,12 +417,22 @@ pub(crate) fn prepare(
     }
     // Only the selected bytes are made durable, in batches, while their
     // payload names still exist; unselected payloads are removed unsynced.
-    crate::fsx::sync_files(
-        &selected_payloads
-            .iter()
-            .map(|(payload, mode)| (payload.as_path(), Some(*mode)))
-            .collect::<Vec<_>>(),
-    )?;
+    // A system change's producer publishes outputs that are written into a
+    // root and deleted in the same command (`EPHEMERAL_ENV`); the root write
+    // is flushed before its receipt, so these need no flush of their own.
+    let durable = std::env::var_os(EPHEMERAL_ENV).is_none();
+    if durable {
+        crate::fsx::sync_files(
+            &selected_payloads
+                .iter()
+                .map(|(payload, mode)| (payload.as_path(), Some(*mode)))
+                .collect::<Vec<_>>(),
+        )?;
+    } else {
+        for (payload, mode) in &selected_payloads {
+            fs::set_permissions(payload, fs::Permissions::from_mode(*mode))?;
+        }
+    }
     fs::remove_dir_all(&payloads)?;
     if long_name.is_some() || long_link.is_some() {
         bail!("long export name without an entry");
@@ -320,12 +493,22 @@ pub(crate) fn prepare(
         })
         .map(|entry| entry.map(walkdir::DirEntry::into_path))
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    crate::fsx::sync_new_directories(
-        &staged
-            .iter()
-            .map(|path| (path.as_path(), directories.get(path).copied()))
-            .collect::<Vec<_>>(),
-    )?;
+    if durable {
+        crate::fsx::sync_new_directories(
+            &staged
+                .iter()
+                .map(|path| (path.as_path(), directories.get(path).copied()))
+                .collect::<Vec<_>>(),
+        )?;
+    } else {
+        for path in &staged {
+            if let Some((mode, modified)) = directories.get(path) {
+                let directory = File::open(path)?;
+                directory.set_modified(*modified)?;
+                directory.set_permissions(fs::Permissions::from_mode(*mode))?;
+            }
+        }
+    }
     Ok(Some(Publication {
         base,
         staging,
@@ -361,7 +544,9 @@ impl Publication {
         {
             return Err(std::io::Error::last_os_error()).context("cannot publish output directory");
         }
-        File::open(&base)?.sync_all()?;
+        if std::env::var_os(EPHEMERAL_ENV).is_none() {
+            File::open(&base)?.sync_all()?;
+        }
         let outputs = context.get_mut("outputs").unwrap().as_object_mut().unwrap();
         for name in selected.keys() {
             outputs.insert(

@@ -240,10 +240,43 @@ fn produce(
     args: &[String],
     context: &str,
 ) -> Result<serde_json::Value> {
+    produce_with(cli, root, recipe, args, context, true)
+}
+
+/// `produce`; with `skip_present`, a recipe the root holds at the same digest
+/// and version is not produced again (the effects recipe always runs).
+fn produce_with(
+    cli: &Cli,
+    root: &Path,
+    recipe: &Path,
+    args: &[String],
+    context: &str,
+    skip_present: bool,
+) -> Result<serde_json::Value> {
     let (base, state, build) = producer_dirs(cli)?;
     std::fs::create_dir_all(&base)?;
     let result = base.join("result.json");
     let _ = std::fs::remove_file(&result);
+    // What the root holds, so the producer skips a recipe (or dependency) it
+    // already holds at the same recipe digest and version.
+    let present = base.join("present.json");
+    let mut held = system::read_receipt(root)?;
+    if !skip_present {
+        held.packages.clear();
+    }
+    std::fs::write(
+        &present,
+        serde_json::to_vec(
+            &held
+                .packages
+                .values()
+                .map(|p| {
+                    serde_json::json!({"name": p.name, "version": p.version,
+                        "recipe_digest": p.recipe_digest})
+                })
+                .collect::<Vec<_>>(),
+        )?,
+    )?;
     let status = Command::new(std::env::current_exe()?)
         .arg("install")
         .arg(recipe)
@@ -260,6 +293,10 @@ fn produce(
         // system" (RUNTIME.host.libc, the libc and systems checks), and a
         // refusal names the command the user gave.
         .env(levitate_recipe::clibrary::ROOT_ENV, root)
+        // Read by the producer's graph (`backend::SYSTEM_PRESENT_ENV`).
+        .env("RECIPE_SYSTEM_PRESENT", &present)
+        // Its published outputs are written into the root and deleted here.
+        .env("RECIPE_EPHEMERAL_OUTPUTS", "1")
         .env(
             super::commands::SYSTEM_PREFIX_ENV,
             match &cli.root {
@@ -272,11 +309,11 @@ fn produce(
         .context("starting the recipe")?;
     anyhow::ensure!(
         status.success(),
-        "the recipe failed; nothing was written to the {}",
-        if context == "other-root" {
-            "other root"
-        } else {
-            "target root"
+        "{}",
+        match context {
+            "effects" => "the effects recipe failed (its error is above)",
+            "other-root" => "the recipe failed; nothing was written to the other root",
+            _ => "the recipe failed; nothing was written to the target root",
         }
     );
     let file = std::fs::File::open(&result)?;
@@ -293,6 +330,19 @@ fn producer_dirs(cli: &Cli) -> Result<(PathBuf, PathBuf, PathBuf)> {
     let state = cli.state_dir.clone().unwrap_or_else(|| base.join("state"));
     let build = cli.build_dir.clone().unwrap_or_else(|| base.join("build"));
     Ok((base, state, build))
+}
+
+/// Run `f`; with `RECIPE_TIMING` set, say how long it took.
+fn timed<T>(what: &str, f: impl FnOnce() -> T) -> T {
+    let start = std::time::Instant::now();
+    let result = f();
+    if std::env::var_os("RECIPE_TIMING").is_some() {
+        eprintln!(
+            "recipe: timing: {what} took {:.1} s",
+            start.elapsed().as_secs_f64()
+        );
+    }
+    result
 }
 
 /// Delete the producer's published outputs once they are written into a root:
@@ -373,15 +423,45 @@ struct Written {
     created: Vec<(String, system::Account)>,
     /// State seeds made under `/var`.
     seeded: Vec<String>,
+    /// Packages the root already held at the same recipe digest and version:
+    /// not produced or written again.
+    present: Vec<String>,
 }
 
 impl Written {
+    /// One record of several changes.
+    fn merge(all: Vec<Written>) -> Written {
+        let mut merged = Written {
+            name: all.first().map(|w| w.name.clone()).unwrap_or_default(),
+            expects: BTreeMap::new(),
+            kept: Vec::new(),
+            beside: Vec::new(),
+            created: Vec::new(),
+            seeded: Vec::new(),
+            present: Vec::new(),
+        };
+        for w in all {
+            merged.expects.extend(w.expects);
+            merged.kept.extend(w.kept);
+            merged.beside.extend(w.beside);
+            merged.created.extend(w.created);
+            merged.seeded.extend(w.seeded);
+            for p in w.present {
+                if !merged.present.contains(&p) && !merged.expects.contains_key(&p) {
+                    merged.present.push(p);
+                }
+            }
+        }
+        merged
+    }
+
     fn json(&self) -> serde_json::Value {
         serde_json::json!({
             "kept_config": self.kept,
             "new_config_beside": self.beside.iter().map(|p| format!("{p}.recipe-new")).collect::<Vec<_>>(),
             "accounts_created": self.created.iter().map(|(p, a)| serde_json::json!({"package": p, "kind": a.kind, "name": a.name, "id": a.id, "group": a.group})).collect::<Vec<_>>(),
             "var_seeded": self.seeded,
+            "present": self.present,
         })
     }
 }
@@ -396,7 +476,32 @@ fn write_into(
     args: &[String],
     context: &str,
 ) -> Result<Written> {
-    let produced = produce(cli, root, recipe, args, context)?;
+    let produced = timed("produce", || produce(cli, root, recipe, args, context))?;
+    let present: Vec<String> = produced["system_present"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|n| n["name"].as_str().map(str::to_owned))
+        .collect();
+    if produced["system_producers"]
+        .as_array()
+        .is_some_and(|p| p.is_empty())
+    {
+        // Everything it would write is in the root already.
+        return Ok(Written {
+            name: produced["name"]
+                .as_str()
+                .or(present.last().map(String::as_str))
+                .unwrap_or_default()
+                .to_owned(),
+            expects: BTreeMap::new(),
+            kept: Vec::new(),
+            beside: Vec::new(),
+            created: Vec::new(),
+            seeded: Vec::new(),
+            present,
+        });
+    }
     let mut payloads = system::payloads(&produced, context)?;
     for p in &payloads {
         anyhow::ensure!(
@@ -406,10 +511,12 @@ fn write_into(
             std::env::consts::ARCH
         );
     }
-    let old = system::read_receipt(root)?;
-    let plan = system::plan(root, &old, &mut payloads, None)?;
-    system::apply(root, &payloads, &plan)?;
-    let seeded = system::seed(state_root, &payloads)?;
+    let old = timed("read receipt", || system::read_receipt(root))?;
+    let plan = timed("accounts, observe, reconcile", || {
+        system::plan(root, &old, &mut payloads, None)
+    })?;
+    timed("apply", || system::apply(root, &payloads, &plan))?;
+    let seeded = timed("seeds", || system::seed(state_root, &payloads))?;
     if !seeded.is_empty() {
         eprintln!(
             "Made {} missing state path(s) under {}/var (seeds; never overwritten or removed).",
@@ -427,7 +534,9 @@ fn write_into(
         })
         .collect::<Vec<_>>();
     tell(&plan, &created);
-    discard_outputs(cli, &produced)?;
+    timed("discard producer output", || {
+        discard_outputs(cli, &produced)
+    })?;
     let name = produced["name"]
         .as_str()
         .or_else(|| payloads.last().map(|p| p.package.name.as_str()))
@@ -443,6 +552,7 @@ fn write_into(
         beside: plan.beside.iter().cloned().collect(),
         created,
         seeded,
+        present,
     })
 }
 
@@ -450,6 +560,10 @@ fn write_into(
 fn remove_from(root: &Path, name: &str) -> Result<Written> {
     let old = system::read_receipt(root)?;
     let name = old.find(Path::new(name))?.name.clone();
+    anyhow::ensure!(
+        name != EFFECTS_PACKAGE,
+        "{EFFECTS_PACKAGE} holds the root's caches, made by /{EFFECTS_RECIPE} after each system change; it is not removed by itself"
+    );
     let plan = system::plan(root, &old, &mut [], Some(&name))?;
     system::apply(root, &[], &plan)?;
     tell(&plan, &[]);
@@ -460,6 +574,7 @@ fn remove_from(root: &Path, name: &str) -> Result<Written> {
         beside: Vec::new(),
         created: Vec::new(),
         seeded: Vec::new(),
+        present: Vec::new(),
     })
 }
 
@@ -474,6 +589,12 @@ fn install_package(
 ) -> Result<Change> {
     // The shared /var is the running system's: seeds go there, once.
     let written = write_into(cli, &roots.other, &roots.booted, recipe, args, "other-root")?;
+    if written.expects.is_empty() {
+        eprintln!(
+            "{} is in the other root ({}) already, from the same recipe; nothing was written.",
+            written.name, roots.other_name
+        );
+    }
     let change = Change {
         package: written.name,
         action: action.into(),
@@ -617,6 +738,7 @@ fn finish(cli: &Cli, value: serde_json::Value, text: String) -> Result<()> {
 fn summary(r: &Receipt) -> Vec<serde_json::Value> {
     r.packages
         .values()
+        .filter(|p| p.name != EFFECTS_PACKAGE)
         .map(|p| {
             serde_json::json!({"name": p.name, "version": p.version, "recipe": p.recipe,
             "recipe_digest": p.recipe_digest, "dependencies": p.dependencies})
@@ -625,11 +747,12 @@ fn summary(r: &Receipt) -> Vec<serde_json::Value> {
 }
 
 fn list(r: &Receipt) -> String {
-    if r.packages.is_empty() {
+    if r.packages.keys().all(|n| n == EFFECTS_PACKAGE) {
         return "  (none)\n".into();
     }
     r.packages
         .values()
+        .filter(|p| p.name != EFFECTS_PACKAGE)
         .map(|p| format!("  {} {}\n", p.name, p.version))
         .collect()
 }
@@ -735,6 +858,7 @@ fn change(cli: &Cli, roots: &Roots, booted: &Receipt, recipe: &Path) -> Result<(
         _ => "remove",
     };
     let args = producer_args(cli)?;
+    let mut all_names = std::collections::BTreeSet::new();
     let done = if action == "remove" {
         if other.find(recipe).is_err() && other.find(Path::new(&stem(recipe))).is_err() {
             // Recorded but never in place: forget it.
@@ -760,17 +884,32 @@ fn change(cli: &Cli, roots: &Roots, booted: &Receipt, recipe: &Path) -> Result<(
             .unwrap_or_else(|_| stem(recipe));
         remove_package(roots, &name, &args)?
     } else {
-        let path = resolve_for(cli, recipe, action, &other, "the other root")?;
-        install_package(cli, roots, &path, &args, action)?
+        let mut first = None;
+        for recipe in std::iter::once(recipe.to_path_buf()).chain(more_recipes(cli)) {
+            let other = system::read_receipt(&roots.other)?;
+            let path = resolve_for(cli, &recipe, action, &other, "the other root")?;
+            let change = install_package(cli, roots, &path, &args, action)?;
+            all_names.extend(change.expects.keys().cloned());
+            first.get_or_insert(change);
+        }
+        first.unwrap()
+    };
+    if action == "remove" {
+        all_names.extend(done.expects.keys().cloned());
+    }
+    let effects = if action == "remove" || !all_names.is_empty() {
+        effects(cli, &roots.other)
+    } else {
+        Effects::Unchanged
     };
     let after = system::read_receipt(&roots.other)?;
-    let names: Vec<_> = done.expects.keys().cloned().collect();
     finish(
         cli,
-        serde_json::json!({"action": action, "package": done.package, "packages": names,
+        serde_json::json!({"action": action, "package": done.package, "packages": all_names,
             "other_root": roots.other_name, "other_mount": roots.other,
             "running_root": roots.booted_name, "active_now": false,
-            "in_other_root": after.packages.contains_key(&done.package)}),
+            "in_other_root": after.packages.contains_key(&done.package),
+            "effects": effects.json()}),
         if action == "remove" {
             format!(
                 "Removed {} from the other root ({}, {}). It stays in the running system until root {} is booted.",
@@ -788,7 +927,8 @@ fn change(cli: &Cli, roots: &Roots, booted: &Receipt, recipe: &Path) -> Result<(
                 roots.other_name
             )
         },
-    )
+    )?;
+    effects.result()
 }
 
 /// The recipe an install or update runs: the catalog's, or for an update with
@@ -889,35 +1029,151 @@ fn root_route(cli: &Cli, dir: &Path, kind: &str, recipe: Option<PathBuf>) -> Res
         Commands::Update { .. } => "update",
         _ => "remove",
     };
-    let recipe = recipe.unwrap();
-    let written = if action == "remove" {
-        let name = receipt
-            .find(&recipe)
-            .or_else(|_| receipt.find(Path::new(&stem(&recipe))))
-            .map(|p| p.name.clone())
-            .with_context(|| format!("{} is not installed in {place}", stem(&recipe)))?;
-        remove_from(&root, &name)?
+    let mut all = Vec::new();
+    for recipe in std::iter::once(recipe.unwrap()).chain(more_recipes(cli)) {
+        let receipt = system::read_receipt(&root)?;
+        all.push(if action == "remove" {
+            let name = receipt
+                .find(&recipe)
+                .or_else(|_| receipt.find(Path::new(&stem(&recipe))))
+                .map(|p| p.name.clone())
+                .with_context(|| format!("{} is not installed in {place}", stem(&recipe)))?;
+            remove_from(&root, &name)?
+        } else {
+            let path = resolve_for(cli, &recipe, action, &receipt, &place)?;
+            write_into(cli, &root, &root, &path, &producer_args(cli)?, "root")?
+        });
+    }
+    let changed = action == "remove" || all.iter().any(|w| !w.expects.is_empty());
+    let effects = if changed {
+        effects(cli, &root)
     } else {
-        let path = resolve_for(cli, &recipe, action, &receipt, &place)?;
-        write_into(cli, &root, &root, &path, &producer_args(cli)?, "root")?
+        Effects::Unchanged
     };
-    let mut value = serde_json::json!({"action": action, "package": written.name,
-        "packages": written.expects.keys().collect::<Vec<_>>(), "root": root,
-        "receipt": root.join(system::RECEIPT)});
-    if let (Some(map), serde_json::Value::Object(more)) = (value.as_object_mut(), written.json()) {
+    let first = all[0].name.clone();
+    let mut value = serde_json::json!({"action": action, "package": first,
+        "packages": all.iter().flat_map(|w| w.expects.keys()).collect::<Vec<_>>(),
+        "root": root, "receipt": root.join(system::RECEIPT)});
+    let merged = Written::merge(all);
+    if let (Some(map), serde_json::Value::Object(more)) = (value.as_object_mut(), merged.json()) {
         map.extend(more);
     }
+    value["effects"] = effects.json();
     let verb = match action {
         "install" => "Installed",
         "update" => "Updated",
         _ => "Removed",
     };
     let preposition = if action == "remove" { "from" } else { "in" };
-    finish(
-        cli,
-        value,
-        format!("{verb} {} {preposition} {place}.", written.name),
-    )
+    let names = merged.expects.keys().cloned().collect::<Vec<_>>();
+    let mut text = if action == "remove" {
+        format!("{verb} {first} {preposition} {place}.")
+    } else if names.is_empty() {
+        format!(
+            "Nothing to write: {place} already holds {}.",
+            merged.present.join(", ")
+        )
+    } else {
+        format!("{verb} {} {preposition} {place}.", names.join(", "))
+    };
+    if action != "remove" && !names.is_empty() && !merged.present.is_empty() {
+        text.push_str(&format!(" Already there: {}.", merged.present.join(", ")));
+    }
+    finish(cli, value, text)?;
+    effects.result()
+}
+
+/// More recipes named on an install command line.
+fn more_recipes(cli: &Cli) -> Vec<PathBuf> {
+    match &cli.command {
+        Commands::Install { more, .. } => more.clone(),
+        _ => Vec::new(),
+    }
+}
+
+/// Where a root keeps the recipe that rebuilds its whole-root caches.
+const EFFECTS_RECIPE: &str = "usr/lib/recipe/effects.rhai";
+/// The reserved package its output is recorded as.
+const EFFECTS_PACKAGE: &str = system::EFFECTS_PACKAGE;
+
+/// What running the root's effects recipe did.
+enum Effects {
+    /// Nothing changed, so nothing ran.
+    Unchanged,
+    /// `--no-effects`.
+    Skipped,
+    /// The root has no effects recipe.
+    None,
+    /// It ran; the number of files `system-effects` holds now.
+    Done(usize),
+    /// It failed; the change itself stays written.
+    Failed(String),
+}
+
+impl Effects {
+    fn json(&self) -> serde_json::Value {
+        match self {
+            Effects::Unchanged => serde_json::json!({"status": "unchanged"}),
+            Effects::Skipped => serde_json::json!({"status": "skipped"}),
+            Effects::None => serde_json::json!({"status": "none", "recipe": EFFECTS_RECIPE}),
+            Effects::Done(files) => serde_json::json!({"status": "done", "recipe": EFFECTS_RECIPE,
+                "package": EFFECTS_PACKAGE, "files": files}),
+            Effects::Failed(error) => {
+                serde_json::json!({"status": "failed", "recipe": EFFECTS_RECIPE,
+                "error": error})
+            }
+        }
+    }
+
+    fn result(self) -> Result<()> {
+        match self {
+            Effects::Failed(error) => anyhow::bail!(
+                "the system change is written, but rebuilding the root's caches with /{EFFECTS_RECIPE} failed: {error}\nThe next system change runs it again."
+            ),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// After a system change to `root`: run the root's effects recipe
+/// (`usr/lib/recipe/effects.rhai`), if it has one, with the root as its
+/// read-only input `root`, and write its `system` output into the root as the
+/// reserved package `system-effects`, replacing that package's previous files.
+fn effects(cli: &Cli, root: &Path) -> Effects {
+    if cli.no_effects {
+        return Effects::Skipped;
+    }
+    let recipe = root.join(EFFECTS_RECIPE);
+    if !std::fs::symlink_metadata(&recipe).is_ok_and(|m| m.is_file()) {
+        return Effects::None;
+    }
+    eprintln!("Rebuilding the root's caches with /{EFFECTS_RECIPE}...");
+    let run = || -> Result<usize> {
+        let mut args = producer_args(cli)?;
+        args.push("--input".into());
+        args.push(format!("root={}", root.display()));
+        let produced = produce_with(cli, root, &recipe, &args, "effects", false)?;
+        let mut payloads = system::payloads(&produced, "effects")?;
+        anyhow::ensure!(
+            payloads.len() == 1,
+            "the effects recipe has runtime dependencies; it must produce one system output"
+        );
+        payloads[0].package.name = EFFECTS_PACKAGE.into();
+        payloads[0].package.dependencies.clear();
+        let old = system::read_receipt(root)?;
+        let plan = system::plan(root, &old, &mut payloads, None)?;
+        system::apply(root, &payloads, &plan)?;
+        discard_outputs(cli, &produced)?;
+        Ok(plan
+            .receipt
+            .packages
+            .get(EFFECTS_PACKAGE)
+            .map_or(0, |p| p.files.len()))
+    };
+    match run() {
+        Ok(files) => Effects::Done(files),
+        Err(error) => Effects::Failed(format!("{error:#}")),
+    }
 }
 
 fn pending_json(failed: &[(String, String)]) -> Vec<serde_json::Value> {

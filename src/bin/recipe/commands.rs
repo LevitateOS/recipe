@@ -145,6 +145,12 @@ fn run(cli: Cli) -> Result<()> {
         },
     };
     let no_activate = cli.no_activate;
+    if let Commands::Install { more, .. } = &cli.command {
+        anyhow::ensure!(
+            more.is_empty(),
+            "several recipes in one install apply to --system; install them one at a time"
+        );
+    }
     let any_libc = cli.any_libc;
     let any_system = cli.any_system;
     anyhow::ensure!(
@@ -249,6 +255,7 @@ fn run(cli: Cli) -> Result<()> {
             autofix_cwd,
             autofix_prompt_file,
             autofix_allow_path,
+            ..
         } => {
             let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
             require_sha256(&recipe_path, sha256.as_deref())?;

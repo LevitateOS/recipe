@@ -58,6 +58,14 @@ pub fn download(
     }
 }
 
+/// Note the digest of a download just published, so a recipe's check of it
+/// (`verify_sha256`) does not read it again.
+fn remember_digest(dest: &Path, sha256: &str) {
+    if let Ok(file) = confine::open_read(dest) {
+        hash::remember(&file, HashAlgorithm::Sha256, sha256);
+    }
+}
+
 /// Place the offline cache's copy of the payload pinned by `sha256` at `dest`
 /// (`crate::offline_cache`), with no network. False when the cache does not
 /// hold it, or holds bytes that do not match (the network is used then).
@@ -89,11 +97,11 @@ fn from_cache(dest: &Path, sha256: &str) -> Result<bool, Box<EvalAltResult>> {
         ));
         return Ok(false);
     }
-    file.file()
-        .sync_all()
-        .map_err(|e| format!("cannot flush download: {e}"))?;
+    // No flush: the cache still holds the bytes, and a run's files are made
+    // durable by its checkpoints.
     file.persist(dest)
         .map_err(|e| format!("cannot publish download to {}: {}", dest.display(), e))?;
+    remember_digest(dest, sha256);
     output::detail(&format!(
         "{} from the offline cache ({bytes} bytes)",
         dest.file_name().unwrap_or_default().to_string_lossy()
@@ -306,6 +314,7 @@ fn save_response_with_prefix(
             .map_err(|e| format!("cannot flush download: {}", e))?;
         file.persist(dest)
             .map_err(|e| format!("cannot publish download to {}: {}", dest.display(), e))?;
+        remember_digest(dest, sha256);
         Ok(total_bytes)
     })();
     drop(pb);

@@ -287,7 +287,7 @@ pub fn extract_rpm_members(
 fn extract_rpm_recorded(archive: &str, root: &str, record: Option<&Path>) -> Result<()> {
     let root = Path::new(root);
     confine::mkdir_all(root)?;
-    let mut manifest = target::load(root)?;
+    let mut manifest = target::load_deferred(root)?;
     let mut reader = BufReader::new(confine::open_read(Path::new(archive)).with_context(|| {
         format!("cannot open RPM {archive}; check the path the recipe acquired it to")
     })?);
@@ -307,7 +307,6 @@ fn extract_rpm_recorded(archive: &str, root: &str, record: Option<&Path>) -> Res
         });
     }
     target::apply_capabilities(root, &mut manifest, &capabilities)?;
-    target::save(root, &manifest)?;
     if let (Some(path), Some(members)) = (record, members) {
         target::save_members(
             path,
@@ -319,7 +318,7 @@ fn extract_rpm_recorded(archive: &str, root: &str, record: Option<&Path>) -> Res
             },
         )?;
     }
-    Ok(())
+    target::defer_save(root, manifest)
 }
 
 /// The staging mode a directory this process creates gets: made and removed
@@ -344,7 +343,7 @@ pub fn extract_apk(archive: &str, root: &str) -> Result<(), Box<EvalAltResult>> 
     recipe_result((|| {
         let root = Path::new(root);
         confine::mkdir_all(root)?;
-        let mut manifest = target::load(root)?;
+        let mut manifest = target::load_deferred(root)?;
         let mut source =
             BufReader::new(confine::open_read(Path::new(archive)).with_context(|| {
                 format!("cannot open APK {archive}; check the path the recipe acquired it to")
@@ -367,7 +366,7 @@ pub fn extract_apk(archive: &str, root: &str) -> Result<(), Box<EvalAltResult>> 
             data == 1,
             "{archive} has {data} data segments; an APK has exactly one"
         );
-        target::save(root, &manifest)
+        target::defer_save(root, manifest)
     })())
 }
 

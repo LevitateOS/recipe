@@ -220,7 +220,70 @@ impl<'a> Resolver<'a> {
     }
 }
 
+/// A manifest a package helper changed and has not written yet: extracting
+/// hundreds of packages into one tree would otherwise parse and write a
+/// growing manifest once per package. It is written before anything else
+/// reads it (`load`), when a different tree is extracted into, and by the
+/// worker before every checkpoint and its result (`flush_pending`).
+static PENDING: std::sync::Mutex<Option<(PathBuf, Manifest)>> = std::sync::Mutex::new(None);
+
+fn pending() -> std::sync::MutexGuard<'static, Option<(PathBuf, Manifest)>> {
+    PENDING.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Write the manifest a package helper deferred, if any.
+pub fn flush_pending() -> Result<()> {
+    if let Some((root, manifest)) = pending().take() {
+        save(&root, &manifest)?;
+    }
+    Ok(())
+}
+
+/// `load`, taking the deferred manifest of `root` when there is one
+/// (package extraction, which then hands it back with `defer_save`).
+pub(crate) fn load_deferred(root: &Path) -> Result<Manifest> {
+    let taken = {
+        let mut guard = pending();
+        match guard.take() {
+            Some((pending_root, manifest)) if pending_root == root => Some(manifest),
+            other => {
+                *guard = other;
+                None
+            }
+        }
+    };
+    match taken {
+        Some(manifest) => Ok(manifest),
+        None => load(root),
+    }
+}
+
+/// Keep `manifest` as `root`'s to be written later (see [`PENDING`]).
+pub(crate) fn defer_save(root: &Path, manifest: Manifest) -> Result<()> {
+    let previous = pending().replace((root.to_path_buf(), manifest));
+    if let Some((other, manifest)) = previous
+        && other != root
+    {
+        save(&other, &manifest)?;
+    }
+    Ok(())
+}
+
 pub fn load(root: &Path) -> Result<Manifest> {
+    let deferred = {
+        let mut guard = pending();
+        match guard.take() {
+            Some((pending_root, manifest)) if pending_root == root => Some(manifest),
+            other => {
+                *guard = other;
+                None
+            }
+        }
+    };
+    if let Some(manifest) = deferred {
+        save(root, &manifest)?;
+        return Ok(manifest);
+    }
     let path = root.join(MANIFEST);
     if !path.try_exists()? {
         return Ok(Manifest::default());
@@ -277,6 +340,13 @@ pub fn load(root: &Path) -> Result<Manifest> {
 }
 
 pub fn save(root: &Path, manifest: &Manifest) -> Result<()> {
+    // A later save of the same tree replaces what was deferred.
+    {
+        let mut guard = pending();
+        if guard.as_ref().is_some_and(|(r, _)| r == root) {
+            *guard = None;
+        }
+    }
     let bytes = serde_json::to_vec(manifest)?;
     ensure!(
         bytes.len() as u64 <= MAX_MANIFEST,
@@ -308,6 +378,50 @@ fn hash(path: &Path) -> Result<String> {
         }
     }
     Ok(hex::encode(digest.finalize()))
+}
+
+/// The SHA-256 of each file, hashed on as many threads as the machine has
+/// CPUs (at most 16), in the order given.
+pub fn hash_all(paths: &[&Path]) -> Result<Vec<String>> {
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .clamp(1, 16)
+        .min(paths.len().max(1));
+    if threads == 1 {
+        return paths.iter().map(|path| hash(path)).collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let results: Vec<std::sync::Mutex<Option<Result<String>>>> =
+        paths.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    let work = || {
+        loop {
+            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let Some(path) = paths.get(index) else { break };
+            let result = hash(path);
+            *results[index].lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
+        }
+    };
+    std::thread::scope(|scope| {
+        // Where threads cannot be made (a task limit), this thread does the
+        // work alone.
+        for _ in 1..threads {
+            if std::thread::Builder::new()
+                .spawn_scoped(scope, work)
+                .is_err()
+            {
+                break;
+            }
+        }
+        work();
+    });
+    results
+        .into_iter()
+        .map(|slot| {
+            slot.into_inner()
+                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(|| Err(anyhow::anyhow!("a file was not hashed")))
+        })
+        .collect()
 }
 
 fn current(path: &Path) -> Result<Entry> {
@@ -405,6 +519,7 @@ fn snapshot(root: &Path, grant_staging: bool) -> Result<Manifest> {
     let groups = accounts("etc/group")?;
     let mut entries = BTreeMap::new();
     let mut inodes = HashMap::<(u64, u64), (String, String)>::new();
+    let mut to_hash: Vec<(String, PathBuf)> = Vec::new();
     for item in walkdir::WalkDir::new(root)
         .follow_links(false)
         .sort_by_file_name()
@@ -469,19 +584,41 @@ fn snapshot(root: &Path, grant_staging: bool) -> Result<Manifest> {
         if observed.kind == "file" {
             // A further name of an inode already seen is a hardlink to the
             // first name, with its digest: its bytes are not read again.
-            if let Some((first, digest)) = inodes.get(&(md.dev(), md.ino())) {
-                entry.sha256 = Some(digest.clone());
+            if let Some((first, _)) = inodes.get(&(md.dev(), md.ino())) {
+                entry.sha256 = None;
                 entry.kind = "hardlink".into();
                 entry.link = Some(first.clone());
             } else {
-                let digest = hash(item.path())?;
-                entry.sha256 = Some(digest.clone());
+                // Hashed below, all files at once across the CPUs.
+                entry.sha256 = None;
                 entry.kind = "file".into();
                 entry.link = None;
-                inodes.insert((md.dev(), md.ino()), (rel.clone(), digest));
+                inodes.insert((md.dev(), md.ino()), (rel.clone(), String::new()));
+                to_hash.push((rel.clone(), item.path().to_path_buf()));
             }
         }
         entries.insert(rel, entry);
+    }
+    let paths: Vec<&Path> = to_hash.iter().map(|(_, path)| path.as_path()).collect();
+    let digests: HashMap<&str, String> = to_hash
+        .iter()
+        .map(|(rel, _)| rel.as_str())
+        .zip(hash_all(&paths)?)
+        .collect();
+    let names: Vec<String> = entries.keys().cloned().collect();
+    for rel in names {
+        let entry = entries.get_mut(&rel).unwrap();
+        if entry.sha256.is_some() {
+            continue;
+        }
+        let key = match entry.kind.as_str() {
+            "file" => rel.as_str(),
+            "hardlink" => entry.link.as_deref().unwrap_or_default(),
+            _ => continue,
+        };
+        if let Some(digest) = digests.get(key) {
+            entry.sha256 = Some(digest.clone());
+        }
     }
     Ok(Manifest {
         version: if manifest.removals.is_empty() { 1 } else { 2 },

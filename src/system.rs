@@ -16,6 +16,9 @@ use std::{
 };
 pub const RECEIPT: &str = "usr/lib/recipe/system.json";
 pub const PROFILE: &str = "usr/lib/recipe/profile";
+/// The reserved package a root's effects recipe (`usr/lib/recipe/effects.rhai`)
+/// writes its caches as; no recipe installs under this name.
+pub const EFFECTS_PACKAGE: &str = "system-effects";
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Package {
@@ -157,6 +160,14 @@ pub fn payloads(result: &serde_json::Value, target: &str) -> Result<Vec<Payload>
     let producers=result["system_producers"].as_array().context("Recipe did not return coordinator-owned system provenance; use a compatible Recipe runtime")?;
     let mut payloads = Vec::new();
     let mut identities = BTreeMap::new();
+    // Dependencies the root already holds (not produced again) keep their
+    // place in the written packages' `dependencies`.
+    let mut held = BTreeMap::new();
+    for present in result["system_present"].as_array().into_iter().flatten() {
+        if let (Some(recipe), Some(name)) = (present["recipe"].as_str(), present["name"].as_str()) {
+            held.insert(recipe.to_owned(), name.to_owned());
+        }
+    }
     for producer in producers {
         let outputs = &producer["outputs"];
         let (path, prefix, system) = if let Some(p) = outputs["system"].as_str() {
@@ -189,6 +200,10 @@ pub fn payloads(result: &serde_json::Value, target: &str) -> Result<Vec<Payload>
             .context("system output needs ctx.name")?
             .to_owned();
         valid_name(&name)?;
+        ensure!(
+            target == "effects" || name != EFFECTS_PACKAGE,
+            "{EFFECTS_PACKAGE} is reserved for the root's effects recipe; rename the recipe"
+        );
         ensure!(
             !identities.values().any(|n| n == &name),
             "duplicate producer package name"
@@ -322,7 +337,7 @@ pub fn payloads(result: &serde_json::Value, target: &str) -> Result<Vec<Payload>
             .package
             .dependencies
             .iter()
-            .filter_map(|p| identities.get(p).cloned())
+            .filter_map(|p| identities.get(p).or_else(|| held.get(p)).cloned())
             .collect();
     }
     Ok(payloads)
@@ -737,6 +752,7 @@ pub fn observe(
     use std::os::unix::fs::MetadataExt;
     let root_user = unsafe { libc::geteuid() } == 0;
     let mut found = BTreeMap::new();
+    let mut to_hash: Vec<(String, PathBuf)> = Vec::new();
     for name in paths {
         let path = confined(root, name, false)?;
         let md = match fs::symlink_metadata(&path) {
@@ -753,10 +769,9 @@ pub fn observe(
                 None,
             )
         } else if md.is_file() {
-            use sha2::{Digest, Sha256};
-            let mut hash = Sha256::new();
-            std::io::copy(&mut fs::File::open(&path)?, &mut hash)?;
-            ("file", None, Some(hex::encode(hash.finalize())))
+            // Hashed below, all at once across the CPUs.
+            to_hash.push((name.clone(), path.clone()));
+            ("file", None, None)
         } else {
             anyhow::bail!("unsupported inode at {}", path.display())
         };
@@ -788,6 +803,12 @@ pub fn observe(
                 sha256,
             },
         );
+    }
+    let digests = target::hash_all(&to_hash.iter().map(|(_, p)| p.as_path()).collect::<Vec<_>>())?;
+    for ((name, _), digest) in to_hash.iter().zip(digests) {
+        if let Some(entry) = found.get_mut(name) {
+            entry.sha256 = Some(digest);
+        }
     }
     // A later path of one file is recorded as a hardlink to the first path.
     for (name, entry) in &mut found {
@@ -876,8 +897,39 @@ fn write_account_file(root: &Path, name: &str, text: &str, mode: u32) -> Result<
     Ok(())
 }
 
+/// Check the payload file `source` against `entry` (its digest) and move it
+/// to `dest` with the entry's mode and owner. False when it cannot be moved
+/// (another filesystem, or another name still uses it); the caller copies it.
+fn move_payload(
+    source: &Path,
+    dest: &Path,
+    entry: &Entry,
+    name: &str,
+    digest: Option<&String>,
+) -> Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let md = fs::symlink_metadata(source)?;
+    let parent = dest.parent().context("system path has no directory")?;
+    if !md.is_file() || md.nlink() != 1 || fs::metadata(parent)?.dev() != md.dev() {
+        return Ok(false);
+    }
+    ensure!(
+        digest.is_some() && digest == entry.sha256.as_ref(),
+        "{name} changed after the recipe published it"
+    );
+    fs::set_permissions(source, fs::Permissions::from_mode(entry.mode))?;
+    own(source, entry)?;
+    match fs::rename(source, dest) {
+        Ok(()) => Ok(true),
+        Err(e) if e.raw_os_error() == Some(libc::EXDEV) => Ok(false),
+        Err(e) => Err(e).with_context(|| format!("moving {name} into place")),
+    }
+}
+
 /// Flush the whole filesystem holding `root`: one `syncfs` for every file an
-/// apply wrote, instead of one sync per file.
+/// apply wrote, instead of one sync per file. (On a filesystem other writers
+/// keep busy it also waits for their data; a sync per written file was tried
+/// and is slower still on such a disk.)
 fn sync_root(root: &Path) -> Result<()> {
     use std::os::fd::AsRawFd;
     let dir = fs::File::open(root)?;
@@ -920,6 +972,25 @@ pub fn apply(root: &Path, payloads: &[Payload], plan: &Plan) -> Result<()> {
                 .map(move |(to, from)| (to.as_str(), (p, from.as_str())))
         })
         .collect();
+    // Every payload file's digest, read across the CPUs before anything is
+    // moved; a file is only moved when its digest is the recorded one.
+    let files: Vec<(&str, PathBuf)> = plan
+        .wanted
+        .iter()
+        .filter(|(_, e)| e.kind == "file")
+        .filter_map(|(name, _)| {
+            sources
+                .get(name.as_str())
+                .map(|(payload, from)| (name.as_str(), payload.root.join(from)))
+        })
+        .collect();
+    let digests: BTreeMap<&str, String> = files
+        .iter()
+        .map(|(name, _)| *name)
+        .zip(target::hash_all(
+            &files.iter().map(|(_, p)| p.as_path()).collect::<Vec<_>>(),
+        )?)
+        .collect();
     let mut links = Vec::new();
     for (name, entry) in &plan.wanted {
         let dest = if plan.beside.contains(name) {
@@ -955,6 +1026,12 @@ pub fn apply(root: &Path, payloads: &[Payload], plan: &Plan) -> Result<()> {
                     "payload {} is not a regular file",
                     source.display()
                 );
+                // The payload is the producer's published output, deleted
+                // after the change: on the same filesystem its file is
+                // checked and moved into place instead of copied.
+                if move_payload(&source, &dest, entry, name, digests.get(name.as_str()))? {
+                    continue;
+                }
                 let temp = dest.with_file_name(format!(
                     ".recipe-write-{}",
                     dest.file_name().unwrap().to_string_lossy()
@@ -1023,7 +1100,14 @@ pub fn apply(root: &Path, payloads: &[Payload], plan: &Plan) -> Result<()> {
             let _ = fs::remove_dir(&path);
         }
     }
+    let flushing = std::time::Instant::now();
     sync_root(root)?;
+    if std::env::var_os("RECIPE_TIMING").is_some() {
+        eprintln!(
+            "recipe: timing: apply: flushing what it wrote took {:.1} s",
+            flushing.elapsed().as_secs_f64()
+        );
+    }
     let receipt = confined(root, RECEIPT, true)?;
     let temp = receipt.with_extension("json.new");
     let mut out = fs::File::create(&temp)?;
@@ -1097,8 +1181,14 @@ pub fn seed(state_root: &Path, payloads: &[Payload]) -> Result<Vec<String>> {
         own(&dest, entry)?;
         made.push(name.clone());
     }
-    if !made.is_empty() {
-        sync_root(state_root)?;
+    for name in &made {
+        let path = state_root.join(name);
+        if fs::symlink_metadata(&path).is_ok_and(|m| !m.file_type().is_symlink()) {
+            fs::File::open(&path)?.sync_all()?;
+        }
+        if let Some(parent) = path.parent() {
+            fs::File::open(parent)?.sync_all()?;
+        }
     }
     Ok(made)
 }

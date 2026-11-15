@@ -53,6 +53,51 @@ pub fn expected_digest(
     Ok(expected.to_ascii_lowercase())
 }
 
+/// Files this worker has hashed, by identity and change time: a recipe that
+/// checks a download it just made (and again before unpacking it) does not
+/// read it again. Any change to the file changes its ctime, so it misses.
+type Identity = (u64, u64, u64, i64, i64, i64, i64);
+static VERIFIED: std::sync::Mutex<
+    Option<std::collections::HashMap<(Identity, &'static str), String>>,
+> = std::sync::Mutex::new(None);
+
+fn identity(file: &std::fs::File) -> Option<Identity> {
+    use std::os::unix::fs::MetadataExt;
+    let md = file.metadata().ok()?;
+    md.is_file().then(|| {
+        (
+            md.dev(),
+            md.ino(),
+            md.len(),
+            md.mtime(),
+            md.mtime_nsec(),
+            md.ctime(),
+            md.ctime_nsec(),
+        )
+    })
+}
+
+/// Note that `file` (open, unchanged since it was hashed) has `digest`.
+pub fn remember(file: &std::fs::File, algorithm: HashAlgorithm, digest: &str) {
+    if let Some(id) = identity(file) {
+        VERIFIED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(Default::default)
+            .insert((id, algorithm.name()), digest.to_ascii_lowercase());
+    }
+}
+
+fn remembered(file: &std::fs::File, algorithm: HashAlgorithm) -> Option<String> {
+    let id = identity(file)?;
+    VERIFIED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()?
+        .get(&(id, algorithm.name()))
+        .cloned()
+}
+
 /// Verify a file's hash against an expected value.
 ///
 /// Shows progress for files larger than 100MB.
@@ -70,30 +115,36 @@ pub fn verify_file_hash(
     let file_size = f.metadata().map(|m| m.len()).unwrap_or(0);
     let show_progress = file_size > PROGRESS_THRESHOLD;
 
-    let hash = match algorithm {
-        HashAlgorithm::Sha256 => {
-            use sha2::Digest;
-            let mut hasher = sha2::Sha256::new();
-            read_chunks(&mut f, file_size, show_progress, |chunk| {
-                hasher.update(chunk)
-            })?;
-            hex::encode(hasher.finalize())
-        }
-        HashAlgorithm::Sha512 => {
-            use sha2::Digest;
-            let mut hasher = sha2::Sha512::new();
-            read_chunks(&mut f, file_size, show_progress, |chunk| {
-                hasher.update(chunk)
-            })?;
-            hex::encode(hasher.finalize())
-        }
-        HashAlgorithm::Blake3 => {
-            let mut hasher = blake3::Hasher::new();
-            read_chunks(&mut f, file_size, show_progress, |chunk| {
-                hasher.update(chunk);
-            })?;
-            hasher.finalize().to_hex().to_string()
-        }
+    let hash = if let Some(known) = remembered(&f, algorithm) {
+        known
+    } else {
+        let hash = match algorithm {
+            HashAlgorithm::Sha256 => {
+                use sha2::Digest;
+                let mut hasher = sha2::Sha256::new();
+                read_chunks(&mut f, file_size, show_progress, |chunk| {
+                    hasher.update(chunk)
+                })?;
+                hex::encode(hasher.finalize())
+            }
+            HashAlgorithm::Sha512 => {
+                use sha2::Digest;
+                let mut hasher = sha2::Sha512::new();
+                read_chunks(&mut f, file_size, show_progress, |chunk| {
+                    hasher.update(chunk)
+                })?;
+                hex::encode(hasher.finalize())
+            }
+            HashAlgorithm::Blake3 => {
+                let mut hasher = blake3::Hasher::new();
+                read_chunks(&mut f, file_size, show_progress, |chunk| {
+                    hasher.update(chunk);
+                })?;
+                hasher.finalize().to_hex().to_string()
+            }
+        };
+        remember(&f, algorithm, &hash);
+        hash
     };
 
     if hash != expected {

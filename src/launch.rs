@@ -465,6 +465,7 @@ fn run_domain_inner(
         finish_outputs(
             &mut stream.result,
             &export_path,
+            None,
             &mut retained,
             prepared,
             &invocation,
@@ -495,6 +496,7 @@ fn run_domain_inner(
 pub(crate) fn finish_outputs(
     result: &mut ResultPayload,
     export_path: &Path,
+    tree: Option<&Path>,
     retained: &mut Option<crate::retained::Retained>,
     prepared: &PreparedInvocation,
     invocation: &str,
@@ -524,18 +526,33 @@ pub(crate) fn finish_outputs(
         }
     }
     runtime.insert("network_usage".into(), usage);
-    let publication = crate::publication::prepare(
-        export_path,
-        &result.ctx_summary,
-        &options.execution,
-        state_dir,
-        &prepared.declaration.needs,
-        matches!(
-            operation,
-            crate::worker::protocol::Operation::Install
-                | crate::worker::protocol::Operation::IsInstalled
+    let complete = matches!(
+        operation,
+        crate::worker::protocol::Operation::Install
+            | crate::worker::protocol::Operation::IsInstalled
+    );
+    let moved = match tree {
+        Some(run_root) => crate::publication::prepare_tree(
+            run_root,
+            &result.ctx_summary,
+            &options.execution,
+            state_dir,
+            &prepared.declaration.needs,
+            complete,
+        )?,
+        None => None,
+    };
+    let publication = match moved {
+        Some(publication) => Ok(Some(publication)),
+        None => crate::publication::prepare(
+            export_path,
+            &result.ctx_summary,
+            &options.execution,
+            state_dir,
+            &prepared.declaration.needs,
+            complete,
         ),
-    )
+    }
     .context(crate::failure::Category::Storage.error("cannot validate completed outputs"))?;
     if let Some(state) = retained.as_mut() {
         let runtime_state = result

@@ -291,7 +291,8 @@ Explicit --recipes-path or RECIPE_PATH uses that directory alone.
 .TP
 .B --system
 System scope (see SYSTEM SCOPE): install, update, remove, installed and isinstalled
-act on the computer's root. On an A/B system the change is written into the other
+act on the computer's root. install takes several recipes (recipe --system install A B C) and
+skips a recipe or dependency the root holds at the same recipe digest and version. On an A/B system the change is written into the other
 (unlocked) root and becomes active when that root is booted; the booted root is
 never written.
 .TP
@@ -299,6 +300,12 @@ never written.
 With --system, given before the command: write the change into DIR, a root that is
 not running, and read installed and isinstalled from DIR. No recab call, no A/B
 record (see SYSTEM SCOPE).
+.TP
+.B --no-effects
+With --system: do not run the root's effects recipe (usr/lib/recipe/effects.rhai)
+after the change. Without it, a successful change runs that recipe with the root as
+its read-only input root and writes its system output into the root as the reserved
+package system-effects; a failure is reported and leaves the change written.
 .TP
 .B --package-root DIR
 Package generations, installed receipts and active profile symlink. Defaults to

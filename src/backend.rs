@@ -1,7 +1,6 @@
 //! Runs a recipe graph: each recipe in a Ginux domain through the launcher,
 //! or on the host (`crate::execution`, `crate::host`).
 use anyhow::{Context, Result, bail};
-use sha2::Digest;
 use std::path::{Path, PathBuf};
 
 /// Verified executable used to start the Ginux domain.
@@ -131,6 +130,20 @@ impl Runner<'_> {
         }
         let mut results = std::collections::BTreeMap::<PathBuf, serde_json::Value>::new();
         let mut image = None;
+        let system = invocation
+            .options
+            .defines
+            .iter()
+            .any(|(k, _)| k == "RECIPE_SYSTEM_CONTEXT");
+        // A system change: packages the root already holds, by recipe digest
+        // and version (`RECIPE_SYSTEM_PRESENT`, written by the system route).
+        let present =
+            if system && invocation.operation == crate::worker::protocol::Operation::Install {
+                system_present()?
+            } else {
+                Vec::new()
+            };
+        let mut skipped = Vec::new();
         for ((node, execution), placement) in graph.iter().zip(executions).zip(&placements) {
             let main = node.recipe == *main_recipe;
             let name = node
@@ -138,6 +151,30 @@ impl Runner<'_> {
                 .file_stem()
                 .map(|stem| stem.to_string_lossy().into_owned())
                 .unwrap_or_default();
+            if !present.is_empty() {
+                let digest = producer_digest(node)?;
+                let version = crate::declared_metadata(&node.recipe, invocation.search_path)
+                    .ok()
+                    .filter(|d| !d.dynamic_fields.contains("version"))
+                    .and_then(|d| d.fields.get("version").cloned());
+                if let Some(held) = present
+                    .iter()
+                    .find(|p| p.digest == digest && Some(&p.version) == version.as_ref())
+                {
+                    crate::diagnostics::diag!(
+                        "recipe: {name}: the root already holds {} {} from this recipe; not produced again",
+                        held.name,
+                        held.version
+                    );
+                    skipped.push(serde_json::json!({"name": held.name, "recipe": node.recipe}));
+                    results.insert(
+                        node.recipe.clone(),
+                        serde_json::json!({"name": held.name, "version": held.version,
+                            "outputs": {}, "system_present": true}),
+                    );
+                    continue;
+                }
+            }
             crate::diagnostics::diag!("recipe: {name}: {}", placement.reason);
             // Every non-install operation reconstructs the installed input
             // identity from checked cached products, without installing them.
@@ -154,6 +191,11 @@ impl Runner<'_> {
                 std::fs::create_dir(&tools)?;
                 let mut product_inputs = Vec::new();
                 for dependency in &node.dependencies {
+                    // A runtime dependency's `system` output is for the root
+                    // the change writes, not for its consumer: in a system
+                    // change it is not staged into the consumer's inputs.
+                    let staged_system =
+                        |output: &str| !(system && !dependency.build_only && output == "system");
                     let outputs = results
                         .get(&dependency.recipe)
                         .context("dependency was not prepared")?
@@ -163,6 +205,9 @@ impl Runner<'_> {
                     let destination = dependencies.join(&dependency.name);
                     std::fs::create_dir_all(&destination)?;
                     for (name, value) in outputs {
+                        if !staged_system(name) {
+                            continue;
+                        }
                         let path = PathBuf::from(
                             value.as_str().context("dependency output must be a path")?,
                         );
@@ -261,14 +306,15 @@ impl Runner<'_> {
             }
             let mut packages = Vec::new();
             for node in &graph {
-                let digest = hex::encode(sha2::Sha256::digest(serde_json::to_vec(
-                    &node.source_digests,
-                )?));
+                let digest = producer_digest(node)?;
                 let mut output = if node.recipe == *main_recipe {
                     result.clone()
                 } else {
                     results[&node.recipe].clone()
                 };
+                if output["system_present"] == true {
+                    continue;
+                }
                 output["producer"] = serde_json::json!({"version":1,"recipe":node.recipe,"recipe_digest":digest,"architecture":invocation.options.execution.target_arch,
                     "dependencies":node.dependencies.iter().filter(|d|!d.build_only).map(|d| d.recipe.clone()).collect::<Vec<_>>()});
                 if node.recipe == *main_recipe || runtime.contains(&node.recipe) {
@@ -276,6 +322,7 @@ impl Runner<'_> {
                 }
             }
             result["system_producers"] = serde_json::Value::Array(packages);
+            result["system_present"] = serde_json::json!(skipped);
         }
         Ok(result)
     }
@@ -378,6 +425,36 @@ impl Runner<'_> {
         }
         Ok(report.result.ctx_summary)
     }
+}
+
+/// The identity a system receipt records for the recipe of `node`
+/// (`recipe_digest`): the digest of its source digests.
+fn producer_digest(node: &crate::needs::Declaration) -> Result<String> {
+    use sha2::Digest;
+    Ok(hex::encode(sha2::Sha256::digest(serde_json::to_vec(
+        &node.source_digests,
+    )?)))
+}
+
+/// A package a system change's root already holds.
+#[derive(serde::Deserialize)]
+struct Present {
+    name: String,
+    version: String,
+    #[serde(rename = "recipe_digest")]
+    digest: String,
+}
+
+/// The environment variable naming the file of packages the root holds.
+pub const SYSTEM_PRESENT_ENV: &str = "RECIPE_SYSTEM_PRESENT";
+
+fn system_present() -> Result<Vec<Present>> {
+    let Some(path) = std::env::var_os(SYSTEM_PRESENT_ENV) else {
+        return Ok(Vec::new());
+    };
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading {}", PathBuf::from(&path).display()))?;
+    Ok(serde_json::from_str(&text)?)
 }
 
 /// Resolve Ginux from `GINUX_BIN`, or the launcher shipped with the OS.

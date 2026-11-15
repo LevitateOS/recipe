@@ -45,6 +45,10 @@ pub(crate) struct Cli {
     )]
     pub(crate) root: Option<PathBuf>,
 
+    /// With --system: do not run the root's effects recipe (usr/lib/recipe/effects.rhai) after the change; for a caller that runs it itself once at the end.
+    #[arg(long, requires = "system", help_heading = "Installed software")]
+    pub(crate) no_effects: bool,
+
     /// Logical build destination and lock (default: stable destination under the state directory).
     #[arg(short, long, global = true)]
     #[arg(help_heading = "Build and state")]
@@ -193,6 +197,10 @@ pub(crate) enum Commands {
     Install {
         /// Recipe path or recipe name. If the file is not found directly, recipe will also look in --recipes-path and try appending `.rhai`.
         recipe: PathBuf,
+
+        /// With --system: more recipes installed in the same run, each written once; one the root already holds from the same recipe (digest and version) is skipped.
+        #[arg(value_name = "MORE")]
+        more: Vec<PathBuf>,
 
         /// Run only if the recipe file has this SHA-256: what was looked at is what runs.
         #[arg(long, value_name = "HASH")]
