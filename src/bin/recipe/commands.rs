@@ -14,16 +14,16 @@ use super::{
 };
 
 /// Where a recipe named on the command line is looked for.
-struct Lookup<'a> {
-    folders: &'a [PathBuf],
+pub(super) struct Lookup<'a> {
+    pub(super) folders: &'a [PathBuf],
     /// None with an explicit collection, which stays isolated.
-    sources: Option<&'a Sources>,
+    pub(super) sources: Option<&'a Sources>,
     /// What a recipe of a remote source is fetched for.
-    purpose: sources::Purpose,
+    pub(super) purpose: sources::Purpose,
 }
 
 /// What was looked at is what runs: the recipe file must be the one named.
-fn require_sha256(recipe: &Path, expected: Option<&str>) -> Result<()> {
+pub(super) fn require_sha256(recipe: &Path, expected: Option<&str>) -> Result<()> {
     use sha2::{Digest, Sha256};
     let Some(expected) = expected else {
         return Ok(());
@@ -57,13 +57,13 @@ fn changed_package(command: &Commands) -> Option<String> {
     })
 }
 
-pub(crate) fn execute(cli: Cli) -> Result<()> {
+pub(crate) fn execute(mut cli: Cli) -> Result<()> {
     // The runtime commands need no package root, recipes or Ginux.
     if let Commands::Runtime { command } = &cli.command {
         return runtime::execute(command, &cli);
     }
-    // A change delegated to recab is reported by the run that makes it.
-    if system_route(&cli)? {
+    // A system change is reported by the run that makes it.
+    if super::system_route::route(&mut cli)? {
         return Ok(());
     }
     let changed = cli
@@ -996,7 +996,7 @@ fn package_prefix(
     Ok(Some(prefix.to_owned()))
 }
 
-fn resolve_recipe_path(recipe: &Path, lookup: &Lookup) -> Result<PathBuf> {
+pub(super) fn resolve_recipe_path(recipe: &Path, lookup: &Lookup) -> Result<PathBuf> {
     if recipe.is_absolute() {
         if recipe.is_file() {
             return Ok(recipe.to_path_buf());
@@ -1543,186 +1543,4 @@ fn parse_inputs(values: &[String]) -> Result<Vec<(String, PathBuf)>> {
             Ok((name.to_owned(), PathBuf::from(path)))
         })
         .collect()
-}
-
-/// Root's installed-system software never activates a shared /var profile.
-/// Explicit independent roots and builder output-only invocations retain their
-/// existing behavior, including on an immutable host.
-fn system_route(cli: &Cli) -> Result<bool> {
-    let command = match &cli.command {
-        Commands::Install { recipe, .. } => Some(("install", Some(recipe))),
-        Commands::Update { recipe } => Some(("update", Some(recipe))),
-        Commands::Remove { recipe } => Some(("remove", Some(recipe))),
-        Commands::Installed => Some(("list", None)),
-        Commands::IsInstalled { recipe } => Some(("check", Some(recipe))),
-        _ => None,
-    };
-    let immutable = std::fs::read_to_string("/proc/cmdline")
-        .unwrap_or_default()
-        .split_whitespace()
-        .any(|p| p == "recab.immutable");
-    let route = cli.system
-        || (!cli.no_activate
-            && command.is_some()
-            && cli.package_root.is_none()
-            && unsafe { libc::geteuid() } == 0
-            && immutable);
-    if !route {
-        anyhow::ensure!(
-            !cli.prepared && cli.preparation.is_none(),
-            "prepared selection options require the system route"
-        );
-        return Ok(false);
-    }
-    let (action, recipe) =
-        command.context("--system supports install, update, remove, installed and isinstalled")?;
-    anyhow::ensure!(
-        cli.build_dir.is_none() && cli.state_dir.is_none(),
-        "recab scopes system producer state/build work to the preparation; use --package-root for an independent profile"
-    );
-    let mut cmd = std::process::Command::new(
-        std::env::var_os("RECIPE_RECAB_BIN").unwrap_or_else(|| "recab".into()),
-    );
-    cmd.arg("change").arg(action);
-    if let Some(recipe) = recipe {
-        cmd.arg(if recipe.exists() {
-            std::fs::canonicalize(recipe)?
-        } else {
-            recipe.clone()
-        });
-        if matches!(action, "install" | "update") {
-            let paths = super::metadata::recipe_paths(cli.recipes_path.clone());
-            let sources = Sources::new(&super::metadata::default_package_root()?);
-            let explicit = cli.recipes_path.is_some() || std::env::var_os("RECIPE_PATH").is_some();
-            let lookup = Lookup {
-                folders: &paths,
-                sources: (!explicit).then_some(&sources),
-                purpose: sources::Purpose::Install,
-            };
-            match resolve_recipe_path(recipe, &lookup) {
-                Ok(path) => {
-                    if let Commands::Install { sha256, .. } = &cli.command {
-                        require_sha256(&path, sha256.as_deref())?;
-                    }
-                    cmd.arg("--producer-recipe")
-                        .arg(std::fs::canonicalize(path)?);
-                }
-                Err(e) if action == "install" || explicit => return Err(e),
-                Err(_) => {} // recab falls back to this prepared package's recorded source.
-            }
-        }
-    }
-    if let Some(id) = &cli.preparation {
-        cmd.arg("--preparation")
-            .arg(id)
-            .arg("--revision")
-            .arg(cli.revision.unwrap().to_string());
-    }
-    if cli.prepared {
-        cmd.arg("--prepared");
-    }
-    let json = cli.json || !std::io::stdout().is_terminal() || cli.json_output.is_some();
-    if json {
-        cmd.arg("--json");
-    }
-    if matches!(action, "install" | "update") {
-        cmd.arg("--");
-        if let Some(path) = &cli.recipes_path {
-            cmd.arg("--recipes-path").arg(std::path::absolute(path)?);
-        }
-        cmd.args([
-            "--target-os",
-            &cli.target_os,
-            "--target-arch",
-            &cli.target_arch,
-            "--jobs",
-            &cli.jobs.to_string(),
-        ]);
-        // Only a non-default choice is passed on, so a run through recab
-        // works with a recipe that predates --execution.
-        if cli.execution != levitate_recipe::ExecutionMode::Auto {
-            cmd.arg("--execution").arg(cli.execution.as_str());
-        }
-        for (flag, value) in [
-            ("--timeout-secs", cli.timeout_secs),
-            ("--memory-mib", cli.memory_mib),
-            ("--storage-max-objects", cli.storage_max_objects),
-            ("--storage-max-bytes", cli.storage_max_bytes),
-            ("--network-max-bytes", cli.network_max_bytes),
-        ] {
-            if let Some(value) = value {
-                cmd.arg(flag).arg(value.to_string());
-            }
-        }
-        for (flag, value) in [
-            ("--no-network", cli.no_network),
-            ("--force-acquire", cli.force_acquire),
-            ("--force-build", cli.force_build),
-            ("--force-install", cli.force_install),
-            ("--no-persist-state", cli.no_persist_state),
-            ("--exact-identity", cli.exact_identity),
-        ] {
-            if value {
-                cmd.arg(flag);
-            }
-        }
-        for host in &cli.network_hosts {
-            cmd.arg("--network-host").arg(host);
-        }
-        for define in &cli.defines {
-            cmd.arg("--define").arg(define);
-        }
-        for input in &cli.inputs {
-            let (name, path) = input.split_once('=').context("input must be NAME=PATH")?;
-            cmd.arg("--input")
-                .arg(format!("{name}={}", std::path::absolute(path)?.display()));
-        }
-        if let Some(profile) = &cli.llm_profile {
-            cmd.arg("--llm-profile").arg(profile);
-        }
-        if cli.machine_events {
-            cmd.arg("--machine-events");
-        }
-        if let Some(path) = &cli.progress_file {
-            cmd.arg("--progress-file").arg(std::path::absolute(path)?);
-        }
-        if let Commands::Install {
-            autofix: true,
-            autofix_attempts,
-            autofix_cwd,
-            autofix_prompt_file,
-            autofix_allow_path,
-            ..
-        } = &cli.command
-        {
-            cmd.arg("--autofix")
-                .arg("--autofix-attempts")
-                .arg(autofix_attempts.to_string());
-            for (flag, path) in [
-                ("--autofix-cwd", autofix_cwd),
-                ("--autofix-prompt-file", autofix_prompt_file),
-            ] {
-                if let Some(path) = path {
-                    cmd.arg(flag).arg(std::path::absolute(path)?);
-                }
-            }
-            for path in autofix_allow_path {
-                cmd.arg("--autofix-allow-path")
-                    .arg(std::path::absolute(path)?);
-            }
-        }
-    }
-    cmd.env("RECAB_RECIPE_BIN", std::env::current_exe()?);
-    if let Some(path) = std::env::var_os("RECIPE_PATH") {
-        cmd.env("RECIPE_PATH", std::path::absolute(path)?);
-    }
-    if let Some(output) = &cli.json_output {
-        let result = cmd.output()?;
-        std::io::stderr().write_all(&result.stderr)?;
-        anyhow::ensure!(result.status.success(), "system change refused by recab");
-        std::fs::write(output, result.stdout)?;
-    } else {
-        anyhow::ensure!(cmd.status()?.success(), "system change refused by recab");
-    }
-    Ok(true)
 }

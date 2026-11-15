@@ -247,7 +247,7 @@ impl Runner<'_> {
             .options
             .defines
             .iter()
-            .any(|(k, _)| k == "RECAB_SYSTEM_CONTEXT")
+            .any(|(k, _)| k == "RECIPE_SYSTEM_CONTEXT")
         {
             let mut runtime = std::collections::BTreeSet::new();
             let mut pending = vec![main_recipe.clone()];

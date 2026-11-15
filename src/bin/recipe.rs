@@ -23,6 +23,8 @@ mod commands;
 mod metadata;
 #[path = "recipe/runtime.rs"]
 mod runtime;
+#[path = "recipe/system_route.rs"]
+mod system_route;
 
 fn default_help_footer() -> String {
     format!(

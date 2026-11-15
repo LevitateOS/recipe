@@ -1,11 +1,15 @@
-//! Recipe's system selection contract. The recab coordinator supplies confined
-//! observations and owns the inactive mount; this module never writes a system.
+//! Recipe's system software contract: the receipt of what Recipe put in a root,
+//! the plan for a change, and writing that plan into a root. The root written
+//! is always the other (unlocked) root of an A/B system, or the one root of a
+//! mutable system; the booted root of an A/B system is never written.
 use crate::target::{self, Entry};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::Write,
+    os::unix::{ffi::OsStrExt, fs::PermissionsExt},
     path::{Path, PathBuf},
 };
 pub const RECEIPT: &str = "usr/lib/recipe/system.json";
@@ -395,6 +399,260 @@ pub fn reconcile(
         wanted,
         removals: removals.into_iter().collect(),
     })
+}
+
+/// `relative` inside `root`, with every directory above it a real directory in
+/// that root (a link there could lead out of the root). With `create`, missing
+/// directories above it are made.
+fn confined(root: &Path, relative: &str, create: bool) -> Result<PathBuf> {
+    let mut path = root.to_path_buf();
+    let parts: Vec<&str> = relative.split('/').collect();
+    for (i, part) in parts.iter().enumerate() {
+        ensure!(
+            !part.is_empty() && *part != "." && *part != "..",
+            "invalid system path"
+        );
+        if i + 1 == parts.len() {
+            path.push(part);
+            break;
+        }
+        path.push(part);
+        match fs::symlink_metadata(&path) {
+            Ok(m) if m.is_dir() => {}
+            Ok(_) => anyhow::bail!(
+                "{} in the other root is not a plain directory, so {relative} cannot be written there",
+                path.display()
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && create => {
+                fs::create_dir(&path)?;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+            }
+            // Nothing exists below a missing directory; the caller sees "not found".
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                path.extend(&parts[i + 1..]);
+                break;
+            }
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        }
+    }
+    Ok(path)
+}
+
+/// The system receipt of the root at `root`; a root without one has no system software.
+pub fn read_receipt(root: &Path) -> Result<Receipt> {
+    let path = confined(root, RECEIPT, false)?;
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => Some(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    Receipt::parse(text.as_deref())
+        .with_context(|| format!("the system receipt of {} is not usable", root.display()))
+}
+
+/// What the root at `root` holds now for each of `paths`.
+pub fn observe(
+    root: &Path,
+    old: &Receipt,
+    paths: &BTreeSet<String>,
+) -> Result<BTreeMap<String, Entry>> {
+    use std::os::unix::fs::MetadataExt;
+    let root_user = unsafe { libc::geteuid() } == 0;
+    let mut found = BTreeMap::new();
+    for name in paths {
+        let path = confined(root, name, false)?;
+        let md = match fs::symlink_metadata(&path) {
+            Ok(md) => md,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        let (kind, link, sha256) = if md.is_dir() {
+            ("dir", None, None)
+        } else if md.file_type().is_symlink() {
+            (
+                "symlink",
+                Some(fs::read_link(&path)?.to_string_lossy().into_owned()),
+                None,
+            )
+        } else if md.is_file() {
+            use sha2::{Digest, Sha256};
+            let mut hash = Sha256::new();
+            std::io::copy(&mut fs::File::open(&path)?, &mut hash)?;
+            ("file", None, Some(hex::encode(hash.finalize())))
+        } else {
+            anyhow::bail!("unsupported inode at {}", path.display())
+        };
+        found.insert(
+            name.clone(),
+            Entry {
+                kind: kind.into(),
+                mode: md.mode() & 0o7777,
+                // Owners are only set when Recipe runs as root (see `own`).
+                uid: if root_user { md.uid() } else { 0 },
+                gid: if root_user { md.gid() } else { 0 },
+                user: None,
+                group: None,
+                xattrs: BTreeMap::new(),
+                link,
+                sha256,
+            },
+        );
+    }
+    // A later path of one file is recorded as a hardlink to the first path.
+    for (name, entry) in &mut found {
+        let prior = old.packages.values().find_map(|p| p.files.get(name));
+        if let Some(prior) = prior
+            && prior.kind == "hardlink"
+            && entry.kind == "file"
+            && entry.sha256 == prior.sha256
+        {
+            entry.kind = "hardlink".into();
+            entry.link = prior.link.clone();
+        }
+    }
+    Ok(found)
+}
+
+fn own(path: &Path, entry: &Entry) -> Result<()> {
+    // Ownership and extended attributes are set when Recipe runs as root, which
+    // a system change does. Another user's run (a check, not a system) skips them.
+    if unsafe { libc::geteuid() } != 0 {
+        return Ok(());
+    }
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    ensure!(
+        unsafe { libc::lchown(c.as_ptr(), entry.uid, entry.gid) } == 0,
+        "cannot set the owner of {}: {}",
+        path.display(),
+        std::io::Error::last_os_error()
+    );
+    for (name, value) in &entry.xattrs {
+        let value = hex::decode(value)?;
+        let name = std::ffi::CString::new(name.as_bytes())?;
+        ensure!(
+            unsafe {
+                libc::lsetxattr(
+                    c.as_ptr(),
+                    name.as_ptr(),
+                    value.as_ptr().cast(),
+                    value.len(),
+                    0,
+                )
+            } == 0,
+            "cannot set an attribute of {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        );
+    }
+    Ok(())
+}
+
+/// Write `plan` into the root at `root`: remove what it removes, write what it
+/// wants from the payloads, then record the new receipt. The caller chose
+/// `root`; it is never the booted root of an A/B system.
+pub fn apply(root: &Path, payloads: &[Payload], plan: &Plan) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    for name in &plan.removals {
+        let path = confined(root, name, false)?;
+        match fs::symlink_metadata(&path) {
+            Ok(m) if !m.is_dir() => fs::remove_file(&path)?,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("removing {}", path.display())),
+        }
+    }
+    let sources: BTreeMap<&str, (&Payload, &str)> = payloads
+        .iter()
+        .flat_map(|p| {
+            p.paths
+                .iter()
+                .map(move |(to, from)| (to.as_str(), (p, from.as_str())))
+        })
+        .collect();
+    let mut links = Vec::new();
+    for (name, entry) in &plan.wanted {
+        let dest = confined(root, name, true)?;
+        let existing = fs::symlink_metadata(&dest).ok();
+        match entry.kind.as_str() {
+            "dir" => {
+                if existing.is_none() {
+                    fs::create_dir(&dest)?;
+                } else if !existing.is_some_and(|m| m.is_dir()) {
+                    anyhow::bail!("{} is not a directory in the other root", dest.display());
+                }
+                fs::set_permissions(&dest, fs::Permissions::from_mode(entry.mode))?;
+                own(&dest, entry)?;
+            }
+            "symlink" => {
+                if existing.is_some() {
+                    fs::remove_file(&dest)?;
+                }
+                std::os::unix::fs::symlink(entry.link.as_ref().context("missing symlink")?, &dest)?;
+                own(&dest, entry)?;
+            }
+            "file" => {
+                let (payload, from) = sources
+                    .get(name.as_str())
+                    .context("payload file is missing")?;
+                let source = payload.root.join(from);
+                ensure!(
+                    fs::symlink_metadata(&source)?.is_file(),
+                    "payload {} is not a regular file",
+                    source.display()
+                );
+                let temp = dest.with_file_name(format!(
+                    ".recipe-write-{}",
+                    dest.file_name().unwrap().to_string_lossy()
+                ));
+                let _ = fs::remove_file(&temp);
+                let mut hash = Sha256::new();
+                {
+                    let mut input = fs::File::open(&source)?;
+                    let mut output = fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&temp)?;
+                    let mut buffer = vec![0; 1 << 16];
+                    loop {
+                        let n = std::io::Read::read(&mut input, &mut buffer)?;
+                        if n == 0 {
+                            break;
+                        }
+                        hash.update(&buffer[..n]);
+                        output.write_all(&buffer[..n])?;
+                    }
+                    output.sync_all()?;
+                }
+                ensure!(
+                    Some(hex::encode(hash.finalize())) == entry.sha256,
+                    "{name} changed after the recipe published it"
+                );
+                fs::set_permissions(&temp, fs::Permissions::from_mode(entry.mode))?;
+                own(&temp, entry)?;
+                fs::rename(&temp, &dest)?;
+            }
+            "hardlink" => links.push((dest, entry)),
+            other => anyhow::bail!("unsupported kind {other} for {name}"),
+        }
+    }
+    for (dest, entry) in links {
+        let target = confined(
+            root,
+            entry.link.as_ref().context("missing hardlink")?,
+            false,
+        )?;
+        if fs::symlink_metadata(&dest).is_ok() {
+            fs::remove_file(&dest)?;
+        }
+        fs::hard_link(target, &dest)?;
+    }
+    let receipt = confined(root, RECEIPT, true)?;
+    let temp = receipt.with_extension("json.new");
+    let mut out = fs::File::create(&temp)?;
+    out.write_all(&serde_json::to_vec(&plan.receipt)?)?;
+    out.sync_all()?;
+    fs::rename(temp, receipt)?;
+    Ok(())
 }
 
 /// Kernel process I/O counters, including streams and reaped children. These

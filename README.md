@@ -25,37 +25,53 @@ OS lifecycle. For user software, the CLI activates a directory output named
 still operate on their isolated output tree. `--no-activate` keeps product-only
 behavior. `list` lists recipe declarations; `installed` lists active packages.
 
-## System software on immutable A/B installations
+## System software on A/B installations
 
-Root's install/update/remove commands delegate to recab's prepared inactive
-system. `--system` selects this explicitly. They leave the running root unchanged:
+On an A/B system the booted root is locked and the other root is unlocked,
+mounted read-write where `recab status --json` reports `other_mount`. System
+software goes into the other root, never the booted one; Recipe does not write
+into, remount or unlock the booted root. Root's install/update/remove commands
+(and `--system`, for any user who may write the other root) do this:
 
 ```sh
-sudo recipe --system install ripgrep
-sudo recipe --system installed
-sudo recipe --system isinstalled ripgrep --prepared
-sudo recab finalize
-sudo recab set-next B   # A is running; use A when B is running
+sudo recipe --system install ripgrep   # written into the other root
+sudo recipe --system installed         # the booted root's software, and the other root's
+sudo recipe --system isinstalled ripgrep
+sudo recab boot-other                  # start the other root at the next boot
 sudo reboot
 rg --version
 ```
 
-A compatible recab runtime is required in both slots. Normal package outputs
-install under the candidate's `/usr/lib/recipe/profile`, with selection recorded
-in `/usr/lib/recipe/system.json`. Explicit `system` directory outputs carry
-root-relative intended metadata from `target_finalize`. Dependencies are produced
-through the existing Recipe graph. Builds receive isolated inputs and outputs;
-recab alone mounts and changes the inactive root. Updates/removals refuse
-conflicting ownership and administrator edits. `recab edit PATH [--file FILE]`
-applies bounded configuration edits to that same preparation. Finalization and
-a successful trial boot make the changes active; package commands do not reboot.
+The change is active when the other root is booted. If the other root is not
+mounted, the command says so and stops; `recab copy` recreates it. Normal package
+outputs install under the other root's `/usr/lib/recipe/profile`, with the
+selection recorded in its `/usr/lib/recipe/system.json`. Explicit `system`
+directory outputs carry root-relative intended metadata from `target_finalize`.
+Dependencies are produced through the existing Recipe graph. Updates and removals
+refuse conflicting ownership and administrator edits.
 
-`recipe installed` reports active and prepared receipts; `isinstalled` checks the
-active selection unless `--prepared` is given. `--preparation ID --revision N`
-guards stale requests. `update` resolves the current catalog first, then falls
-back to the prepared package's recorded producer. `--package-root DIR` retains an
-independent profile and `--no-activate` retains output-only builder execution.
-Other commands, including catalog listing and validation, keep their normal routes.
+`recipe installed` and `isinstalled` say which software is in the running (booted)
+root and which is in the other root and becomes active when that root is booted.
+`update` resolves the current catalog first, then falls back to the recipe the
+package was installed from. When the running root has software the other root's
+receipt lacks, a change prints one line naming it; `recab copy` makes the other
+root a copy of the running system. It is information only.
+
+`recab copy` overwrites the other root, and with it the system changes Recipe
+wrote there. Recipe keeps a record of those changes in `other-root.json` in its
+package root (on the shared `/var`: `/var/lib/recipe`). Before any system-scope
+command, it compares the record with both roots' receipts. A change that the
+booted root now holds was booted into and is forgotten; a change neither root
+holds was wiped, and Recipe writes exactly that system part into the other root
+again (not the whole install, and never the "for me" software in a user's own
+store). Until that has succeeded, the part is reported as not done.
+
+A system without `recab.immutable` on its kernel command line has one root, the
+running one, and no recab. `--system` there means root's own package root,
+`/var/lib/recipe`, with no A/B and no call to recab.
+`--package-root DIR` retains an independent profile and `--no-activate` retains
+output-only builder execution. Other commands, including catalog listing and
+validation, keep their normal routes.
 
 ## Independent user software
 
@@ -82,10 +98,10 @@ symlinks, special files and setuid/setgid payloads fail before switching. No
 activation script executes on the host. Failed acquisition or activation preserves
 the previous profile.
 
-Outside the immutable system route, root's package root is `/var/lib/recipe`; an ordinary user's is
+Outside the A/B system route, root's package root is `/var/lib/recipe`; an ordinary user's is
 `$XDG_DATA_HOME/recipe` (normally `~/.local/share/recipe`). `--package-root PATH`
 selects another store. Its `profile/bin` contains active commands; installed login
-profiles add the booted slot system path and ordinary user paths to PATH. On a host without an immutable system, software installed for this computer (`/var/lib/recipe/profile/bin`) is on every user's PATH, and a user's own store comes first. `remove` uses the installed receipt
+profiles add the booted root's system path and ordinary user paths to PATH. On a host without an A/B system, software installed for this computer (`/var/lib/recipe/profile/bin`) is on every user's PATH, and a user's own store comes first. `remove` uses the installed receipt
 without the recipe or runtime. `installed` only reads, so an ordinary user may
 also read a store root owns (`recipe installed --package-root /var/lib/recipe`);
 changing a store still requires owning it. `isinstalled` checks active files and links. Removed

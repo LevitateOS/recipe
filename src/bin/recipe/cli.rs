@@ -24,7 +24,7 @@ pub(crate) struct Cli {
     #[arg(help_heading = "Recipes")]
     pub(crate) recipes_path: Option<PathBuf>,
 
-    /// Independent package storage/profile; overrides root's immutable-system route.
+    /// Independent package storage/profile; overrides the system route.
     #[arg(long, global = true, help_heading = "Installed software")]
     pub(crate) package_root: Option<PathBuf>,
 
@@ -32,26 +32,9 @@ pub(crate) struct Cli {
     #[arg(long, global = true, help_heading = "Installed software")]
     pub(crate) no_activate: bool,
 
-    /// Apply/list system software through recab's prepared inactive system.
+    /// System scope: install, update, remove and list software for the computer's root. On an A/B system the change is written into the other (unlocked) root and becomes active when that root is booted; the booted root is never written.
     #[arg(long, global=true, conflicts_with_all=["no_activate","package_root"], help_heading="Installed software")]
     pub(crate) system: bool,
-    /// Inspect the prepared selection rather than the running selection.
-    #[arg(long, global = true, help_heading = "Installed software")]
-    pub(crate) prepared: bool,
-    #[arg(
-        long,
-        global = true,
-        requires = "revision",
-        help_heading = "Installed software"
-    )]
-    pub(crate) preparation: Option<String>,
-    #[arg(
-        long,
-        global = true,
-        requires = "preparation",
-        help_heading = "Installed software"
-    )]
-    pub(crate) revision: Option<u64>,
 
     /// Logical build destination and lock (default: stable destination under the state directory).
     #[arg(short, long, global = true)]
@@ -229,7 +212,7 @@ pub(crate) enum Commands {
     )]
     Update { recipe: PathBuf },
 
-    /// List package receipts; the system route distinguishes active and prepared selection
+    /// List package receipts; with --system on an A/B system, the running root's software and the other root's
     #[command(
         after_help = "With --json each package also names what its recipe was allowed to use when it\nwas installed (needs), when (installed_on), the length of its files (size_bytes)\nand the earlier versions 'recipe go-back' can return to (kept)."
     )]

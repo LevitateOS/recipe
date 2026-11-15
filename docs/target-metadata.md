@@ -159,14 +159,14 @@ APK 3 requires a non-root virtual identity for `--usermode`. Per-command
 continues to describe installed UID/GID values. No host credential changes are
 used by the configured runtime.
 
-For recab system changes, declare `NEEDS.outputs.system = "directory"` and
+For system changes, declare `NEEDS.outputs.system = "directory"` and
 publish a finalized root-relative tree as `ctx.outputs.system`. Numeric installed
 UID/GID, mode, raw xattrs, links and content fingerprints come from this manifest,
 not the Ginux worker's staging inodes. Omitted old owned files are also removed
-when updating the selection. Ordinary `package` outputs are placed in the slot's
+when updating the selection. Ordinary `package` outputs are placed in the root's
 system profile instead. The coordinator attaches versioned recipe/dependency
 provenance after verified publication; worker-supplied provenance is not trusted.
 
-When a system producer omits `security.selinux`, recab retains labels assigned
+When a system producer omits `security.selinux`, Recipe retains labels assigned
 by the installed kernel policy. An explicitly authored label remains an exact
 metadata constraint, as do capabilities and all other intended xattrs.
