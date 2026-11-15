@@ -428,10 +428,46 @@ pub fn reconcile(
         receipt.packages.remove(*name);
     }
     let mut beside = BTreeSet::new();
+    // A directory several packages of one change carry: a package that only
+    // has it as the parent of its files carries it as root:root 0755 (what an
+    // unpacked tree makes), while the package it belongs to states its owner
+    // and mode. The stated one is the directory's; two stated ones that
+    // differ are refused below.
+    let plain = |e: &Entry| {
+        e.kind == "dir"
+            && e.mode & 0o7777 == 0o755
+            && e.uid == 0
+            && e.gid == 0
+            && e.user.as_deref().is_none_or(|user| user == "root")
+            && e.group.as_deref().is_none_or(|group| group == "root")
+            && e.xattrs.keys().all(|key| key == "security.selinux")
+    };
+    let mut stated = BTreeMap::<String, Option<Entry>>::new();
+    for payload in payloads.iter() {
+        for (path, entry) in &payload.package.files {
+            if entry.kind != "dir" || plain(entry) {
+                continue;
+            }
+            match stated.get(path) {
+                None => {
+                    stated.insert(path.clone(), Some(entry.clone()));
+                }
+                Some(Some(prior)) if prior != entry => {
+                    stated.insert(path.clone(), None);
+                }
+                _ => {}
+            }
+        }
+    }
     for payload in payloads {
         let mut package = payload.package.clone();
         let mut base_dirs = Vec::new();
         for (path, entry) in &mut package.files {
+            if plain(entry)
+                && let Some(Some(owner)) = stated.get(path)
+            {
+                *entry = owner.clone();
+            }
             if entry.kind == "dir" {
                 if let Some(current) = observed.get(path) {
                     if current.kind == "dir" {
