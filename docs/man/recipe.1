@@ -69,7 +69,7 @@ See bootstrap/README.md for the pinned manifest producer.
 .SH EXECUTION MODES
 Before a run, Recipe compiles (never runs) each recipe of the graph, the base
 it extends and every module it imports. A recipe that can reach exec,
-exec_checked, exec_output, shell*, git_checkout, target_extract_rpm, target_extract_tar,
+exec_checked, exec_output, shell*, git_checkout, target_extract_tar,
 command_exists, rpm_installed, rpm_version, dnf_*, apk_*, carry_link_flags or
 carry_libraries, or that uses eval, Fn with a computed name or a dynamic import,
 runs in Ginux. Every other recipe runs on the host as an ordinary process of the
@@ -109,8 +109,26 @@ reported as not done.
 .PP
 With --json, --system installed prints the booted root's packages and the other
 root's, and the changes not done. On a system without recab.immutable there is one
-root and no recab: --system means root's own package root, /var/lib/recipe.
---package-root DIR and --no-activate keep their own routes.
+root, the running one, and no recab: --system writes the change into it, with its
+usr/lib/recipe/system.json, exactly as into any root (RECIPE_BOOTED_ROOT names
+another directory for tests). --system --root DIR does the same for DIR, a root that
+is not running: an installer's /mnt or an image tree. Neither calls recab or keeps
+other-root.json; --root refuses the booted root of an A/B system.
+--package-root DIR and --no-activate keep their own routes. Without --system, root's
+install on a system without recab.immutable still uses /var/lib/recipe.
+.PP
+Writing into a root: a system output's owner names are resolved against that root's
+etc/passwd and etc/group. Accounts the change needs are created first, from its own
+usr/lib/sysusers.d/*.conf files and the accounts its recipe declares, the way the OS
+builder creates them (g lines, then u lines; existing accounts kept; "-" is the
+highest free id below 1000), and recorded with the package in the receipt; removing
+the package keeps them. A configuration file under etc/ that was changed since it was
+installed is kept and reported: a removal leaves it, an update writes the new version
+beside it as NAME.recipe-new. Any other changed file refuses the change. Directories
+left empty by a removal are removed; directories the root had before are never
+recorded. One syncfs flushes each change before the receipt is written. The
+producer's published outputs are deleted once written (its saved state stays unless
+--no-persist-state; --state-dir and --build-dir choose where both live).
 .SH COMMANDS
 .TP
 .B install RECIPE
@@ -274,6 +292,11 @@ act on the computer's root. On an A/B system the change is written into the othe
 (unlocked) root and becomes active when that root is booted; the booted root is
 never written.
 .TP
+.B --root DIR
+With --system, given before the command: write the change into DIR, a root that is
+not running, and read installed and isinstalled from DIR. No recab call, no A/B
+record (see SYSTEM SCOPE).
+.TP
 .B --package-root DIR
 Package generations, installed receipts and active profile symlink. Defaults to
 /var/lib/recipe for root or XDG_DATA_HOME/recipe for an ordinary user.
@@ -426,6 +449,14 @@ in-flight logs/scratch. Later invocations reclaim recognized abandoned scratch.
 Scratch is a private directory on disk, ~/.cache/recipe/scratch; RECIPE_SCRATCH_DIR
 (absolute path) replaces it; a set TMPDIR selects TMPDIR/recipe-scratch-UID. Published outputs
 go to STATE/exports, not the current directory.
+.PP
+The offline cache is a read-only directory of pinned payloads, CACHE/sha256/HEX, each
+named by the SHA-256 of its bytes: RECIPE_CACHE_DIR (an absolute path; empty turns it
+off), else /usr/share/recipe/cache when it exists. download and download_exact take a
+payload whose pin they find there from it, with no network; a cached file whose bytes
+do not match its name is ignored. A host run uses it; a Ginux run does not see it.
+With a cache present, a NEEDS.network host that cannot be resolved is left out with a
+warning instead of failing the run, so an offline install needs no --no-network.
 .PP
 SIGINT/SIGTERM cancel execution and await descendant teardown without publishing
 failed work. RECIPE_FRAME_TIMEOUT_SECS bounds partial-frame transport waits,

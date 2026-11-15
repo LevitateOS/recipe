@@ -254,6 +254,7 @@ fn run_inner(
                 .to_owned(),
             network: prepared.network.host_grants(),
             network_max_bytes: options.execution.network_max_bytes,
+            cache: offline_cache_text().map_err(startup)?,
         }),
     };
     let mut progress = options.execution.progress_file.as_deref().map(|path| {
@@ -418,6 +419,17 @@ fn run_inner(
 /// The worker environment of a host run: the variables a Ginux worker gets,
 /// with the host directories in place of the domain paths, and nothing of
 /// the coordinator's own environment.
+/// The offline cache directory a host run's worker reads (`crate::offline_cache`).
+pub(crate) fn offline_cache_text() -> Result<Option<String>> {
+    crate::offline_cache::dir()?
+        .map(|dir| {
+            dir.into_os_string()
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("the offline cache path is not UTF-8"))
+        })
+        .transpose()
+}
+
 fn environment(root: &Path, invocation_id: &str) -> Vec<(String, String)> {
     let local = |path: &str| {
         root.join(path.trim_start_matches('/'))

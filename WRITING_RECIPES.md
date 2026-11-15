@@ -344,7 +344,7 @@ registry is not evidence that every external package's executable works.
 A recipe whose code cannot start a program runs on the host, without the root
 image; everything else runs in Ginux. These helpers put a recipe in Ginux:
 `exec`, `exec_checked`, `exec_output`, `shell*`, `git_checkout`,
-`target_extract_rpm`, `target_extract_tar`, `command_exists`, `rpm_installed`, `rpm_version`,
+`target_extract_tar`, `command_exists`, `rpm_installed`, `rpm_version`,
 `dnf_*`, `apk_*`, `carry_link_flags` and `carry_libraries`. So do `eval`,
 `Fn(name)` with a computed name and a dynamic `import`. The rule covers the
 recipe, its `extends` base and every module it imports, and any code in them,
@@ -359,6 +359,49 @@ only `NEEDS.network`, and a host name there that resolves to a loopback,
 link-local, private, CGNAT or unique-local address is refused unless the entry
 is that address itself (`"127.0.0.1:8080"`). A recipe that downloads, checks
 digests, unpacks and copies needs nothing else.
+
+## Software for the computer's root (`system` outputs)
+
+A `system` directory output is a root-relative tree (`etc/…`, `usr/…`) that
+`recipe --system` writes into a root with a receipt, so it can be removed again.
+It must be finished with `target_finalize`, and may not hold `var/`, `run/`,
+`home/`, `boot/` and other shared or runtime data (systemd-tmpfiles makes `/var`
+directories at boot from the package's `usr/lib/tmpfiles.d`). Unpack package
+archives with the native helpers, which start no program, so the recipe runs on
+the host:
+
+```rhai
+const NEEDS = #{ outputs: #{ system: "directory" }, network: ["dl.fedoraproject.org:443"] };
+// acquire: download(url, archive, sha256) for each pinned package
+fn install(ctx) {
+    for archive in ctx.archives { target_extract_rpm(archive, ctx.tree); }   // or target_extract_apk
+    for d in ["var", "run"] { let p = join_path(ctx.tree, d); if exists(p) { rm(p); } }
+    target_finalize(ctx.tree, #{ owners: "apply", accounts: [
+        "g messagebus -",
+        "u messagebus - 'System Message Bus' /var/run/dbus /sbin/nologin",
+    ] });
+    ctx.outputs.system = ctx.tree;
+    ctx
+}
+```
+
+- `target_extract_rpm(archive, root)` reads an RPM, `target_extract_apk(archive,
+  root)` an Alpine `.apk` (its data segment; the signature and control segments,
+  with the install scripts, are skipped). Neither runs package scripts. Both record
+  modes, links, file capabilities (RPM) and owners **by name**.
+- `target_finalize(root, #{ owners: "apply" })` keeps those names: the system change
+  resolves them in the root it writes, after creating the accounts the tree needs
+  there from its own `usr/lib/sysusers.d/*.conf` (Fedora packages ship them) and
+  from `accounts`, a list of sysusers.d `u`/`g` lines the recipe declares (Alpine
+  packages create theirs in install scripts, which never run, so an Alpine group
+  recipe declares them). Accounts are made as the OS builder makes them: `g` lines,
+  then `u` lines; an existing account is kept; `-` is the highest free id below
+  1000; `u NAME -` takes the group NAME when it exists and otherwise makes it. An
+  owner no account resolves fails the change, naming the line to declare.
+- `target_finalize(root)` without options resolves names against the tree's own
+  `etc/passwd`/`etc/group` (an image tree), as before.
+- Pinned downloads come from the offline cache when it holds them (see the README),
+  so the same recipe installs offline from an install medium.
 
 ## Dependencies and inheritance
 

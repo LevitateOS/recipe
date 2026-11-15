@@ -68,8 +68,55 @@ again (not the whole install, and never the "for me" software in a user's own
 store). Until that has succeeded, the part is reported as not done.
 
 A system without `recab.immutable` on its kernel command line has one root, the
-running one, and no recab. `--system` there means root's own package root,
-`/var/lib/recipe`, with no A/B and no call to recab.
+running one, and no recab. `--system` there writes the change into that root with
+its receipt (`/usr/lib/recipe/system.json`), with no A/B record and no call to
+recab; `system` outputs (a desktop, say) install there like anywhere else. Without
+`--system`, root's install there still uses its own package root, `/var/lib/recipe`.
+
+## System software in a root that is not running
+
+`--system --root DIR` writes a system change into DIR and reads `installed` and
+`isinstalled` from it: an installer's target before the first boot, or an image
+tree. It does what a change to the other root does, without recab and without the
+`other-root.json` record; `--root` given the booted root of an A/B system is refused.
+
+```sh
+recipe --system --root /mnt install plasma-desktop   # written into /mnt, receipt in /mnt/usr/lib/recipe/system.json
+recipe --system --root /mnt installed
+```
+
+The producer runs under `--state-dir`/`--build-dir` (default
+`/var/lib/recipe/system-producer` for root); on a live medium whose `/var` is in
+memory, put them, and `RECIPE_SCRATCH_DIR`, on the target disk, and add
+`--no-persist-state` so no saved copy is kept. Its published outputs are deleted
+once written.
+
+Writing into any root (the other root, the running root, or `--root`):
+
+- **Accounts.** File owners in a `system` output are names, resolved against the
+  root's `etc/passwd` and `etc/group`. Accounts the change needs are created first,
+  from its own `usr/lib/sysusers.d/*.conf` files and the `accounts` its recipe
+  declares (`target_finalize(root, #{ owners: "apply", accounts: [...] })`), the way
+  the OS builder creates them; the receipt records them with the package
+  (`accounts`), and removing the package keeps them. Ownership is applied when
+  Recipe runs as root.
+- **Edited configuration.** A file under `etc/` changed since it was installed is
+  kept and reported: removal leaves it, an update writes the new version beside it
+  as `NAME.recipe-new` (JSON: `kept_config`, `new_config_beside`). Any other
+  changed file still refuses the change.
+- **Tidiness.** Directories a removal leaves empty are removed; directories the root
+  had before the install are never recorded or removed. Each change is flushed with
+  one `syncfs` before the receipt is written.
+
+## Offline cache
+
+A read-only directory of pinned payloads, `CACHE/sha256/<hex>`, each named by the
+SHA-256 of its bytes: `RECIPE_CACHE_DIR` (absolute; empty turns it off), else
+`/usr/share/recipe/cache` when it exists (an install medium carries it).
+`download` and `download_exact` take a payload whose pin they find there from it,
+with no network; a cached file whose bytes do not match is ignored. Host runs use
+it; Ginux runs do not see it. With a cache present, a `NEEDS.network` host that
+cannot be resolved is left out with a warning rather than failing the run.
 `--package-root DIR` retains an independent profile and `--no-activate` retains
 output-only builder execution. Other commands, including catalog listing and
 validation, keep their normal routes.

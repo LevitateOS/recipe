@@ -25,6 +25,13 @@ The native recipe helpers are:
 - `target_extract_rpm(archive, root)`: read a verified RPM natively (lead, headers, and the zstd, xz, lzma, gzip or
   bzip2 cpio payload; no `rpm` or `rpm2archive` is started), recording payload metadata and RPM file capabilities. The
   helper does not run package scriptlets. Recipes verify their pinned inputs.
+- `target_extract_apk(archive, root)`: extract an Alpine `.apk` (concatenated gzip
+  streams: signature, control, data) natively. Only the data segment is extracted;
+  the signature and control segments (`.SIGN.*`, `.PKGINFO`, install scripts) are
+  skipped and no script runs. Members are recorded as `target_extract_tar` records
+  them: modes, owner names, links, hardlinks, SCHILY xattrs.
+- RPM and APK extraction record owners by name only (the ids are 0 until resolved)
+  and read no account file, so recipes using them run on the host.
 - `target_extract_rpm(archive, root, members)`: the same, and write the record of
   the extraction (`target::Members`: every member in archive order with its header
   metadata and where its bytes are in `root`, the file capabilities, and the mode
@@ -56,6 +63,13 @@ The native recipe helpers are:
   payload bytes. Call after recipe policy changes and before writing the recipe's
   success marker. Generated paths default to UID/GID zero and their authored
   ordinary permissions; use `target_mode` for restrictive or special modes.
+- `target_finalize(root, #{ owners: "apply", accounts: [...] })`: finalize a tree
+  that a system change writes into a root later (a `system` output). Owner names
+  stay in the entries (`owners_at_apply: true` in the manifest) instead of being
+  resolved against the tree's own account files, and `accounts` (optional,
+  sysusers.d `u`/`g` lines, kept as the manifest's `accounts`) names accounts to
+  create there. The system change creates them, with those of the tree's own
+  `usr/lib/sysusers.d/*.conf`, the way the OS builder does, then resolves the names.
 
 ## Unpacking a tree through archive import
 

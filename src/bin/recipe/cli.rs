@@ -36,6 +36,15 @@ pub(crate) struct Cli {
     #[arg(long, global=true, conflicts_with_all=["no_activate","package_root"], help_heading="Installed software")]
     pub(crate) system: bool,
 
+    /// With --system: write the system change into DIR, a root that is not running (an installer's /mnt, an image tree), and read installed/isinstalled from it. No recab call, no A/B record. Given before the command: `recipe --system --root /mnt install NAME`.
+    #[arg(
+        long,
+        value_name = "DIR",
+        requires = "system",
+        help_heading = "Installed software"
+    )]
+    pub(crate) root: Option<PathBuf>,
+
     /// Logical build destination and lock (default: stable destination under the state directory).
     #[arg(short, long, global = true)]
     #[arg(help_heading = "Build and state")]

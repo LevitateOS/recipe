@@ -132,35 +132,6 @@ fn read_tar<R: Read>(
     extraction.finish()
 }
 
-/// The numeric ids for package owner names, from this environment's
-/// passwd/group files; names that do not resolve are 0, as RPM treats them.
-/// The names themselves are recorded alongside.
-struct Owners {
-    users: BTreeMap<String, u32>,
-    groups: BTreeMap<String, u32>,
-}
-
-impl Owners {
-    fn load() -> Self {
-        let table = |path: &str| -> BTreeMap<String, u32> {
-            fs::read_to_string(path)
-                .unwrap_or_default()
-                .lines()
-                .filter_map(|line| {
-                    let mut f = line.split(':');
-                    let name = f.next()?;
-                    let id = f.nth(1)?.parse().ok()?;
-                    Some((name.to_owned(), id))
-                })
-                .collect()
-        };
-        Owners {
-            users: table("/etc/passwd"),
-            groups: table("/etc/group"),
-        }
-    }
-}
-
 /// Extract an RPM payload (a cpio stream) into `root` through
 /// [`target::Extraction`], with metadata taken from the package header.
 /// Hardlink sets come out as RPM stores them in the payload (content on the
@@ -173,26 +144,21 @@ fn read_rpm_payload<R: Read + 'static>(
     manifest: &mut Manifest,
     mut members: Option<&mut Vec<target::Member>>,
 ) -> Result<()> {
-    let owners = Owners::load();
     let by_path = rpm_package::index(header);
     let mut cpio = rpm_package::Cpio::new(rpm_package::payload(header, reader)?);
     let mut extraction = target::Extraction::new(root);
     let entry_for = |index: usize, kind: &str, link: Option<String>, mode: u32| -> Entry {
         let user = header.users.get(index).filter(|s| !s.is_empty()).cloned();
         let group = header.groups.get(index).filter(|s| !s.is_empty()).cloned();
+        // Owners are recorded by name only; the ids are resolved against the
+        // root the files end up in (`target_finalize`, or a system change).
+        // Nothing here reads the running system's account files, so the
+        // helper runs on the host as well as in Ginux.
         Entry {
             kind: kind.into(),
             mode: mode & 0o7777,
-            uid: user
-                .as_ref()
-                .and_then(|u| owners.users.get(u))
-                .copied()
-                .unwrap_or(0),
-            gid: group
-                .as_ref()
-                .and_then(|g| owners.groups.get(g))
-                .copied()
-                .unwrap_or(0),
+            uid: 0,
+            gid: 0,
             user,
             group,
             link,
@@ -320,9 +286,9 @@ pub fn extract_rpm_members(
 
 fn extract_rpm_recorded(archive: &str, root: &str, record: Option<&Path>) -> Result<()> {
     let root = Path::new(root);
-    fs::create_dir_all(root)?;
+    confine::mkdir_all(root)?;
     let mut manifest = target::load(root)?;
-    let mut reader = BufReader::new(File::open(archive).with_context(|| {
+    let mut reader = BufReader::new(confine::open_read(Path::new(archive)).with_context(|| {
         format!("cannot open RPM {archive}; check the path the recipe acquired it to")
     })?);
     let header = rpm_package::read_header(&mut reader)?;
@@ -367,6 +333,59 @@ fn created_dir_mode(record: &Path) -> Result<u32> {
     let mode = fs::symlink_metadata(&probe)?.mode() & 0o7777;
     fs::remove_dir(&probe)?;
     Ok(mode)
+}
+
+/// Extract the data of an Alpine `.apk` into `root`, recording its members
+/// (modes, owner names, links) as `extract_tar` records a tar's. An APK is
+/// concatenated gzip streams: the signature (`.SIGN.*`), the control segment
+/// (`.PKGINFO` and install scripts) and the data. Only the data is extracted;
+/// install scripts never run.
+pub fn extract_apk(archive: &str, root: &str) -> Result<(), Box<EvalAltResult>> {
+    recipe_result((|| {
+        let root = Path::new(root);
+        confine::mkdir_all(root)?;
+        let mut manifest = target::load(root)?;
+        let mut source =
+            BufReader::new(confine::open_read(Path::new(archive)).with_context(|| {
+                format!("cannot open APK {archive}; check the path the recipe acquired it to")
+            })?);
+        let mut data = 0;
+        while !source.fill_buf()?.is_empty() {
+            let mut segment = Vec::new();
+            let mut gz = flate2::bufread::GzDecoder::new(source);
+            gz.read_to_end(&mut segment)
+                .with_context(|| format!("{archive} is not a complete APK (gzip segment)"))?;
+            source = gz.into_inner();
+            if apk_metadata_segment(&segment)? {
+                continue;
+            }
+            data += 1;
+            read_tar(segment.as_slice(), root, &mut manifest, true, None)
+                .with_context(|| format!("extracting {archive}"))?;
+        }
+        ensure!(
+            data == 1,
+            "{archive} has {data} data segments; an APK has exactly one"
+        );
+        target::save(root, &manifest)
+    })())
+}
+
+/// Whether an APK gzip segment is its signature or control segment: their
+/// members are all top-level names starting with a dot (`.SIGN.*`,
+/// `.PKGINFO`, `.pre-install`, …). The data segment never has `.PKGINFO`
+/// or a `.SIGN.` member.
+fn apk_metadata_segment(segment: &[u8]) -> Result<bool> {
+    let mut archive = tar::Archive::new(segment);
+    for entry in archive.entries()? {
+        let entry = entry?;
+        let path = entry.path()?;
+        let name = path.to_string_lossy();
+        if name == ".PKGINFO" || name.starts_with(".SIGN.") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub fn extract_tar(archive: &str, root: &str) -> Result<(), Box<EvalAltResult>> {
@@ -540,6 +559,49 @@ pub fn mode(root: &str, path: &str, mode: i64) -> Result<(), Box<EvalAltResult>>
 
 pub fn finalize(root: &str) -> Result<(), Box<EvalAltResult>> {
     recipe_result(target::finalize(Path::new(root)))
+}
+
+/// `target_finalize(root, #{ owners: "apply", accounts: [...] })`.
+pub fn finalize_with(root: &str, options: rhai::Map) -> Result<(), Box<EvalAltResult>> {
+    recipe_result((|| {
+        let mut accounts = Vec::new();
+        let mut at_apply = false;
+        for (key, value) in options {
+            match key.as_str() {
+                "owners" => {
+                    let value = value
+                        .into_string()
+                        .map_err(|_| anyhow::anyhow!("target_finalize owners must be a string"))?;
+                    ensure!(
+                        value == "apply",
+                        "target_finalize owners {value:?}: the one choice is \"apply\" \
+                         (owner names are resolved in the root a system change writes); \
+                         without it, call target_finalize(root)"
+                    );
+                    at_apply = true;
+                }
+                "accounts" => {
+                    for line in value
+                        .into_typed_array::<rhai::ImmutableString>()
+                        .map_err(|_| {
+                            anyhow::anyhow!("target_finalize accounts must be a list of strings")
+                        })?
+                    {
+                        accounts.push(line.to_string());
+                    }
+                }
+                other => {
+                    bail!("target_finalize has no option {other:?}; it takes owners and accounts")
+                }
+            }
+        }
+        ensure!(
+            at_apply,
+            "target_finalize options need owners: \"apply\"; accounts are created where \
+             owner names are resolved"
+        );
+        target::finalize_at_apply(Path::new(root), accounts)
+    })())
 }
 
 pub fn remove(root: &str, path: &str) -> Result<(), Box<EvalAltResult>> {

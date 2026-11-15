@@ -8,7 +8,10 @@
 //! other root, only that system part is applied again.
 //!
 //! A system without `recab.immutable` on its kernel command line has one root,
-//! the running one, and no recab: system scope is then the ordinary root route.
+//! the running one, and no recab: a system change is written into it with its
+//! receipt (`usr/lib/recipe/system.json`), as into any root. `--root DIR` writes
+//! into a root that is not running (an installer's target, an image tree) the
+//! same way. Neither calls recab or keeps the A/B record.
 use anyhow::{Context, Result};
 use levitate_recipe::system::{self, Receipt};
 use serde::{Deserialize, Serialize};
@@ -230,10 +233,8 @@ fn remember(change: Change) -> Result<()> {
 
 /// Run the recipe as a producer: its outputs are made and published, nothing is
 /// activated anywhere. The result lists what it produced.
-fn produce(cli: &Cli, recipe: &Path, args: &[String]) -> Result<serde_json::Value> {
-    let base = super::metadata::default_package_root()?.join("system-producer");
-    let state = cli.state_dir.clone().unwrap_or_else(|| base.join("state"));
-    let build = cli.build_dir.clone().unwrap_or_else(|| base.join("build"));
+fn produce(cli: &Cli, recipe: &Path, args: &[String], context: &str) -> Result<serde_json::Value> {
+    let (base, state, build) = producer_dirs(cli)?;
     std::fs::create_dir_all(&base)?;
     let result = base.join("result.json");
     let _ = std::fs::remove_file(&result);
@@ -248,13 +249,18 @@ fn produce(cli: &Cli, recipe: &Path, args: &[String]) -> Result<serde_json::Valu
         .arg("--json-output")
         .arg(&result)
         .arg("--define")
-        .arg("RECIPE_SYSTEM_CONTEXT=other-root")
+        .arg(format!("RECIPE_SYSTEM_CONTEXT={context}"))
         .stdout(std::process::Stdio::null())
         .status()
         .context("starting the recipe")?;
     anyhow::ensure!(
         status.success(),
-        "the recipe failed; nothing was written to the other root"
+        "the recipe failed; nothing was written to the {}",
+        if context == "other-root" {
+            "other root"
+        } else {
+            "target root"
+        }
     );
     let file = std::fs::File::open(&result)?;
     anyhow::ensure!(
@@ -262,6 +268,162 @@ fn produce(cli: &Cli, recipe: &Path, args: &[String]) -> Result<serde_json::Valu
         "the recipe result exceeds 8 MiB"
     );
     Ok(serde_json::from_reader(file)?)
+}
+
+/// The producer's directory, state directory and build directory.
+fn producer_dirs(cli: &Cli) -> Result<(PathBuf, PathBuf, PathBuf)> {
+    let base = super::metadata::default_package_root()?.join("system-producer");
+    let state = cli.state_dir.clone().unwrap_or_else(|| base.join("state"));
+    let build = cli.build_dir.clone().unwrap_or_else(|| base.join("build"));
+    Ok((base, state, build))
+}
+
+/// Delete the producer's published outputs once they are written into a root:
+/// they would otherwise keep a second copy of everything installed. Only
+/// publications in the producer's own `<state>/exports` are deleted; its saved
+/// state (unless `--no-persist-state`) stays for reuse.
+fn discard_outputs(cli: &Cli, produced: &serde_json::Value) -> Result<()> {
+    let (_, state, _) = producer_dirs(cli)?;
+    let Ok(exports) = std::path::absolute(state)?.join("exports").canonicalize() else {
+        return Ok(());
+    };
+    let mut done = std::collections::BTreeSet::new();
+    let producers = produced["system_producers"]
+        .as_array()
+        .into_iter()
+        .flatten();
+    for outputs in producers
+        .map(|p| &p["outputs"])
+        .chain(std::iter::once(&produced["outputs"]))
+    {
+        for path in outputs
+            .as_object()
+            .into_iter()
+            .flat_map(|o| o.values())
+            .filter_map(|v| v.as_str())
+        {
+            let Some(publication) = Path::new(path).parent() else {
+                continue;
+            };
+            if publication.parent() != Some(exports.as_path()) || !done.insert(publication) {
+                continue;
+            }
+            levitate_recipe::fsx::make_removable(publication);
+            std::fs::remove_dir_all(publication).with_context(|| {
+                format!("removing the producer output {}", publication.display())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Tell what a change left alone: configuration files the administrator
+/// changed, and the accounts it created.
+fn tell(plan: &system::Plan, created: &[(String, system::Account)]) {
+    for path in &plan.kept {
+        if plan.beside.contains(path) {
+            eprintln!(
+                "Kept /{path}: it was changed since it was installed. The new version is /{path}.recipe-new."
+            );
+        } else {
+            eprintln!(
+                "Kept /{path}: it was changed since it was installed, so it was not removed."
+            );
+        }
+    }
+    for (package, account) in created {
+        eprintln!(
+            "Created {} {} ({}) for {package}.",
+            account.kind, account.name, account.id
+        );
+    }
+}
+
+/// What writing a change into a root did.
+struct Written {
+    /// The package the change is about.
+    name: String,
+    /// Package name -> recipe digest, for every package written.
+    expects: BTreeMap<String, String>,
+    kept: Vec<String>,
+    beside: Vec<String>,
+    created: Vec<(String, system::Account)>,
+}
+
+impl Written {
+    fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "kept_config": self.kept,
+            "new_config_beside": self.beside.iter().map(|p| format!("{p}.recipe-new")).collect::<Vec<_>>(),
+            "accounts_created": self.created.iter().map(|(p, a)| serde_json::json!({"package": p, "kind": a.kind, "name": a.name, "id": a.id})).collect::<Vec<_>>(),
+        })
+    }
+}
+
+/// Produce `recipe` and write it, with the runtime dependencies it brings, into
+/// the root at `root`.
+fn write_into(
+    cli: &Cli,
+    root: &Path,
+    recipe: &Path,
+    args: &[String],
+    context: &str,
+) -> Result<Written> {
+    let produced = produce(cli, recipe, args, context)?;
+    let mut payloads = system::payloads(&produced, context)?;
+    for p in &payloads {
+        anyhow::ensure!(
+            p.package.architecture == std::env::consts::ARCH,
+            "the recipe builds for {}, this system is {}",
+            p.package.architecture,
+            std::env::consts::ARCH
+        );
+    }
+    let old = system::read_receipt(root)?;
+    let plan = system::plan(root, &old, &mut payloads, None)?;
+    system::apply(root, &payloads, &plan)?;
+    let created = payloads
+        .iter()
+        .flat_map(|p| {
+            p.package
+                .accounts
+                .iter()
+                .map(|a| (p.package.name.clone(), a.clone()))
+        })
+        .collect::<Vec<_>>();
+    tell(&plan, &created);
+    discard_outputs(cli, &produced)?;
+    let name = produced["name"]
+        .as_str()
+        .or_else(|| payloads.last().map(|p| p.package.name.as_str()))
+        .unwrap()
+        .to_owned();
+    Ok(Written {
+        name,
+        expects: payloads
+            .iter()
+            .map(|p| (p.package.name.clone(), p.package.recipe_digest.clone()))
+            .collect(),
+        kept: plan.kept.clone(),
+        beside: plan.beside.iter().cloned().collect(),
+        created,
+    })
+}
+
+/// Remove the package `name` from the root at `root`.
+fn remove_from(root: &Path, name: &str) -> Result<Written> {
+    let old = system::read_receipt(root)?;
+    let name = old.find(Path::new(name))?.name.clone();
+    let plan = system::plan(root, &old, &mut [], Some(&name))?;
+    system::apply(root, &[], &plan)?;
+    tell(&plan, &[]);
+    Ok(Written {
+        name,
+        expects: BTreeMap::new(),
+        kept: plan.kept.clone(),
+        beside: Vec::new(),
+        created: Vec::new(),
+    })
 }
 
 /// Produce `recipe` and write it, with the runtime dependencies it brings, into
@@ -273,34 +435,13 @@ fn install_package(
     args: &[String],
     action: &str,
 ) -> Result<Change> {
-    let produced = produce(cli, recipe, args)?;
-    let payloads = system::payloads(&produced, "other-root")?;
-    for p in &payloads {
-        anyhow::ensure!(
-            p.package.architecture == std::env::consts::ARCH,
-            "the recipe builds for {}, this system is {}",
-            p.package.architecture,
-            std::env::consts::ARCH
-        );
-    }
-    let old = system::read_receipt(&roots.other)?;
-    let observed = system::observe(&roots.other, &old, &old.affected(&payloads, None))?;
-    let plan = system::reconcile(&old, &payloads, None, &observed)?;
-    system::apply(&roots.other, &payloads, &plan)?;
-    let name = produced["name"]
-        .as_str()
-        .or_else(|| payloads.last().map(|p| p.package.name.as_str()))
-        .unwrap()
-        .to_owned();
+    let written = write_into(cli, &roots.other, recipe, args, "other-root")?;
     let change = Change {
-        package: name,
+        package: written.name,
         action: action.into(),
         recipe: Some(recipe.to_path_buf()),
         producer_args: args.to_vec(),
-        expects: payloads
-            .iter()
-            .map(|p| (p.package.name.clone(), p.package.recipe_digest.clone()))
-            .collect(),
+        expects: written.expects,
         written_at: now(),
     };
     remember(change.clone())?;
@@ -308,13 +449,9 @@ fn install_package(
 }
 
 fn remove_package(roots: &Roots, name: &str, args: &[String]) -> Result<Change> {
-    let old = system::read_receipt(&roots.other)?;
-    let name = old.find(Path::new(name))?.name.clone();
-    let observed = system::observe(&roots.other, &old, &old.affected(&[], Some(&name)))?;
-    let plan = system::reconcile(&old, &[], Some(&name), &observed)?;
-    system::apply(&roots.other, &[], &plan)?;
+    let written = remove_from(&roots.other, name)?;
     let change = Change {
-        package: name,
+        package: written.name,
         action: "remove".into(),
         recipe: None,
         producer_args: args.to_vec(),
@@ -489,12 +626,18 @@ pub(crate) fn route(cli: &mut Cli) -> Result<bool> {
     }
     let recipe =
         command.context("--system supports install, update, remove, installed and isinstalled")?;
+    if let Some(dir) = cli.root.clone() {
+        // A root that is not running (an installer's target, an image tree).
+        root_route(cli, &dir, "target", recipe)?;
+        return Ok(true);
+    }
     if !ab {
-        // One root, the running one: system software lives in its own package
-        // root, and recab is not involved.
-        cli.package_root = Some("/var/lib/recipe".into());
-        cli.system = false;
-        return Ok(false);
+        // One root, the running one, and no recab: the change is written into
+        // it with its receipt, like any root.
+        let booted =
+            std::env::var_os("RECIPE_BOOTED_ROOT").map_or_else(|| "/".into(), PathBuf::from);
+        root_route(cli, &booted, "running", recipe)?;
+        return Ok(true);
     }
     let roots = roots()?;
     let failed = settle(cli, &roots, skipped(&cli.command).as_deref())?;
@@ -577,32 +720,7 @@ fn change(cli: &Cli, roots: &Roots, booted: &Receipt, recipe: &Path) -> Result<(
             .unwrap_or_else(|_| stem(recipe));
         remove_package(roots, &name, &args)?
     } else {
-        let paths = super::metadata::recipe_paths(cli.recipes_path.clone());
-        let sources = Sources::new(&super::metadata::default_package_root()?);
-        let explicit = cli.recipes_path.is_some() || std::env::var_os("RECIPE_PATH").is_some();
-        let lookup = Lookup {
-            folders: &paths,
-            sources: (!explicit).then_some(&sources),
-            purpose: sources::Purpose::Install,
-        };
-        let path = match resolve_recipe_path(recipe, &lookup) {
-            Ok(path) => {
-                if let Commands::Install { sha256, .. } = &cli.command {
-                    require_sha256(&path, sha256.as_deref())?;
-                }
-                std::fs::canonicalize(path)?
-            }
-            Err(e) if action == "install" || explicit => return Err(e),
-            // An update with no catalog entry uses the recipe the package came from.
-            Err(_) => other
-                .find(recipe)
-                .or_else(|_| other.find(Path::new(&stem(recipe))))
-                .with_context(|| {
-                    format!("{} is not installed in the other root", recipe.display())
-                })?
-                .recipe
-                .clone(),
-        };
+        let path = resolve_for(cli, recipe, action, &other, "the other root")?;
         install_package(cli, roots, &path, &args, action)?
     };
     let after = system::read_receipt(&roots.other)?;
@@ -630,6 +748,135 @@ fn change(cli: &Cli, roots: &Roots, booted: &Receipt, recipe: &Path) -> Result<(
                 roots.other_name
             )
         },
+    )
+}
+
+/// The recipe an install or update runs: the catalog's, or for an update with
+/// no catalog entry, the recipe the package was installed from (`installed`).
+fn resolve_for(
+    cli: &Cli,
+    recipe: &Path,
+    action: &str,
+    installed: &Receipt,
+    place: &str,
+) -> Result<PathBuf> {
+    let paths = super::metadata::recipe_paths(cli.recipes_path.clone());
+    let sources = Sources::new(&super::metadata::default_package_root()?);
+    let explicit = cli.recipes_path.is_some() || std::env::var_os("RECIPE_PATH").is_some();
+    let lookup = Lookup {
+        folders: &paths,
+        sources: (!explicit).then_some(&sources),
+        purpose: sources::Purpose::Install,
+    };
+    Ok(match resolve_recipe_path(recipe, &lookup) {
+        Ok(path) => {
+            if let Commands::Install { sha256, .. } = &cli.command {
+                require_sha256(&path, sha256.as_deref())?;
+            }
+            std::fs::canonicalize(path)?
+        }
+        Err(e) if action == "install" || explicit => return Err(e),
+        // An update with no catalog entry uses the recipe the package came from.
+        Err(_) => installed
+            .find(recipe)
+            .or_else(|_| installed.find(Path::new(&stem(recipe))))
+            .with_context(|| format!("{} is not installed in {place}", recipe.display()))?
+            .recipe
+            .clone(),
+    })
+}
+
+/// System scope on one root that is written directly: a target given with
+/// `--root` (`kind` "target"), or the running root of a system without A/B
+/// (`kind` "running"). The change goes into that root with its receipt; recab
+/// is not called and no A/B record is kept.
+fn root_route(cli: &Cli, dir: &Path, kind: &str, recipe: Option<PathBuf>) -> Result<()> {
+    let root = std::fs::canonicalize(dir)
+        .with_context(|| format!("the root {} does not exist", dir.display()))?;
+    anyhow::ensure!(
+        root.is_dir(),
+        "the root {} is not a directory",
+        root.display()
+    );
+    if kind == "target" && immutable() {
+        let booted =
+            std::env::var_os("RECIPE_BOOTED_ROOT").map_or_else(|| "/".into(), PathBuf::from);
+        anyhow::ensure!(
+            std::fs::canonicalize(&booted).ok().as_deref() != Some(root.as_path()),
+            "{} is the booted root of this A/B system, which is locked; `recipe --system` without --root writes into the other root",
+            root.display()
+        );
+    }
+    let place = if kind == "target" {
+        format!("the target root {}", root.display())
+    } else {
+        "this system's root".to_owned()
+    };
+    let receipt = system::read_receipt(&root)?;
+    let action = match &cli.command {
+        Commands::Installed => {
+            let mut text = format!("System software in {place}:\n{}", list(&receipt));
+            if text.ends_with('\n') {
+                text.pop();
+            }
+            return finish(
+                cli,
+                serde_json::json!({"root": root, "packages": summary(&receipt)}),
+                text,
+            );
+        }
+        Commands::IsInstalled { .. } => {
+            let recipe = recipe.unwrap();
+            let found = receipt
+                .find(&recipe)
+                .or_else(|_| receipt.find(Path::new(&stem(&recipe))))
+                .ok()
+                .map(|p| p.version.clone());
+            let name = stem(&recipe);
+            let text = match &found {
+                Some(v) => format!("{name} {v} is installed in {place}."),
+                None => format!("{name} is not installed in {place}."),
+            };
+            finish(
+                cli,
+                serde_json::json!({"package": name, "root": root, "installed": found.is_some(), "version": found}),
+                text.clone(),
+            )?;
+            anyhow::ensure!(found.is_some(), "{text}");
+            return Ok(());
+        }
+        Commands::Install { .. } => "install",
+        Commands::Update { .. } => "update",
+        _ => "remove",
+    };
+    let recipe = recipe.unwrap();
+    let written = if action == "remove" {
+        let name = receipt
+            .find(&recipe)
+            .or_else(|_| receipt.find(Path::new(&stem(&recipe))))
+            .map(|p| p.name.clone())
+            .with_context(|| format!("{} is not installed in {place}", stem(&recipe)))?;
+        remove_from(&root, &name)?
+    } else {
+        let path = resolve_for(cli, &recipe, action, &receipt, &place)?;
+        write_into(cli, &root, &path, &producer_args(cli)?, "root")?
+    };
+    let mut value = serde_json::json!({"action": action, "package": written.name,
+        "packages": written.expects.keys().collect::<Vec<_>>(), "root": root,
+        "receipt": root.join(system::RECEIPT)});
+    if let (Some(map), serde_json::Value::Object(more)) = (value.as_object_mut(), written.json()) {
+        map.extend(more);
+    }
+    let verb = match action {
+        "install" => "Installed",
+        "update" => "Updated",
+        _ => "Removed",
+    };
+    let preposition = if action == "remove" { "from" } else { "in" };
+    finish(
+        cli,
+        value,
+        format!("{verb} {} {preposition} {place}.", written.name),
     )
 }
 

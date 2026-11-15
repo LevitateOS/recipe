@@ -25,9 +25,10 @@
 //! See README.md, WRITING_RECIPES.md and HELPERS_AUDIT.md for the current CLI,
 //! helper signatures, input/output contracts, resource limits and recovery.
 
+/// What a front end may show about a recipe, read without running it.
+pub mod accounts;
 mod backend;
 mod cancellation;
-/// What a front end may show about a recipe, read without running it.
 pub mod catalog;
 pub mod clibrary;
 mod core;
@@ -51,6 +52,7 @@ mod launch;
 mod lifecycle;
 mod llm;
 pub mod needs;
+pub mod offline_cache;
 mod options;
 pub mod packages;
 mod process;

@@ -42,6 +42,14 @@ pub struct Manifest {
     pub entries: BTreeMap<String, Entry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub removals: Vec<String>,
+    /// Owner names stay in the entries and are resolved where the tree is
+    /// written (a system change), not against the tree's own account files.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub owners_at_apply: bool,
+    /// sysusers.d `u`/`g` lines for accounts the tree needs where it is
+    /// written, beyond its own `usr/lib/sysusers.d` files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<String>,
 }
 
 impl Default for Manifest {
@@ -50,6 +58,8 @@ impl Default for Manifest {
             version: 1,
             entries: BTreeMap::new(),
             removals: Vec::new(),
+            owners_at_apply: false,
+            accounts: Vec::new(),
         }
     }
 }
@@ -337,6 +347,21 @@ pub fn finalize(root: &Path) -> Result<()> {
     save(root, &snapshot(root, true)?)
 }
 
+/// `finalize` for a tree written into a root later (a system output): file
+/// owner names are kept and resolved there, and `accounts` (sysusers.d `u`/`g`
+/// lines) are created there when missing, together with the tree's own
+/// `usr/lib/sysusers.d` accounts.
+pub fn finalize_at_apply(root: &Path, accounts: Vec<String>) -> Result<()> {
+    for line in &accounts {
+        crate::accounts::check_declared(line)?;
+    }
+    let mut manifest = load(root)?;
+    manifest.owners_at_apply = true;
+    manifest.accounts = accounts;
+    save(root, &manifest)?;
+    save(root, &snapshot(root, true)?)
+}
+
 /// Inspect published ordinary package metadata without modifying its cache.
 pub fn inspect(root: &Path) -> Result<Manifest> {
     snapshot(root, false)
@@ -408,15 +433,25 @@ fn snapshot(root: &Path, grant_staging: bool) -> Result<Manifest> {
             .entries
             .remove(&rel)
             .unwrap_or_else(|| observed.clone());
-        if let Some(user) = entry.user.take() {
-            entry.uid = *users
-                .get(&user)
-                .with_context(|| format!("target user {user} for {rel} is missing"))?;
-        }
-        if let Some(group) = entry.group.take() {
-            entry.gid = *groups
-                .get(&group)
-                .with_context(|| format!("target group {group} for {rel} is missing"))?;
+        if manifest.owners_at_apply {
+            // Resolved where the tree is written; the id is meaningless here.
+            if entry.user.is_some() {
+                entry.uid = 0;
+            }
+            if entry.group.is_some() {
+                entry.gid = 0;
+            }
+        } else {
+            if let Some(user) = entry.user.take() {
+                entry.uid = *users
+                    .get(&user)
+                    .with_context(|| format!("target user {user} for {rel} is missing"))?;
+            }
+            if let Some(group) = entry.group.take() {
+                entry.gid = *groups
+                    .get(&group)
+                    .with_context(|| format!("target group {group} for {rel} is missing"))?;
+            }
         }
         ensure!(
             entry.kind == observed.kind || (entry.kind == "hardlink" && observed.kind == "file"),
@@ -446,6 +481,8 @@ fn snapshot(root: &Path, grant_staging: bool) -> Result<Manifest> {
         version: if manifest.removals.is_empty() { 1 } else { 2 },
         entries,
         removals: manifest.removals,
+        owners_at_apply: manifest.owners_at_apply,
+        accounts: manifest.accounts,
     })
 }
 

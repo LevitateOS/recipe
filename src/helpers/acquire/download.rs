@@ -48,11 +48,57 @@ pub fn download(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(format!("cannot inspect download destination: {error}").into()),
     }
+    if from_cache(path, sha256)? {
+        return Ok(dest.to_owned());
+    }
     if resume {
         resume_impl(url, dest, sha256)
     } else {
         download_impl(url, dest, sha256)
     }
+}
+
+/// Place the offline cache's copy of the payload pinned by `sha256` at `dest`
+/// (`crate::offline_cache`), with no network. False when the cache does not
+/// hold it, or holds bytes that do not match (the network is used then).
+fn from_cache(dest: &Path, sha256: &str) -> Result<bool, Box<EvalAltResult>> {
+    let Some(dir) = crate::offline_cache::worker() else {
+        return Ok(false);
+    };
+    let Some(mut cached) = crate::offline_cache::open(dir, sha256) else {
+        return Ok(false);
+    };
+    fs_utils::ensure_parent_dir(dest)?;
+    let parent = dest
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut file = confine::Staged::new(parent, ".recipe-download.").map_err(|e| {
+        format!(
+            "cannot create partial download in {}: {}",
+            parent.display(),
+            e
+        )
+    })?;
+    let bytes = std::io::copy(&mut cached, file.file())
+        .map_err(|e| format!("cannot copy from the offline cache: {e}"))?;
+    if hash::verify_file_hash(file.path(), sha256, HashAlgorithm::Sha256).is_err() {
+        output::detail(&format!(
+            "the offline cache's {} does not match its name; using the network",
+            sha256.to_ascii_lowercase()
+        ));
+        return Ok(false);
+    }
+    file.file()
+        .sync_all()
+        .map_err(|e| format!("cannot flush download: {e}"))?;
+    file.persist(dest)
+        .map_err(|e| format!("cannot publish download to {}: {}", dest.display(), e))?;
+    output::detail(&format!(
+        "{} from the offline cache ({bytes} bytes)",
+        dest.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    Ok(true)
 }
 
 fn download_impl(url: &str, dest: &str, sha256: &str) -> Result<String, Box<EvalAltResult>> {
@@ -340,6 +386,9 @@ pub fn download_exact(
         return Err("download length must be positive".into());
     }
     super::verify::validate_sha256(sha256)?;
+    if from_cache(Path::new(dest), sha256)? {
+        return Ok(dest.to_owned());
+    }
     exact_response(
         request(url)?
             .call()
@@ -360,6 +409,9 @@ pub fn download_exact_scoped(
         return Err("download length must be positive".into());
     }
     super::verify::validate_sha256(sha256)?;
+    if from_cache(Path::new(dest), sha256)? {
+        return Ok(dest.to_owned());
+    }
     exact_response(scoped_response(url, prefixes)?, dest, sha256, size)
 }
 fn exact_response(

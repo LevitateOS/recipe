@@ -52,7 +52,20 @@ impl NetworkPolicy {
                 {
                     bail!("invalid network hostname {host:?}");
                 }
-                for address in resolve_host(host)? {
+                let addresses = match resolve_host(host) {
+                    Ok(addresses) => addresses,
+                    // With an offline cache, a host that cannot be resolved
+                    // (no network) gets no address: pinned downloads come from
+                    // the cache, and one it lacks fails naming the host.
+                    Err(error) if matches!(crate::offline_cache::dir(), Ok(Some(_))) => {
+                        crate::diagnostics::diag!(
+                            "recipe: network grant {grant} is not available ({error:#}); downloads come from the offline cache only"
+                        );
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
+                for address in addresses {
                     let endpoint = SocketAddr::new(address, port);
                     validate_endpoint(endpoint)?;
                     resolved.insert(endpoint);

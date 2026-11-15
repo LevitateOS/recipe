@@ -241,6 +241,9 @@ pub struct HostRun {
     pub network: std::collections::BTreeMap<String, Vec<String>>,
     /// The run's received-byte budget (`NEEDS.network_max_bytes`).
     pub network_max_bytes: u64,
+    /// The offline cache directory (`crate::offline_cache`), read-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<String>,
 }
 
 /// Longest host root a request carries.
@@ -257,6 +260,12 @@ fn check_host(host: &HostRun) -> Result<(), ProtocolError> {
             .values()
             .any(|pins| pins.is_empty() || pins.len() > crate::domain::MAX_NETWORK_ENDPOINTS)
         || host.network_max_bytes == 0
+        || host.cache.as_ref().is_some_and(|cache| {
+            !cache.starts_with('/')
+                || cache.len() > MAX_HOST_ROOT
+                || cache.contains('\0')
+                || cache.split('/').any(|part| part == "." || part == "..")
+        })
     {
         return Err(ProtocolError::PayloadInvalid(
             "invalid host run description".into(),

@@ -101,7 +101,7 @@ Runs the matching package command inside the domain; requires its binary, assign
 Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used.
 .TP
 \fBdownload(url, dest, sha256[, resume:bool]) -> String\fR
-Required SHA256; staged verified replacement; failure preserves valid destination.
+Required SHA256; staged verified replacement; failure preserves valid destination. In a host run a payload the offline cache holds (RECIPE_CACHE_DIR, else /usr/share/recipe/cache: CACHE/sha256/HEX) is copied from there, with no network.
 .TP
 \fBends_with(s, suffix) -> bool\fR
 
@@ -268,10 +268,19 @@ explicit file
 .PP
 Target filesystem helpers retain logical metadata separately from writable staging:
 target_extract_tar(archive, root), target_extract_rpm(archive, root),
+target_extract_apk(archive, root),
 target_capture_apks(root, archive_directories), target_mode(root, relative_path, mode)
 and target_finalize(root). RPM extraction reads the package natively (no rpm or rpm2archive);
-it does not run package scriptlets. Capture package metadata before policy,
-then finalize the tree after policy changes.
+it does not run package scriptlets. target_extract_apk(archive, root) extracts the
+data segment of an Alpine .apk (its signature and control segments, with the install
+scripts, are skipped) and records modes, owner names and links the same way.
+Both record owners by name only and read no account file, so they run on the host.
+Capture package metadata before policy,
+then finalize the tree after policy changes. A tree for a system output finalizes with
+target_finalize(root, #{ owners: "apply", accounts: [LINES] }): owner names stay in the
+manifest and are resolved in the root the system change writes; accounts is an optional
+list of sysusers.d "u"/"g" lines (for Alpine packages, whose install scripts would have
+added them), created there together with the tree's own usr/lib/sysusers.d accounts.
 target_extract_rpm(archive, root, members) also writes the record of the
 extraction to members, from which a package is composed into another root.
 target_pack_tree(root, archive) moves a staging tree, its modes, times, links

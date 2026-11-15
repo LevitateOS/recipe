@@ -77,7 +77,6 @@ pub(crate) const PROGRAM_HELPERS: &[&str] = &[
     "shell_output_in",
     // Fixed tools from the image.
     "git_checkout",
-    "target_extract_rpm",
     // Map package owner names to ids through the running system's
     // /etc/passwd and /etc/group (the image's, in a Ginux run).
     "target_extract_tar",
@@ -355,6 +354,28 @@ pub fn register_all(engine: &mut Engine, programs: bool) {
     helper!(engine, "target_finalize", |root: &str| target::finalize(
         &write(root)?
     ));
+    helper!(
+        engine,
+        "target_finalize",
+        |root: &str, options: rhai::Map| target::finalize_with(&write(root)?, options)
+    );
+    // Package extraction records owner names only and reads no account file,
+    // so it runs on the host too.
+    helper!(engine, "target_extract_rpm", |archive: &str, root: &str| {
+        target::extract_rpm(&read(archive)?, &write(root)?)
+    });
+    helper!(
+        engine,
+        "target_extract_rpm",
+        |archive: &str, root: &str, members: &str| target::extract_rpm_members(
+            &read(archive)?,
+            &write(root)?,
+            &write(members)?
+        )
+    );
+    helper!(engine, "target_extract_apk", |archive: &str, root: &str| {
+        target::extract_apk(&read(archive)?, &write(root)?)
+    });
 
     // Build helpers (build/extract)
     // extract(archive, dest) -> ()
@@ -527,19 +548,9 @@ fn register_programs(engine: &mut Engine) {
         "carry_libraries",
         |_package: &str, _prefix: (), _search: rhai::Array| install::carry::carry_without_prefix()
     );
-    helper!(engine, "target_extract_rpm", |archive: &str, root: &str| {
-        target::extract_rpm(archive, root)
-    });
     helper!(engine, "target_extract_tar", |archive: &str, root: &str| {
         target::extract_tar(archive, root)
     });
-    helper!(
-        engine,
-        "target_extract_rpm",
-        |archive: &str, root: &str, members: &str| target::extract_rpm_members(
-            archive, root, members
-        )
-    );
     let expected: std::collections::BTreeSet<&str> = PROGRAM_HELPERS.iter().copied().collect();
     assert_eq!(
         registered, expected,
