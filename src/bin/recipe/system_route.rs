@@ -784,8 +784,20 @@ fn summary(r: &Receipt, root: &Path) -> Vec<serde_json::Value> {
                     "release": true, "recipe": p.recipe, "recipe_digest": p.recipe_digest,
                     "dependencies": p.dependencies});
             }
+            // Desktop sessions this package provides: a front end warns
+            // before the last package with one is removed.
+            let sessions = p
+                .files
+                .keys()
+                .filter(|path| {
+                    (path.starts_with("usr/share/wayland-sessions/")
+                        || path.starts_with("usr/share/xsessions/"))
+                        && path.ends_with(".desktop")
+                })
+                .count();
             serde_json::json!({"name": p.name, "version": p.version, "recipe": p.recipe,
-            "recipe_digest": p.recipe_digest, "dependencies": p.dependencies})
+            "recipe_digest": p.recipe_digest, "dependencies": p.dependencies,
+            "sessions": sessions})
         })
         .collect()
 }
