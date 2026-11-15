@@ -12,9 +12,15 @@
 //!    `system::plan_base`). The manifest becomes the root's
 //!    `usr/lib/levitate/release.json`, a file of `base`.
 //! 3. Every package the root's receipt holds (but `base` and the effects
-//!    package) that the release has a recipe for (`NAME.rhai` in
-//!    `recipes.tar.zst`) is installed from it; one the root already holds from
-//!    the same recipe is skipped, one the release has no recipe for stays.
+//!    package) that the release has a recipe for is installed from it; one the
+//!    root already holds from the same recipe is skipped, one the release has
+//!    no recipe for stays. The base is in place by now (step 2 wrote it, or
+//!    the root had it already), so the release's recipes are the root's own
+//!    `usr/lib/recipe/release-recipes/` (base files, the same recipes as
+//!    `recipes.tar.zst`): what the receipt records, and what later commands
+//!    use as the release source. Only a base without that folder has
+//!    `recipes.tar.zst` unpacked into `/var/lib/recipe/release/SERIAL/`
+//!    instead, for this apply, and removed at its end.
 //! 4. The root's effects run once.
 //!
 //! A root without a `base` entry was installed from an image made before
@@ -356,15 +362,26 @@ fn apply(cli: &mut Cli, folder: &Path) -> Result<()> {
     // 2. The groups, from the release's recipes.
     step(&mut record, "groups")?;
     step_event(cli, 3, "Installing the release's groups");
-    let recipes = super::metadata::default_package_root()?
+    let unpacked = super::metadata::default_package_root()?
         .join("release")
         .join(m.serial.to_string());
-    if std::fs::symlink_metadata(&recipes).is_ok() {
-        levitate_recipe::fsx::make_removable(&recipes);
-        std::fs::remove_dir_all(&recipes)?;
+    if std::fs::symlink_metadata(&unpacked).is_ok() {
+        levitate_recipe::fsx::make_removable(&unpacked);
+        std::fs::remove_dir_all(&unpacked)?;
     }
-    std::fs::create_dir_all(&recipes)?;
-    release::unpack_recipes(&folder, &recipes)?;
+    let in_base = root.join(levitate_recipe::sources::RELEASE_RECIPES);
+    let recipes = if std::fs::symlink_metadata(&in_base).is_ok_and(|m| m.is_dir()) {
+        std::fs::canonicalize(&in_base)?
+    } else {
+        eprintln!(
+            "The release's base has no /{}; using the recipes of {} for this apply.",
+            levitate_recipe::sources::RELEASE_RECIPES,
+            release::RECIPES_ARCHIVE
+        );
+        std::fs::create_dir_all(&unpacked)?;
+        release::unpack_recipes(&folder, &unpacked)?;
+        unpacked.clone()
+    };
     let saved_path = cli.recipes_path.replace(recipes.clone());
     let receipt = system::read_receipt(&root)?;
     let context = if target.ab.is_some() {
@@ -404,8 +421,14 @@ fn apply(cli: &mut Cli, folder: &Path) -> Result<()> {
         }
     }
     cli.recipes_path = saved_path;
-    levitate_recipe::fsx::make_removable(&recipes);
-    let _ = std::fs::remove_dir_all(&recipes);
+    if recipes == unpacked {
+        levitate_recipe::fsx::make_removable(&unpacked);
+        let _ = std::fs::remove_dir_all(&unpacked);
+        // The folder above it holds nothing else.
+        if let Some(parent) = unpacked.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
     for name in &not_in_release {
         eprintln!("{name} is not in the release's recipes; it stays as it is.");
     }

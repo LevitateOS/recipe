@@ -148,7 +148,10 @@ NAME.recipe-new beside them; fstab, crypttab, hostname, machine-id, localtime,
 adjtime, mtab, resolv.conf, subuid, subgid and the account files never part of it;
 missing release accounts added), the manifest becomes
 usr/lib/levitate/release.json, every held package the release has NAME.rhai for
-is installed from it, and the effects run once. On the running root the running
+is installed from it, and the effects run once. The groups are installed from the
+new base's usr/lib/recipe/release-recipes (written by then), which later commands
+use as the release source; only a base without that folder has recipes.tar.zst
+unpacked under /var/lib/recipe/release/SERIAL for the apply, removed at its end. On the running root the running
 kernel's old modules stay as the hidden package previous-kernel. A root without
 base is refused. Without A/B, /var/lib/recipe/apply-release.json records the step,
 and the same command finishes an interrupted apply. \fBrecord\-base\fR writes base
@@ -189,7 +192,8 @@ Say which installed packages update would change, and what the newer recipe may
 use that the installed one may not (the NEEDS recorded at install, compared).
 Reads the receipts, the collection and the sources as last fetched; fetches and
 runs nothing. A package has an update when its recipe names another version or
-its source publishes another recipe file for it.
+its source publishes another recipe file for it. A package whose name the release
+source carries (see \fBsource\fR) is at the release's version and is never listed.
 .TP
 .B go-back NAME [--to VERSION]
 Activate an earlier version of an installed package again from the files an
@@ -239,8 +243,14 @@ This lists available recipe files, not installed applications.
 With \fB\-\-json\fR, print one entry per recipe for a front end: name, version,
 description, path, ABOUT (including its libc list), NEEDS, dependency names and defined hooks,
 and for each recipe runs_here and not_runnable_reason (whether this system's C
-library can run it, and the message install would give, else null). The top
-level carries host_libc, this system's C library: glibc, musl or unknown.
+library can run it, and the message install would give, else null), and its
+source. The release source is listed first. On a root with a release source, a
+recipe of a remote source that the release carries by name, or that is a system
+group, has runs_here false, not_runnable_override null and a one-sentence
+not_runnable_reason (\-\-any\-system does not change this). The top level carries
+host_libc, this system's C library: glibc, musl or unknown. With \fB\-\-system\fR
+[\fB\-\-root DIR\fR], the release source is that of the root a system change
+targets (the default without \-\-system too).
 .TP
 .B index [FOLDER] [\-\-check]
 Write index.json in a folder of recipes (default: the current directory): the
@@ -269,6 +279,30 @@ against the index; \fBinstall\fR and \fBupdate\fR keep the copy under the
 package root and record source, commit and SHA-256 in the receipt. With
 \fBinstall \-\-sha256 HASH\fR, nothing runs unless the recipe file has that
 checksum. An explicit \fB\-\-recipes\-path\fR uses no sources.
+.IP
+The release source, named \fBsystem\fR, is built in: the group recipes of the
+system release run by the root a system change targets (the other root on A/B,
+/ without A/B, DIR with \-\-root), which that root carries as base files in
+usr/lib/recipe/release-recipes. It is read from disk, needs no index or refresh,
+cannot be removed, and is absent where the root has no such folder (another
+distribution, or an explicit \-\-recipes\-path). \fBsource list\fR and
+\fBlist \-\-json\fR show it with kind release, the title "OS-NAME VERSION" (os-release
+NAME, version from usr/lib/levitate/release.json), path, os and version. A system
+group is a recipe of ABOUT.kind system, or library with a system output; groups
+change only with a system release. Two rules follow on such a root. A system
+change (\-\-system install, update, remove) resolves a name the release source
+carries to its recipe, whatever other source carries the name (SOURCE:NAME of a
+remote source included; a note says so); its dependencies resolve beside it,
+within the release, and a remote recipe's dependencies the release carries come
+from the release. A system group of a remote source is not installed, whether or
+not the release carries its name: a newer system release brings newer groups,
+and a folder of one's own (\fBsource add \-\-path\fR, or the recipe folder)
+is not restricted. \fBupdates\fR and \-\-system update never take a newer
+version of a name the release carries from elsewhere; a package installed from
+a release's recipes that the current release no longer carries is reported
+(update JSON not_in_release true, changed false; installed \-\-json
+from_release and not_in_release) and not updated. A recipe given as a file path
+is used as it is.
 .TP
 .B refresh [NAME]
 Fetch the index of every remote source again, or of one, over HTTPS. A failed

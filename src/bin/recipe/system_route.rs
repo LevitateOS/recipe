@@ -107,6 +107,24 @@ pub(super) fn now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// The root a system change targets, found when it is first needed: DIR of
+/// `--root`, the other root of an A/B system (the booted root when recab
+/// cannot say where the other one is), or the running root. Its release
+/// source is the one recipe uses.
+pub(super) fn target_root(dir: Option<PathBuf>) -> impl Fn() -> Option<PathBuf> + 'static {
+    move || {
+        if let Some(dir) = &dir {
+            return std::fs::canonicalize(dir).ok();
+        }
+        if immutable()
+            && let Ok(roots) = roots()
+        {
+            return Some(roots.other);
+        }
+        Some(std::env::var_os("RECIPE_BOOTED_ROOT").map_or_else(|| "/".into(), PathBuf::from))
+    }
+}
+
 /// Which root is booted and where the other one is mounted.
 pub(super) fn roots() -> Result<Roots> {
     let bin = std::env::var_os("RECIPE_RECAB_BIN").unwrap_or_else(|| "recab".into());
@@ -212,6 +230,7 @@ pub(super) fn settle(
                 } else {
                     let recipe = change.recipe.clone().context("the record has no recipe")?;
                     install_package(cli, roots, &recipe, &change.producer_args, &change.action)
+                        .map(|(done, _)| done)
                 };
                 match again {
                     Ok(done) => kept.push(done),
@@ -619,7 +638,7 @@ fn install_package(
     recipe: &Path,
     args: &[String],
     action: &str,
-) -> Result<Change> {
+) -> Result<(Change, Written)> {
     // The shared /var is the running system's: seeds go there, once.
     let written = write_into(cli, &roots.other, &roots.booted, recipe, args, "other-root")?;
     if written.expects.is_empty() {
@@ -629,21 +648,21 @@ fn install_package(
         );
     }
     let change = Change {
-        package: written.name,
+        package: written.name.clone(),
         action: action.into(),
         recipe: Some(recipe.to_path_buf()),
         producer_args: args.to_vec(),
-        expects: written.expects,
+        expects: written.expects.clone(),
         written_at: now(),
     };
     remember(change.clone())?;
-    Ok(change)
+    Ok((change, written))
 }
 
-fn remove_package(roots: &Roots, name: &str, args: &[String]) -> Result<Change> {
+fn remove_package(roots: &Roots, name: &str, args: &[String]) -> Result<(Change, Written)> {
     let written = remove_from(&roots.other, name)?;
     let change = Change {
-        package: written.name,
+        package: written.name.clone(),
         action: "remove".into(),
         recipe: None,
         producer_args: args.to_vec(),
@@ -651,7 +670,7 @@ fn remove_package(roots: &Roots, name: &str, args: &[String]) -> Result<Change> 
         written_at: now(),
     };
     remember(change.clone())?;
-    Ok(change)
+    Ok((change, written))
 }
 
 /// The options a producer run is given, from this invocation's.
@@ -770,7 +789,12 @@ pub(super) fn finish(cli: &Cli, value: serde_json::Value, text: String) -> Resul
 
 /// The receipt's packages for `--json`: all but the effects package. The
 /// base is there with the serial of the release the root at `root` records.
+///
+/// `from_release` says a package was installed from a release's recipes;
+/// `not_in_release` that the root's release source no longer carries it, so
+/// it stays as it is until it is removed (no other source updates it).
 fn summary(r: &Receipt, root: &Path) -> Vec<serde_json::Value> {
+    let release = sources::Release::of(root);
     r.packages
         .values()
         .filter(|p| p.name != EFFECTS_PACKAGE && p.name != system::PREVIOUS_KERNEL_PACKAGE)
@@ -795,9 +819,15 @@ fn summary(r: &Receipt, root: &Path) -> Vec<serde_json::Value> {
                         && path.ends_with(".desktop")
                 })
                 .count();
+            let from_release = sources::from_release(&p.recipe);
+            let not_in_release = from_release
+                && release
+                    .as_ref()
+                    .is_some_and(|release| release.carries(&p.name).is_none());
             serde_json::json!({"name": p.name, "version": p.version, "recipe": p.recipe,
             "recipe_digest": p.recipe_digest, "dependencies": p.dependencies,
-            "sessions": sessions})
+            "sessions": sessions, "from_release": from_release,
+            "not_in_release": not_in_release})
         })
         .collect()
 }
@@ -834,6 +864,8 @@ fn missing_in_other(booted: &Receipt, other: &Receipt) -> Vec<String> {
 pub(crate) fn route(cli: &mut Cli) -> Result<bool> {
     if cli.system {
         match &cli.command {
+            // The catalog as a system change on the target root sees it.
+            Commands::List => return Ok(false),
             Commands::ApplyRelease { folder } => {
                 let folder = folder.clone();
                 super::release_route::apply_release(cli, &folder)?;
@@ -946,8 +978,22 @@ fn change(cli: &Cli, roots: &Roots, booted: &Receipt, recipe: &Path) -> Result<(
         Commands::Update { .. } => "update",
         _ => "remove",
     };
+    if action == "update"
+        && let Some((name, why)) = not_in_release(cli, recipe, &other, &roots.other)
+    {
+        return finish(
+            cli,
+            serde_json::json!({"action": "update", "package": name, "changed": false,
+                "not_in_release": true, "reason": why, "other_root": roots.other_name,
+                "other_mount": roots.other, "running_root": roots.booted_name,
+                "effects": Effects::Unchanged.json(), "present": [], "kept_config": [],
+                "new_config_beside": [], "accounts_created": [], "var_seeded": []}),
+            why,
+        );
+    }
     let args = producer_args(cli)?;
     let mut all_names = std::collections::BTreeSet::new();
+    let mut all_written = Vec::new();
     let done = if action == "remove" {
         if other.find(recipe).is_err() && other.find(Path::new(&stem(recipe))).is_err() {
             // Recorded but never in place: forget it.
@@ -971,14 +1017,17 @@ fn change(cli: &Cli, roots: &Roots, booted: &Receipt, recipe: &Path) -> Result<(
             .or_else(|_| other.find(Path::new(&stem(recipe))))
             .map(|p| p.name.clone())
             .unwrap_or_else(|_| stem(recipe));
-        remove_package(roots, &name, &args)?
+        let (done, written) = remove_package(roots, &name, &args)?;
+        all_written.push(written);
+        done
     } else {
         let mut first = None;
         for recipe in std::iter::once(recipe.to_path_buf()).chain(more_recipes(cli)) {
             let other = system::read_receipt(&roots.other)?;
-            let path = resolve_for(cli, &recipe, action, &other, "the other root")?;
-            let change = install_package(cli, roots, &path, &args, action)?;
+            let path = resolve_for(cli, &recipe, action, &other, "the other root", &roots.other)?;
+            let (change, written) = install_package(cli, roots, &path, &args, action)?;
             all_names.extend(change.expects.keys().cloned());
+            all_written.push(written);
             first.get_or_insert(change);
         }
         first.unwrap()
@@ -992,13 +1041,21 @@ fn change(cli: &Cli, roots: &Roots, booted: &Receipt, recipe: &Path) -> Result<(
         Effects::Unchanged
     };
     let after = system::read_receipt(&roots.other)?;
+    let mut value = serde_json::json!({"action": action, "package": done.package, "packages": all_names,
+        "other_root": roots.other_name, "other_mount": roots.other,
+        "running_root": roots.booted_name, "active_now": false,
+        "in_other_root": after.packages.contains_key(&done.package)});
+    // The same report of what the change left alone as a change to one root:
+    // present, kept_config, new_config_beside, accounts_created, var_seeded.
+    if let (Some(map), serde_json::Value::Object(more)) =
+        (value.as_object_mut(), Written::merge(all_written).json())
+    {
+        map.extend(more);
+    }
+    value["effects"] = effects.json();
     finish(
         cli,
-        serde_json::json!({"action": action, "package": done.package, "packages": all_names,
-            "other_root": roots.other_name, "other_mount": roots.other,
-            "running_root": roots.booted_name, "active_now": false,
-            "in_other_root": after.packages.contains_key(&done.package),
-            "effects": effects.json()}),
+        value,
         if action == "remove" {
             format!(
                 "Removed {} from the other root ({}, {}). It stays in the running system until root {} is booted.",
@@ -1020,22 +1077,65 @@ fn change(cli: &Cli, roots: &Roots, booted: &Receipt, recipe: &Path) -> Result<(
     effects.result()
 }
 
+/// Whether the collection is explicit (`--recipes-path`, `$RECIPE_PATH`):
+/// it stays isolated, with no sources and no release source.
+fn explicit(cli: &Cli) -> bool {
+    cli.recipes_path.is_some() || std::env::var_os("RECIPE_PATH").is_some()
+}
+
+/// For an update by name of a package the root holds from its release's
+/// recipes that the root's release source no longer carries: the package and
+/// why it is not updated. Such a package changes only with a system release,
+/// so no other source updates it. None for anything else, and with an
+/// explicit collection or a recipe given as a file.
+fn not_in_release(
+    cli: &Cli,
+    recipe: &Path,
+    installed: &Receipt,
+    root: &Path,
+) -> Option<(String, String)> {
+    if explicit(cli) || recipe.is_file() || recipe.components().count() != 1 {
+        return None;
+    }
+    let release = sources::Release::of(root)?;
+    let package = installed
+        .find(recipe)
+        .or_else(|_| installed.find(Path::new(&stem(recipe))))
+        .ok()?;
+    if !sources::from_release(&package.recipe) || release.carries(&package.name).is_some() {
+        return None;
+    }
+    Some((
+        package.name.clone(),
+        format!(
+            "{} {} came with an earlier system release, and this root's release, {}, no longer carries it; it changes only with a system release, so it is not updated from any other source and stays as it is (`recipe --system remove {}` removes it).",
+            package.name, package.version, release.title, package.name
+        ),
+    ))
+}
+
 /// The recipe an install or update runs: the catalog's, or for an update with
 /// no catalog entry, the recipe the package was installed from (`installed`).
+/// A name the release source of `root` carries is its recipe (see `Lookup`).
 fn resolve_for(
     cli: &Cli,
     recipe: &Path,
     action: &str,
     installed: &Receipt,
     place: &str,
+    root: &Path,
 ) -> Result<PathBuf> {
     let paths = super::metadata::recipe_paths(cli.recipes_path.clone());
-    let sources = Sources::new(&super::metadata::default_package_root()?);
-    let explicit = cli.recipes_path.is_some() || std::env::var_os("RECIPE_PATH").is_some();
+    let root = root.to_path_buf();
+    let sources = Sources::new(&super::metadata::default_package_root()?)
+        .with_release(move || Some(root.clone()))
+        .for_system_change();
+    let explicit = explicit(cli);
     let lookup = Lookup {
         folders: &paths,
         sources: (!explicit).then_some(&sources),
         purpose: sources::Purpose::Install,
+        system: true,
     };
     Ok(match resolve_recipe_path(recipe, &lookup) {
         Ok(path) => {
@@ -1118,8 +1218,21 @@ fn root_route(cli: &Cli, dir: &Path, kind: &str, recipe: Option<PathBuf>) -> Res
         Commands::Update { .. } => "update",
         _ => "remove",
     };
+    let recipe = recipe.unwrap();
+    if action == "update"
+        && let Some((name, why)) = not_in_release(cli, &recipe, &receipt, &root)
+    {
+        return finish(
+            cli,
+            serde_json::json!({"action": "update", "package": name, "changed": false,
+                "not_in_release": true, "reason": why, "packages": [], "root": root,
+                "receipt": root.join(system::RECEIPT), "effects": Effects::Unchanged.json(), "present": [], "kept_config": [],
+                "new_config_beside": [], "accounts_created": [], "var_seeded": []}),
+            why,
+        );
+    }
     let mut all = Vec::new();
-    for recipe in std::iter::once(recipe.unwrap()).chain(more_recipes(cli)) {
+    for recipe in std::iter::once(recipe).chain(more_recipes(cli)) {
         let receipt = system::read_receipt(&root)?;
         all.push(if action == "remove" {
             let name = receipt
@@ -1129,7 +1242,7 @@ fn root_route(cli: &Cli, dir: &Path, kind: &str, recipe: Option<PathBuf>) -> Res
                 .with_context(|| format!("{} is not installed in {place}", stem(&recipe)))?;
             remove_from(&root, &name)?
         } else {
-            let path = resolve_for(cli, &recipe, action, &receipt, &place)?;
+            let path = resolve_for(cli, &recipe, action, &receipt, &place, &root)?;
             write_into(cli, &root, &root, &path, &producer_args(cli)?, "root")?
         });
     }

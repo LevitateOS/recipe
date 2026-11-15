@@ -20,6 +20,11 @@ pub(super) struct Lookup<'a> {
     pub(super) sources: Option<&'a Sources>,
     /// What a recipe of a remote source is fetched for.
     pub(super) purpose: sources::Purpose,
+    /// A system change (`--system install|update|remove`): a bare name the
+    /// release source carries is its recipe before the recipe folder's, and a
+    /// system group of a remote source is refused on a root with a release
+    /// source.
+    pub(super) system: bool,
 }
 
 /// What was looked at is what runs: the recipe file must be the one named.
@@ -141,7 +146,9 @@ fn run(cli: Cli) -> Result<()> {
         Some(path) => std::path::absolute(path)?,
         None => super::metadata::default_package_root()?,
     };
-    let all_sources = Sources::new(&package_root);
+    // The release source belongs to the root a system change targets.
+    let all_sources = Sources::new(&package_root)
+        .with_release(super::system_route::target_root(cli.root.clone()));
     let package_store = PackageStore::new(package_root);
     let lookup = Lookup {
         folders: &recipe_paths,
@@ -154,6 +161,7 @@ fn run(cli: Cli) -> Result<()> {
         } else {
             sources::Purpose::Look
         },
+        system: false,
     };
     let no_activate = cli.no_activate;
     if let Commands::Install { more, .. } = &cli.command {
@@ -1058,7 +1066,11 @@ pub(super) fn resolve_recipe_path(recipe: &Path, lookup: &Lookup) -> Result<Path
                 let from = all.get(source)?;
                 match &from.kind {
                     sources::Kind::Folder { path } => Some(path.clone()),
+                    sources::Kind::Release(release) => Some(release.path.clone()),
                     sources::Kind::Remote { .. } => {
+                        if let Some(path) = release_instead(all, &from, name, lookup)? {
+                            return Ok(path);
+                        }
                         return all.fetch(&from, name, lookup.purpose);
                     }
                 }
@@ -1075,6 +1087,16 @@ pub(super) fn resolve_recipe_path(recipe: &Path, lookup: &Lookup) -> Result<Path
         return Ok(file);
     }
 
+    // A system change takes the release's recipe of a name it carries,
+    // whatever any other source holds.
+    let name = text.strip_suffix(".rhai").unwrap_or(&text);
+    let release = lookup.sources.and_then(Sources::release);
+    if lookup.system
+        && let Some(path) = release.and_then(|release| release.carries(name))
+    {
+        return Ok(path);
+    }
+
     for recipes_path in lookup.folders {
         let in_recipes = recipes_path.join(recipe);
         if in_recipes.is_file() {
@@ -1086,8 +1108,11 @@ pub(super) fn resolve_recipe_path(recipe: &Path, lookup: &Lookup) -> Result<Path
         }
     }
 
-    // A bare name the folders do not hold means the one source that has it.
-    let name = text.strip_suffix(".rhai").unwrap_or(&text);
+    // A bare name the folders do not hold means the release's recipe, else
+    // the one source that has it.
+    if let Some(path) = release.and_then(|release| release.carries(name)) {
+        return Ok(path);
+    }
     if let Some(all) = lookup.sources
         && levitate_recipe::catalog::is_file_name(name)
     {
@@ -1105,7 +1130,13 @@ pub(super) fn resolve_recipe_path(recipe: &Path, lookup: &Lookup) -> Result<Path
         if let Some(found) = found.pop() {
             return match found.path {
                 Some(path) => Ok(path),
-                None => all.fetch(&all.get(&found.source)?, name, lookup.purpose),
+                None => {
+                    let from = all.get(&found.source)?;
+                    if let Some(path) = release_instead(all, &from, name, lookup)? {
+                        return Ok(path);
+                    }
+                    all.fetch(&from, name, lookup.purpose)
+                }
             };
         }
     }
@@ -1120,6 +1151,36 @@ pub(super) fn resolve_recipe_path(recipe: &Path, lookup: &Lookup) -> Result<Path
             .collect::<Vec<_>>()
             .join(", ")
     )
+}
+
+/// For a system change on a root with a release source, before a remote
+/// source's recipe is fetched: the release's recipe of the same name instead
+/// (said on stderr), or a refusal for a system group the release does not
+/// carry. None when the remote recipe is the one to fetch.
+fn release_instead(
+    all: &Sources,
+    from: &sources::Source,
+    name: &str,
+    lookup: &Lookup,
+) -> Result<Option<PathBuf>> {
+    let Some(release) = all.release().filter(|_| lookup.system) else {
+        return Ok(None);
+    };
+    if let Some(path) = release.carries(name) {
+        eprintln!(
+            "{name} comes with this system's release, {}: installing {}:{name}, not {}:{name}.",
+            release.title,
+            sources::RELEASE,
+            from.name
+        );
+        return Ok(Some(path));
+    }
+    if let Some(entry) = all.published_entry(from, name)
+        && let Some(reason) = sources::release_refusal(&entry, release)
+    {
+        anyhow::bail!("{reason} Nothing was installed from {}.", from.name);
+    }
+    Ok(None)
 }
 
 /// The catalog entry `recipe update NAME` would run for an installed package,
@@ -1174,7 +1235,13 @@ fn updates(store: &PackageStore, lookup: &Lookup) -> Result<serde_json::Value> {
     let mut listings = std::collections::BTreeMap::new();
     let mut found = Vec::new();
     let mut problems = Vec::new();
+    let release = lookup.sources.and_then(Sources::release);
     for installed in store.list()? {
+        // A package the release carries is at the release's version by
+        // definition: only a newer system release changes it.
+        if release.is_some_and(|release| release.carries(&installed.name).is_some()) {
+            continue;
+        }
         let entry = match update_candidate(&installed, lookup, &mut listings) {
             Ok(Some(entry)) => entry,
             Ok(None) => {
@@ -1337,6 +1404,23 @@ fn list_recipes(lookup: &Lookup, json: bool) -> Result<()> {
     let mut about = Vec::new();
     let mut recipes = Vec::new();
     let mut problems = Vec::new();
+    let (found, unreadable) = match lookup.sources {
+        Some(all) => all.all(),
+        None => (Vec::new(), Vec::new()),
+    };
+    // The release source first: a front end that takes the first recipe of a
+    // name finds the release's.
+    let (release, others): (Vec<_>, Vec<_>) = found
+        .into_iter()
+        .partition(|source| matches!(source.kind, sources::Kind::Release(_)));
+    if let Some(all) = lookup.sources {
+        for source in &release {
+            let listing = all.listing(source);
+            about.push(listing.about);
+            recipes.extend(listing.recipes);
+            problems.extend(listing.problems.iter().map(problem_json));
+        }
+    }
     for (index, recipes_path) in lookup.folders.iter().enumerate() {
         about.push(serde_json::json!({
             "name": folder_name(index),
@@ -1375,11 +1459,15 @@ fn list_recipes(lookup: &Lookup, json: bool) -> Result<()> {
             }
         }
     }
+    let remote: std::collections::BTreeSet<String> = others
+        .iter()
+        .filter(|source| matches!(source.kind, sources::Kind::Remote { .. }))
+        .map(|source| source.name.clone())
+        .collect();
     if let Some(all) = lookup.sources {
-        let (found, unreadable) = all.all();
         problems.extend(unreadable.iter().map(problem_json));
-        for source in found {
-            let listing = all.listing(&source);
+        for source in &others {
+            let listing = all.listing(source);
             about.push(listing.about);
             recipes.extend(listing.recipes);
             problems.extend(listing.problems.iter().map(problem_json));
@@ -1388,8 +1476,22 @@ fn list_recipes(lookup: &Lookup, json: bool) -> Result<()> {
 
     if json {
         let host = levitate_recipe::clibrary::detect();
+        let release = lookup.sources.and_then(Sources::release);
         for recipe in &mut recipes {
             levitate_recipe::clibrary::annotate(recipe, &host);
+            // On a root with a release source, a remote source's system
+            // group, or a recipe the release carries, is not installed from
+            // there; no flag changes that.
+            let from_remote = recipe["source"]
+                .as_str()
+                .is_some_and(|source| remote.contains(source));
+            if let Some(release) = release.filter(|_| from_remote)
+                && let Some(reason) = sources::release_refusal(recipe, release)
+            {
+                recipe["runs_here"] = false.into();
+                recipe["not_runnable_override"] = serde_json::Value::Null;
+                recipe["not_runnable_reason"] = reason.into();
+            }
         }
         let result = serde_json::json!({
             "schema_version": levitate_recipe::catalog::SCHEMA_VERSION,
@@ -1444,10 +1546,10 @@ fn source_command(all: &Sources, command: SourceCommands, json: bool) -> Result<
             for listing in &listings {
                 let about = &listing.about;
                 let text = |field: &str| about[field].as_str().unwrap_or_default().to_owned();
-                let place = if about["kind"] == "remote" {
-                    format!("{} ({})", text("files"), text("branch"))
-                } else {
-                    text("path")
+                let place = match about["kind"].as_str() {
+                    Some("remote") => format!("{} ({})", text("files"), text("branch")),
+                    Some("release") => format!("{}, {}", text("title"), text("path")),
+                    _ => text("path"),
                 };
                 println!(
                     "  {}  {}  {}",
@@ -1462,7 +1564,7 @@ fn source_command(all: &Sources, command: SourceCommands, json: bool) -> Result<
                 );
                 let state = match about["checked"].as_u64() {
                     Some(checked) => format!("{count}, fetched {}", sources::ago(checked)),
-                    None if about["kind"] == "folder" => count,
+                    None if about["kind"] == "folder" || about["kind"] == "release" => count,
                     None if !listing.recipes.is_empty() => {
                         format!("{count}, from the copy that came with the system; not fetched yet")
                     }

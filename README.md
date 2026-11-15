@@ -141,8 +141,13 @@ checks both archives' size and SHA-256 against the manifest before anything chan
    base's modules of the running kernel stay, as the hidden package
    `previous-kernel` (at most one kernel's; the next apply removes them).
 2. Every package the receipt holds that the release has a recipe for
-   (`NAME.rhai` in `recipes.tar.zst`) is installed from it; one held from the same
-   recipe is skipped, one the release lacks stays and is reported.
+   (`NAME.rhai`) is installed from it; one held from the same recipe is skipped,
+   one the release lacks stays and is reported. The new base is in place by then
+   (step 1 wrote it, or the root had it), so the recipes are the root's own
+   `usr/lib/recipe/release-recipes/` (the same recipes as `recipes.tar.zst`): what
+   the receipt records, and the release source of every later command. Only a base
+   without that folder has `recipes.tar.zst` unpacked under
+   `/var/lib/recipe/release/SERIAL/` for the apply, removed at its end.
 3. The effects run once.
 
 `base` is shown by `installed --json` with `version` and `serial`, not in the human
@@ -545,6 +550,43 @@ details. [HELPERS_AUDIT.md](HELPERS_AUDIT.md) lists registered helpers.
   the network: it shows a remote source from its kept index, and `list --json`
   adds `sources` and each recipe's `source`. An explicit `--recipes-path` or
   `$RECIPE_PATH` uses no sources.
+- The release source, named `system`, is built in: the group recipes of the
+  system release run by the root a system change targets (the other root on A/B,
+  `/` without A/B, `DIR` with `--system --root DIR`), which that root carries as
+  base files in `usr/lib/recipe/release-recipes/NAME.rhai` (the builder puts them
+  there; `apply-release` replaces them with the base). It is read from disk: no
+  index, no refresh, and `source remove system` refuses. `source list` and
+  `list --json` show it first, with `kind` `release`, `title` "OS-NAME VERSION"
+  (os-release `NAME`, the version from `usr/lib/levitate/release.json`), `path`,
+  `os` and `version`; its recipes carry `"source": "system"` like any other, and
+  `system:NAME` names one. Where the root has no such folder (Recipe on another
+  distribution) or the collection is explicit (`--recipes-path`, as the image
+  builder and the installer use), there is no release source and nothing below
+  applies; a recipe given as a file path is always used as it is.
+- System groups change only with a system release (a system group is a recipe of
+  `ABOUT.kind` `system`, or `library` with a `system` output; base and groups are
+  made from one package snapshot). On a root with a release source:
+  - A system change (`--system install|update|remove`) resolves a name the
+    release source carries to its recipe, whatever other source carries the name;
+    `SOURCE:NAME` of a remote source then takes the release's recipe too, with a
+    note on stderr. A release recipe's dependencies resolve beside it, within the
+    release, and a remote recipe's dependencies that the release carries are
+    taken from the release, so a catalog's copy of a group never replaces the
+    release's.
+  - A system group of a remote source (the LevitateOS catalog, say) is not
+    installed, whether or not the release carries the name. `list --json` marks
+    it, and any remote recipe the release carries by name, `runs_here: false`,
+    `not_runnable_override: null`, with a one-sentence `not_runnable_reason`;
+    `--any-system` does not lift it. A newer system release brings newer groups;
+    a folder of one's own (`source add --path`, or the recipe folder) is not
+    restricted.
+  - `recipe updates` never lists a package whose name the release carries: it is
+    at the release's version by definition. `--system update NAME` takes the
+    release's recipe; a package installed from a release's recipes that the
+    current release no longer carries is reported (`"not_in_release": true`,
+    `"changed": false`, exit 0) and not updated from anywhere else.
+    `--system installed --json` gives each package `from_release` and
+    `not_in_release`.
 - Naming a recipe of a remote source downloads it with every recipe it needs
   (`deps`, `build_deps`), each file at the index's commit and checked against
   the index's SHA-256 and size; a file that differs stops before anything

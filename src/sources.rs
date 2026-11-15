@@ -16,6 +16,14 @@
 //! published index and the files it lists. It stands in for the index until
 //! one is fetched, and spares downloading a file it already holds, so the
 //! shipped recipes install without a network.
+//!
+//! One more source is built in: [`RELEASE`], the group recipes of the system
+//! release the root a system change targets runs, which that root carries as
+//! base files in [`RELEASE_RECIPES`]. It is read from disk as it is, needs no
+//! index and no refresh, and cannot be removed: a newer release replaces it.
+//! System groups change only with a release (`docs/release-engineering.md`
+//! in LevitateOS, section 8 item 7), so on such a root a name it carries is
+//! its recipe, and a system group of a remote source is not installed.
 
 use crate::catalog::{self, Published};
 use anyhow::{Context, Result, bail, ensure};
@@ -31,6 +39,111 @@ use std::time::{Duration, UNIX_EPOCH};
 pub const SHIPPED: &str = "/usr/share/recipe/sources";
 /// The name of the recipe folder: `--recipes-path` or the default.
 pub const LOCAL: &str = "local";
+/// The name of the release source: the group recipes of the system release
+/// the target root runs.
+pub const RELEASE: &str = "system";
+/// Where a root carries its release's group recipes, relative to the root.
+/// They are base files: the builder puts them there and each applied release
+/// replaces them with its own.
+pub const RELEASE_RECIPES: &str = "usr/lib/recipe/release-recipes";
+
+/// The release source of one root: its folder of group recipes, and the
+/// release it belongs to.
+#[derive(Debug, Clone)]
+pub struct Release {
+    pub path: PathBuf,
+    /// "<OS name> <release version>", as a person reads it.
+    pub title: String,
+    /// The release's `os` and `version`, from the root's
+    /// `usr/lib/levitate/release.json`; None when the root records none.
+    pub os: Option<String>,
+    pub version: Option<String>,
+}
+
+/// The os-release `NAME` of the root at `root`.
+fn os_name(root: &Path) -> Option<String> {
+    ["etc/os-release", "usr/lib/os-release"]
+        .iter()
+        .find_map(|file| {
+            let text = std::fs::read_to_string(root.join(file)).ok()?;
+            text.lines().find_map(|line| {
+                let value = line.trim().strip_prefix("NAME=")?;
+                let value = value.trim().trim_matches(['"', '\'']).trim();
+                (!value.is_empty()).then(|| value.to_owned())
+            })
+        })
+}
+
+impl Release {
+    /// The release source of the root at `root`, when it carries one.
+    pub fn of(root: &Path) -> Option<Release> {
+        let path = root.join(RELEASE_RECIPES);
+        if !path.is_dir() {
+            return None;
+        }
+        let installed = crate::release::installed(root).ok().flatten();
+        let name = os_name(root)
+            .or_else(|| installed.as_ref().map(|release| release.os.clone()))
+            .unwrap_or_else(|| "This system".to_owned());
+        let title = match &installed {
+            Some(release) => format!("{name} {}", release.version),
+            None => name,
+        };
+        Some(Release {
+            path,
+            title,
+            os: installed.as_ref().map(|release| release.os.clone()),
+            version: installed.map(|release| release.version),
+        })
+    }
+
+    /// The release's recipe of this name, if it carries one.
+    pub fn carries(&self, name: &str) -> Option<PathBuf> {
+        if !catalog::is_file_name(name) {
+            return None;
+        }
+        let file = self.path.join(format!("{name}.rhai"));
+        file.is_file().then_some(file)
+    }
+}
+
+/// Whether a catalog entry (`list --json`, or a published index) is a system
+/// group: `ABOUT.kind` `system`, or `library` with a `system` output.
+pub fn is_system_group(entry: &serde_json::Value) -> bool {
+    let kind = entry["about"]["kind"].as_str();
+    let system_output = entry["needs"]["outputs"].get("system").is_some();
+    kind == Some("system") || (kind == Some("library") && system_output)
+}
+
+/// Why a remote source's recipe is not installed on a root with a release
+/// source, in one sentence; None when nothing stops it: an entry the release
+/// carries by name, or a system group the release does not carry.
+pub fn release_refusal(entry: &serde_json::Value, release: &Release) -> Option<String> {
+    let name = entry["name"].as_str().unwrap_or_default();
+    if release.carries(name).is_some() {
+        return Some(format!(
+            "{name} comes with this system's release, {}, as {RELEASE}:{name}, which is the copy installed here; a newer system release brings a newer one.",
+            release.title
+        ));
+    }
+    is_system_group(entry).then(|| format!(
+        "{name} is a system group, which comes only with a system release ({} here) and is not installed from a catalog; a newer system release brings newer groups, and a recipe folder of your own (recipe source add --path FOLDER) can hold your own recipe for it.",
+        release.title
+    ))
+}
+
+/// Whether a recipe file is a release's copy: in a root's release recipes,
+/// or unpacked from a release's `recipes.tar.zst` by an `apply-release` of an
+/// earlier Recipe (`/var/lib/recipe/release/SERIAL/`).
+pub fn from_release(recipe: &Path) -> bool {
+    let Some(folder) = recipe.parent() else {
+        return false;
+    };
+    folder.ends_with(RELEASE_RECIPES)
+        || folder
+            .parent()
+            .is_some_and(|parent| parent.ends_with("recipe/release"))
+}
 
 const INDEX_LIMIT: u64 = 32 * 1024 * 1024;
 
@@ -61,6 +174,8 @@ pub enum Kind {
     Folder {
         path: PathBuf,
     },
+    /// The built-in [`RELEASE`] source: read from disk, never fetched.
+    Release(Release),
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +247,13 @@ pub struct Sources {
     shipped: PathBuf,
     fetched: PathBuf,
     cache: Option<PathBuf>,
+    /// Finds the root whose release source is used, when it is first needed
+    /// (finding the other root of an A/B system asks recab).
+    release_root: Option<Box<dyn Fn() -> Option<PathBuf>>>,
+    release: std::cell::OnceCell<Option<Release>>,
+    /// For a system change: a needed recipe the release source carries comes
+    /// from the release, not from the remote source (see [`Sources::fetch`]).
+    release_dependencies: bool,
 }
 
 /// One file of a fetched recipe: where it is downloaded from and what it
@@ -143,7 +265,7 @@ struct Wanted {
 }
 
 fn reserved(name: &str) -> bool {
-    name == LOCAL
+    name == LOCAL || name == RELEASE
 }
 
 fn is_rev(rev: &str) -> bool {
@@ -296,7 +418,38 @@ impl Sources {
             shipped: std::env::var_os("RECIPE_SHIPPED_SOURCES")
                 .map_or_else(crate::runtime::shipped_sources, PathBuf::from),
             cache: dirs::cache_dir().map(|cache| cache.join("recipe/sources")),
+            release_root: None,
+            release: std::cell::OnceCell::new(),
+            release_dependencies: false,
         }
+    }
+
+    /// For a system change: a recipe fetched from a remote source takes every
+    /// recipe it needs that the release source carries from the release, so a
+    /// catalog's copy of a system group is never written over the release's.
+    pub fn for_system_change(mut self) -> Self {
+        self.release_dependencies = true;
+        self
+    }
+
+    /// With the release source of the root `root` names: the root a system
+    /// change targets. Without this there is no release source.
+    pub fn with_release(mut self, root: impl Fn() -> Option<PathBuf> + 'static) -> Self {
+        self.release_root = Some(Box::new(root));
+        self.release = std::cell::OnceCell::new();
+        self
+    }
+
+    /// The release source, when the target root carries one.
+    pub fn release(&self) -> Option<&Release> {
+        self.release
+            .get_or_init(|| {
+                self.release_root
+                    .as_ref()
+                    .and_then(|find| find())
+                    .and_then(|root| Release::of(&root))
+            })
+            .as_ref()
     }
 
     /// Every source that is switched on, by name, and the files that could
@@ -317,6 +470,12 @@ impl Sources {
         }
         let mut sources = Vec::new();
         let mut problems = Vec::new();
+        if let Some(release) = self.release() {
+            sources.push(Source {
+                name: RELEASE.to_owned(),
+                kind: Kind::Release(release.clone()),
+            });
+        }
         for (name, path) in files {
             let read = || -> Result<Option<Kind>> {
                 ensure!(
@@ -500,31 +659,28 @@ impl Sources {
                     "problem": kept.problem,
                 })
             }
+            Kind::Release(release) => {
+                read_folder(&release.path, &mut recipes, &mut problems);
+                serde_json::json!({
+                    "name": source.name,
+                    "kind": "release",
+                    "title": release.title,
+                    "about": "The group recipes of the system release this root runs. System groups change only with a system release.",
+                    "address": null,
+                    "keeper": null,
+                    "path": release.path,
+                    "os": release.os,
+                    "version": release.version,
+                    "checked": null,
+                    "problem": null,
+                })
+            }
             Kind::Folder { path } => {
                 let described = path
                     .join(catalog::SOURCE_FILE)
                     .is_file()
                     .then(|| catalog::source(path));
-                let mut names: Vec<_> = std::fs::read_dir(path)
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .map(|item| item.path())
-                    .filter(|path| {
-                        path.extension()
-                            .is_some_and(|extension| extension == "rhai")
-                    })
-                    .collect();
-                names.sort();
-                for recipe in names {
-                    match catalog::entry(&recipe, Some(path)) {
-                        Ok(entry) => recipes.push(entry),
-                        Err(error) => problems.push(Problem {
-                            path: recipe,
-                            problem: format!("{error:#}"),
-                        }),
-                    }
-                }
+                read_folder(path, &mut recipes, &mut problems);
                 let described = match described {
                     Some(Err(error)) => {
                         problems.push(Problem {
@@ -582,7 +738,10 @@ impl Sources {
     /// Downloads a recipe of a remote source and every recipe it needs into
     /// one folder, each file checked against the index, and returns the
     /// recipe's file there. A needed recipe comes from the recipe's own
-    /// source, or from a source that one names under `uses`.
+    /// source, or from a source that one names under `uses`; for a system
+    /// change ([`Sources::for_system_change`]) one the release source carries
+    /// comes from the release, whose files are then copied in beside it (its
+    /// own needed recipes resolve beside it, within the release).
     pub fn fetch(&self, source: &Source, recipe: &str, purpose: Purpose) -> Result<PathBuf> {
         let Kind::Remote { files, .. } = &source.kind else {
             bail!("{} is a folder; recipe reads it as it is", source.name);
@@ -611,6 +770,8 @@ impl Sources {
         let mut used = BTreeMap::<String, (String, Published)>::new();
         let mut pending = vec![(recipe.to_owned(), source.name.clone())];
         used.insert(source.name.clone(), (files.clone(), index));
+        let release = self.release().filter(|_| self.release_dependencies);
+        let mut from_release = false;
         while let Some((name, from)) = pending.pop() {
             if !seen.insert(name.clone()) {
                 continue;
@@ -642,6 +803,10 @@ impl Sources {
                 .collect();
             'needed: for needed in needs {
                 if seen.contains(&needed) {
+                    continue;
+                }
+                if release.is_some_and(|release| release.carries(&needed).is_some()) {
+                    from_release = true;
                     continue;
                 }
                 if used[&from].1.recipe(&needed).is_some() {
@@ -677,11 +842,35 @@ impl Sources {
             }
         }
 
+        // The release's files, when a needed recipe is the release's; they
+        // take the place of a fetched file of the same name.
+        let mut local = BTreeMap::<String, Vec<u8>>::new();
+        if let Some(release) = release.filter(|_| from_release) {
+            for item in std::fs::read_dir(&release.path)
+                .with_context(|| format!("cannot read {}", release.path.display()))?
+            {
+                let item = item?;
+                let Some(name) = item.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                if name.starts_with('.') || !item.file_type()?.is_file() {
+                    continue;
+                }
+                let bytes = std::fs::read(item.path())
+                    .with_context(|| format!("cannot read {}", item.path().display()))?;
+                wanted.remove(&name);
+                local.insert(name, bytes);
+            }
+        }
+
         // The folder is named by everything in it, so a change to any needed
         // recipe gives a new folder and an installed one is never rewritten.
         let mut contents = Sha256::new();
         for (path, file) in &wanted {
             contents.update(format!("{path} {}\n", file.sha256));
+        }
+        for (path, bytes) in &local {
+            contents.update(format!("{path} {}\n", hex::encode(Sha256::digest(bytes))));
         }
         let key = hex::encode(contents.finalize());
         let base = match purpose {
@@ -722,6 +911,16 @@ impl Sources {
                 .and_then(|()| std::fs::rename(&fresh, &target))
                 .with_context(|| format!("cannot write {}", target.display()))?;
         }
+        for (path, bytes) in &local {
+            let target = folder.join(path);
+            if std::fs::read(&target).is_ok_and(|kept| kept == *bytes) {
+                continue;
+            }
+            let fresh = folder.join(format!("{path}.new"));
+            std::fs::write(&fresh, bytes)
+                .and_then(|()| std::fs::rename(&fresh, &target))
+                .with_context(|| format!("cannot write {}", target.display()))?;
+        }
         std::fs::write(folder.join(ORIGIN_FILE), serde_json::to_string(&origin)?)
             .with_context(|| format!("cannot write in {}", folder.display()))?;
         Ok(folder.join(format!("{recipe}.rhai")))
@@ -749,13 +948,22 @@ impl Sources {
         }
     }
 
+    /// A remote source's index entry for a recipe, from the kept index (or the
+    /// copy the image ships, or one fetch when there is neither).
+    pub fn published_entry(&self, source: &Source, recipe: &str) -> Option<serde_json::Value> {
+        if !matches!(source.kind, Kind::Remote { .. }) {
+            return None;
+        }
+        self.index(source, false).ok()?.recipe(recipe).cloned()
+    }
+
     /// Every source that has a recipe of this name. A remote source whose
     /// index was never fetched is fetched once, so a first use finds it.
     pub fn find(&self, recipe: &str) -> Vec<Found> {
         let mut found = Vec::new();
         for source in self.all().0 {
             match &source.kind {
-                Kind::Folder { path } => {
+                Kind::Folder { path } | Kind::Release(Release { path, .. }) => {
                     let file = path.join(format!("{recipe}.rhai"));
                     if file.is_file() {
                         found.push(Found {
@@ -788,6 +996,10 @@ impl Sources {
         ensure!(
             catalog::is_source_name(name),
             "a source's name is lower-case letters, digits and '-', got {name:?}"
+        );
+        ensure!(
+            name != RELEASE,
+            "{RELEASE} names the recipes of the system release, which recipe reads from the root itself"
         );
         ensure!(
             !reserved(name),
@@ -873,6 +1085,17 @@ impl Sources {
 
     /// Removes a source this store added, or switches a shipped one off.
     pub fn remove(&self, name: &str) -> Result<Removed> {
+        if name == RELEASE {
+            let place = self
+                .release()
+                .map(|release| {
+                    format!(" ({}, read from {})", release.title, release.path.display())
+                })
+                .unwrap_or_default();
+            bail!(
+                "{RELEASE} is the recipes of the system release this root runs{place}: they are part of the release and are not removed; a newer system release replaces them."
+            );
+        }
         let file = self.file(name);
         let shipped = self.shipped.join(format!("{name}.toml")).is_file();
         let own = file.is_file();
@@ -908,6 +1131,31 @@ impl Sources {
             .and_then(|()| std::fs::write(&file, toml::to_string(&off).unwrap_or_default()))
             .with_context(|| format!("cannot write {}", file.display()))?;
         Ok(Removed::SwitchedOff(file))
+    }
+}
+
+/// The recipes of a folder, each read without running anything; one that
+/// cannot be read is a problem and does not hide the others.
+fn read_folder(path: &Path, recipes: &mut Vec<serde_json::Value>, problems: &mut Vec<Problem>) {
+    let mut names: Vec<_> = std::fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|item| item.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "rhai")
+        })
+        .collect();
+    names.sort();
+    for recipe in names {
+        match catalog::entry(&recipe, Some(path)) {
+            Ok(entry) => recipes.push(entry),
+            Err(error) => problems.push(Problem {
+                path: recipe,
+                problem: format!("{error:#}"),
+            }),
+        }
     }
 }
 
