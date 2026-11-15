@@ -23,7 +23,7 @@ Read these instead of copies here; each fact has one home:
   old form working beside a new one, accept two spellings of a field, or shape
   a change so an older Recipe can still read it. When a format changes, change
   every recipe and every reader and delete the old form. The `RECIPE_API` line
-  stays and is `0` until there is a release with users; the engine accepts one
+  stays and becomes `1` with the rewrite; the engine accepts one
   number at a time (the 2/3 split of 2026-11-15 was such a switch). See
   `docs/next-recipe-format.md`, "The API number and the rewrite".
 

@@ -199,12 +199,13 @@ about 40, the whole catalog about 4,000 instead of 41,000.
 
 ## The API number and the rewrite
 
-Decided by the owner on 2026-11-16. Written down first; not done by this note.
+Decided by the owner on 2026-11-16. Written down only; nothing here is done.
 
 - **No backwards compatibility.** Recipe has never been released and has no
   users. Nothing has to keep working for anyone.
-- **The API number stays, and is reset to 0.** Every recipe keeps its first
-  line, now `const RECIPE_API = 0;`. The numbers 2 and 3 described steps of a
+- **The API number stays, and is 1.** Every recipe keeps its first line, as
+  `const RECIPE_API = 1;`: the rewritten format is the first real one. (The
+  owner first said 0, then chose 1.) The numbers 2 and 3 described steps of a
   history nobody outside this project has seen, so they go. The engine accepts
   exactly one number at a time. There is never a "2 or 3".
 - **All recipes are rewritten.** When the format changes, every recipe changes
@@ -212,13 +213,38 @@ Decided by the owner on 2026-11-16. Written down first; not done by this note.
   the 72 catalog recipes (`LevitateOS/recipes`), the 34 OS-building recipes
   (`distro/builder/os-recipes` in LevitateOS), and the examples and test
   recipes in this repository. The same goes for everything that reads a
-  recipe: the engine, `recipe list --json` and the desktop app.
+  recipe: the engine, `recipe list --json`, the pin generator, the builder and
+  the desktop app.
 - **The number goes up again only when it means something:** once Recipe is
   released and a recipe written for one release must be refused by another.
-  Until then the format changes and the number stays 0.
 
-The new form in this note is therefore `RECIPE_API = 0`, not a fourth API.
-Its examples leave the line out only to stay short.
+The examples in this note leave the API line out only to stay short.
+
+## Decisions (the owner, 2026-11-16)
+
+| Question | Decision |
+| --- | --- |
+| The API number | 1 |
+| Outputs | One by default, never named in a normal recipe. A recipe that needs several declares them (5 of the 34 OS-building recipes do; no catalog recipe does), and its `build` gets each by name. |
+| Which source a file in `FILES` comes from | The source's name comes first in the path: `["release/ninja", "bin/ninja"]`. With one source the name is left out. |
+| A whole folder in `FILES` | A path ending in `/`: `["release/", ""]` copies everything in it. Single files can be listed beside it to rename one or set a mode. |
+| What `verify` may do | Only read the result (files and their contents). It does not start programs. |
+| The OS-building recipes | Rewritten in the same step as the catalog recipes. |
+
+## How the rewrite is to be done (plan, not started)
+
+1. One agent writes the engine and converts one recipe of each shape. Those
+   are the reference recipes, with the new writing guide.
+2. The mass conversion runs against the references. Counted on 2026-11-16:
+   46 system groups (one conversion script, they all end in the same block),
+   19 that download, unpack and copy files, 5 toolchains with a per-file
+   checksum list, 2 that run programs, 34 OS-building recipes.
+3. The readers follow: the pin generator, the builder, the desktop app, the
+   docs.
+4. The work is done in separate working copies and reaches the repositories
+   in one commit each when everything compiles and every recipe passes
+   `recipe info`. Nothing is run to prove it; the first proof is the owner's
+   build.
 
 ## What it would take
 
@@ -234,12 +260,6 @@ Its examples leave the line out only to stay short.
 
 ## Open questions
 
-1. One output folder (`out`) or several named outputs as today
-   (`program`, `package`, `system`, `sdk`): how `FILES` and `build` name them.
-2. Settled by the owner on 2026-11-16: everything moves at once. See "The API
-   number and the rewrite" above.
-3. How a recipe with several sources names which one `FILES` reads from.
-4. What `verify` may do: read the output only, or also run its programs
-   (which decides host or Ginux, see "Host or Ginux" in `WRITING_RECIPES.md`).
-5. Whether text that is the same in many recipes' `configure` (the look
+1. Whether text that is the same in many recipes' `configure` (the look
    functions in `plasma`, `konsole`, `lxqt`) becomes helpers or a shared file.
+2. The name and form of the pins file beside a group recipe.
