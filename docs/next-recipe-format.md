@@ -144,6 +144,42 @@ It already has what it needs.
 So the check functions, the per-file checksum lists and `remove` have nothing
 left to do.
 
+## What `ctx` was for: keeping state
+
+`ctx` was designed to carry a recipe's state from one run to the next: whether
+it is installed, where its downloads and build material are. That need is real
+and this idea keeps it. What changes is who holds the state.
+
+In today's engine most of it has already moved out of `ctx`:
+
+| State | Where it is kept today | In this form |
+| --- | --- | --- |
+| Is it installed, which version, which files | Recipe's receipt, not `ctx` | the same |
+| Where downloads and build material are | fixed folders Recipe gives the run (`RUNTIME.paths.build`, the download cache); `ctx` only repeats the paths, and they are worked out again on every run | Recipe's, and the recipe no longer repeats them |
+| How far a build got | Recipe's checkpoint: a snapshot of the files, with `ctx.state` beside it | `checkpoint("name")` |
+| A value the recipe learned while running (a checksum read from a release listing, say) | `ctx.state`, the only part of `ctx` that is saved | still needed: see below |
+
+Only `ctx.state` is saved between runs today. The rest of `ctx` is built again
+from the recipe's text each time, and `WRITING_RECIPES.md` says saved state
+alone never proves that work is done: the files are checked. On 2026-11-16
+none of the 72 catalog recipes used `ctx.state`; three of the 34 OS-building
+recipes did, each to remember a checksum it had looked up.
+
+So a recipe must still be able to save values of its own. Instead of a map
+threaded through every function:
+
+```rhai
+fn build(src, out) {
+    if saved("archive_sha") == () {
+        save("archive_sha", lookup_digest(src.listing, "tool.tar.gz"));
+    }
+    verify_sha256(src.archive, saved("archive_sha"));
+}
+```
+
+`save` and `saved` keep what `ctx.state` keeps, under the same rule: saved
+with the files' snapshot, and never taken as proof by itself.
+
 ## What goes, what stays
 
 | Today | In this form |
@@ -153,7 +189,7 @@ left to do.
 | `acquire` | gone; `SOURCES` (first designed in LevitateOS `docs/recipe-front-end-format.md`, 2026-11-10, never built) |
 | `build`, `install` | one optional `build(src, out)`; `FILES` when nothing is compiled |
 | `remove` | gone |
-| `ctx.state` | `checkpoint("name")` |
+| `ctx.state` | `checkpoint("name")` for progress; `save`/`saved` for values the recipe learned |
 | `ctx.outputs[...] = ...` in two places | the output is `out`; its kind is in `NEEDS.outputs` as today |
 | Generated pin blocks inside recipes | a pins file beside the recipe, written only by the generator |
 | The copied group code | in the engine |
