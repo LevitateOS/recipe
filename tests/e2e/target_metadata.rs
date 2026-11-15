@@ -181,7 +181,7 @@ fn install(ctx) {
     fs::write(
         prepared.join(".prepared-product.json"),
         serde_json::to_vec(&serde_json::json!({
-            "product":"base-rootfs", "distro_id":"levitate", "rootfs_source_dir":"composed",
+            "product":"test-base-rootfs", "distro_id":"levitate", "rootfs_source_dir":"composed",
             "overlay_dir":"overlay", "rootfs_erofs":"target.erofs", "overlay_erofs":"overlay.erofs"
         }))
         .unwrap(),
