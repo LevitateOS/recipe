@@ -2,8 +2,9 @@
 
 A recipe owns its package facts, lifecycle and literal NEEDS authority. Callers
 bind declared immutable inputs, may narrow grants/limits, and select the managed
-environment. Every executable recipe declares `const RECIPE_API = 2;` and its
-own `const NEEDS = #{...};`, including children that extend another recipe.
+environment. Every executable recipe declares `const RECIPE_API = 2;` (or `3`,
+see [API 3](#api-3)) and its own `const NEEDS = #{...};`, including children that
+extend another recipe.
 OS artifact producers and user-managed software use this same format and engine.
 In the LevitateOS workspace they live in `distro/builder/os-recipes/` and
 `recipes/`, respectively. Their consumer owns deployment: the builder composes
@@ -360,13 +361,37 @@ link-local, private, CGNAT or unique-local address is refused unless the entry
 is that address itself (`"127.0.0.1:8080"`). A recipe that downloads, checks
 digests, unpacks and copies needs nothing else.
 
+## API 3
+
+`const RECIPE_API = 3;` declares that a recipe needs what this engine added for
+software written into a system root. This engine runs API 2 and API 3 recipes; an
+engine that knows only API 2 (every engine since API 2 began, 2026-11-06) refuses
+`RECIPE_API = 3` when it compiles the recipe, before setup or any hook runs, with
+"Recipe must declare const RECIPE_API = 2". The released 0.1.x builds predate
+RECIPE_API altogether and cannot run API 2 recipes either. API 3 adds:
+
+- `target_extract_apk(archive, root)`;
+- `target_finalize(root, #{ owners: "apply", accounts: [...], seed: "var" })`:
+  owner names resolved in the root written into, declared `u`/`g`/`m` account
+  lines, and `var/` as state seeds;
+- `ABOUT.systems`, checked against the target root's os-release `ID`, with
+  `--any-system`;
+- `RUNTIME.host.libc` and the `ABOUT.libc` check describe the root a system
+  change writes into, not the machine Recipe runs on;
+- pinned downloads served from the offline cache.
+
+A recipe that declares API 2 and uses `target_extract_apk`, the options form of
+`target_finalize` or `ABOUT.systems` is refused with the line to change.
+
 ## Software for the computer's root (`system` outputs)
 
 A `system` directory output is a root-relative tree (`etc/…`, `usr/…`) that
 `recipe --system` writes into a root with a receipt, so it can be removed again.
-It must be finished with `target_finalize`, and may not hold `var/`, `run/`,
-`home/`, `boot/` and other shared or runtime data (systemd-tmpfiles makes `/var`
-directories at boot from the package's `usr/lib/tmpfiles.d`). Unpack package
+It must be finished with `target_finalize`, and may not own `var/`, `run/`,
+`home/`, `boot/` and other shared or runtime data. What a package needs under
+`/var` (spool and lib directories, seed files) is kept as state seeds with
+`seed: "var"`: created in the system's `/var` where missing, with their mode and
+owner, never overwritten, owned or removed. Delete the rest (`run`, `tmp`, ...). Unpack package
 archives with the native helpers, which start no program, so the recipe runs on
 the host:
 
@@ -375,10 +400,11 @@ const NEEDS = #{ outputs: #{ system: "directory" }, network: ["dl.fedoraproject.
 // acquire: download(url, archive, sha256) for each pinned package
 fn install(ctx) {
     for archive in ctx.archives { target_extract_rpm(archive, ctx.tree); }   // or target_extract_apk
-    for d in ["var", "run"] { let p = join_path(ctx.tree, d); if exists(p) { rm(p); } }
-    target_finalize(ctx.tree, #{ owners: "apply", accounts: [
+    for d in ["run", "tmp"] { let p = join_path(ctx.tree, d); if exists(p) { rm(p); } }
+    target_finalize(ctx.tree, #{ owners: "apply", seed: "var", accounts: [
         "g messagebus -",
         "u messagebus - 'System Message Bus' /var/run/dbus /sbin/nologin",
+        "m sddm video",
     ] });
     ctx.outputs.system = ctx.tree;
     ctx
@@ -392,12 +418,13 @@ fn install(ctx) {
 - `target_finalize(root, #{ owners: "apply" })` keeps those names: the system change
   resolves them in the root it writes, after creating the accounts the tree needs
   there from its own `usr/lib/sysusers.d/*.conf` (Fedora packages ship them) and
-  from `accounts`, a list of sysusers.d `u`/`g` lines the recipe declares (Alpine
+  from `accounts`, a list of sysusers.d `u`/`g`/`m` lines the recipe declares (Alpine
   packages create theirs in install scripts, which never run, so an Alpine group
   recipe declares them). Accounts are made as the OS builder makes them: `g` lines,
   then `u` lines; an existing account is kept; `-` is the highest free id below
-  1000; `u NAME -` takes the group NAME when it exists and otherwise makes it. An
-  owner no account resolves fails the change, naming the line to declare.
+  1000; `u NAME -` takes the group NAME when it exists and otherwise makes it;
+  `m USER GROUP` (after those) adds USER to GROUP, once. An owner no account
+  resolves fails the change, naming the line to declare.
 - `target_finalize(root)` without options resolves names against the tree's own
   `etc/passwd`/`etc/group` (an image tree), as before.
 - Pinned downloads come from the offline cache when it holds them (see the README),
@@ -475,6 +502,17 @@ would be missing) and the flag that installs it anyway, `--any-libc`, and exits
 nonzero; `--json` adds a record `{"failure": {"kind": "libc_mismatch", "recipe",
 "build_libc", "host_libc", "carried_libc", "override_flag", "needed_by",
 "message"}}`. With `--any-libc` the install goes ahead with one note line.
+
+`ABOUT.systems` (API 3) is a list of os-release `ID`s, e.g. `systems:
+["levitateos", "acornos"]` (the `ID=` the LevitateOS and AcornOS images write,
+from `os_id` in each variant's `distro.toml`). The recipe runs only where the
+root's `etc/os-release` (else `usr/lib/os-release`) has one of them; a root with
+none matches none. The same decision as the C library check gives the facts and
+the flag `--any-system`; `--json` adds `{"failure": {"kind": "system_mismatch",
+"recipe", "systems", "host_system", "override_flag", "needed_by", "message"}}`,
+and `recipe list --json` shows it as `runs_here: false` with
+`not_runnable_reason` and `not_runnable_override` (the flag). For a system
+change, "this system" is the root written into.
 `ABOUT.libc_carried: true`
 says the package brings its own C library and loader (it carries them from a
 library recipe with `carry_libraries`, as `antigravity` does from

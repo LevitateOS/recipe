@@ -50,6 +50,10 @@ pub struct Manifest {
     /// written, beyond its own `usr/lib/sysusers.d` files.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accounts: Vec<String>,
+    /// The tree's `var/` is state seeds: created in the root's `/var` when
+    /// missing, never overwritten, owned or removed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub var_seed: bool,
 }
 
 impl Default for Manifest {
@@ -60,6 +64,7 @@ impl Default for Manifest {
             removals: Vec::new(),
             owners_at_apply: false,
             accounts: Vec::new(),
+            var_seed: false,
         }
     }
 }
@@ -351,13 +356,14 @@ pub fn finalize(root: &Path) -> Result<()> {
 /// owner names are kept and resolved there, and `accounts` (sysusers.d `u`/`g`
 /// lines) are created there when missing, together with the tree's own
 /// `usr/lib/sysusers.d` accounts.
-pub fn finalize_at_apply(root: &Path, accounts: Vec<String>) -> Result<()> {
+pub fn finalize_at_apply(root: &Path, accounts: Vec<String>, var_seed: bool) -> Result<()> {
     for line in &accounts {
         crate::accounts::check_declared(line)?;
     }
     let mut manifest = load(root)?;
     manifest.owners_at_apply = true;
     manifest.accounts = accounts;
+    manifest.var_seed = var_seed;
     save(root, &manifest)?;
     save(root, &snapshot(root, true)?)
 }
@@ -483,6 +489,7 @@ fn snapshot(root: &Path, grant_staging: bool) -> Result<Manifest> {
         removals: manifest.removals,
         owners_at_apply: manifest.owners_at_apply,
         accounts: manifest.accounts,
+        var_seed: manifest.var_seed,
     })
 }
 

@@ -14,7 +14,8 @@ catalog, starting with ripgrep. The builder selects its own collection
 with `--recipes-path DIR` and `--no-activate`; normal CLI lookup uses an explicitly selected
 catalog, or the user's XDG recipe directory and then the sources, of which the
 image ships the official one in `/usr/share/recipe/sources`.
-Both use this engine, the same Rhai API 2 and the same Ginux
+Both use this engine, the same Rhai API (2, or 3 for the additions listed in
+`WRITING_RECIPES.md`) and the same Ginux
 execution rules. Directory placement expresses ownership, not a new recipe type
 or permission boundary. This repository's `examples/` and `tests/` are engine
 examples and fixtures, not the application catalog.
@@ -86,10 +87,29 @@ recipe --system --root /mnt installed
 ```
 
 The producer runs under `--state-dir`/`--build-dir` (default
-`/var/lib/recipe/system-producer` for root); on a live medium whose `/var` is in
-memory, put them, and `RECIPE_SCRATCH_DIR`, on the target disk, and add
-`--no-persist-state` so no saved copy is kept. Its published outputs are deleted
-once written.
+`/var/lib/recipe/system-producer` for root) and unpacks in the scratch pool
+(`~/.cache/recipe/scratch`). On a live medium whose `/var` and home are in
+memory, the installer runs exactly:
+
+```sh
+RECIPE_SCRATCH_DIR=/mnt/var/tmp/recipe-install recipe --system --root /mnt \
+  --state-dir /mnt/var/tmp/recipe-install/state --build-dir /mnt/var/tmp/recipe-install/build \
+  --no-persist-state install <the default set>
+rm -rf /mnt/var/tmp/recipe-install
+```
+
+so scratch, producer state, logs and published outputs land on the target disk and
+no saved copy is kept (the published outputs are deleted once written anyway).
+The offline cache is found at `/usr/share/recipe/cache` on the medium without a
+flag (`RECIPE_CACHE_DIR` names another). Nothing else in the environment is needed:
+the target root decides what the recipes see of "this system" (below).
+
+**The target decides.** For every system change, the root written into (the
+`--root` directory, the other root of an A/B system, or the running root) is
+"this system" for the recipe: Recipe hands it to the producer
+(`RECIPE_HOST_LIBC_ROOT`), so `RUNTIME.host.libc`, the `ABOUT.libc` check and the
+`ABOUT.systems` check use that root's loaders and `etc/os-release`, not those of
+the machine Recipe runs on.
 
 Writing into any root (the other root, the running root, or `--root`):
 
@@ -103,7 +123,19 @@ Writing into any root (the other root, the running root, or `--root`):
 - **Edited configuration.** A file under `etc/` changed since it was installed is
   kept and reported: removal leaves it, an update writes the new version beside it
   as `NAME.recipe-new` (JSON: `kept_config`, `new_config_beside`). Any other
-  changed file still refuses the change.
+  changed file still refuses the change. A `NAME.recipe-new` still as Recipe wrote
+  it goes when its package is removed, or when an update no longer needs it.
+- **Group membership.** Account lines may be `m USER GROUP` (sysusers.d): USER is
+  added to GROUP's member list in `group` and `gshadow` (creating a missing user or
+  group as `u USER -` / `g GROUP -`); already a member, nothing changes. The receipt
+  records it as `{"kind": "member", "name": USER, "group": GROUP, "id": GID}`.
+- **State seeds under `/var`.** `target_finalize(root, #{ owners: "apply",
+  seed: "var" })` keeps the tree's `var/` as seeds: each directory, file or link
+  there is created in the system's `/var` with its mode and owner only where
+  nothing exists; it is never overwritten, never owned by the package and never
+  removed (JSON: `var_seeded`). A seed below a link (`var/run -> ../run`) is left
+  out. On an A/B system the seeds go to the running root's `/var`, the shared
+  partition, not into the other root; at install time `/mnt/var` is that partition.
 - **Tidiness.** Directories a removal leaves empty are removed; directories the root
   had before the install are never recorded or removed. Each change is flushed with
   one `syncfs` before the receipt is written.

@@ -454,27 +454,76 @@ pub(crate) enum Readiness {
     NeedsWork(Map, String),
 }
 
+/// The recipe API versions this engine runs. API 3 adds, over API 2: system
+/// outputs written into a root (`target_finalize(root, #{ owners: "apply",
+/// accounts, seed: "var" })` with `m` account lines), `target_extract_apk`,
+/// `ABOUT.systems`, and `RUNTIME.host.libc` describing the target root.
+pub const SUPPORTED_APIS: [i64; 2] = [2, 3];
+
 /// Inspect declarations without executing any recipe code. A base/child pair
-/// cannot declare an unsupported version. The selected API governs the merged AST.
-pub(crate) fn validate_api(ast: &AST) -> Result<()> {
-    let mut declared = false;
+/// cannot declare an unsupported version. The selected API governs the merged
+/// AST. An engine that knows only API 2 refuses `RECIPE_API = 3` here, before
+/// setup runs, so a recipe that needs API 3 declares it.
+pub(crate) fn validate_api(ast: &AST) -> Result<i64> {
+    const MUST: &str =
+        "Recipe must declare const RECIPE_API = 2 or 3 (this engine runs API 2 and 3)";
+    let mut declared = None;
     for statement in ast.statements() {
         if let Stmt::Var(declaration, flags, _) = statement {
             let (name, value, _) = declaration.as_ref();
             if name.name != "RECIPE_API" {
                 continue;
             }
-            if !flags.contains(ASTFlags::CONSTANT) || !matches!(value, Expr::IntegerConstant(2, _))
-            {
-                bail!("Recipe must declare const RECIPE_API = 2");
+            match value {
+                Expr::IntegerConstant(version, _)
+                    if flags.contains(ASTFlags::CONSTANT) && SUPPORTED_APIS.contains(version) =>
+                {
+                    declared = Some(*version);
+                }
+                _ => bail!("{MUST}"),
             }
-            declared = true;
         }
     }
-    if !declared {
-        bail!("Recipe must declare const RECIPE_API = 2");
+    let version = declared.ok_or_else(|| anyhow!("{MUST}"))?;
+    if version < 3
+        && let Some(feature) = api3_feature(ast)
+    {
+        bail!(
+            "the recipe uses {feature}, which RECIPE_API 3 adds; declare const RECIPE_API = 3 \
+             (an engine that knows only API 2 then refuses the recipe before doing anything)"
+        );
     }
-    Ok(())
+    Ok(version)
+}
+
+/// The first API 3 feature an AST uses, in words.
+fn api3_feature(ast: &AST) -> Option<String> {
+    use rhai::ASTNode;
+    let mut found = None;
+    for statement in ast.statements() {
+        if let Stmt::Var(declaration, _, _) = statement
+            && declaration.0.name == "ABOUT"
+            && let Ok(about) = crate::needs::literal(&declaration.1)
+            && about.get("systems").is_some()
+        {
+            return Some("ABOUT.systems".into());
+        }
+    }
+    ast.walk(&mut |nodes| {
+        if let Some(ASTNode::Stmt(Stmt::FnCall(call, _)))
+        | Some(ASTNode::Expr(Expr::FnCall(call, _)))
+        | Some(ASTNode::Expr(Expr::MethodCall(call, _))) = nodes.last()
+        {
+            let name = call.name.as_str();
+            if name == "target_extract_apk" {
+                found = Some("target_extract_apk".to_owned());
+            } else if name == "target_finalize" && call.args.len() == 2 {
+                found = Some("target_finalize(root, options)".to_owned());
+            }
+        }
+        found.is_none()
+    });
+    found
 }
 
 fn has_fn(ast: &AST, name: &str) -> bool {

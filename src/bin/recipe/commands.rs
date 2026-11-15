@@ -146,13 +146,14 @@ fn run(cli: Cli) -> Result<()> {
     };
     let no_activate = cli.no_activate;
     let any_libc = cli.any_libc;
+    let any_system = cli.any_system;
     anyhow::ensure!(
-        !any_libc
+        !(any_libc || any_system)
             || matches!(
                 &cli.command,
                 Commands::Install { .. } | Commands::Update { .. }
             ),
-        "--any-libc applies to install and update"
+        "--any-libc and --any-system apply to install and update"
     );
 
     let json_output = cli.json_output;
@@ -266,7 +267,7 @@ fn run(cli: Cli) -> Result<()> {
                 recipes_path,
                 "install",
                 &recipe,
-                any_libc,
+                (any_libc, any_system),
                 (json_output.as_deref(), json),
             )?;
             let engine = create_engine(&recipe_path, &engine_options, autofix_cfg)?;
@@ -318,7 +319,7 @@ fn run(cli: Cli) -> Result<()> {
                 recipes_path,
                 "update",
                 &PathBuf::from(&installed.name),
-                any_libc,
+                (any_libc, any_system),
                 (json_output.as_deref(), json),
             )?;
             let engine = create_engine(&recipe_path, &engine_options, None)?;
@@ -654,32 +655,40 @@ fn installed_package(store: &PackageStore, requested: &Path) -> Result<Option<In
     }))
 }
 
-/// Before anything is acquired: compare the C library the recipe (and its
-/// runtime dependencies) declare with this system's. A mismatch ends the
-/// command with the facts and the flag that installs anyway, and a JSON
-/// failure record when the caller asked for JSON; with `--any-libc` it is one
-/// note line.
+/// Before anything is acquired: compare the C library and the systems the
+/// recipe (and its runtime dependencies) declare with this system's. A
+/// mismatch ends the command with the facts and the flag that installs anyway,
+/// and a JSON failure record when the caller asked for JSON; with that flag
+/// (`--any-libc`, `--any-system`) it is one note line.
 fn check_libc(
     recipe: &Path,
     search: &Path,
     verb: &str,
     requested: &Path,
-    any_libc: bool,
+    (any_libc, any_system): (bool, bool),
     (json_output, json): (Option<&Path>, bool),
 ) -> Result<()> {
+    use levitate_recipe::clibrary::Kind;
     let host = levitate_recipe::clibrary::detect();
     let requested = requested.to_string_lossy();
-    let verdict = levitate_recipe::clibrary::check(recipe, Some(search), &host, verb, &requested)?;
+    let command = levitate_recipe::clibrary::command_for(
+        &std::env::var(SYSTEM_PREFIX_ENV).unwrap_or_default(),
+        verb,
+        &requested,
+    );
+    let verdict = levitate_recipe::clibrary::check(recipe, Some(search), &host, &command)?;
     for note in &verdict.notes {
         eprintln!("{note}");
     }
-    if any_libc {
-        for mismatch in &verdict.mismatches {
-            eprintln!("{}", mismatch.note());
-        }
-        return Ok(());
+    let (allowed, refused): (Vec<_>, Vec<_>) =
+        verdict.mismatches.into_iter().partition(|m| match m.kind {
+            Kind::Libc => any_libc,
+            Kind::System => any_system,
+        });
+    for mismatch in &allowed {
+        eprintln!("{}", mismatch.note());
     }
-    if let Some(mismatch) = verdict.mismatches.into_iter().next() {
+    if let Some(mismatch) = refused.into_iter().next() {
         if json_output.is_some() || json {
             emit_result(&mismatch.json(), json_output, json, "Not installed")?;
         }
@@ -687,6 +696,10 @@ fn check_libc(
     }
     Ok(())
 }
+
+/// Set by a system change for the producer it starts: the options that go
+/// before the command in the line a refusal suggests (`--system --root /mnt`).
+pub(crate) const SYSTEM_PREFIX_ENV: &str = "RECIPE_SYSTEM_COMMAND_PREFIX";
 
 fn activate_package(
     store: &PackageStore,
@@ -1508,7 +1521,9 @@ fn show_info(recipe_path: &Path, search_path: Option<&Path>) -> Result<()> {
         recipe_path.display().to_string().dimmed()
     );
     // A recipe without a readable API-2 declaration has no C library to show.
-    if let Ok(Some(declared)) = levitate_recipe::catalog::declared_libc(recipe_path, search_path) {
+    if let Ok(Some(declared)) = levitate_recipe::catalog::declared_libc(recipe_path, search_path)
+        && !declared.libc.is_empty()
+    {
         let host = levitate_recipe::clibrary::detect();
         let build = declared.libc.join(" or ");
         let carried = if declared.carried {
@@ -1521,6 +1536,18 @@ fn show_info(recipe_path: &Path, search_path: Option<&Path>) -> Result<()> {
             "C library:".bold(),
             host.libc,
             host.found
+        );
+    }
+    if let Ok(Some(declared)) = levitate_recipe::catalog::declared_libc(recipe_path, search_path)
+        && !declared.systems.is_empty()
+    {
+        let host = levitate_recipe::clibrary::detect();
+        println!(
+            "{:<12} made for {} (os-release ID); this system is {} ({})",
+            "Systems:".bold(),
+            declared.systems.join(", "),
+            host.os_id.as_deref().unwrap_or("unknown"),
+            host.os_found
         );
     }
     // Where `--execution auto` runs it, from its source alone.

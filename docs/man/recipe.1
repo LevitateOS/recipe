@@ -32,7 +32,7 @@ publishes named outputs after successful execution and independent archive
 validation. A recipe that can start a program always runs in Ginux; a recipe
 that cannot runs as a confined host process. See EXECUTION MODES.
 .PP
-Executable recipes declare const RECIPE_API = 2 and literal const NEEDS.
+Executable recipes declare const RECIPE_API = 2 or 3 (WRITING_RECIPES.md lists what 3 adds) and literal const NEEDS.
 NEEDS owns typed input/output names, network endpoints and upper limits; callers
 bind inputs and can only narrow authority. Checks return ready(ctx) or
 needs_work(ctx, reason); check errors fail execution. Only ctx.state is restored,
@@ -122,7 +122,10 @@ etc/passwd and etc/group. Accounts the change needs are created first, from its 
 usr/lib/sysusers.d/*.conf files and the accounts its recipe declares, the way the OS
 builder creates them (g lines, then u lines; existing accounts kept; "-" is the
 highest free id below 1000), and recorded with the package in the receipt; removing
-the package keeps them. A configuration file under etc/ that was changed since it was
+the package keeps them. Account lines may also be m USER GROUP (group membership).
+target_finalize's seed: "var" makes the tree's var/ state seeds, created in the
+system's /var only where missing (on an A/B system the running root's shared /var),
+never overwritten, owned or removed. A configuration file under etc/ that was changed since it was
 installed is kept and reported: a removal leaves it, an update writes the new version
 beside it as NAME.recipe-new. Any other changed file refuses the change. Directories
 left empty by a removal are removed; directories the root had before are never
@@ -336,7 +339,11 @@ this system's. Recipe learns this system's C library from its dynamic loaders
 (glibc: the architecture's ld-linux loader, e.g. /lib64/ld-linux-x86-64.so.2; musl:
 /lib/ld-musl-ARCH.so.1); with both or neither present it is unknown and
 nothing is compared. The environment variable RECIPE_HOST_LIBC_ROOT names a
-folder to look in instead of /.
+folder to look in instead of /; a system change sets it to the root it writes into.
+.TP
+.B --any-system
+For install and update: go ahead when the recipe's ABOUT.systems does not list the
+os-release ID of this system (or of the root a system change writes into).
 .TP
 .B --force-install
 Rerun installation for the main recipe.

@@ -1,6 +1,6 @@
 //! Managed Rhai package recipes executed through the configured Ginux launcher.
 //!
-//! Every executable recipe declares `const RECIPE_API = 2;`. Setup reads
+//! Every executable recipe declares `const RECIPE_API = 2;` (or `3`). Setup reads
 //! immutable `RUNTIME`; hooks receive `ctx.runtime`, resumable `ctx.state` and
 //! named `ctx.outputs`. Package facts are initialized from current recipe bytes.
 //!

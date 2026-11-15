@@ -63,7 +63,9 @@ The native recipe helpers are:
   payload bytes. Call after recipe policy changes and before writing the recipe's
   success marker. Generated paths default to UID/GID zero and their authored
   ordinary permissions; use `target_mode` for restrictive or special modes.
-- `target_finalize(root, #{ owners: "apply", accounts: [...] })`: finalize a tree
+- `target_finalize(root, #{ owners: "apply", accounts: [...], seed: "var" })`
+  (RECIPE_API 3; `seed: "var"` records `var_seed: true`: the tree's `var/` is
+  state seeds, not owned files): finalize a tree
   that a system change writes into a root later (a `system` output). Owner names
   stay in the entries (`owners_at_apply: true` in the manifest) instead of being
   resolved against the tree's own account files, and `accounts` (optional,

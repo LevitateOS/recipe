@@ -20,6 +20,10 @@ pub struct Account {
     pub kind: String,
     pub name: String,
     pub id: u32,
+    /// For a `member` record: the group `name` (a user) was added to; `id` is
+    /// that group's id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 /// The four account files of a root, as text.
@@ -67,11 +71,15 @@ pub fn words(line: &str) -> Vec<String> {
 pub fn check_declared(line: &str) -> Result<()> {
     let w = words(line.trim());
     ensure!(
-        w.len() >= 2 && (w[0] == "u" || w[0] == "g"),
-        "account declaration {line:?} is not a sysusers.d `u` or `g` line \
-         (for example \"g polkitd -\" or \"u polkitd -:polkitd 'polkit' /var/lib/polkit /sbin/nologin\")"
+        (w.len() >= 2 && (w[0] == "u" || w[0] == "g")) || (w.len() == 3 && w[0] == "m"),
+        "account declaration {line:?} is not a sysusers.d `u`, `g` or `m` line \
+         (for example \"g polkitd -\", \"u polkitd - 'polkit' /var/lib/polkit /sbin/nologin\" \
+         or \"m sddm video\")"
     );
     valid_name(&w[1])?;
+    if w[0] == "m" {
+        valid_name(&w[2])?;
+    }
     Ok(())
 }
 
@@ -128,6 +136,37 @@ pub fn create(
     mut files: Files,
     lines: &[(usize, String)],
 ) -> Result<(Files, BTreeMap<usize, Vec<Account>>)> {
+    // `m USER GROUP` creates a user or group it names that nothing else
+    // creates (as systemd-sysusers does), with `u USER -` / `g GROUP -`.
+    let members: Vec<(usize, String, String)> = lines
+        .iter()
+        .filter_map(|(owner, line)| {
+            let w = words(line.trim());
+            (w.len() >= 3 && w[0] == "m").then(|| (*owner, w[1].clone(), w[2].clone()))
+        })
+        .collect();
+    let mut lines = lines.to_vec();
+    {
+        let declared = |kind: &[&str], name: &str| {
+            lines.iter().any(|(_, l)| {
+                let w = words(l.trim());
+                w.len() >= 2 && kind.contains(&w[0].as_str()) && w[1] == name
+            })
+        };
+        let (users, groups) = (ids(&files.passwd), ids(&files.group));
+        let mut extra = Vec::new();
+        for (owner, user, group) in &members {
+            if !groups.contains_key(group) && !declared(&["g", "u"], group) {
+                extra.push((*owner, format!("g {group} -")));
+            }
+            if !users.contains_key(user) && !declared(&["u"], user) {
+                extra.push((*owner, format!("u {user} -")));
+            }
+        }
+        extra.dedup();
+        lines.extend(extra);
+    }
+    let lines = &lines;
     for text in [
         &mut files.passwd,
         &mut files.group,
@@ -166,6 +205,7 @@ pub fn create(
                     kind: "group".into(),
                     name: name.clone(),
                     id: gid,
+                    group: None,
                 });
                 continue;
             }
@@ -207,6 +247,7 @@ pub fn create(
                         kind: "group".into(),
                         name: name.clone(),
                         id: gid,
+                        group: None,
                     });
                 }
             }
@@ -231,8 +272,57 @@ pub fn create(
                 kind: "user".into(),
                 name: name.clone(),
                 id: uid,
+                group: None,
+            });
+        }
+    }
+    for (owner, user, group) in &members {
+        valid_name(user)?;
+        valid_name(group)?;
+        let gid = *groups
+            .get(group)
+            .with_context(|| format!("m {user} {group}: group {group} does not exist"))?;
+        let added = add_member(&mut files.group, group, user, 3)?;
+        add_member(&mut files.gshadow, group, user, 3)?;
+        if added {
+            created.entry(*owner).or_default().push(Account {
+                kind: "member".into(),
+                name: user.clone(),
+                id: gid,
+                group: Some(group.clone()),
             });
         }
     }
     Ok((files, created))
+}
+
+/// Add `user` to the member list (field `field`, 0-based) of `group`'s line in
+/// a group or gshadow file. False when it is already a member or the file has
+/// no line for the group (gshadow may lack it).
+fn add_member(text: &mut String, group: &str, user: &str, field: usize) -> Result<bool> {
+    let mut added = false;
+    let mut out = String::with_capacity(text.len() + user.len() + 1);
+    for line in text.split_inclusive('\n') {
+        let body = line.strip_suffix('\n').unwrap_or(line);
+        let mut fields: Vec<String> = body.split(':').map(str::to_owned).collect();
+        if !added && fields.first().is_some_and(|f| f == group) && fields.len() >= field {
+            fields.resize(fields.len().max(field + 1), String::new());
+            let members = &mut fields[field];
+            if members.split(',').any(|m| m == user) {
+                out.push_str(line);
+                continue;
+            }
+            if !members.is_empty() {
+                members.push(',');
+            }
+            members.push_str(user);
+            added = true;
+            out.push_str(&fields.join(":"));
+            out.push('\n');
+        } else {
+            out.push_str(line);
+        }
+    }
+    *text = out;
+    Ok(added)
 }

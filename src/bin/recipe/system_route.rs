@@ -233,7 +233,13 @@ fn remember(change: Change) -> Result<()> {
 
 /// Run the recipe as a producer: its outputs are made and published, nothing is
 /// activated anywhere. The result lists what it produced.
-fn produce(cli: &Cli, recipe: &Path, args: &[String], context: &str) -> Result<serde_json::Value> {
+fn produce(
+    cli: &Cli,
+    root: &Path,
+    recipe: &Path,
+    args: &[String],
+    context: &str,
+) -> Result<serde_json::Value> {
     let (base, state, build) = producer_dirs(cli)?;
     std::fs::create_dir_all(&base)?;
     let result = base.join("result.json");
@@ -250,6 +256,17 @@ fn produce(cli: &Cli, recipe: &Path, args: &[String], context: &str) -> Result<s
         .arg(&result)
         .arg("--define")
         .arg(format!("RECIPE_SYSTEM_CONTEXT={context}"))
+        // The root written into decides what the recipe sees of "this
+        // system" (RUNTIME.host.libc, the libc and systems checks), and a
+        // refusal names the command the user gave.
+        .env(levitate_recipe::clibrary::ROOT_ENV, root)
+        .env(
+            super::commands::SYSTEM_PREFIX_ENV,
+            match &cli.root {
+                Some(dir) => format!("--system --root {}", dir.display()),
+                None => "--system".into(),
+            },
+        )
         .stdout(std::process::Stdio::null())
         .status()
         .context("starting the recipe")?;
@@ -332,10 +349,16 @@ fn tell(plan: &system::Plan, created: &[(String, system::Account)]) {
         }
     }
     for (package, account) in created {
-        eprintln!(
-            "Created {} {} ({}) for {package}.",
-            account.kind, account.name, account.id
-        );
+        match &account.group {
+            Some(group) => eprintln!(
+                "Added user {} to group {group} ({}) for {package}.",
+                account.name, account.id
+            ),
+            None => eprintln!(
+                "Created {} {} ({}) for {package}.",
+                account.kind, account.name, account.id
+            ),
+        }
     }
 }
 
@@ -348,6 +371,8 @@ struct Written {
     kept: Vec<String>,
     beside: Vec<String>,
     created: Vec<(String, system::Account)>,
+    /// State seeds made under `/var`.
+    seeded: Vec<String>,
 }
 
 impl Written {
@@ -355,7 +380,8 @@ impl Written {
         serde_json::json!({
             "kept_config": self.kept,
             "new_config_beside": self.beside.iter().map(|p| format!("{p}.recipe-new")).collect::<Vec<_>>(),
-            "accounts_created": self.created.iter().map(|(p, a)| serde_json::json!({"package": p, "kind": a.kind, "name": a.name, "id": a.id})).collect::<Vec<_>>(),
+            "accounts_created": self.created.iter().map(|(p, a)| serde_json::json!({"package": p, "kind": a.kind, "name": a.name, "id": a.id, "group": a.group})).collect::<Vec<_>>(),
+            "var_seeded": self.seeded,
         })
     }
 }
@@ -365,11 +391,12 @@ impl Written {
 fn write_into(
     cli: &Cli,
     root: &Path,
+    state_root: &Path,
     recipe: &Path,
     args: &[String],
     context: &str,
 ) -> Result<Written> {
-    let produced = produce(cli, recipe, args, context)?;
+    let produced = produce(cli, root, recipe, args, context)?;
     let mut payloads = system::payloads(&produced, context)?;
     for p in &payloads {
         anyhow::ensure!(
@@ -382,6 +409,14 @@ fn write_into(
     let old = system::read_receipt(root)?;
     let plan = system::plan(root, &old, &mut payloads, None)?;
     system::apply(root, &payloads, &plan)?;
+    let seeded = system::seed(state_root, &payloads)?;
+    if !seeded.is_empty() {
+        eprintln!(
+            "Made {} missing state path(s) under {}/var (seeds; never overwritten or removed).",
+            seeded.len(),
+            state_root.display()
+        );
+    }
     let created = payloads
         .iter()
         .flat_map(|p| {
@@ -407,6 +442,7 @@ fn write_into(
         kept: plan.kept.clone(),
         beside: plan.beside.iter().cloned().collect(),
         created,
+        seeded,
     })
 }
 
@@ -423,6 +459,7 @@ fn remove_from(root: &Path, name: &str) -> Result<Written> {
         kept: plan.kept.clone(),
         beside: Vec::new(),
         created: Vec::new(),
+        seeded: Vec::new(),
     })
 }
 
@@ -435,7 +472,8 @@ fn install_package(
     args: &[String],
     action: &str,
 ) -> Result<Change> {
-    let written = write_into(cli, &roots.other, recipe, args, "other-root")?;
+    // The shared /var is the running system's: seeds go there, once.
+    let written = write_into(cli, &roots.other, &roots.booted, recipe, args, "other-root")?;
     let change = Change {
         package: written.name,
         action: action.into(),
@@ -497,6 +535,8 @@ fn producer_args(cli: &Cli) -> Result<Vec<String>> {
         ("--force-acquire", cli.force_acquire),
         ("--force-build", cli.force_build),
         ("--force-install", cli.force_install),
+        ("--any-libc", cli.any_libc),
+        ("--any-system", cli.any_system),
         ("--no-persist-state", cli.no_persist_state),
         ("--exact-identity", cli.exact_identity),
         ("--machine-events", cli.machine_events),
@@ -859,7 +899,7 @@ fn root_route(cli: &Cli, dir: &Path, kind: &str, recipe: Option<PathBuf>) -> Res
         remove_from(&root, &name)?
     } else {
         let path = resolve_for(cli, &recipe, action, &receipt, &place)?;
-        write_into(cli, &root, &path, &producer_args(cli)?, "root")?
+        write_into(cli, &root, &root, &path, &producer_args(cli)?, "root")?
     };
     let mut value = serde_json::json!({"action": action, "package": written.name,
         "packages": written.expects.keys().collect::<Vec<_>>(), "root": root,

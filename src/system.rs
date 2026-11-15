@@ -97,9 +97,12 @@ pub struct Payload {
     pub root: PathBuf,
     pub paths: BTreeMap<String, String>,
     pub removals: Vec<String>,
-    /// sysusers.d `u`/`g` lines the recipe declared (`target_finalize`'s
+    /// sysusers.d `u`/`g`/`m` lines the recipe declared (`target_finalize`'s
     /// `accounts`).
     pub accounts: Vec<String>,
+    /// State seeds (`target_finalize`'s `seed: "var"`): paths under `var/`,
+    /// created in the root's `/var` where missing (see [`seed`]). Not owned.
+    pub seeds: BTreeMap<String, Entry>,
 }
 fn valid_name(name: &str) -> Result<()> {
     ensure!(
@@ -199,8 +202,20 @@ pub fn payloads(result: &serde_json::Value, target: &str) -> Result<Vec<Payload>
         );
         let mut files = BTreeMap::new();
         let mut paths = BTreeMap::new();
+        let mut seeds = BTreeMap::new();
+        let var_seed = system && manifest.var_seed;
+        let mut seed_links = Vec::new();
         for (relative, mut entry) in manifest.entries {
             if relative.is_empty() {
+                continue;
+            }
+            if var_seed && (relative == "var" || relative.starts_with("var/")) {
+                if entry.kind == "hardlink" {
+                    // A seed is copied, not linked: it takes its first name's bytes.
+                    seed_links.push(relative.clone());
+                }
+                paths.insert(relative.clone(), relative.clone());
+                seeds.insert(relative, entry);
                 continue;
             }
             let path = if prefix.is_empty() {
@@ -237,6 +252,16 @@ pub fn payloads(result: &serde_json::Value, target: &str) -> Result<Vec<Payload>
                     "inconsistent intended hardlink at {path}"
                 );
             }
+        }
+        for path in seed_links {
+            let entry = seeds.get_mut(&path).unwrap();
+            let link = entry.link.take().context("missing hardlink")?;
+            entry.kind = "file".into();
+            let source = paths
+                .get(&link)
+                .cloned()
+                .context("hardlink seed has no target")?;
+            paths.insert(path, source);
         }
         ensure!(!files.is_empty(), "empty system output");
         let declared = manifest.accounts.clone();
@@ -285,6 +310,7 @@ pub fn payloads(result: &serde_json::Value, target: &str) -> Result<Vec<Payload>
             paths,
             removals,
             accounts: declared,
+            seeds,
         });
     }
     ensure!(
@@ -320,6 +346,11 @@ pub struct Plan {
     /// The root's new account files, when the change creates accounts.
     #[serde(default)]
     pub accounts: Option<accounts::Files>,
+    /// `NAME.recipe-new` files an earlier update wrote that this change no
+    /// longer needs, with the digest they were written with: removed when
+    /// still unchanged.
+    #[serde(default)]
+    pub stale_new: Vec<(String, String)>,
 }
 
 /// Where a configuration file the administrator changed is kept: a file or
@@ -459,6 +490,22 @@ pub fn reconcile(
             dirs.remove(path);
         }
     }
+    // A `.recipe-new` an earlier update wrote beside an `etc/` file of these
+    // packages goes when this change does not write it again.
+    let mut stale_new = Vec::new();
+    for name in &names {
+        if let Some(package) = old.packages.get(*name) {
+            for (path, prior) in &package.files {
+                if path.starts_with("etc/")
+                    && prior.kind == "file"
+                    && !beside.contains(path)
+                    && let Some(sha) = &prior.sha256
+                {
+                    stale_new.push((format!("{path}.recipe-new"), sha.clone()));
+                }
+            }
+        }
+    }
     // A kept file that is wanted again belongs to its package as before.
     let kept = kept
         .into_iter()
@@ -472,6 +519,7 @@ pub fn reconcile(
         beside,
         dirs: dirs.into_iter().collect(),
         accounts: None,
+        stale_new,
     })
 }
 
@@ -534,6 +582,7 @@ pub fn resolve_owners(root: &Path, payloads: &mut [Payload]) -> Result<Option<ac
         p.package
             .files
             .values()
+            .chain(p.seeds.values())
             .any(|e| e.user.is_some() || e.group.is_some())
     });
     if lines.is_empty() && !named {
@@ -561,7 +610,7 @@ pub fn resolve_owners(root: &Path, payloads: &mut [Payload]) -> Result<Option<ac
     for (index, payload) in payloads.iter_mut().enumerate() {
         let package = &mut payload.package;
         package.accounts = created.get(&index).cloned().unwrap_or_default();
-        for (path, entry) in &mut package.files {
+        for (path, entry) in package.files.iter_mut().chain(payload.seeds.iter_mut()) {
             if let Some(user) = entry.user.take() {
                 entry.uid = *users.get(&user).with_context(|| {
                     format!(
@@ -951,6 +1000,19 @@ pub fn apply(root: &Path, payloads: &[Payload], plan: &Plan) -> Result<()> {
         }
         fs::hard_link(target, &dest)?;
     }
+    for (name, sha) in &plan.stale_new {
+        let Ok(path) = confined(root, name, false) else {
+            continue;
+        };
+        if !fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
+            continue;
+        }
+        let mut hash = Sha256::new();
+        std::io::copy(&mut fs::File::open(&path)?, &mut hash)?;
+        if hex::encode(hash.finalize()) == *sha {
+            fs::remove_file(&path)?;
+        }
+    }
     // Deepest first, so a parent left empty by its children goes too.
     let mut dirs: Vec<&String> = plan.dirs.iter().collect();
     dirs.sort_by_key(|d| std::cmp::Reverse(d.matches('/').count()));
@@ -970,6 +1032,75 @@ pub fn apply(root: &Path, payloads: &[Payload], plan: &Plan) -> Result<()> {
     fs::rename(temp, &receipt)?;
     fs::File::open(receipt.parent().context("receipt has no directory")?)?.sync_all()?;
     Ok(())
+}
+
+/// Create the payloads' state seeds in `state_root` (whose `var/` is the
+/// system's `/var`: the root itself, or on an A/B system the running root,
+/// where the shared `/var` is mounted). A seed is made only where nothing
+/// exists; an existing path is never changed, and nothing is recorded or ever
+/// removed. A seed below a link or a non-directory (`var/run -> ../run`) is
+/// left out. Returns the paths made.
+pub fn seed(state_root: &Path, payloads: &[Payload]) -> Result<Vec<String>> {
+    let mut made = Vec::new();
+    // Parents sort before their children.
+    let all: BTreeMap<&String, (&Payload, &Entry)> = payloads
+        .iter()
+        .flat_map(|p| p.seeds.iter().map(move |(path, e)| (path, (p, e))))
+        .collect();
+    'seeds: for (name, (payload, entry)) in all {
+        let parts: Vec<&str> = name.split('/').collect();
+        let mut dest = state_root.to_path_buf();
+        for (i, part) in parts.iter().enumerate() {
+            ensure!(
+                !part.is_empty() && *part != "." && *part != "..",
+                "invalid seed path {name}"
+            );
+            dest.push(part);
+            if i + 1 == parts.len() {
+                break;
+            }
+            match fs::symlink_metadata(&dest) {
+                Ok(m) if m.is_dir() => {}
+                Ok(_) => continue 'seeds,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    fs::create_dir(&dest)?;
+                    fs::set_permissions(&dest, fs::Permissions::from_mode(0o755))?;
+                }
+                Err(e) => return Err(e).with_context(|| format!("reading {}", dest.display())),
+            }
+        }
+        if fs::symlink_metadata(&dest).is_ok() {
+            continue;
+        }
+        match entry.kind.as_str() {
+            "dir" => {
+                fs::create_dir(&dest)?;
+                fs::set_permissions(&dest, fs::Permissions::from_mode(entry.mode))?;
+            }
+            "symlink" => {
+                std::os::unix::fs::symlink(entry.link.as_ref().context("missing symlink")?, &dest)?;
+            }
+            "file" => {
+                let source = payload
+                    .root
+                    .join(payload.paths.get(name).context("seed source is missing")?);
+                ensure!(
+                    fs::symlink_metadata(&source)?.is_file(),
+                    "seed {} is not a regular file",
+                    source.display()
+                );
+                fs::copy(&source, &dest)?;
+                fs::set_permissions(&dest, fs::Permissions::from_mode(entry.mode))?;
+            }
+            other => anyhow::bail!("unsupported seed kind {other} for {name}"),
+        }
+        own(&dest, entry)?;
+        made.push(name.clone());
+    }
+    if !made.is_empty() {
+        sync_root(state_root)?;
+    }
+    Ok(made)
 }
 
 /// Kernel process I/O counters, including streams and reaped children. These

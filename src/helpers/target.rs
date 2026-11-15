@@ -561,11 +561,12 @@ pub fn finalize(root: &str) -> Result<(), Box<EvalAltResult>> {
     recipe_result(target::finalize(Path::new(root)))
 }
 
-/// `target_finalize(root, #{ owners: "apply", accounts: [...] })`.
+/// `target_finalize(root, #{ owners: "apply", accounts: [...], seed: "var" })`.
 pub fn finalize_with(root: &str, options: rhai::Map) -> Result<(), Box<EvalAltResult>> {
     recipe_result((|| {
         let mut accounts = Vec::new();
         let mut at_apply = false;
+        let mut var_seed = false;
         for (key, value) in options {
             match key.as_str() {
                 "owners" => {
@@ -590,9 +591,21 @@ pub fn finalize_with(root: &str, options: rhai::Map) -> Result<(), Box<EvalAltRe
                         accounts.push(line.to_string());
                     }
                 }
-                other => {
-                    bail!("target_finalize has no option {other:?}; it takes owners and accounts")
+                "seed" => {
+                    let value = value
+                        .into_string()
+                        .map_err(|_| anyhow::anyhow!("target_finalize seed must be a string"))?;
+                    ensure!(
+                        value == "var",
+                        "target_finalize seed {value:?}: the one choice is \"var\" (the tree's \
+                         var/ is created in the root's /var where missing, never overwritten, \
+                         owned or removed); without it, remove var/ from the tree"
+                    );
+                    var_seed = true;
                 }
+                other => bail!(
+                    "target_finalize has no option {other:?}; it takes owners, accounts and seed"
+                ),
             }
         }
         ensure!(
@@ -600,7 +613,7 @@ pub fn finalize_with(root: &str, options: rhai::Map) -> Result<(), Box<EvalAltRe
             "target_finalize options need owners: \"apply\"; accounts are created where \
              owner names are resolved"
         );
-        target::finalize_at_apply(Path::new(root), accounts)
+        target::finalize_at_apply(Path::new(root), accounts, var_seed)
     })())
 }
 

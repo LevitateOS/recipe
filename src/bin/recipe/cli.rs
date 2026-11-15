@@ -87,6 +87,10 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     #[arg(help_heading = "Target")]
     pub(crate) any_libc: bool,
+    /// Install or update a package on a system its ABOUT.systems does not list (by os-release ID).
+    #[arg(long, global = true)]
+    #[arg(help_heading = "Target")]
+    pub(crate) any_system: bool,
 
     /// Cap NEEDS.timeout_secs across the dependency graph (including silent work).
     #[arg(long, global = true)]

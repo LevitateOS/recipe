@@ -1,8 +1,11 @@
 .TH RECIPE-RECIPE 5 "2026-11-08" "Recipe" "File Formats"
 .SH NAME
-recipe-recipe \- managed API 2 Rhai recipe contract
+recipe-recipe \- managed API 2 and 3 Rhai recipe contract
 .SH DESCRIPTION
-Every executable recipe declares const RECIPE_API = 2, its own literal const
+Every executable recipe declares const RECIPE_API = 2, or 3 when it uses
+target_extract_apk, target_finalize(root, options), ABOUT.systems or the other
+additions WRITING_RECIPES.md lists (an engine that knows only API 2 refuses 3 before
+setup), its own literal const
 NEEDS map, and initializes ctx with
 current package facts. Setup executes once per invocation, in a Ginux domain or, for a recipe that starts no program, on the host (see recipe(1), EXECUTION MODES).
 Pure imported facts modules need no executable lifecycle.
