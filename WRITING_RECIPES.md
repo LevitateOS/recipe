@@ -5,6 +5,9 @@ bind declared immutable inputs, may narrow grants/limits, and select the managed
 environment. Every executable recipe declares `const RECIPE_API = 2;` (or `3`,
 see [API 3](#api-3)) and its own `const NEEDS = #{...};`, including children that
 extend another recipe.
+This format makes recipes longer than they need to be. A shorter one is written
+down, not built, in [docs/next-recipe-format.md](docs/next-recipe-format.md).
+
 OS artifact producers and user-managed software use this same format and engine.
 In the LevitateOS workspace they live in `distro/builder/os-recipes/` and
 `recipes/`, respectively. Their consumer owns deployment: the builder composes
