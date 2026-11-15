@@ -48,7 +48,6 @@ is already done from what it records itself.
 ### A prebuilt program: no functions
 
 ```rhai
-const RECIPE_API = 4;
 const NEEDS = #{ /* as today: what the recipe may use */ };
 const ABOUT = #{ /* as today: what a front end shows */ };
 
@@ -214,8 +213,10 @@ about 40, the whole catalog about 4,000 instead of 41,000.
 
 1. One output folder (`out`) or several named outputs as today
    (`program`, `package`, `system`, `sdk`): how `FILES` and `build` name them.
-2. Whether API 2 and 3 recipes keep working beside API 4 for a time, or
-   everything moves at once.
+2. Settled by the owner on 2026-11-16: everything moves at once. Recipe has
+   never been released and has no users, so there is no backwards
+   compatibility: no old form beside the new one and no `RECIPE_API` number
+   to tell them apart.
 3. How a recipe with several sources names which one `FILES` reads from.
 4. What `verify` may do: read the output only, or also run its programs
    (which decides host or Ginux, see "Host or Ginux" in `WRITING_RECIPES.md`).

@@ -17,6 +17,14 @@ Read these instead of copies here; each fact has one home:
 
 ## Design rules
 
+- No backwards compatibility (the owner's rule, 2026-11-16). Recipe has never
+  been released and has no users. The engine, the recipes and everything that
+  reads them change together, in one step. Do not add version switches, keep an
+  old form working beside a new one, accept two spellings of a field, or shape
+  a change so an older Recipe can still read it. When a format changes, change
+  every recipe and every reader and delete the old form. The `RECIPE_API` 2/3
+  split of 2026-11-15 is such a switch and is to be removed, not extended.
+
 - Lifecycle: `is_installed` → `is_built` → `is_acquired` checks decide which of
   `acquire()` → `build()` → `install()` run. Each phase does one thing and is
   re-verified by its check.
