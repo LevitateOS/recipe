@@ -18,7 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (JSON failure kind `libc_mismatch`). `ABOUT.libc_carried: true` marks a
   package that brings its own C library and loader; the facts then say where it
   was made and tried. `recipe info` shows both; `list --json` and `index` carry
-  them in `about`.
+  them in `about`. `list --json` also has `host_libc` at the top and, per
+  recipe, `runs_here` and `not_runnable_reason` (the message an install would give).
 - `RUNTIME.paths.prefix`: the folder a package output will live in once
   activated (unit with `--no-activate`); it keys saved state, so a build
   belongs to its store.

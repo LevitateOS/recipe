@@ -357,12 +357,16 @@ details. [HELPERS_AUDIT.md](HELPERS_AUDIT.md) lists registered helpers.
   or helper code. Dynamic metadata is reported unavailable.
 - `list --json` prints one entry per recipe for a front end (`schema_version` 1):
   name, version, description, path, the recipe's `ABOUT` block, NEEDS, dependency
-  names and the hooks it defines. It needs no Ginux launcher, and a recipe that
+  names and the hooks it defines, plus `runs_here` and `not_runnable_reason`
+  (whether this system's C library can run it, from the same comparison
+  `install` makes, and the message `install` would give, else null; the index
+  does not carry them). The top level has `host_libc`, this system's C library
+  (`glibc`, `musl` or `unknown`). It needs no Ginux launcher, and a recipe that
   cannot be read is reported under `problems` instead of failing the list.
 - `index [FOLDER]` writes `index.json`, the file a source of recipes publishes
   so its recipes can be listed without downloading them: the folder's
   `repo.toml` (`name`, `title`, `about`, `address`, `keeper`, optional `uses`),
-  every `list --json` entry without its path, the SHA-256 and size of each
+  every `list --json` entry without its path, `runs_here` and `not_runnable_reason`, the SHA-256 and size of each
   recipe file and of the files beside it that share its name, and the commit
   they are at. The folder must be in a Git repository with full history and
   the listed files committed. `--check` fails when the file is out of date.

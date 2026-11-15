@@ -207,6 +207,51 @@ impl std::fmt::Display for Mismatch {
 
 impl std::error::Error for Mismatch {}
 
+/// The one rule: a recipe whose declared C libraries do not include the host's
+/// does not match. An unknown host matches everything (the caller notes it).
+fn mismatch(
+    recipe: &str,
+    declared: Declared,
+    host: &Host,
+    command: String,
+    parent: Option<&str>,
+) -> Option<Mismatch> {
+    (host.libc != "unknown" && !declared.libc.iter().any(|libc| libc == host.libc)).then(|| {
+        Mismatch {
+            recipe: recipe.to_owned(),
+            build_libc: declared.libc,
+            host_libc: host.libc.to_owned(),
+            carried: declared.carried,
+            command,
+            needed_by: parent.map(str::to_owned),
+        }
+    })
+}
+
+/// Add `runs_here` (can this system run the recipe) and `not_runnable_reason`
+/// (the message the install would give, else null) to a catalog entry, from
+/// the same comparison the install makes. A recipe file on this machine is
+/// checked with its runtime dependencies; an entry from a published index,
+/// whose files are not here, is checked by its own `ABOUT` alone.
+pub fn annotate(entry: &mut serde_json::Value, host: &Host) {
+    let name = entry["name"].as_str().unwrap_or_default().to_owned();
+    let path = entry["path"].as_str().map(PathBuf::from);
+    let found = match path.filter(|path| path.is_file()) {
+        Some(path) => check(&path, path.parent(), host, "install", &name)
+            .ok()
+            .and_then(|verdict| verdict.mismatches.into_iter().next()),
+        None => entry
+            .get("about")
+            .and_then(|about| declared(about).ok().flatten())
+            .and_then(|declared| {
+                let command = format!("recipe install {OVERRIDE_FLAG} {name}");
+                mismatch(&name, declared, host, command, None)
+            }),
+    };
+    entry["runs_here"] = found.is_none().into();
+    entry["not_runnable_reason"] = found.map(|found| found.to_string()).into();
+}
+
 /// The result of comparing a recipe, and its runtime dependencies, with the host.
 pub struct Verdict {
     /// Every recipe whose build does not match the host, the requested one first.
@@ -279,27 +324,22 @@ fn visit(
     ) else {
         return Ok(());
     };
-    if let Some(crate::clibrary::Declared {
-        libc: build,
-        carried,
-    }) = libc
-    {
+    if let Some(declared) = libc {
         if host.libc == "unknown" {
             verdict.notes.push(format!(
                 "{name}: its build is linked against {}; Recipe found {} on this system, so \
                  this system's C library is unknown and the install goes on without a comparison.",
-                build.join(" or "),
+                declared.libc.join(" or "),
                 host.found
             ));
-        } else if !build.iter().any(|libc| libc == host.libc) {
-            verdict.mismatches.push(Mismatch {
-                recipe: name.clone(),
-                build_libc: build,
-                host_libc: host.libc.to_owned(),
-                carried,
-                command: format!("recipe {verb} {OVERRIDE_FLAG} {requested}"),
-                needed_by: parent.map(str::to_owned),
-            });
+        } else if let Some(mismatch) = mismatch(
+            &name,
+            declared,
+            host,
+            format!("recipe {verb} {OVERRIDE_FLAG} {requested}"),
+            parent,
+        ) {
+            verdict.mismatches.push(mismatch);
         }
     }
     for dependency in declaration.dependencies {

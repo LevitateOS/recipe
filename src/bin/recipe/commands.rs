@@ -1353,8 +1353,13 @@ fn list_recipes(lookup: &Lookup, json: bool) -> Result<()> {
     }
 
     if json {
+        let host = levitate_recipe::clibrary::detect();
+        for recipe in &mut recipes {
+            levitate_recipe::clibrary::annotate(recipe, &host);
+        }
         let result = serde_json::json!({
             "schema_version": levitate_recipe::catalog::SCHEMA_VERSION,
+            "host_libc": host.libc,
             "collections": lookup.folders,
             "sources": about,
             "recipes": recipes,
