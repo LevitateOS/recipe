@@ -713,12 +713,40 @@ pub fn record_base(tree: &Path, manifest: &Path) -> Result<Recorded> {
         host.os_found
     );
     let mut receipt = system::read_receipt(tree)?;
+    // A tree a build staged keeps each file's owner, mode and attributes in
+    // its target metadata, not on disk (the build does not run as root), and
+    // the image is made from that metadata. The base entry records the same.
+    let staged = tree.join(target::MANIFEST).exists();
+    let mut metadata = if staged {
+        target::load(tree)?
+    } else {
+        target::Manifest::default()
+    };
     let dest = tree.join(INSTALLED);
     fs::create_dir_all(dest.parent().unwrap())?;
     fs::write(&dest, &bytes)?;
     fs::set_permissions(&dest, fs::Permissions::from_mode(0o644))?;
     if unsafe { libc::geteuid() } == 0 {
         std::os::unix::fs::lchown(&dest, Some(0), Some(0))?;
+    }
+    if staged {
+        // The folder made above is root's in the image too.
+        let folder = Path::new(INSTALLED)
+            .parent()
+            .and_then(Path::to_str)
+            .unwrap_or_default()
+            .to_owned();
+        metadata.entries.entry(folder).or_insert(Entry {
+            kind: "dir".into(),
+            mode: 0o755,
+            uid: 0,
+            gid: 0,
+            user: None,
+            group: None,
+            xattrs: BTreeMap::new(),
+            link: None,
+            sha256: None,
+        });
     }
     let others: BTreeSet<&String> = receipt
         .packages
@@ -775,6 +803,17 @@ pub fn record_base(tree: &Path, manifest: &Path) -> Result<Recorded> {
             link: None,
             sha256: None,
         };
+        if let Some(stated) = metadata.entries.get(&rel) {
+            entry.mode = stated.mode & 0o7777;
+            entry.uid = stated.uid;
+            entry.gid = stated.gid;
+            entry.xattrs = stated
+                .xattrs
+                .iter()
+                .filter(|(name, _)| name.as_str() != "security.selinux")
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect();
+        }
         if md.is_dir() {
             entry.kind = "dir".into();
         } else if md.file_type().is_symlink() {
@@ -862,6 +901,28 @@ pub fn record_base(tree: &Path, manifest: &Path) -> Result<Recorded> {
         .packages
         .insert(BASE_PACKAGE.into(), base_package(&release, files));
     system::write_receipt(tree, &receipt)?;
+    if staged {
+        // The two files written here are root's in the image, like the rest.
+        for rel in [INSTALLED, system::RECEIPT] {
+            let path = tree.join(rel);
+            let digest = target::hash_all(&[path.as_path()])?.remove(0);
+            metadata.entries.insert(
+                rel.into(),
+                Entry {
+                    kind: "file".into(),
+                    mode: 0o644,
+                    uid: 0,
+                    gid: 0,
+                    user: None,
+                    group: None,
+                    xattrs: BTreeMap::new(),
+                    link: None,
+                    sha256: Some(digest),
+                },
+            );
+        }
+        target::save(tree, &metadata)?;
+    }
     Ok(Recorded {
         files: count,
         version: installed.version,
