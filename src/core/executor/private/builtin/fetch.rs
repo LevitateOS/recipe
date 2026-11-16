@@ -281,7 +281,7 @@ fn single_folder(dir: &Path) -> Result<Option<PathBuf>> {
 
 /// `src` for `build(src, out)` and `configure`: each source name to its
 /// path, and with `PACKAGES` and `build` the list `src.packages`, in pin
-/// order, of `#{ name, path, sha256, bytes, var, licence }` (decision 8).
+/// order, of `#{ name, path, sha256, bytes, keep_var, licence }` (decision 8).
 pub(crate) fn src_map(declared: &Declared, fetched: &Fetched, unpacked: &Unpacked) -> Result<Map> {
     let mut src = Map::new();
     for (name, (path, _)) in &unpacked.sources {
@@ -301,7 +301,7 @@ pub(crate) fn src_map(declared: &Declared, fetched: &Fetched, unpacked: &Unpacke
                     .context("a pinned package is too large")?
                     .into(),
             );
-            entry.insert("var".into(), pin.var.into());
+            entry.insert("keep_var".into(), pin.var.into());
             entry.insert(
                 "licence".into(),
                 pin.licence.clone().map_or(Dynamic::UNIT, Dynamic::from),

@@ -402,8 +402,8 @@ Two recipes need the pinned packages but not the steps above:
 **Decided (2026-11-16, owner away):** a recipe with `PACKAGES` does its own unpacking like this:
 when it defines `build(src, out)`, Recipe still downloads the pins,
 skips steps 2 to 4, and gives `src.packages`: a list, in pin order, of
-`#{ name, path, sha256, bytes, var, licence }` (`path` is the downloaded
-package file, `var` whether its `var/` is kept). The recipe unpacks with
+`#{ name, path, sha256, bytes, keep_var, licence }` (`path` is the downloaded
+package file, `keep_var` whether its `var/` is kept). The recipe unpacks with
 `target_extract_rpm` or `target_extract_apk`. A `system` output is still
 finished by Recipe afterwards. `packages` is then a reserved source name. Why:
 it covers both recipes with one rule and no new helper, and it keeps the
@@ -1670,3 +1670,10 @@ of the format.
 - A cleanup result (8.6) carries `outputs: {}`. The builder passes the same
   `--define` and `--input` flags to `cleanup` as to install, so recipes with
   required ones load.
+- A group whose `PACKAGES` lists are empty but whose pins file has a section for
+  that C library (`desktop-libs`) is a shared group: the generator fills it, and
+  a pins section is refused only for a C library whose key is not in `PACKAGES`.
+- A `FILES` entry that names a source of another C library (not fetched on this
+  system) is skipped together with its source.
+- `src.packages[i].var` is `keep_var` (`var` is a reserved word in Rhai); the
+  pins file column keeps its name.

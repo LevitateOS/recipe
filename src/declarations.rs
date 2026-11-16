@@ -182,6 +182,10 @@ pub enum Packages {
         musl: Vec<String>,
         #[serde(skip_serializing_if = "Vec::is_empty")]
         glibc_i686: Vec<String>,
+        /// The C libraries whose key is in the map, even with an empty list:
+        /// a shared group (`desktop-libs`) is filled by the generator.
+        #[serde(skip)]
+        keys: BTreeSet<String>,
     },
 }
 
@@ -1058,7 +1062,9 @@ fn parse_packages(value: serde_json::Value) -> Result<Packages> {
             let mut glibc = Vec::new();
             let mut musl = Vec::new();
             let mut glibc_i686 = Vec::new();
+            let mut keys = BTreeSet::new();
             for (field, value) in map {
+                keys.insert(field.clone());
                 let what = format!("PACKAGES.{field}");
                 let seeds = strings(&value, &what)?;
                 check(&seeds, &what)?;
@@ -1073,6 +1079,7 @@ fn parse_packages(value: serde_json::Value) -> Result<Packages> {
                 glibc,
                 musl,
                 glibc_i686,
+                keys,
             })
         }
         _ => bail!(
@@ -1094,11 +1101,16 @@ fn check_pins(pins: &Pins, packages: &Packages, needs: &Needs) -> Result<()> {
             (Packages::ByLibc { .. }, SectionLibc::Any) => false,
             (
                 Packages::ByLibc {
-                    glibc, glibc_i686, ..
+                    glibc,
+                    glibc_i686,
+                    keys,
+                    ..
                 },
                 SectionLibc::Glibc,
-            ) => !glibc.is_empty() || !glibc_i686.is_empty(),
-            (Packages::ByLibc { musl, .. }, SectionLibc::Musl) => !musl.is_empty(),
+            ) => !glibc.is_empty() || !glibc_i686.is_empty() || keys.contains("glibc"),
+            (Packages::ByLibc { musl, keys, .. }, SectionLibc::Musl) => {
+                !musl.is_empty() || keys.contains("musl")
+            }
         };
         ensure!(
             fits,

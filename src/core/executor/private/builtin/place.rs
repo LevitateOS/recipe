@@ -43,12 +43,10 @@ pub(crate) fn place_files(
             format!("{}/{}", entry.source, entry.path)
         };
         let what = format!("FILES[{index}] ({from})");
+        // A source of another C library is not fetched on this system; its
+        // entries go with it (the declaration reader checked the name).
         let Some((origin, held)) = unpacked.sources.get(&entry.source) else {
-            bail!(
-                "{what}: SOURCES.{} is not fetched on this system (its libc is another C library \
-                 than this system's); a FILES entry may only name a source this system fetches",
-                entry.source
-            );
+            continue;
         };
         let (current, again) = match locate(&placed, &from) {
             Some(at) => (at, true),
