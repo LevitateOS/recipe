@@ -8,9 +8,9 @@ boundary; its implementation checkpoint records exact tested revisions and gaps.
 
 ## Execution ownership
 
-- Executable recipes declare `const RECIPE_API = 2;` and literal `NEEDS`.
+- Every recipe declares `const RECIPE_API = 1;` and a literal `NEEDS`.
   Coordinator discovery, metadata and input staging never evaluate arbitrary
-  recipe setup or helper code.
+  recipe code or helper code.
 - Before anything runs, Recipe reads each recipe's source (and the base it
   extends and the modules it imports) and picks where it runs. If nothing in it
   can call a helper that starts a program or reads the root image, it runs on
@@ -25,30 +25,31 @@ boundary; its implementation checkpoint records exact tested revisions and gaps.
   only for runs in Ginux), imports explicit inputs, owns destination locking
   and durable records, and publishes named products. Unavailable runtime
   capabilities fail explicitly.
-- Recipes own package versions, source URLs/digests, build facts and lifecycle
-  behavior, typed input/output schemas, endpoint authority and limits in NEEDS.
+- Recipes own package versions, source URLs/digests, build facts, typed
+  input/output declarations, and endpoint authority and limits in `NEEDS`.
   Rust/TOML owns orchestration, path bindings and consumer validation.
 - External commands/helpers remain subject to the same assignments and resource
   bounds in either mode. There is no unconfined host execution and no network
   access outside the declared endpoints.
+- Recipe never asks an AI and never changes a recipe. A failure is reported;
+  what to do about it is the user's.
 
 ## Recipe contract
 
-- Setup runs once per invocation with immutable `RUNTIME`; hooks receive the same
-  `ctx.runtime`. Current facts are initialized from current recipe bytes.
-- Checks return `ready(ctx)` or `needs_work(ctx, nonempty_reason)`. Errors and
-  malformed values fail execution. Custom checks inspect actual relevant
-  products/configuration; saved booleans do not establish installation.
-- Acquire/build/install/remove hooks return updated context. Successful work is
-  checked against custom readiness. Required missing work fails clearly.
-- Only `ctx.state` is restored. It contains bounded JSON-compatible values and
-  never replaces current package facts, runtime paths or output declarations.
-- Optional cleanup receives `manual` or `auto.<phase>.<success|failure>`. Successful
-  failure cleanup is checkpointed with returned state and matching files while
-  the producer still fails without publication. Cleanup/checkpoint failures are
-  reported without hiding the existing primary failure.
+- The format is one: constants and optional functions, specified in
+  [the recipe format](docs/recipe-format.md#1-a-recipe-at-a-glance) and taught in
+  the [author guide](WRITING_RECIPES.md). No other form is accepted.
+- Recipe decides what is done from its own records, never from recipe code; see
+  [states](docs/recipe-format.md#62-the-states-of-a-program). A saved value
+  never proves that work is done; see
+  [saved values](docs/recipe-format.md#7-saved-values-and-resuming).
+- Errors and malformed values fail execution. A required step that did not
+  produce its result fails clearly.
+- Optional `cleanup(reason)` runs at the end of a run and on `recipe cleanup`;
+  see [`cleanup(reason)`](docs/recipe-format.md#37-cleanupreason-answer-12).
+  Cleanup failures are reported without hiding an existing primary failure.
 - Literal modules, dependency declarations and base inheritance are resolved by
-  the existing loader. Dynamic declarations and cycles fail before anything runs.
+  the loader. Dynamic declarations and cycles fail before anything runs.
 
 ## Filesystem and products
 
@@ -57,22 +58,26 @@ boundary; its implementation checkpoint records exact tested revisions and gaps.
   bindings fail preflight. Dependencies receive only their explicit DEP::NAME
   bindings and run under separate declared grants. A host path in a
   define is not an import or filesystem grant.
-- `/work/build`, `/work/tools` and `/work/tmp` are owned work/tools/scratch;
-  `/out` is the owned selected-target/product tree. Runtime exposes these paths.
+- The run owns its work folder, `/out` (the selected-target/product tree) and
+  scratch space. Recipe code sees them through the engine's constants; see
+  [the engine's constants](docs/recipe-format.md#4-the-engines-constants).
 - A named `target` input seeds `/out` on fresh state; retained state restores the
   owned target. Compiler-image files cannot satisfy selected-target readiness.
 - Input identity includes bytes, modes and links. Confined source links and
   rootfs/target symlink bytes are preserved without following host paths.
   Hardlinks preserve shared owned identity through copy/checkpoint/publication.
-- Recipes select actual files/directories in `ctx.outputs`. Consumers validate
-  required names/kinds and use returned publication paths, never sibling-path
-  guesses, stale JSON or unrequested host-built outputs.
+- Consumers validate required output names/kinds and use returned publication
+  paths, never sibling-path guesses, stale JSON or unrequested host-built
+  outputs.
 - Publication requires successful managed execution and independent bounded
   archive/path/link validation. Failed/interrupted work cannot replace valid
   earlier publications. Imported inputs and previous generations stay immutable.
 - Removal changes owned selected-target files (the producer lifecycle,
   `--no-activate`). Putting a package output into a profile is the CLI's job,
   below.
+- After a successful install Recipe deletes the downloads, unpacked sources,
+  build material and saved state, unless the user chose `--keep`; see
+  [disk rules](docs/recipe-format.md#65-disk-rules).
 
 ## Installed software
 
@@ -136,13 +141,10 @@ boundary; its implementation checkpoint records exact tested revisions and gaps.
   the last complete checkpoint and never publish failed work. Silent execution
   is distinct from a stalled partial protocol frame.
 
-## Optional repair and metadata
+## Metadata
 
-- Normal execution requires no AI credentials. Explicit optional repair runs in
-  the coordinator, bounds attempts/paths/provider work and protects readiness.
-  Changed source bytes receive a new identity before retry.
-- Metadata comes from the loader's declared/merged AST without executing setup.
-  Literal inherited facts are reported, dynamic facts are unavailable, and
+- Metadata comes from the loader's declared/merged AST without running recipe
+  code. Literal inherited facts are reported, dynamic facts are unavailable, and
   malformed declarations fail clearly.
 
 ## Evidence boundary

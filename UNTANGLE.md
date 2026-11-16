@@ -1,5 +1,7 @@
 # Untangle log
 
+This is a historical record, written before the API 1 rewrite of 2026-11-16. It mentions things that have since been removed (`ctx`, `RECIPE_API = 2`, autofix, LLM providers). The current recipe format is [docs/recipe-format.md](docs/recipe-format.md).
+
 Note (2026-11-16): `llm/`, `core/autofix/` and `--autofix` were removed; entries below that mention them describe code that no longer exists.
 
 ## Scope
