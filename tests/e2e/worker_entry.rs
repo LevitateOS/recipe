@@ -74,7 +74,10 @@ const NEEDS = #{{}}; write_file({:?},\"unexpected setup\"); fn build(src, out) {
             sentinel.to_str().unwrap()
         ),
     );
-    let output = host_command(&recipes)
+    // The private entry is recognised only as the first argument, so this
+    // command carries none of host_command's leading public flags.
+    let output = Command::new(recipe_bin())
+        .current_dir(dir.path())
         .env_remove("RECIPE_WORKER")
         .env_remove("RECIPE_INVOCATION")
         .arg(levitate_recipe::bin_support::WORKER_ENTRY_ARG)
@@ -82,6 +85,7 @@ const NEEDS = #{{}}; write_file({:?},\"unexpected setup\"); fn build(src, out) {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("private worker entry requires"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("private worker entry requires"), "{stderr}");
     assert!(!sentinel.exists());
 }
