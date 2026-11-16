@@ -194,6 +194,36 @@ pub(crate) fn prepare_tree(
         fs::rename(run_root.join(relative), staging.0.path().join(name))
             .with_context(|| format!("cannot move the output {relative} into publication"))?;
     }
+    // As for an unpacked archive, everything staged reaches the disk before
+    // `publish` renames it into place, except for a system change's producer
+    // (`EPHEMERAL_ENV`), whose root write is flushed instead.
+    if std::env::var_os(EPHEMERAL_ENV).is_none() {
+        let mut files = Vec::new();
+        let mut directories = Vec::new();
+        for item in walkdir::WalkDir::new(staging.0.path())
+            .follow_links(false)
+            .contents_first(true)
+        {
+            let item = item?;
+            if item.file_type().is_file() {
+                files.push(item.into_path());
+            } else if item.file_type().is_dir() {
+                directories.push(item.into_path());
+            }
+        }
+        crate::fsx::sync_files(
+            &files
+                .iter()
+                .map(|path| (path.as_path(), None))
+                .collect::<Vec<_>>(),
+        )?;
+        crate::fsx::sync_new_directories(
+            &directories
+                .iter()
+                .map(|path| (path.as_path(), None))
+                .collect::<Vec<_>>(),
+        )?;
+    }
     Ok(Some(Publication {
         base,
         staging,

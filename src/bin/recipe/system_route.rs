@@ -248,12 +248,12 @@ pub(super) fn settle(
     }
     record.changes = kept;
     save_record(&record)?;
-    // The copy brought the running root's library cache, or none: the root
-    // the parts were written into again gets its own.
-    if rewrote && let Cache::Failed(error) = Cache::of(&roots.other) {
-        eprintln!(
-            "recipe: warning: the system parts are written again, but rebuilding the other root's library cache (/{LIBRARY_CACHE}) with its own ldconfig failed: {error}\nThe next system change runs it again."
-        );
+    // The copy brought the running root's caches: the root the parts were
+    // written into again ends as every system change does, once, after all
+    // of them (the effects recipe unless --no-effects, then the library
+    // cache). A failure leaves the parts written; the command goes on.
+    if rewrote && let Err(error) = effects(cli, &roots.other).result() {
+        eprintln!("recipe: warning: {error:#}");
     }
     Ok(failed)
 }

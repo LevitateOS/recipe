@@ -912,7 +912,8 @@ pub(crate) fn finish_outputs(
     // The run's archive moves into the kept generation (a finished result
     // stays kept until the install is complete and activated, so a crash
     // before that installs it without building again). The publication was
-    // unpacked from it above and no longer reads it.
+    // unpacked from it (or, in a host run, moved from the run's tree) above
+    // and no longer reads it.
     // A RERUN recipe keeps no result, and its finished run leaves no
     // checkpoint to be resumed next time.
     if operation.builds()

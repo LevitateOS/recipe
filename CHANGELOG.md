@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ldconfig -X -i -r ROOT`, with or without `--no-effects`; a musl root is left
   alone. JSON `effects.library_cache`; a failure is reported and keeps the change.
   `etc/ld.so.cache` is a machine file, never part of `base`.
+  A part written again after `recab copy` now ends through the same root effects
+  as every other change: the root's effects recipe (unless `--no-effects`) and then
+  the library cache, once after all such parts; a failure is a warning and the
+  parts stay written.
 - `ABOUT.libc` (a list from `"glibc"` and `"musl"`) names the C libraries a
   recipe's build works with, and `RUNTIME.host.libc` gives the C library of the
   system the package is installed on, decided from its dynamic loaders (`"unknown"`
@@ -62,6 +66,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A host run moves its outputs into publication instead of archiving and
+  unpacking them, wherever the run's directory and the state root share a disk
+  (before, only a system change's producer did): a result is no longer on disk
+  three times at the end of a run. With saved state the run's archive is still
+  kept as the result until cleanup. Placing `FILES` was already a rename in both
+  kinds of run; `docs/recipe-format.md` section 6.5 now says what is still copied
+  (a Ginux run's outputs are unpacked from its export archive).
 - A recipe that states `PACKAGE.name` no longer fails in the worker with
   "the file is main.rhai": the coordinator sends the worker the recipe's name
   (request `recipe_name`, transport 12), and the worker no longer takes it from

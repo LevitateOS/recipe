@@ -70,7 +70,9 @@ command, it compares the record with both roots' receipts. A change that the
 booted root now holds was booted into and is forgotten; a change neither root
 holds was wiped, and Recipe writes exactly that system part into the other root
 again (not the whole install, and never the "for me" software in a user's own
-store). Until that has succeeded, the part is reported as not done.
+store), then ends as every system change does: the root's effects and library
+cache, once, after all such parts (a failure is a warning; the parts stay
+written). Until that has succeeded, the part is reported as not done.
 
 A system without `recab.immutable` on its kernel command line has one root, the
 running one, and no recab. `--system` there writes the change into that root with

@@ -942,6 +942,23 @@ everything" honest.
   steps. After a successful install they are deleted, unless kept.
 - A result moves into the package store, and a placed file moves from the
   unpacked source, wherever both are on the same disk.
+  - Placing `FILES` from an unpacked source is a rename in both kinds of run.
+    In Ginux, `/work` and `/out` are two assignments of one memory storage,
+    and a rename between them moves the name, not the bytes. A plain-file
+    source and a `git` checkout are the downloads themselves and are copied
+    (section 2.5).
+  - A host run moves its outputs from the run's directory into publication
+    where that directory and the state root share a disk. With saved state
+    (the default) it first archives the run's `work` and `out` as the kept
+    result, so the result's bytes are on disk twice until cleanup deletes
+    the kept result after the install; without saved state nothing is
+    archived.
+  - A Ginux run hands back one archive of its `/work` and `/out`, and its
+    outputs are unpacked from that archive: Ginux keeps the run's files in
+    its memory storage and has no other way out. Until cleanup deletes the
+    kept result (or, without saved state, until the run ends) the result's
+    bytes are on disk twice, in the archive and unpacked. The same holds
+    when an install publishes a result kept by an earlier `build`.
 - Saved state exists only while a run is unfinished, one copy at most, and
   is deleted when the install succeeds.
 - A download two programs name is deleted only when neither still needs it.

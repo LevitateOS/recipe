@@ -145,8 +145,9 @@ copy of the booted root and so wipes those changes. Before any system-scope
 command, Recipe compares the record with both roots' receipts: a change the
 booted root now holds was booted into and is forgotten; a change neither root
 holds was wiped, and Recipe writes exactly that system part again, not the whole
-install and never software installed for one user. Until that succeeds the part is
-reported as not done.
+install and never software installed for one user, and then runs the root's
+effects and library cache once, as after any system change (a failure is a warning
+and the parts stay written). Until that succeeds the part is reported as not done.
 .PP
 With --json, --system installed prints the booted root's packages and the other
 root's, and the changes not done. On a system without recab.immutable there is one

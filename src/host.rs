@@ -24,8 +24,11 @@
 //! - Storage bounds are checked when an archive is made: at every checkpoint
 //!   and at the end, over everything in `work` and `out` (coarse: a run may
 //!   exceed them between checkpoints).
-//! - The final archive is the export `crate::publication` validates and
-//!   publishes, exactly as a Ginux export.
+//! - The outputs are validated and moved into publication from the run's
+//!   directory where it shares a filesystem with the state root
+//!   (`crate::publication::prepare_tree`); elsewhere the final archive is the
+//!   export `crate::publication` validates and unpacks, exactly as a Ginux
+//!   export. Saved state keeps the final archive as the kept result.
 //! - The deadline and cancellation kill the worker's process group.
 //! - Identity: the worker never keeps privilege; a root run's worker has a
 //!   uid and gid of its own and only it reaches the run's directories
@@ -411,15 +414,16 @@ fn run_inner(
                 .outputs
                 .values()
                 .all(|path| path.starts_with(&format!("{}/", crate::domain::OUT)));
-        // A system change's producer (`EPHEMERAL_ENV`) with no saved state:
-        // its outputs are moved out of the run's directory, which is
-        // discarded, instead of archived and unpacked (bounds checked by the
-        // same walk as a checkpoint's).
-        let tree = (in_out
-            && std::env::var_os(crate::publication::EPHEMERAL_ENV).is_some()
-            && crate::publication::can_move(&root, &stream.result.outputs, state_dir))
-        .then_some(root.as_path());
-        if tree.is_some() {
+        // Where the run's directory and the state root share a filesystem,
+        // the outputs are moved out of the run's directory (discarded after
+        // the run) into publication instead of unpacked from an archive: a
+        // result is moved, never copied twice (docs/recipe-format.md,
+        // section 6.5). Saved state still keeps the run's archive as the
+        // kept result, made before the move; without saved state nothing is
+        // archived (bounds checked by the same walk as a checkpoint's).
+        let tree = crate::publication::can_move(&root, &stream.result.outputs, state_dir)
+            .then_some(root.as_path());
+        if tree.is_some() && retained.is_none() {
             check_storage(&root, &options.execution).map_err(|error| {
                 Category::Storage.wrap(error, "cannot archive the run's outputs")
             })?;
