@@ -294,6 +294,10 @@ impl Runner<'_> {
                     execution,
                 },
                 dependencies: &dependency_outputs,
+                // Only the main recipe's install activates and cleans up
+                // (`crate::launch::Finish`); a dependency keeps its result
+                // for its consumer until the whole install is done.
+                finish: if main { invocation.finish } else { None },
                 // latest() and cleanup("manual") see no kept files and keep
                 // nothing: no saved files are restored into their run, and
                 // none are kept after it.
@@ -312,21 +316,50 @@ impl Runner<'_> {
         }
         let mut result = results.remove(main_recipe).unwrap();
         result["operation"] = operation.as_str().into();
+        // The install is complete (published, activated, the main recipe's
+        // material deleted unless kept): now the material of the dependency
+        // runs made for it goes too, each under its own destination lock.
+        let ran_dependencies: Vec<&Path> = graph
+            .iter()
+            .filter(|node| node.recipe != *main_recipe)
+            .filter(|node| results[&node.recipe]["system_present"] != true)
+            .map(|node| node.recipe.as_path())
+            .collect();
+        let cleaned = install && invocation.finish.is_some_and(|finish| !finish.keep);
+        if cleaned {
+            let freed = crate::state::cleanup_dependencies(
+                invocation.state_dir,
+                invocation.destination,
+                &ran_dependencies,
+            );
+            let own = result["freed_bytes"].as_u64().unwrap_or(0);
+            result["freed_bytes"] = (own + freed).into();
+        }
         // Per dependency that ran: its name, its state (a dependency's
-        // result is kept and published for its consumer, never installed)
-        // and its steps.
+        // result is kept and published for its consumer, never installed;
+        // after a cleaned install nothing of it is left) and its steps.
         result["dependencies"] = graph
             .iter()
             .filter(|node| node.recipe != *main_recipe)
             .map(|node| {
                 let ran = &results[&node.recipe];
+                let mut steps = ran
+                    .get("steps")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([]));
                 let state = if ran["system_present"] == true {
                     crate::state::State::Installed
+                } else if cleaned {
+                    for step in steps.as_array_mut().into_iter().flatten() {
+                        if step["step"] == "cleanup" {
+                            step["status"] = crate::core::events::StepStatus::Done.as_str().into();
+                        }
+                    }
+                    crate::state::State::None
                 } else {
                     crate::state::State::Built
                 };
-                serde_json::json!({"name": node.name(), "state": state.as_str(),
-                    "steps": ran.get("steps").cloned().unwrap_or_else(|| serde_json::json!([]))})
+                serde_json::json!({"name": node.name(), "state": state.as_str(), "steps": steps})
             })
             .collect();
         if install && system {
@@ -359,6 +392,24 @@ impl Runner<'_> {
             }
             result["system_producers"] = serde_json::Value::Array(packages);
             result["system_present"] = serde_json::json!(skipped);
+        }
+        // A dependency's published outputs were staged for its consumer,
+        // whose run is over: they go, except those a system change writes
+        // into its root (`system_producers`; the system route deletes them
+        // once written). The main recipe's stay: they are the result.
+        let consumed: std::collections::BTreeSet<String> = result["system_producers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|producer| producer["producer"]["recipe"].as_str().map(str::to_owned))
+            .collect();
+        for node in graph.iter().filter(|node| node.recipe != *main_recipe) {
+            if !consumed.contains(node.recipe.to_string_lossy().as_ref()) {
+                crate::publication::discard(
+                    invocation.state_dir,
+                    &results[&node.recipe]["outputs"],
+                );
+            }
         }
         Ok(result)
     }

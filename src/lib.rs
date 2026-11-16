@@ -136,6 +136,12 @@ pub mod bin_support {
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
+/// What [`RecipeEngine::install_activating`] calls with the run's result once
+/// the outputs are published, before the material is deleted: it activates
+/// the package (and may change the result, adding `activation`). An error
+/// fails the install and leaves the kept result for the next one.
+pub type Activate<'a> = dyn Fn(&mut serde_json::Value) -> Result<()> + 'a;
+
 /// Recipe execution engine
 pub struct RecipeEngine {
     build_dir: PathBuf,
@@ -144,6 +150,9 @@ pub struct RecipeEngine {
     defines: Vec<(String, String)>,
     inputs: Vec<inputs::ExtraInput>,
     persist_state: bool,
+    /// The keep option (docs/recipe-format.md, section 6.4): an install
+    /// leaves the downloads and build material.
+    keep: bool,
     execution: ExecutionOptions,
     state_dir: Option<PathBuf>,
     /// Explicit launcher selection; None resolves Ginux from the environment
@@ -162,6 +171,7 @@ impl RecipeEngine {
             defines: Vec::new(),
             inputs: Vec::new(),
             persist_state: true,
+            keep: false,
             execution: ExecutionOptions::default(),
             state_dir: None,
             launcher: None,
@@ -206,6 +216,13 @@ impl RecipeEngine {
         self
     }
 
+    /// Keep the downloads and build material after a successful install
+    /// (`--keep`). Default is `false`: the install ends with the cleanup step.
+    pub fn with_keep(mut self, keep: bool) -> Self {
+        self.keep = keep;
+        self
+    }
+
     /// Select target, job count and the other execution options.
     pub fn with_execution_options(mut self, options: ExecutionOptions) -> Self {
         self.execution = options;
@@ -233,13 +250,36 @@ impl RecipeEngine {
     /// Install a recipe (docs/recipe-format.md, section 6.3): run its
     /// dependencies, then every step still missing by Recipe's records, and
     /// publish the outputs. A kept result with the current identity is
-    /// published without running anything.
+    /// published without running anything. Publishing the outputs is the
+    /// install of a producer (decision 23); then, unless kept
+    /// ([`Self::with_keep`]), the cleanup step deletes the downloads, the
+    /// build material and the saved state of the recipe and of the
+    /// dependency runs made for it.
     ///
     /// Returns the run's result: `operation`, `name`, `version`, `steps`,
     /// `outputs` (each output's published path), `prefix`, `dependencies`,
-    /// `contract`, `network_usage`.
+    /// `kept`, `freed_bytes`, `contract`, `network_usage`.
     pub fn install(&self, recipe_path: &Path) -> Result<serde_json::Value> {
-        self.invoke(worker::protocol::Operation::Install, recipe_path)
+        self.install_activating(recipe_path, None)
+    }
+
+    /// [`Self::install`], calling `activate` with the result once the
+    /// outputs are published and before the cleanup step, so the material
+    /// is deleted only after the program is activated.
+    pub fn install_activating(
+        &self,
+        recipe_path: &Path,
+        activate: Option<&Activate<'_>>,
+    ) -> Result<serde_json::Value> {
+        let finish = launch::Finish {
+            keep: self.keep,
+            activate,
+        };
+        self.invoke_with(
+            worker::protocol::Operation::Install,
+            recipe_path,
+            Some(&finish),
+        )
     }
 
     /// Build a recipe: its dependencies, the download step where it is
@@ -286,6 +326,15 @@ impl RecipeEngine {
         operation: worker::protocol::Operation,
         recipe: &Path,
     ) -> Result<serde_json::Value> {
+        self.invoke_with(operation, recipe, None)
+    }
+
+    fn invoke_with(
+        &self,
+        operation: worker::protocol::Operation,
+        recipe: &Path,
+        finish: Option<&launch::Finish<'_>>,
+    ) -> Result<serde_json::Value> {
         let no_dependencies = Default::default();
         backend::run(
             self.launcher.as_ref(),
@@ -304,6 +353,7 @@ impl RecipeEngine {
                 // Each run of the graph names its own (`backend`).
                 dependencies: &no_dependencies,
                 key: "",
+                finish,
             },
         )
     }

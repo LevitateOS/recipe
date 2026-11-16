@@ -27,6 +27,9 @@ mod config;
 mod discover;
 mod env;
 mod image_cache;
+pub(crate) use image_cache::{
+    cached_bytes as image_cache_bytes, remove_caches as remove_image_caches,
+};
 mod network;
 mod root;
 

@@ -561,3 +561,76 @@ impl Publication {
         Ok(outputs)
     }
 }
+
+/// The bytes of the files under `path`, each inode once (a walk that never
+/// follows links). Unreadable entries count as nothing.
+pub(crate) fn tree_bytes(path: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    let mut seen = HashSet::new();
+    walkdir::WalkDir::new(path)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|entry| entry.ok()?.metadata().ok())
+        .filter(|metadata| metadata.is_file() && seen.insert((metadata.dev(), metadata.ino())))
+        .map(|metadata| metadata.len())
+        .sum()
+}
+
+/// The publications still in the state root `root` (`exports/<invocation>`),
+/// each with the name of the recipe that made it (from the invocation's
+/// diagnostics while they are kept, else the invocation's id) and its bytes.
+/// A staging directory (`.pending-…`) that a crash left behind is listed by
+/// its own name: it is not hidden, though nothing removes it by itself.
+pub(crate) fn published(root: &Path) -> Vec<(String, u64)> {
+    let Ok(entries) = fs::read_dir(root.join("exports")) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let recipe = crate::invocation_log::recipe_of(root, &name).unwrap_or(name);
+        found.push((recipe, tree_bytes(&entry.path())));
+    }
+    found
+}
+
+/// Delete the publications that hold `outputs` (output name to published
+/// path, as a run's result names them): each output's parent directory, when
+/// it is a publication directly in the state root's `exports`. Used once
+/// their consumer no longer needs them: a dependency's outputs after the run
+/// they were staged for, a package's after it moved into the package store.
+/// Failing to delete one is reported, never fatal.
+pub(crate) fn discard(state_dir: Option<&Path>, outputs: &serde_json::Value) {
+    let Ok(exports) = crate::retained::state_root(state_dir)
+        .and_then(|root| Ok(root.join("exports").canonicalize()?))
+    else {
+        return;
+    };
+    let mut done = HashSet::new();
+    for path in outputs
+        .as_object()
+        .into_iter()
+        .flat_map(|outputs| outputs.values())
+        .filter_map(|value| value.as_str())
+    {
+        let Some(publication) = Path::new(path).parent() else {
+            continue;
+        };
+        if publication.parent() != Some(exports.as_path())
+            || !done.insert(publication.to_path_buf())
+            || !fs::symlink_metadata(publication).is_ok_and(|metadata| metadata.is_dir())
+        {
+            continue;
+        }
+        crate::fsx::make_removable(publication);
+        if let Err(error) = fs::remove_dir_all(publication) {
+            crate::diagnostics::diag!(
+                "recipe: warning: cannot delete the publication {}: {error}",
+                publication.display()
+            );
+        }
+    }
+}

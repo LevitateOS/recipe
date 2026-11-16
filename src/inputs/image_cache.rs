@@ -299,3 +299,64 @@ fn clone_tree(source: &Path, root: &Path) -> Result<()> {
     }
     Ok(())
 }
+
+/// The bytes of the unpacked image caches in the scratch pool (`recipe
+/// storage`, kind `build_image`). Reads only; the pool is not created.
+pub(crate) fn cached_bytes() -> u64 {
+    let Ok(pool) = crate::temporary::pool_location() else {
+        return 0;
+    };
+    let Ok(entries) = fs::read_dir(&pool) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            entry.file_name().to_string_lossy().starts_with(PREFIX)
+                && entry.file_type().is_ok_and(|kind| kind.is_dir())
+        })
+        .map(|entry| crate::publication::tree_bytes(&entry.path()))
+        .sum()
+}
+
+/// `recipe runtime remove`: delete every unpacked image cache in the scratch
+/// pool, holding the pool lock exclusively so no root is being cloned from
+/// one. A partial cache whose build is still running (its build lock held)
+/// stays. Returns the bytes freed.
+pub(crate) fn remove_caches() -> Result<u64> {
+    let Ok(pool) = crate::temporary::pool_location() else {
+        return Ok(0);
+    };
+    if !pool.is_dir() {
+        return Ok(0);
+    }
+    let lock = crate::fsx::open_lease(&pool.join(LOCK), true)?;
+    lock.lock_exclusive()
+        .context("cannot lock the image cache")?;
+    let mut freed = 0;
+    for entry in fs::read_dir(&pool)?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with(PREFIX) || !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let digest_name = name
+            .split_once(PARTIAL)
+            .map_or(name.as_str(), |(cache, _)| cache);
+        if name.contains(PARTIAL) {
+            let building =
+                crate::fsx::open_lease(&pool.join(format!("{digest_name}{BUILD}")), false)
+                    .is_ok_and(|lock| lock.try_lock_exclusive().is_err());
+            if building {
+                continue;
+            }
+        }
+        let path = entry.path();
+        let bytes = crate::publication::tree_bytes(&path);
+        crate::fsx::make_removable(&path);
+        fs::remove_dir_all(&path)
+            .with_context(|| format!("cannot remove the image cache {}", path.display()))?;
+        freed += bytes;
+    }
+    lock.unlock()?;
+    Ok(freed)
+}

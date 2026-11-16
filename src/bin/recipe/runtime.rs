@@ -27,6 +27,33 @@ pub(crate) fn execute(command: &RuntimeCommands, cli: &Cli) -> Result<()> {
             println!("{}", path.display());
             Ok(())
         }
+        RuntimeCommands::Remove => {
+            // The cached build image (decision 26). One installed with the
+            // system and one chosen with GINUX_ROOTFS stay.
+            let freed = runtime::remove_build_image()?;
+            let image = runtime::build_image()?;
+            let result = serde_json::json!({"schema_version": 1, "freed_bytes": freed,
+                "path": image.path, "remaining_bytes": image.bytes});
+            let json = cli.json || !std::io::stdout().is_terminal();
+            if let Some(path) = &cli.json_output {
+                std::fs::write(path, serde_json::to_string(&result)?)
+                    .with_context(|| format!("cannot write {}", path.display()))?;
+            }
+            if json && cli.json_output.is_none() {
+                println!("{}", serde_json::to_string(&result)?);
+            } else if !json {
+                println!(
+                    "Deleted {freed} bytes of the build image from {}.{}",
+                    image.path.display(),
+                    if image.bytes > 0 {
+                        " The image installed with the system stays."
+                    } else {
+                        " It is downloaded again when a recipe needs it."
+                    }
+                );
+            }
+            Ok(())
+        }
         RuntimeCommands::Stage {
             root,
             prefix,

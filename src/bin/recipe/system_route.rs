@@ -370,13 +370,17 @@ pub(super) fn timed<T>(what: &str, f: impl FnOnce() -> T) -> T {
 
 /// Delete the producer's published outputs once they are written into a root:
 /// they would otherwise keep a second copy of everything installed. Only
-/// publications in the producer's own `<state>/exports` are deleted; its saved
-/// state (unless `--no-persist-state`) stays for reuse.
-fn discard_outputs(cli: &Cli, produced: &serde_json::Value) -> Result<()> {
+/// publications in the producer's own `<state>/exports` are deleted. Its
+/// downloads, build material and saved state the producer run deleted itself
+/// once it published (decision 23: a producer's install is its published
+/// outputs; a system change passes no `--keep`); a failed run keeps its saved
+/// state, so the next attempt continues. Returns the bytes deleted.
+fn discard_outputs(cli: &Cli, produced: &serde_json::Value) -> Result<u64> {
     let (_, state, _) = producer_dirs(cli)?;
     let Ok(exports) = std::path::absolute(state)?.join("exports").canonicalize() else {
-        return Ok(());
+        return Ok(0);
     };
+    let mut freed = 0;
     let mut done = std::collections::BTreeSet::new();
     let producers = produced["system_producers"]
         .as_array()
@@ -398,13 +402,27 @@ fn discard_outputs(cli: &Cli, produced: &serde_json::Value) -> Result<()> {
             if publication.parent() != Some(exports.as_path()) || !done.insert(publication) {
                 continue;
             }
+            freed += tree_bytes(publication);
             levitate_recipe::fsx::make_removable(publication);
             std::fs::remove_dir_all(publication).with_context(|| {
                 format!("removing the producer output {}", publication.display())
             })?;
         }
     }
-    Ok(())
+    Ok(freed)
+}
+
+/// The bytes of the regular files under `path`, each inode once.
+fn tree_bytes(path: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    let mut seen = std::collections::HashSet::new();
+    walkdir::WalkDir::new(path)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|entry| entry.ok()?.metadata().ok())
+        .filter(|metadata| metadata.is_file() && seen.insert((metadata.dev(), metadata.ino())))
+        .map(|metadata| metadata.len())
+        .sum()
 }
 
 /// Tell what a change left alone: configuration files the administrator
@@ -453,6 +471,10 @@ pub(super) struct Written {
     /// Packages the root already held at the same recipe digest and version:
     /// not produced or written again.
     pub(super) present: Vec<String>,
+    /// Bytes the producer run deleted: its downloads and build material once
+    /// its outputs were published (decision 23), and the published outputs
+    /// once they were written into the root.
+    pub(super) freed: u64,
 }
 
 impl Written {
@@ -466,8 +488,10 @@ impl Written {
             created: Vec::new(),
             seeded: Vec::new(),
             present: Vec::new(),
+            freed: 0,
         };
         for w in all {
+            merged.freed += w.freed;
             merged.expects.extend(w.expects);
             merged.kept.extend(w.kept);
             merged.beside.extend(w.beside);
@@ -489,6 +513,7 @@ impl Written {
             "accounts_created": self.created.iter().map(|(p, a)| serde_json::json!({"package": p, "kind": a.kind, "name": a.name, "id": a.id, "group": a.group})).collect::<Vec<_>>(),
             "var_seeded": self.seeded,
             "present": self.present,
+            "freed_bytes": self.freed,
         })
     }
 }
@@ -504,6 +529,7 @@ pub(super) fn write_into(
     context: &str,
 ) -> Result<Written> {
     let produced = timed("produce", || produce(cli, root, recipe, args, context))?;
+    let producer_freed = produced["freed_bytes"].as_u64().unwrap_or(0);
     let present: Vec<String> = produced["system_present"]
         .as_array()
         .into_iter()
@@ -527,6 +553,7 @@ pub(super) fn write_into(
             created: Vec::new(),
             seeded: Vec::new(),
             present,
+            freed: producer_freed,
         });
     }
     let mut payloads = system::payloads(&produced, context)?;
@@ -561,7 +588,7 @@ pub(super) fn write_into(
         })
         .collect::<Vec<_>>();
     tell(&plan, &created);
-    timed("discard producer output", || {
+    let discarded = timed("discard producer output", || {
         discard_outputs(cli, &produced)
     })?;
     let name = produced["name"]
@@ -580,6 +607,7 @@ pub(super) fn write_into(
         created,
         seeded,
         present,
+        freed: producer_freed + discarded,
     })
 }
 
@@ -614,6 +642,7 @@ fn remove_from(root: &Path, name: &str) -> Result<Written> {
         created: Vec::new(),
         seeded: Vec::new(),
         present: Vec::new(),
+        freed: 0,
     })
 }
 
@@ -841,7 +870,10 @@ pub(crate) fn route(cli: &mut Cli) -> Result<bool> {
                 super::release_route::record_base(cli, &release)?;
                 return Ok(true);
             }
-            Commands::Install { recipe, more, .. } => {
+            Commands::Install {
+                recipe, more, keep, ..
+            } => {
+                anyhow::ensure!(!keep.keep, "{}", KEEP_REFUSAL);
                 for recipe in std::iter::once(recipe).chain(more) {
                     anyhow::ensure!(
                         stem(recipe) != BASE_PACKAGE,
@@ -850,7 +882,8 @@ pub(crate) fn route(cli: &mut Cli) -> Result<bool> {
                     );
                 }
             }
-            Commands::Update { recipe, .. } => {
+            Commands::Update { recipe, keep } => {
+                anyhow::ensure!(!keep.keep, "{}", KEEP_REFUSAL);
                 anyhow::ensure!(stem(recipe) != BASE_PACKAGE, "{}", base_refusal("updated"));
             }
             _ => {}
@@ -907,6 +940,10 @@ pub(crate) fn route(cli: &mut Cli) -> Result<bool> {
     }
     Ok(true)
 }
+
+/// A system change keeps no material: its producer's downloads and build
+/// material go once its outputs are published (decision 23).
+const KEEP_REFUSAL: &str = "a system change keeps no downloads or build material: its producer run deletes them once the change is produced; --keep applies to a person's own installs (recipe install NAME --keep)";
 
 /// A removal does not first re-apply the package it removes.
 fn skipped(command: &Commands) -> Option<String> {
@@ -1009,7 +1046,9 @@ fn change(cli: &Cli, roots: &Roots, booted: &Receipt, recipe: &Path) -> Result<(
     let mut value = serde_json::json!({"action": action, "package": done.package, "packages": all_names,
         "other_root": roots.other_name, "other_mount": roots.other,
         "running_root": roots.booted_name, "active_now": false,
-        "in_other_root": after.packages.contains_key(&done.package)});
+        "in_other_root": after.packages.contains_key(&done.package),
+        // Section 8.6: the program's state in the root written.
+        "state": if after.packages.contains_key(&done.package) { "installed" } else { "none" }});
     // The same report of what the change left alone as a change to one root:
     // present, kept_config, new_config_beside, accounts_created, var_seeded.
     if let (Some(map), serde_json::Value::Object(more)) =
@@ -1214,9 +1253,12 @@ fn root_route(cli: &Cli, dir: &Path, kind: &str, recipe: Option<PathBuf>) -> Res
         Effects::Unchanged
     };
     let first = all[0].name.clone();
+    let after = system::read_receipt(&root)?;
     let mut value = serde_json::json!({"action": action, "package": first,
         "packages": all.iter().flat_map(|w| w.expects.keys()).collect::<Vec<_>>(),
-        "root": root, "receipt": root.join(system::RECEIPT)});
+        "root": root, "receipt": root.join(system::RECEIPT),
+        // Section 8.6: the program's state in the root written.
+        "state": if after.packages.contains_key(&first) { "installed" } else { "none" }});
     let merged = Written::merge(all);
     if let (Some(map), serde_json::Value::Object(more)) = (value.as_object_mut(), merged.json()) {
         map.extend(more);
@@ -1383,9 +1425,10 @@ fn report(cli: &Cli, roots: &Roots, booted: &Receipt, failed: &[(String, String)
 
 /// `recipe --system state NAME` (docs/recipe-format.md, section 8.5): the
 /// state the roots' receipts give, installed or none. The downloads and
-/// build material of system changes are not kept (their producer runs are
-/// discarded with the change), so `on_disk` is empty. Exits 0 whatever the
-/// state.
+/// build material of system changes are not kept (their producer runs delete
+/// them once their outputs are published, and a system change takes no
+/// `--keep`), so `keep` is false and `on_disk` is empty. Exits 0 whatever
+/// the state.
 fn program_state(
     cli: &Cli,
     roots: &Roots,

@@ -479,6 +479,7 @@ fn apply(cli: &mut Cli, folder: &Path) -> Result<()> {
         },
         "effects": effects.json(),
         "receipt": root.join(system::RECEIPT),
+        "freed_bytes": merged.freed,
         "restart_needed": running,
         "active_now": false,
     });

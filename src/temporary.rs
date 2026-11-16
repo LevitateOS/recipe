@@ -17,22 +17,7 @@ use std::path::{Path, PathBuf};
 /// enter it.
 pub(crate) fn pool() -> Result<PathBuf> {
     let uid = unsafe { libc::geteuid() };
-    let pool = match std::env::var_os("RECIPE_SCRATCH_DIR") {
-        Some(path) if !path.is_empty() => {
-            let path = PathBuf::from(path);
-            if !path.is_absolute() {
-                bail!("RECIPE_SCRATCH_DIR must be an absolute path");
-            }
-            path
-        }
-        _ if std::env::var_os("TMPDIR").is_some_and(|dir| !dir.is_empty()) => {
-            std::env::temp_dir().join(format!("recipe-scratch-{uid}"))
-        }
-        _ => dirs::cache_dir()
-            .context("cannot locate the cache directory; set RECIPE_SCRATCH_DIR")?
-            .join("recipe")
-            .join("scratch"),
-    };
+    let pool = pool_location()?;
     if let Some(parent) = pool.parent() {
         fs::create_dir_all(parent).context("cannot create recipe scratch parent directory")?;
     }
@@ -50,6 +35,27 @@ pub(crate) fn pool() -> Result<PathBuf> {
         );
     }
     Ok(pool)
+}
+
+/// Where the [`pool`] is, without creating it (`recipe storage` reads it).
+pub(crate) fn pool_location() -> Result<PathBuf> {
+    let uid = unsafe { libc::geteuid() };
+    Ok(match std::env::var_os("RECIPE_SCRATCH_DIR") {
+        Some(path) if !path.is_empty() => {
+            let path = PathBuf::from(path);
+            if !path.is_absolute() {
+                bail!("RECIPE_SCRATCH_DIR must be an absolute path");
+            }
+            path
+        }
+        _ if std::env::var_os("TMPDIR").is_some_and(|dir| !dir.is_empty()) => {
+            std::env::temp_dir().join(format!("recipe-scratch-{uid}"))
+        }
+        _ => dirs::cache_dir()
+            .context("cannot locate the cache directory; set RECIPE_SCRATCH_DIR")?
+            .join("recipe")
+            .join("scratch"),
+    })
 }
 
 /// Where a host run's directories live (`crate::host`). For an ordinary
@@ -228,7 +234,21 @@ impl TemporaryDirectory {
 }
 
 impl Drop for TemporaryDirectory {
+    /// Removed when the run ends, after success and failure alike (and on
+    /// unwinding). What a crash or a kill leaves behind is removed by the
+    /// next invocation that makes a scratch directory, once its lease is free
+    /// (`create_in`). A directory that cannot be removed now is reported.
     fn drop(&mut self) {
-        crate::fsx::make_removable(self.directory.path());
+        let path = self.directory.path();
+        crate::fsx::make_removable(path);
+        match fs::remove_dir_all(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => crate::diagnostics::diag!(
+                "recipe: warning: cannot remove the scratch directory {} ({error}); \
+                 the next run removes it",
+                path.display()
+            ),
+        }
     }
 }

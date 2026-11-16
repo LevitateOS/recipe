@@ -354,3 +354,98 @@ fn fetch_image(digest: &str, destination: &Path) -> Result<()> {
     crate::diagnostics::diag!("recipe: runtime image stored at {}", destination.display());
     Ok(())
 }
+
+/// The compiler image Recipe holds (`recipe storage`, kind `build_image`):
+/// the downloaded image files in the download cache and their unpacked
+/// copies in the scratch pool, plus the image installed with Recipe when it
+/// is the one in use. An image selected with `GINUX_ROOTFS` is the caller's
+/// file, not Recipe's, and is not counted.
+pub struct BuildImage {
+    /// The download cache (`~/.cache/recipe/images`).
+    pub path: PathBuf,
+    pub bytes: u64,
+    /// Whether `recipe runtime remove` can delete any of it: false when all
+    /// there is is the image installed with the system.
+    pub removable: bool,
+}
+
+/// The download cache of runtime images.
+fn images_directory() -> Result<PathBuf> {
+    Ok(dirs::cache_dir()
+        .context("cannot locate the image cache; set GINUX_ROOTFS to an assembled rootfs tar")?
+        .join("recipe/images"))
+}
+
+/// The regular files of the download cache (image files and partial
+/// downloads; the 0-byte download locks count as nothing).
+fn cached_images(directory: &Path) -> Vec<(PathBuf, u64)> {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let metadata = entry.metadata().ok()?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            (metadata.is_file() && !name.ends_with(".lock")).then(|| (entry.path(), metadata.len()))
+        })
+        .collect()
+}
+
+pub fn build_image() -> Result<BuildImage> {
+    let path = images_directory()?;
+    let removable_bytes = cached_images(&path)
+        .iter()
+        .map(|(_, bytes)| bytes)
+        .sum::<u64>()
+        + crate::inputs::image_cache_bytes();
+    let shipped = std::env::var_os("GINUX_ROOTFS").is_none()
+        && root_reference()
+            .and_then(|reference| rootfs_path(&reference))
+            .is_ok_and(|selected| selected == shipped_rootfs());
+    let shipped_bytes = if shipped {
+        std::fs::metadata(shipped_rootfs()).map_or(0, |metadata| metadata.len())
+    } else {
+        0
+    };
+    Ok(BuildImage {
+        path,
+        bytes: removable_bytes + shipped_bytes,
+        removable: removable_bytes > 0 || shipped_bytes == 0,
+    })
+}
+
+/// `recipe runtime remove`: delete the downloaded runtime images and their
+/// unpacked copies. A download in progress (its lock held) is left alone;
+/// the image installed with Recipe and one selected with `GINUX_ROOTFS` are
+/// never touched. The image is downloaded again when a recipe needs it.
+/// Returns the bytes freed.
+pub fn remove_build_image() -> Result<u64> {
+    use fs2::FileExt;
+    let directory = images_directory()?;
+    let mut freed = 0;
+    for (path, bytes) in cached_images(&directory) {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        // `<digest>.tar`, or `.partial-<digest>-…` of a download.
+        let digest = name
+            .strip_suffix(".tar")
+            .or_else(|| {
+                name.strip_prefix(".partial-")
+                    .and_then(|rest| rest.split('-').next())
+            })
+            .unwrap_or_default();
+        let lock = directory.join(format!(".fetch-{digest}.lock"));
+        let downloading = crate::fsx::open_lease(&lock, false)
+            .is_ok_and(|lock| lock.try_lock_exclusive().is_err());
+        if downloading {
+            continue;
+        }
+        std::fs::remove_file(&path).with_context(|| format!("cannot remove {}", path.display()))?;
+        freed += bytes;
+    }
+    freed += crate::inputs::remove_image_caches()?;
+    Ok(freed)
+}

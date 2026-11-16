@@ -165,7 +165,7 @@ fn run_inner(
     // What is done already, from Recipe's records: nothing to run, or a run
     // that starts from an unfinished generation, or from nothing.
     let mut restore =
-        match crate::launch::start(retained.as_ref(), operation, prepared, &restore_path)? {
+        match crate::launch::start(retained.as_ref(), invocation, prepared, &restore_path)? {
             crate::launch::Start::Done { publish } => {
                 return crate::launch::done_report(
                     &retained,
@@ -173,9 +173,7 @@ fn run_inner(
                     publish,
                     prepared,
                     &invocation_id,
-                    operation,
-                    options,
-                    state_dir,
+                    invocation,
                 );
             }
             crate::launch::Start::Run { restore } => restore,
@@ -449,9 +447,7 @@ fn run_inner(
             &mut retained,
             prepared,
             &invocation_id,
-            operation,
-            options,
-            state_dir,
+            invocation,
             usage,
         )?);
     }

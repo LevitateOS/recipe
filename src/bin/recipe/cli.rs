@@ -243,9 +243,9 @@ pub(crate) enum Commands {
     )]
     History,
 
-    /// Show what installed software takes on disk
+    /// Show everything Recipe holds on disk, by kind, and what removes each
     #[command(
-        after_help = "Examples:\n  recipe storage\n  recipe storage --json\n\nThe package store keeps one generation: what is installed now. An install,\nupdate or remove deletes the generation it replaces once the new one is active."
+        after_help = "Examples:\n  recipe storage\n  recipe storage --json\n\nSeven kinds, each byte counted once: installed (the package store, and the\npublished outputs of --no-activate runs), downloaded, built, kept (material of\ninstalled programs with --keep), unfinished (saved state of interrupted runs),\nbuild_image (the cached compiler image; 'recipe runtime remove') and logs\n('recipe cleanup --logs'). Nothing is changed."
     )]
     Storage,
 
@@ -263,7 +263,7 @@ pub(crate) enum Commands {
 
     /// Delete downloads and build material; installed programs stay
     #[command(
-        after_help = "Examples:\n  recipe cleanup kitty\n  recipe cleanup kitty --downloads\n  recipe cleanup kitty --build\n  recipe cleanup\n\nWith a name: that program's downloads, kept results and unfinished runs (and\nthose of the dependency runs made for it); then the recipe's own\ncleanup(\"manual\") runs when it defines one. Without a name: the same for every\nprogram. The installed programs stay."
+        after_help = "Examples:\n  recipe cleanup kitty\n  recipe cleanup kitty --downloads\n  recipe cleanup kitty --build\n  recipe cleanup\n  recipe cleanup --logs\n\nWith a name: that program's downloads, kept results and unfinished runs (and\nthose of the dependency runs made for it); then the recipe's own\ncleanup(\"manual\") runs when it defines one. Without a name: the same for every\nprogram. Material kept with --keep is deleted too; the keep option stays on.\nThe installed programs stay. --logs deletes the diagnostic logs instead."
     )]
     Cleanup {
         /// Recipe path or recipe name; without it, every program. Name lookup follows the same rules as `recipe install`.
@@ -274,6 +274,9 @@ pub(crate) enum Commands {
         /// Only the build material: kept results and unfinished runs.
         #[arg(long)]
         build: bool,
+        /// The diagnostic logs of finished runs, instead of any program's material.
+        #[arg(long, conflicts_with_all = ["recipe", "downloads", "build"])]
+        logs: bool,
     },
 
     /// Print a program's state: none, downloaded, built or installed
@@ -399,6 +402,8 @@ pub(crate) enum RuntimeCommands {
     Status,
     /// Download the selected runtime image now, unless it is already here
     Fetch,
+    /// Delete the downloaded runtime image and its unpacked copies; it is downloaded again when a recipe needs it
+    Remove,
     /// Write a runtime tree (launcher, reference, sources, profile snippet) into a staging root
     Stage {
         /// The staging root; it may already hold other files.

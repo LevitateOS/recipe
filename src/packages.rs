@@ -167,8 +167,11 @@ impl PackageStore {
         Ok(package.clone())
     }
 
-    /// Copy the validated publication, then activate a complete new profile.
-    /// `update_only` refuses an absent package instead of implicitly installing it.
+    /// Move the validated publication into a new generation (copied only
+    /// where the publication is on another filesystem than the store), then
+    /// activate the complete new profile. The publication's files are
+    /// therefore gone from `package_output` afterwards. `update_only`
+    /// refuses an absent package instead of implicitly installing it.
     pub fn install(
         &self,
         name: &str,
@@ -198,7 +201,7 @@ impl PackageStore {
         let mut packages = active.packages.clone();
         copy_existing(&root, &active, pending.path(), Some(name))?;
         let destination = pending.path().join(PACKAGES).join(name);
-        let files = copy_package(package_output, &destination, false)?;
+        let files = copy_package(package_output, &destination, Placing::Move)?;
         ensure!(!files.is_empty(), "package {name} has no installable files");
         let mut size_bytes = 0;
         for file in &files {
@@ -595,7 +598,7 @@ fn copy_existing(root: &Path, active: &Active, pending: &Path, omit: Option<&str
             .join(PACKAGES)
             .join(name);
         let destination = pending.join(PACKAGES).join(name);
-        let files = copy_package(&source, &destination, true)?;
+        let files = copy_package(&source, &destination, Placing::Link)?;
         ensure!(
             files == package.files,
             "installed files no longer match the receipt for {name}"
@@ -604,19 +607,28 @@ fn copy_existing(root: &Path, active: &Active, pending: &Path, omit: Option<&str
     Ok(())
 }
 
+/// How [`copy_package`] places each file.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Placing {
+    /// From the active generation: hard links to its immutable files.
+    Link,
+    /// From a publication: moved (renamed) into the generation, read-only;
+    /// copied where the two are on different filesystems.
+    Move,
+}
+
 /// Package outputs deliberately expose a small install surface. No symlink,
 /// device, special permission, arbitrary host path or activation script crosses
-/// this boundary, and no program in the publication is executed here.
-fn copy_package(source: &Path, destination: &Path, retained: bool) -> Result<Vec<String>> {
+/// this boundary, and no program in the publication is executed here. Every
+/// entry is checked before the first file is placed.
+fn copy_package(source: &Path, destination: &Path, placing: Placing) -> Result<Vec<String>> {
     let metadata = fs::symlink_metadata(source)?;
     ensure!(metadata.is_dir(), "package output is not a real directory");
     ensure!(
         metadata.mode() & 0o6000 == 0,
         "package output directory has setuid/setgid permissions"
     );
-    create_directory(destination)?;
-    let mut files = Vec::new();
-    let mut copied = Vec::new();
+    let mut entries = Vec::new();
     for entry in walkdir::WalkDir::new(source)
         .follow_links(false)
         .min_depth(1)
@@ -624,8 +636,11 @@ fn copy_package(source: &Path, destination: &Path, retained: bool) -> Result<Vec
     {
         crate::cancellation::check()?;
         let entry = entry?;
-        let relative = entry.path().strip_prefix(source)?;
-        let relative_text = relative.to_str().context("package paths must be UTF-8")?;
+        let relative = entry.path().strip_prefix(source)?.to_path_buf();
+        let relative_text = relative
+            .to_str()
+            .context("package paths must be UTF-8")?
+            .to_owned();
         let metadata = fs::symlink_metadata(entry.path())?;
         ensure!(
             metadata.mode() & 0o6000 == 0,
@@ -642,7 +657,6 @@ fn copy_package(source: &Path, destination: &Path, retained: bool) -> Result<Vec
                 || first.as_os_str() == "lib",
             "unsupported package directory: {relative_text}"
         );
-        let output = destination.join(relative);
         if metadata.is_dir() {
             ensure!(
                 relative
@@ -650,47 +664,75 @@ fn copy_package(source: &Path, destination: &Path, retained: bool) -> Result<Vec
                     .all(|c| matches!(c, Component::Normal(_))),
                 "invalid package directory"
             );
-            create_directory(&output)?;
         } else {
-            valid_file(relative_text)?;
+            valid_file(&relative_text)?;
             if first.as_os_str() == "bin" {
                 ensure!(
                     metadata.mode() & 0o111 != 0,
                     "package command is not executable: {relative_text}"
                 );
             }
-            if retained {
-                fs::hard_link(entry.path(), &output)?;
+        }
+        entries.push((entry.into_path(), relative, relative_text, metadata));
+    }
+    create_directory(destination)?;
+    let mut files = Vec::new();
+    let mut placed = Vec::new();
+    for (path, relative, relative_text, metadata) in entries {
+        crate::cancellation::check()?;
+        let output = destination.join(&relative);
+        if metadata.is_dir() {
+            create_directory(&output)?;
+            continue;
+        }
+        let mode = if metadata.mode() & 0o111 != 0 {
+            0o555
+        } else {
+            0o444
+        };
+        match placing {
+            Placing::Link => {
+                fs::hard_link(&path, &output)?;
                 ensure!(
                     fs::symlink_metadata(&output)?.is_file(),
                     "installed package file changed during activation"
                 );
-            } else {
-                let mut input = crate::fsx::open_regular(entry.path())?;
-                let mode = if metadata.mode() & 0o111 != 0 {
-                    0o555
-                } else {
-                    0o444
-                };
-                let mut target = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .open(&output)?;
-                std::io::copy(&mut input, &mut target)?;
-                target.set_permissions(fs::Permissions::from_mode(mode))?;
-                copied.push(output);
             }
-            files.push(relative_text.to_owned());
+            Placing::Move => match fs::rename(&path, &output) {
+                Ok(()) => {
+                    ensure!(
+                        fs::symlink_metadata(&output)?.is_file(),
+                        "package file changed during activation: {relative_text}"
+                    );
+                    placed.push((output, mode));
+                }
+                Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
+                    let mut input = crate::fsx::open_regular(&path)?;
+                    let mut target = OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(0o600)
+                        .open(&output)?;
+                    std::io::copy(&mut input, &mut target)?;
+                    placed.push((output, mode));
+                }
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("cannot move {relative_text} into the store"));
+                }
+            },
         }
+        files.push(relative_text);
     }
-    // Copied bytes are durable before the generation's directories are synced
-    // and its profile is switched (`finish_generation`): one batch instead of
-    // one fsync per file. Hardlinked files are a durable generation's already.
+    // Placed files get their read-only mode and are durable before the
+    // generation's directories are synced and its profile is switched
+    // (`finish_generation`): one batch instead of one fsync per file (a moved
+    // file's bytes are durable already; its new mode is not). Hardlinked
+    // files are a durable generation's already.
     crate::fsx::sync_files(
-        &copied
+        &placed
             .iter()
-            .map(|path| (path.as_path(), None))
+            .map(|(path, mode)| (path.as_path(), Some(*mode)))
             .collect::<Vec<_>>(),
     )?;
     files.sort();

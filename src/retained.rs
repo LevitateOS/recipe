@@ -400,7 +400,10 @@ impl Retained {
             state_budget,
             archive_bound: options.execution.archive_bound(),
         };
-        retained.prune_best_effort();
+        // Other identities stay until this one keeps a generation of its own
+        // (`commit_as`): a run that fails before that leaves the saved state
+        // it found.
+        retained.prune_best_effort(false);
         Ok(retained)
     }
 
@@ -580,13 +583,17 @@ impl Retained {
         let root = scope.parent().context("scope has no state root")?;
         crate::fsx::sync_directories(&[&self.directory, scope, root])?;
         self.current = record;
-        self.prune_best_effort();
+        self.prune_best_effort(true);
         Ok(self.current.generation)
     }
 
     /// Keep the end of a run: the downloads of `recipe download`
     /// ([`Reached::Downloaded`], no outputs) or a finished result
-    /// ([`Reached::Built`] with its outputs).
+    /// ([`Reached::Built`] with its outputs). The run's archive at `export`
+    /// is moved into the generation, so it is not there afterwards. Only
+    /// where the state root is on another filesystem than the run's scratch
+    /// directory (`crate::temporary::pool`) is it cloned or copied instead
+    /// (a rename cannot cross filesystems).
     pub fn finish(
         &mut self,
         export: &Path,
@@ -595,18 +602,29 @@ impl Retained {
         outputs: BTreeMap<String, String>,
     ) -> Result<u64> {
         let pending = self.begin()?;
-        let mut input = crate::fsx::open_regular(export)?;
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&pending.path)?;
+        match fs::rename(export, &pending.path) {
+            Ok(()) => {
+                fs::set_permissions(
+                    &pending.path,
+                    std::os::unix::fs::PermissionsExt::from_mode(0o600),
+                )?;
+            }
+            Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
+                let mut input = crate::fsx::open_regular(export)?;
+                let mut output = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&pending.path)?;
+                if !crate::fsx::reflink(&input, &output)? {
+                    crate::fsx::copy_hashed(&mut input, &mut output, self.archive_bound)?;
+                }
+                drop(output);
+            }
+            Err(error) => return Err(error).context("cannot keep the run's archive"),
+        }
         // `commit` hashes the snapshot within the archive bound and makes it
         // durable with the rest of the generation.
-        if !crate::fsx::reflink(&input, &output)? {
-            crate::fsx::copy_hashed(&mut input, &mut output, self.archive_bound)?;
-        }
-        drop(output);
         self.commit_as(pending, crate::domain::MAIN_RECIPE, state, reached, outputs)
     }
 }
@@ -635,13 +653,10 @@ fn durable_directory(path: &Path) -> Result<()> {
     crate::fsx::private_dir(&path, true)
 }
 
-// C4b: saved state only while a run is unfinished and one copy at most
-// (docs/recipe-format.md, section 7 and 6.5) replaces these counts.
-// Per destination/recipe scope: retain the current and three recent input
-// identities, each with its current and previous complete filesystem generation.
-// The caller holds the existing destination lock throughout this operation.
-const RETAIN_IDENTITIES: usize = 4;
-const RETAIN_GENERATIONS: usize = 2;
+// Saved state is one copy at most (docs/recipe-format.md, sections 6.5 and
+// 7): per scope (recipe and destination) only the current generation of the
+// identity that ran last is kept. The caller holds the destination lock
+// throughout pruning.
 
 fn owned_record(path: &Path, identity: &str) -> Option<Record> {
     let mut file = crate::fsx::open_regular(path).ok()?;
@@ -683,14 +698,18 @@ fn remove_generation(path: &Path) -> Result<bool> {
 }
 impl Retained {
     /// Removing old generations is housekeeping: it never fails the
-    /// invocation that triggered it (the newest pair is already durable).
-    fn prune_best_effort(&self) {
-        if let Err(error) = self.prune() {
+    /// invocation that triggered it (the current generation is already
+    /// durable). With `others`, the scope's other identities go too.
+    fn prune_best_effort(&self, others: bool) {
+        if let Err(error) = self.prune(others) {
             crate::diagnostics::diag!("recipe: warning: cannot prune saved state: {error:#}");
         }
     }
 
-    fn prune(&self) -> Result<()> {
+    /// Delete every generation of this identity but the current one, a
+    /// crashed never-committed snapshot, and with `others` every other
+    /// identity of the scope: one copy at most.
+    fn prune(&self, others: bool) -> Result<()> {
         let mut generations = Vec::new();
         let current = self.current.archive.split('/').next().unwrap_or("");
         for entry in fs::read_dir(&self.directory)? {
@@ -715,46 +734,33 @@ impl Retained {
                 remove_generation(&entry.path())?;
             }
         }
-        generations.sort_by_key(|(generation, _)| std::cmp::Reverse(*generation));
-        let mut kept = 0;
         for (_, path) in generations {
             if path.file_name().is_some_and(|name| name == current) {
                 continue;
             }
-            if kept < RETAIN_GENERATIONS - 1 {
-                kept += 1;
-            } else {
-                remove_generation(&path)?;
-            }
+            remove_generation(&path)?;
+        }
+        if !others || self.current.generation == 0 {
+            return Ok(());
         }
         let scope = self.directory.parent().context("identity has no scope")?;
-        let mut identities = Vec::new();
         for entry in fs::read_dir(scope)? {
             let entry = entry?;
             let name = entry.file_name();
-            let Some(name) = name.to_str() else {
+            let Some(identity) = name.to_str() else {
                 continue;
             };
             if entry.path() == self.directory
                 || !entry.file_type()?.is_dir()
-                || name.len() != 64
-                || !name.bytes().all(|b| b.is_ascii_hexdigit())
+                || identity.len() != 64
+                || !identity.bytes().all(|b| b.is_ascii_hexdigit())
             {
                 continue;
             }
-            let pointer = entry.path().join(CURRENT);
-            if owned_record(&pointer, name).is_some() {
-                identities.push((
-                    fs::metadata(&pointer)?.modified()?,
-                    entry.path(),
-                    name.to_owned(),
-                ));
-            }
-        }
-        identities.sort_by_key(|(time, _, _)| std::cmp::Reverse(*time));
-        for (_, path, identity) in identities.into_iter().skip(RETAIN_IDENTITIES - 1) {
+            let path = entry.path();
             let entries = fs::read_dir(&path)?.collect::<std::io::Result<Vec<_>>>()?;
-            // Foreign or manually added data is never recursively removed.
+            // Foreign or manually added data is never recursively removed:
+            // only the pointer, committed generations and crashed snapshots.
             let owned = entries.iter().all(|entry| {
                 (entry.file_name() == CURRENT && entry.file_type().is_ok_and(|kind| kind.is_file()))
                     || (entry.file_type().is_ok_and(|kind| kind.is_dir())
@@ -762,8 +768,11 @@ impl Retained {
                             .file_name()
                             .to_string_lossy()
                             .starts_with(GENERATION_PREFIX)
-                        && owned_record(&entry.path().join(RECORD), &identity).is_some()
-                        && generation_files(&entry.path()).is_some())
+                        && generation_files(&entry.path()).is_some_and(|files| {
+                            owned_record(&entry.path().join(RECORD), identity).is_some()
+                                || (files.len() == 1
+                                    && files[0].file_name().is_some_and(|name| name == FILES))
+                        }))
             });
             if !owned {
                 continue;
@@ -773,7 +782,12 @@ impl Retained {
                     remove_generation(&entry.path())?;
                 }
             }
-            fs::remove_file(path.join(CURRENT))?;
+            match fs::remove_file(path.join(CURRENT)) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(error.into());
+                }
+                _ => {}
+            }
             fs::remove_dir(path)?;
         }
         // No barrier: removals that a crash undoes are repeated by the next
@@ -942,19 +956,25 @@ impl Scope {
     }
 
     /// Delete the generations of the kinds in `kinds`, holding the
-    /// destination's lock (a run of this recipe holds it while it runs).
-    /// Where an identity's current generation goes, its newest remaining one
-    /// becomes current; an identity left with none is removed. Returns the
-    /// bytes freed.
-    pub fn remove(&self, kinds: &[Reached]) -> Result<u64> {
-        let _lock =
-            lock_destination(&self.destination, Duration::from_secs(10)).with_context(|| {
-                format!(
-                    "{} is in use by a run of {}; try again when it ends",
-                    self.destination.display(),
-                    self.recipe.display()
-                )
-            })?;
+    /// destination's lock (a run of this recipe holds it while it runs, so
+    /// nothing a run in progress uses is deleted). Waits up to `wait` for
+    /// the lock. Returns the bytes freed.
+    pub fn remove(&self, kinds: &[Reached], wait: Duration) -> Result<u64> {
+        let _lock = lock_destination(&self.destination, wait).with_context(|| {
+            format!(
+                "{} is in use by a run of {}; try again when it ends",
+                self.destination.display(),
+                self.recipe.display()
+            )
+        })?;
+        self.remove_locked(kinds)
+    }
+
+    /// [`Self::remove`] by a caller that holds the destination's lock
+    /// already (the run that just finished). Where an identity's current
+    /// generation goes, its newest remaining one becomes current; an
+    /// identity left with none is removed, and a scope left with none too.
+    pub fn remove_locked(&self, kinds: &[Reached]) -> Result<u64> {
         let mut freed = 0;
         let mut identities = HashSet::new();
         for generation in self.generations()? {
@@ -1015,6 +1035,20 @@ impl Scope {
                     let _ = fs::remove_dir(&identity);
                 }
             }
+        }
+        // A scope that holds nothing but its own description goes too, so
+        // nothing of the program is left (a run makes it again).
+        let empty = fs::read_dir(&self.directory)?
+            .filter_map(|entry| entry.ok())
+            .all(|entry| entry.file_name() == SCOPE_ABOUT);
+        if empty {
+            match fs::remove_file(self.directory.join(SCOPE_ABOUT)) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(error.into());
+                }
+                _ => {}
+            }
+            let _ = fs::remove_dir(&self.directory);
         }
         Ok(freed)
     }

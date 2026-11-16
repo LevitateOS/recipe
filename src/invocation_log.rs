@@ -81,7 +81,8 @@ impl InvocationLog {
         let pool = crate::fsx::open_lease(&logs.join("prune.lock"), true)?;
         pool.lock_exclusive()?;
         // Removing old logs is housekeeping; it never fails this invocation.
-        if let Err(error) = prune(&logs) {
+        // One slot is for the invocation being created.
+        if let Err(error) = prune(&logs, RETAINED_INVOCATIONS - 1) {
             crate::diagnostics::diag!("recipe: warning: cannot prune old diagnostics: {error:#}");
         }
         let directory = logs.join(invocation);
@@ -217,10 +218,55 @@ fn read_bounded(path: &Path, bound: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Remove the oldest unleased invocation directories beyond retention.
-/// A directory is ours when its name is an invocation id, it holds a lease and
-/// nothing but our files (or a staging leftover from a crash).
-fn prune(root: &Path) -> Result<()> {
+/// The diagnostic logs under the state root `state_root`: where, and their
+/// bytes (`recipe storage`).
+pub(crate) struct Logs {
+    pub path: PathBuf,
+    pub bytes: u64,
+}
+
+pub(crate) fn bytes(state_root: &Path) -> Logs {
+    let path = state_root.join(LOGS);
+    Logs {
+        bytes: crate::publication::tree_bytes(&path),
+        path,
+    }
+}
+
+/// `recipe cleanup --logs`: delete every invocation directory no invocation
+/// holds (a running one keeps its own). Returns the bytes freed.
+pub(crate) fn remove_all(state_root: &Path) -> Result<u64> {
+    use fs2::FileExt;
+    let logs = state_root.join(LOGS);
+    if !logs.is_dir() {
+        return Ok(0);
+    }
+    let pool = crate::fsx::open_lease(&logs.join("prune.lock"), true)?;
+    pool.lock_exclusive()?;
+    prune(&logs, 0)
+}
+
+/// The name of the recipe invocation `invocation` ran, from its authority
+/// receipt, while its diagnostics are kept.
+pub(crate) fn recipe_of(state_root: &Path, invocation: &str) -> Option<String> {
+    if !crate::domain::valid_name(invocation) {
+        return None;
+    }
+    let bytes = read_bounded(
+        &state_root.join(LOGS).join(invocation).join(AUTHORITY),
+        MAX_RESULT_BYTES,
+    )
+    .ok()?;
+    let authority: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let recipe = Path::new(authority["declaration"]["recipe"].as_str()?);
+    Some(recipe.file_stem()?.to_string_lossy().into_owned())
+}
+
+/// Remove the oldest unleased invocation directories beyond the newest
+/// `keep`. A directory is ours when its name is an invocation id, it holds a
+/// lease and nothing but our files (or a staging leftover from a crash).
+/// Returns the bytes freed.
+fn prune(root: &Path, keep: usize) -> Result<u64> {
     use fs2::FileExt;
     use std::io::Read;
     let mut inactive = Vec::new();
@@ -274,12 +320,13 @@ fn prune(root: &Path) -> Result<()> {
         inactive.push((aged, path, lease, files));
     }
     inactive.sort_by_key(|(time, _, _, _)| std::cmp::Reverse(*time));
-    // One slot is for the invocation being created.
-    for (_, path, _lease, files) in inactive.into_iter().skip(RETAINED_INVOCATIONS - 1) {
+    let mut freed = 0;
+    for (_, path, _lease, files) in inactive.into_iter().skip(keep) {
         for file in files {
+            freed += file.metadata().map_or(0, |metadata| metadata.len());
             std::fs::remove_file(file.path())?;
         }
         std::fs::remove_dir(path)?;
     }
-    Ok(())
+    Ok(freed)
 }

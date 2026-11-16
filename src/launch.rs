@@ -95,6 +95,23 @@ pub(crate) struct Invocation<'a> {
     /// The recipe's state key (`crate::state::key`), recorded with each
     /// generation.
     pub key: &'a str,
+    /// What a successful install of the main recipe does once its outputs
+    /// are published ([`Finish`]); None for every other run (dependencies,
+    /// the other operations).
+    pub finish: Option<&'a Finish<'a>>,
+}
+
+/// The end of a successful install of the main recipe (docs/recipe-format.md,
+/// sections 6.1, 6.4 and 6.5): activate its package (the caller's package
+/// store; nothing for a producer, whose install is its published outputs),
+/// then the cleanup step unless the program keeps its material. Both run in
+/// the run that installed, under the destination lock it holds, so no other
+/// run of the recipe at this destination can start in between or lose
+/// material it needs; the dependency runs made for it are cleaned afterwards
+/// (`crate::backend`).
+pub(crate) struct Finish<'a> {
+    pub keep: bool,
+    pub activate: Option<&'a crate::Activate<'a>>,
 }
 
 /// Outcome of one supervised domain run.
@@ -227,6 +244,7 @@ fn run_domain_inner(
         key: invocation_key,
         ..
     } = *invocation;
+    let run = invocation;
     let invocation = prepared.invocation_id.clone();
     let timeout = frame_timeout()
         .map_err(|error| crate::failure::Category::Startup.wrap(error, "invalid frame timeout"))?;
@@ -272,7 +290,7 @@ fn run_domain_inner(
     // What is done already, from Recipe's records: nothing to run, or a run
     // that starts from an unfinished generation, or from nothing.
     let restore_path = run_dir.path().join("restore.tar");
-    let mut restore = match start(retained.as_ref(), operation, prepared, &restore_path)? {
+    let mut restore = match start(retained.as_ref(), run, prepared, &restore_path)? {
         Start::Done { publish } => {
             return done_report(
                 &retained,
@@ -280,9 +298,7 @@ fn run_domain_inner(
                 publish,
                 prepared,
                 &invocation,
-                operation,
-                options,
-                state_dir,
+                run,
             );
         }
         Start::Run { restore } => restore,
@@ -502,9 +518,7 @@ fn run_domain_inner(
             &mut retained,
             prepared,
             &invocation,
-            operation,
-            options,
-            state_dir,
+            run,
             usage,
         )?);
     }
@@ -540,15 +554,19 @@ pub(crate) enum Start {
 /// result is never built on again, and a `RERUN` recipe's never reused.
 pub(crate) fn start(
     retained: Option<&crate::retained::Retained>,
-    operation: crate::worker::protocol::Operation,
+    run: &Invocation<'_>,
     prepared: &PreparedInvocation,
     restore_path: &Path,
 ) -> Result<Start> {
     use crate::retained::Reached;
     use crate::worker::protocol::Operation;
+    let operation = run.operation;
+    let cleans = cleans(run);
     let storage = |error| crate::failure::Category::Storage.wrap(error, "cannot read saved state");
     let Some(retained) = retained else {
-        return Ok(Start::Run { restore: false });
+        let start = Start::Run { restore: false };
+        plan_event(prepared, operation, &start, cleans);
+        return Ok(start);
     };
     let rerun = prepared.declaration.declared.rerun;
     let start = match (operation, retained.reached()) {
@@ -574,8 +592,15 @@ pub(crate) fn start(
             restore: retained.restore_input(restore_path).map_err(storage)?,
         },
     };
-    plan_event(prepared, operation, &start);
+    plan_event(prepared, operation, &start, cleans);
     Ok(start)
+}
+
+/// Whether this run ends with the cleanup step: the main recipe's install,
+/// unless the program keeps its material.
+fn cleans(run: &Invocation<'_>) -> bool {
+    run.operation == crate::worker::protocol::Operation::Install
+        && run.finish.is_some_and(|finish| !finish.keep)
 }
 
 /// The recipe's own `plan` event for a front end, once Recipe knows what is
@@ -584,10 +609,12 @@ fn plan_event(
     prepared: &PreparedInvocation,
     operation: crate::worker::protocol::Operation,
     start: &Start,
+    cleans: bool,
 ) {
     use crate::worker::protocol::Operation;
     let declared = &prepared.declaration.declared;
     let steps: Vec<&str> = match start {
+        Start::Done { publish: true } if cleans => vec!["install", "cleanup"],
         Start::Done { publish: true } => vec!["install"],
         Start::Done { publish: false } => Vec::new(),
         Start::Run { .. } => declared
@@ -600,7 +627,7 @@ fn plan_event(
                 ),
                 "build" => operation.builds(),
                 "install" => operation == Operation::Install,
-                // C4b: the cleanup step after a successful install.
+                "cleanup" => cleans,
                 _ => false,
             })
             .collect(),
@@ -623,6 +650,7 @@ fn finish_steps(
     worker: &[crate::core::events::StepReport],
     operation: crate::worker::protocol::Operation,
     published: bool,
+    cleanup: crate::core::events::StepStatus,
 ) -> Vec<crate::core::events::StepReport> {
     use crate::core::events::{StepReport, StepStatus};
     use crate::worker::protocol::Operation;
@@ -642,8 +670,10 @@ fn finish_steps(
                     "install" if published => StepStatus::Done,
                     "download" if operation != Operation::Cleanup => StepStatus::Already,
                     "build" if operation.builds() => StepStatus::Already,
-                    // C4b: cleanup after a successful install (done, or
-                    // skipped when the keep option is on).
+                    // Done after an install that deleted the material;
+                    // skipped when the program keeps it, and for the other
+                    // operations.
+                    "cleanup" => cleanup,
                     _ => StepStatus::Skipped,
                 }
             };
@@ -740,23 +770,36 @@ pub(crate) fn done_report(
     publish: bool,
     prepared: &PreparedInvocation,
     invocation: &str,
-    operation: crate::worker::protocol::Operation,
-    options: &crate::worker::protocol::InvocationOptions,
-    state_dir: Option<&Path>,
+    run: &Invocation<'_>,
 ) -> Result<LaunchReport> {
+    let operation = run.operation;
     let kept = retained
         .as_ref()
         .map(|state| state.outputs().clone())
         .unwrap_or_default();
     let outputs = if publish {
-        let publication = validate(&kept, restore_path, None, prepared, options, state_dir)?;
+        let publication = validate(
+            &kept,
+            restore_path,
+            None,
+            prepared,
+            &run.options,
+            run.state_dir,
+        )?;
         self::publish(publication, invocation)?
     } else {
         serde_json::json!({})
     };
-    let steps = finish_steps(prepared, &[], operation, publish);
     let usage = serde_json::json!({"status": "unused",
         "reason": "nothing ran: Recipe's records hold what was asked for", "warnings": []});
+    let mut summary = summary(prepared, Vec::new(), outputs, usage)?;
+    let cleanup = if publish && operation == crate::worker::protocol::Operation::Install {
+        complete(run, &mut summary)?
+    } else {
+        crate::core::events::StepStatus::Skipped
+    };
+    let steps = finish_steps(prepared, &[], operation, publish, cleanup);
+    summary["steps"] = serde_json::to_value(&steps)?;
     let result = ResultPayload {
         ok: true,
         failure: None,
@@ -768,7 +811,7 @@ pub(crate) fn done_report(
     };
     Ok(LaunchReport {
         result,
-        summary: Some(summary(prepared, steps, outputs, usage)?),
+        summary: Some(summary),
         checkpoints_acked: 0,
         generations: Vec::new(),
         launcher_code: Some(0),
@@ -792,13 +835,12 @@ pub(crate) fn finish_outputs(
     retained: &mut Option<crate::retained::Retained>,
     prepared: &PreparedInvocation,
     invocation: &str,
-    operation: crate::worker::protocol::Operation,
-    options: &crate::worker::protocol::InvocationOptions,
-    state_dir: Option<&Path>,
+    run: &Invocation<'_>,
     usage: serde_json::Value,
 ) -> Result<serde_json::Value> {
     use crate::retained::Reached;
     use crate::worker::protocol::Operation;
+    let (operation, options, state_dir) = (run.operation, &run.options, run.state_dir);
     if let Some(warnings) = usage["warnings"].as_array() {
         for warning in warnings {
             if let Some(warning) = warning.as_str() {
@@ -830,6 +872,10 @@ pub(crate) fn finish_outputs(
         }
         _ => None,
     };
+    // The run's archive moves into the kept generation (a finished result
+    // stays kept until the install is complete and activated, so a crash
+    // before that installs it without building again). The publication was
+    // unpacked from it above and no longer reads it.
     if let (Some(state), Some((reached, outputs))) = (retained.as_mut(), keep) {
         state
             .finish(export_path, result.saved.clone(), reached, outputs)
@@ -844,12 +890,65 @@ pub(crate) fn finish_outputs(
     } else {
         serde_json::json!({})
     };
-    let steps = finish_steps(prepared, &result.steps, operation, install);
-    let mut summary = summary(prepared, steps, outputs, usage)?;
+    let mut summary = summary(prepared, Vec::new(), outputs, usage)?;
+    let cleanup = if install {
+        complete(run, &mut summary)?
+    } else {
+        crate::core::events::StepStatus::Skipped
+    };
+    let steps = finish_steps(prepared, &result.steps, operation, install, cleanup);
+    summary["steps"] = serde_json::to_value(&steps)?;
     if let Some(latest) = &result.latest {
         summary["latest"] = latest.as_str().into();
     }
     Ok(summary)
+}
+
+/// After an install published its outputs ([`Finish`]): activate, then the
+/// cleanup step unless kept, deleting every generation of the recipe's scope
+/// at this destination (downloads, unfinished runs, the kept result) under
+/// the destination lock this run holds. Only once activation succeeded: a
+/// failed activation fails the run and leaves the kept result, which the
+/// next install publishes again. Sets `kept` and `freed_bytes` in `summary`;
+/// returns the cleanup step's status. A dependency's run has no [`Finish`]
+/// and keeps its result for its consumer.
+fn complete(
+    run: &Invocation<'_>,
+    summary: &mut serde_json::Value,
+) -> Result<crate::core::events::StepStatus> {
+    use crate::core::events::StepStatus;
+    let Some(finish) = run.finish else {
+        return Ok(StepStatus::Skipped);
+    };
+    if let Some(activate) = finish.activate {
+        activate(summary)?;
+    }
+    summary["kept"] = finish.keep.into();
+    summary["freed_bytes"] = 0.into();
+    if finish.keep {
+        return Ok(StepStatus::Skipped);
+    }
+    let removed =
+        crate::retained::Scope::of(run.state_dir, run.recipe, run.destination).and_then(|scope| {
+            match scope {
+                Some(scope) => scope.remove_locked(crate::state::Material::All.kinds()),
+                None => Ok(0),
+            }
+        });
+    Ok(match removed {
+        Ok(freed) => {
+            summary["freed_bytes"] = freed.into();
+            StepStatus::Done
+        }
+        // The program is installed; what could not be deleted stays for
+        // `recipe cleanup`.
+        Err(error) => {
+            crate::diagnostics::diag!(
+                "recipe: warning: the install is complete, but its material could not be deleted: {error:#}; `recipe cleanup` deletes it later"
+            );
+            StepStatus::Failed
+        }
+    })
 }
 
 /// Completed worker stream: exactly one result plus the relayed checkpoints.
