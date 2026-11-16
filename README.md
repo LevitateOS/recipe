@@ -259,7 +259,10 @@ version. The coordinator copies them into an owned profile generation and commit
 the files and installed receipt through one atomic symlink switch. File conflicts,
 symlinks, special files and setuid/setgid payloads fail before switching. No
 activation script executes on the host. Failed acquisition or activation preserves
-the previous profile.
+the previous profile. The store keeps exactly one generation: an install, update or
+remove deletes the generation it replaced once the new one is active (after the
+switch and its directory sync), and the next change deletes any generation an
+interrupted one left behind.
 
 Outside the A/B system route, root's package root is `/var/lib/recipe`; an ordinary user's is
 `$XDG_DATA_HOME/recipe` (normally `~/.local/share/recipe`). `--package-root PATH`
@@ -268,37 +271,30 @@ profiles add the booted root's system path and ordinary user paths to PATH. On a
 without the recipe or runtime. `installed` only reads, so an ordinary user may
 also read a store root owns (`recipe installed --package-root /var/lib/recipe`);
 changing a store still requires owning it. `isinstalled` checks active files and links. Removed
-packages disappear from the profile; old inactive generations and build/publication
+packages disappear from the profile and their files are deleted; build/publication
 caches remain. They are not an installed-package inventory.
 
 For a front end, all read-only and without Ginux: `recipe installed --json`
 adds to each package what its recipe was allowed to use when it was installed
-(`needs`), when (`installed_on`), the length of its files (`size_bytes`) and
-the earlier versions still held (`kept`). `recipe updates` says which installed
+(`needs`), when (`installed_on`) and the length of its files (`size_bytes`).
+`recipe updates` says which installed
 packages `recipe update` would change, from the receipts, the collection and
 the sources as last fetched, and lists under `changes` every NEEDS field in
 which the newer recipe differs from what was recorded (`added` and `raised`
 mean it may use more; `null` when the receipt predates the record).
-`recipe go-back NAME [--to VERSION]` activates an earlier version again from
-the files an inactive generation holds; `recipe storage` reports what the
-active and the inactive generations take, and `--clear-earlier` deletes the
-inactive ones. `recipe history [--json]` lists what was done to the store,
-newest first (install, update, remove, go-back, hold, unhold, clear-earlier),
+`recipe storage` reports what the active generation takes.
+`recipe history [--json]` lists what was done to the store,
+newest first (install, update, remove),
 from `history.jsonl` in the package root: one JSON object per line with `at`
 (seconds since 1970), `what`, `package`, `from`, `to` and `source`, null where
 one does not apply. It is written under the store's lock after each change; a
 failure to write it is reported on stderr and does not undo the change. It keeps
 the newest entries (about 256 KiB when it passes 512 KiB). `--json` (and piped
 output) prints `{"schema_version": 1, "history": [...]}`.
-`recipe hold NAME` and `recipe unhold NAME` set `held` in the receipt (a new
-generation, like remove; absent when false). `recipe update NAME` refuses a held
-package before it needs Ginux; `recipe updates` still lists it with `"held":
-true`, `recipe installed --json` shows `held`, and `recipe install NAME` and
-`recipe go-back NAME` keep it as it is. With `--machine-events`, a failed
+With `--machine-events`, a failed
 install carries `"refused": {"endpoint", "declared"}` when Ginux's log of that
 run records a denied connection: `endpoint` is the numeric address the audit
-line names, `declared` the recipe's NEEDS.network. The history, hold and
-unhold commands were run on a hand-made store; `refused` is compiled and not
+line names, `declared` the recipe's NEEDS.network. The history command was run on a hand-made store; `refused` is compiled and not
 run, since it needs a failed install under Ginux. These were run on a hand-made store; the record of `needs` at
 install has compiled and not run, since an install needs Ginux.
 

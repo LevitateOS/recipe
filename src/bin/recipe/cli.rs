@@ -204,13 +204,13 @@ pub(crate) enum Commands {
 
     /// Update an installed package to the version pinned by its current recipe
     #[command(
-        after_help = "Example:\n  recipe update ripgrep\n\nUses the current catalog recipe, or the installed source path if no catalog entry\nexists. It does not edit version pins or fetch an unverified latest release.\nThe previous package remains active until the replacement is ready."
+        after_help = "Example:\n  recipe update ripgrep\n\nUses the current catalog recipe, or the installed source path if no catalog entry\nexists. It does not edit version pins or fetch an unverified latest release.\nThe previous package remains active until the replacement is active; then it is\ndeleted."
     )]
     Update { recipe: PathBuf },
 
     /// List package receipts; with --system on an A/B system, the running root's software and the other root's
     #[command(
-        after_help = "With --json each package also names what its recipe was allowed to use when it\nwas installed (needs), when (installed_on), the length of its files (size_bytes)\nand the earlier versions 'recipe go-back' can return to (kept)."
+        after_help = "With --json each package also names what its recipe was allowed to use when it\nwas installed (needs), when (installed_on) and the length of its files\n(size_bytes)."
     )]
     Installed,
 
@@ -220,54 +220,21 @@ pub(crate) enum Commands {
     )]
     Updates,
 
-    /// Activate the earlier version of an installed package again
-    #[command(name = "go-back")]
-    #[command(
-        after_help = "Examples:\n  recipe go-back ripgrep\n  recipe go-back ripgrep --to 14.1.0\n\nUses the files an earlier profile generation still holds; no recipe is run and\nGinux is not needed. The other packages stay as they are. The version left\nbehind stays kept, so 'recipe go-back' again returns to it. 'recipe installed\n--json' lists the kept versions; 'recipe storage --clear-earlier' deletes them."
-    )]
-    GoBack {
-        /// The installed package's name.
-        name: String,
-        /// The kept version to return to (default: the newest that differs).
-        #[arg(long, value_name = "VERSION")]
-        to: Option<String>,
-    },
-
     /// Show what was done to the installed software, newest first
     #[command(
-        after_help = "Examples:\n  recipe history\n  recipe history --json\n\nLists installs, updates, removals, goings back, holds, releases and clearings of\nearlier versions, from the log in the package root. The log keeps the newest\nentries; it is not the earlier profile generations, which 'recipe storage\n--clear-earlier' deletes. With --json (and when piped) it prints\n{\"schema_version\": 1, \"history\": [...]}; each entry has at (seconds since 1970),\nwhat, package, from, to and source, null where one does not apply."
+        after_help = "Examples:\n  recipe history\n  recipe history --json\n\nLists installs, updates and removals, from the log in the package root. The log\nkeeps the newest entries. With --json (and when piped) it prints\n{\"schema_version\": 1, \"history\": [...]}; each entry has at (seconds since 1970),\nwhat, package, from, to and source, null where one does not apply."
     )]
     History,
 
-    /// Keep an installed package from being updated by accident
+    /// Show what installed software takes on disk
     #[command(
-        after_help = "Example:\n  recipe hold ripgrep\n\n'recipe update' refuses a held package; 'recipe updates' still lists it, marked\nheld. Installing, removing and going back still work. Release it with\n'recipe unhold'. Needs neither the recipe nor Ginux."
+        after_help = "Examples:\n  recipe storage\n  recipe storage --json\n\nThe package store keeps one generation: what is installed now. An install,\nupdate or remove deletes the generation it replaces once the new one is active."
     )]
-    Hold {
-        /// The installed package's name.
-        name: String,
-    },
-
-    /// Let an installed package be updated again
-    #[command(after_help = "Example:\n  recipe unhold ripgrep")]
-    Unhold {
-        /// The installed package's name.
-        name: String,
-    },
-
-    /// Show what installed software and its earlier versions take on disk
-    #[command(
-        after_help = "Examples:\n  recipe storage\n  recipe storage --json\n  recipe storage --clear-earlier\n\nEarlier profile generations are what 'recipe go-back' returns to. A file that\nan earlier generation shares with the active one is counted with the active\none. --clear-earlier deletes every inactive generation: nothing installed\nchanges, and no package can be gone back on afterwards."
-    )]
-    Storage {
-        /// Delete every inactive profile generation.
-        #[arg(long)]
-        clear_earlier: bool,
-    },
+    Storage,
 
     /// Remove an active package, or run an output-only recipe's remove hook
     #[command(
-        after_help = "Examples:\n  recipe remove ripgrep\n  recipe remove ./producer.rhai --no-activate\n\nActive package removal uses its installed receipt and needs neither the recipe\nnor Ginux. Inactive profile generations and build caches are retained.\n--no-activate runs only the recipe's removal hook in its owned output tree."
+        after_help = "Examples:\n  recipe remove ripgrep\n  recipe remove ./producer.rhai --no-activate\n\nActive package removal uses its installed receipt and needs neither the recipe\nnor Ginux, and frees the package's space. Build caches are retained.\n--no-activate runs only the recipe's removal hook in its owned output tree."
     )]
     Remove {
         /// Recipe path or recipe name. Name lookup follows the same rules as `recipe install`.

@@ -1,10 +1,11 @@
 //! Activate published package trees without changing the recipe execution engine.
 //!
 //! A profile generation contains its receipt and all active package files. One
-//! symlink replacement commits installation, update or removal. Old generations
-//! remain inactive; removal needs neither the source recipe nor a Ginux instance.
-//! An earlier generation is what `go_back` returns a package to, until
-//! `clear_earlier` deletes them.
+//! symlink replacement commits installation, update or removal; removal needs
+//! neither the source recipe nor a Ginux instance. The store keeps exactly one
+//! generation: the one it replaced is deleted once the new one is durably
+//! active, and any generation an interrupted change left behind is deleted by
+//! the next change (`sweep`).
 
 use anyhow::{Context, Result, bail, ensure};
 use fs2::FileExt;
@@ -52,33 +53,13 @@ pub struct InstalledPackage {
     /// The length of its files together.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_bytes: Option<u64>,
-    /// Held: 'recipe update' leaves it as it is. Absent when not held.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub held: bool,
 }
 
-fn is_false(value: &bool) -> bool {
-    !*value
-}
-
-/// An earlier version of a package that an inactive generation still holds.
-#[derive(Clone, Debug, Serialize)]
-pub struct KeptPackage {
-    pub version: String,
-    pub generation: String,
-    pub installed_on: Option<u64>,
-    pub size_bytes: Option<u64>,
-}
-
-/// What the store holds on disk. Files shared between generations are
-/// counted once, with the active generation first.
+/// What the store holds on disk.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Storage {
     /// The active generation: what is installed now.
     pub active_bytes: u64,
-    /// Inactive generations, and what only they hold.
-    pub earlier_generations: u64,
-    pub earlier_bytes: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -86,20 +67,10 @@ pub struct Storage {
 struct Receipt {
     schema_version: u32,
     packages: BTreeMap<String, InstalledPackage>,
-    /// The generation this one replaced, which orders the earlier ones.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    previous: Option<String>,
 }
 
 struct Active {
     target: Option<PathBuf>,
-    packages: BTreeMap<String, InstalledPackage>,
-    previous: Option<String>,
-}
-
-/// One inactive generation as its receipt records it.
-struct Earlier {
-    name: String,
     packages: BTreeMap<String, InstalledPackage>,
 }
 
@@ -217,6 +188,7 @@ impl PackageStore {
             .with_context(|| format!("cannot locate recipe {}", source_recipe.display()))?;
         let (root, _lock) = self.lock()?;
         let active = read_active(&root)?;
+        sweep(&root, &active);
         ensure!(
             !update_only || active.packages.contains_key(name),
             "package {name} is not installed; use recipe install first"
@@ -242,8 +214,6 @@ impl PackageStore {
             needs: needs.cloned(),
             installed_on: Some(now_seconds()),
             size_bytes: Some(size_bytes),
-            // Installing again keeps a package held.
-            held: active.packages.get(name).is_some_and(|before| before.held),
         };
         let before = active
             .packages
@@ -270,6 +240,7 @@ impl PackageStore {
         valid_name(name)?;
         let (root, _lock) = self.lock()?;
         let active = read_active(&root)?;
+        sweep(&root, &active);
         let mut packages = active.packages.clone();
         let removed = packages
             .remove(name)
@@ -290,135 +261,9 @@ impl PackageStore {
         Ok(removed)
     }
 
-    /// Hold or release one package: a new generation that differs only in the
-    /// receipt's `held`. Holding a held package changes nothing.
-    pub fn set_held(&self, name: &str, held: bool) -> Result<InstalledPackage> {
-        valid_name(name)?;
-        let (root, _lock) = self.lock()?;
-        let active = read_active(&root)?;
-        let now = active
-            .packages
-            .get(name)
-            .with_context(|| format!("package {name} is not installed"))?;
-        if now.held == held {
-            return Ok(now.clone());
-        }
-        let pending = new_generation(&root)?;
-        let mut packages = active.packages.clone();
-        copy_existing(&root, &active, pending.path(), None)?;
-        let changed = InstalledPackage {
-            held,
-            ..now.clone()
-        };
-        packages.insert(name.to_owned(), changed.clone());
-        finish_generation(&root, pending, packages, active.target.as_deref())?;
-        history::record(
-            &root,
-            HistoryEntry::new(
-                if held { "hold" } else { "unhold" },
-                Some(name),
-                Some(&changed.version),
-                Some(&changed.version),
-                changed.source.as_deref(),
-            ),
-        );
-        Ok(changed)
-    }
-
-    /// The earlier versions of each active package that can be gone back to,
-    /// newest first, each version once. Reading changes nothing.
-    pub fn kept(&self) -> Result<BTreeMap<String, Vec<KeptPackage>>> {
-        let mut kept = BTreeMap::<String, Vec<KeptPackage>>::new();
-        if !self.root.try_exists()? {
-            return Ok(kept);
-        }
-        readable_directory(&self.root)?;
-        let active = read_active_checked(&self.root, readable_directory)?;
-        for earlier in earlier_generations(&self.root, &active, readable_directory)? {
-            for (name, package) in &earlier.packages {
-                let Some(now) = active.packages.get(name) else {
-                    continue;
-                };
-                let versions = kept.entry(name.clone()).or_default();
-                if same_installation(package, now)
-                    || versions.iter().any(|kept| kept.version == package.version)
-                {
-                    continue;
-                }
-                versions.push(KeptPackage {
-                    version: package.version.clone(),
-                    generation: earlier.name.clone(),
-                    installed_on: package.installed_on,
-                    size_bytes: package.size_bytes,
-                });
-            }
-        }
-        kept.retain(|_, versions| !versions.is_empty());
-        Ok(kept)
-    }
-
-    /// Activate an earlier version of one package again: the newest one that
-    /// differs from the active one, or the newest of `version`. Its files are
-    /// the ones an earlier generation still holds; no recipe is run. The
-    /// other packages stay as they are, and the version left behind stays in
-    /// its generation, so going back can itself be gone back on.
-    pub fn go_back(&self, name: &str, version: Option<&str>) -> Result<InstalledPackage> {
-        valid_name(name)?;
-        let (root, _lock) = self.lock()?;
-        let active = read_active(&root)?;
-        let now = active
-            .packages
-            .get(name)
-            .with_context(|| format!("package {name} is not installed"))?;
-        let (generation, earlier) = earlier_generations(&root, &active, real_owned_directory)?
-            .into_iter()
-            .find_map(|earlier| {
-                let package = earlier.packages.get(name)?;
-                (!same_installation(package, now)
-                    && version.is_none_or(|version| version == package.version))
-                .then(|| (earlier.name.clone(), package.clone()))
-            })
-            .with_context(|| match version {
-                Some(version) => format!("no earlier generation holds {name} {version}"),
-                None => format!("no earlier version of {name} is kept"),
-            })?;
-        let pending = new_generation(&root)?;
-        let mut packages = active.packages.clone();
-        copy_existing(&root, &active, pending.path(), Some(name))?;
-        let source = root
-            .join(GENERATIONS)
-            .join(&generation)
-            .join(PACKAGES)
-            .join(name);
-        let files = copy_package(&source, &pending.path().join(PACKAGES).join(name), true)?;
-        ensure!(
-            files == earlier.files,
-            "the kept files of {name} {} no longer match their receipt",
-            earlier.version
-        );
-        // Going back keeps the package held or free as it is now.
-        let back = InstalledPackage {
-            installed_on: Some(now_seconds()),
-            held: now.held,
-            ..earlier
-        };
-        let left = now.version.clone();
-        packages.insert(name.to_owned(), back.clone());
-        finish_generation(&root, pending, packages, active.target.as_deref())?;
-        history::record(
-            &root,
-            HistoryEntry::new(
-                "go-back",
-                Some(name),
-                Some(&left),
-                Some(&back.version),
-                back.source.as_deref(),
-            ),
-        );
-        Ok(back)
-    }
-
-    /// What the store holds on disk. Reading changes nothing.
+    /// What the store holds on disk. Reading changes nothing. A generation an
+    /// interrupted change left behind is not counted; the next install, update
+    /// or remove deletes it.
     pub fn storage(&self) -> Result<Storage> {
         let mut storage = Storage::default();
         if !self.root.try_exists()? {
@@ -426,49 +271,10 @@ impl PackageStore {
         }
         readable_directory(&self.root)?;
         let active = read_active_checked(&self.root, readable_directory)?;
-        let mut seen = BTreeSet::new();
         if let Some(target) = &active.target {
-            storage.active_bytes = generation_bytes(&self.root.join(target), &mut seen)?;
-        }
-        for earlier in earlier_generations(&self.root, &active, readable_directory)? {
-            storage.earlier_generations += 1;
-            storage.earlier_bytes +=
-                generation_bytes(&self.root.join(GENERATIONS).join(&earlier.name), &mut seen)?;
+            storage.active_bytes = generation_bytes(&self.root.join(target))?;
         }
         Ok(storage)
-    }
-
-    /// Delete every inactive generation. Nothing that is installed changes;
-    /// afterwards no package can be gone back on. Returns what `storage`
-    /// counted as earlier.
-    pub fn clear_earlier(&self) -> Result<Storage> {
-        let (root, _lock) = self.lock()?;
-        let active = read_active(&root)?;
-        let mut seen = BTreeSet::new();
-        let mut cleared = Storage::default();
-        if let Some(target) = &active.target {
-            cleared.active_bytes = generation_bytes(&root.join(target), &mut seen)?;
-        }
-        let active_name = active.target.as_ref().and_then(|target| target.file_name());
-        for name in generation_names(&root)? {
-            if Some(std::ffi::OsStr::new(&name)) == active_name {
-                continue;
-            }
-            crate::cancellation::check()?;
-            let generation = root.join(GENERATIONS).join(&name);
-            real_owned_directory(&generation)?;
-            cleared.earlier_generations += 1;
-            cleared.earlier_bytes += generation_bytes(&generation, &mut seen)?;
-            // Package files are read-only; their directories are not.
-            fs::remove_dir_all(&generation)
-                .with_context(|| format!("cannot delete {}", generation.display()))?;
-        }
-        File::open(root.join(GENERATIONS))?.sync_all()?;
-        history::record(
-            &root,
-            HistoryEntry::new("clear-earlier", None, None, None, None),
-        );
-        Ok(cleared)
     }
 
     fn lock(&self) -> Result<(PathBuf, File)> {
@@ -637,7 +443,6 @@ fn read_active_checked(root: &Path, directory: fn(&Path) -> Result<()>) -> Resul
         return Ok(Active {
             target: None,
             packages: BTreeMap::new(),
-            previous: None,
         });
     };
     directory(&root.join(GENERATIONS))?;
@@ -645,7 +450,6 @@ fn read_active_checked(root: &Path, directory: fn(&Path) -> Result<()>) -> Resul
     Ok(Active {
         target: Some(target),
         packages: receipt.packages,
-        previous: receipt.previous,
     })
 }
 
@@ -686,81 +490,9 @@ fn now_seconds() -> u64 {
         .map_or(0, |since| since.as_secs())
 }
 
-/// Whether two receipts record the same installation of a package.
-fn same_installation(a: &InstalledPackage, b: &InstalledPackage) -> bool {
-    a.version == b.version && a.files == b.files && a.sha256 == b.sha256 && a.recipe == b.recipe
-}
-
-/// The names of every finished generation in the store.
-fn generation_names(root: &Path) -> Result<Vec<String>> {
-    let mut names = Vec::new();
-    for item in fs::read_dir(root.join(GENERATIONS))? {
-        let item = item?;
-        // A generation still being made has no receipt yet.
-        if let Some(name) = item.file_name().to_str()
-            && name.starts_with("g-")
-            && item.path().join(RECEIPT).is_file()
-        {
-            names.push(name.to_owned());
-        }
-    }
-    Ok(names)
-}
-
-/// The inactive generations, newest first: the ones each receipt names as
-/// its predecessor, then the rest (older receipts name none) by their time.
-/// A generation that cannot be read is left out; it cannot be gone back to.
-fn earlier_generations(
-    root: &Path,
-    active: &Active,
-    directory: fn(&Path) -> Result<()>,
-) -> Result<Vec<Earlier>> {
-    let Some(active_name) = active
-        .target
-        .as_ref()
-        .and_then(|target| target.file_name()?.to_str())
-    else {
-        return Ok(Vec::new());
-    };
-    let mut receipts = BTreeMap::new();
-    for name in generation_names(root)? {
-        if name != active_name
-            && let Ok(receipt) = read_receipt(&root.join(GENERATIONS).join(&name), directory)
-        {
-            receipts.insert(name, receipt);
-        }
-    }
-    let mut ordered = Vec::new();
-    let mut next = active.previous.clone();
-    while let Some(name) = next {
-        let Some(receipt) = receipts.remove(&name) else {
-            break;
-        };
-        next = receipt.previous.clone();
-        ordered.push(Earlier {
-            name,
-            packages: receipt.packages,
-        });
-    }
-    let mut rest: Vec<_> = receipts
-        .into_iter()
-        .map(|(name, receipt)| {
-            let made = fs::metadata(root.join(GENERATIONS).join(&name).join(RECEIPT))
-                .and_then(|metadata| metadata.modified())
-                .ok();
-            (made, name, receipt)
-        })
-        .collect();
-    rest.sort_by(|a, b| (b.0, &b.1).cmp(&(a.0, &a.1)));
-    ordered.extend(rest.into_iter().map(|(_, name, receipt)| Earlier {
-        name,
-        packages: receipt.packages,
-    }));
-    Ok(ordered)
-}
-
-/// The length of the files of one generation that `seen` does not hold yet.
-fn generation_bytes(generation: &Path, seen: &mut BTreeSet<(u64, u64)>) -> Result<u64> {
+/// The length of the files of one generation.
+fn generation_bytes(generation: &Path) -> Result<u64> {
+    let mut seen = BTreeSet::new();
     let mut bytes = 0;
     for entry in walkdir::WalkDir::new(generation).follow_links(false) {
         let metadata = entry?.metadata()?;
@@ -769,6 +501,68 @@ fn generation_bytes(generation: &Path, seen: &mut BTreeSet<(u64, u64)>) -> Resul
         }
     }
     Ok(bytes)
+}
+
+/// Delete what an interrupted change left behind: every generation directory
+/// but the active one (one being made, a finished one never activated, or
+/// the one an activation replaced and had not deleted yet) and a profile
+/// symlink staged but never renamed into place. The caller holds the store's
+/// lock and has read `active` under it, so no other change is in progress.
+/// Leftovers are not installed software: failing to delete one is reported
+/// and never fails the change.
+fn sweep(root: &Path, active: &Active) {
+    let keep = active.target.as_ref().and_then(|target| target.file_name());
+    let mut stale = Vec::new();
+    match fs::read_dir(root.join(GENERATIONS)) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if Some(name.as_os_str()) != keep
+                    && name.to_str().is_some_and(|name| name.starts_with("g-"))
+                {
+                    stale.push(entry.path());
+                }
+            }
+        }
+        Err(error) => crate::diagnostics::diag!(
+            "recipe: warning: cannot look for leftover package generations: {error}"
+        ),
+    }
+    if let Ok(entries) = fs::read_dir(root) {
+        for entry in entries.flatten() {
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(".profile-"))
+                && entry.file_type().is_ok_and(|kind| kind.is_symlink())
+            {
+                stale.push(entry.path());
+            }
+        }
+    }
+    for path in stale {
+        delete_generation(root, &path);
+    }
+}
+
+/// Delete one generation directory (or a stray staged profile symlink) that
+/// is not the active one, and make the deletion durable.
+fn delete_generation(root: &Path, path: &Path) {
+    // `remove_dir_all` removes a symlink itself, never what it points to.
+    // Package files are read-only; their directories are not.
+    let removed = match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(path),
+        Ok(_) => fs::remove_file(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    };
+    let synced = removed.and_then(|()| File::open(path.parent().unwrap_or(root))?.sync_all());
+    if let Err(error) = synced {
+        crate::diagnostics::diag!(
+            "recipe: warning: cannot delete {}; the next install, update or remove tries again: {error}",
+            path.display()
+        );
+    }
 }
 
 fn new_generation(root: &Path) -> Result<tempfile::TempDir> {
@@ -924,9 +718,6 @@ fn finish_generation(
     let receipt = serde_json::to_vec(&Receipt {
         schema_version: 1,
         packages,
-        previous: previous
-            .and_then(|target| target.file_name()?.to_str())
-            .map(str::to_owned),
     })?;
     ensure!(
         receipt.len() as u64 <= MAX_RECEIPT,
@@ -986,6 +777,12 @@ fn finish_generation(
     File::open(root)?
         .sync_all()
         .context("profile activated, but syncing its directory failed")?;
+    // Only now, with the new generation durably active, is the replaced one
+    // deleted: a crash before this point leaves it whole, and a crash during
+    // it leaves an inactive remnant that the next change's `sweep` deletes.
+    if let Some(previous) = previous {
+        delete_generation(root, &root.join(previous));
+    }
     Ok(())
 }
 

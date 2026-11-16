@@ -1,7 +1,7 @@
 //! What was done to a package store: an append-only log in the package root.
 //!
-//! Earlier generations cannot be the record, because `clear_earlier` deletes
-//! them. Each committed change adds one JSON line to `history.jsonl`, under the
+//! The store keeps only the active generation, so this log is the only record
+//! of earlier changes. Each committed change adds one JSON line to `history.jsonl`, under the
 //! store's lock and after the change is in effect. A log that cannot be written
 //! never undoes or fails the change; it is reported on the diagnostic stream.
 
@@ -24,7 +24,7 @@ const KEEP_LOG: u64 = 256 * 1024;
 pub struct HistoryEntry {
     /// When, in seconds since 1970.
     pub at: u64,
-    /// `install`, `update`, `remove`, `go-back`, `clear-earlier`, `hold` or `unhold`.
+    /// `install`, `update` or `remove`.
     pub what: String,
     pub package: Option<String>,
     /// The version before the change, where there was one.

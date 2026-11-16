@@ -51,9 +51,6 @@ fn changed_package(command: &Commands) -> Option<String> {
         Commands::Install { recipe, .. }
         | Commands::Update { recipe }
         | Commands::Remove { recipe } => recipe.file_stem()?.to_str()?.to_owned(),
-        Commands::GoBack { name, .. } | Commands::Hold { name } | Commands::Unhold { name } => {
-            name.clone()
-        }
         _ => return None,
     };
     Some(match recipe.split_once(':') {
@@ -195,11 +192,6 @@ fn run(cli: Cli) -> Result<()> {
         activate_into: (!no_activate).then_some(&package_store),
     };
 
-    let command_name = match &cli.command {
-        Commands::Hold { .. } => "hold",
-        Commands::Unhold { .. } => "unhold",
-        _ => "",
-    };
     match cli.command {
         Commands::Validate { recipe } => {
             let recipe = resolve_recipe_path(&recipe, &lookup)?;
@@ -292,11 +284,6 @@ fn run(cli: Cli) -> Result<()> {
             );
             let installed = installed_package(&package_store, &recipe)?
                 .with_context(|| format!("package {} is not installed", recipe.display()))?;
-            anyhow::ensure!(
-                !installed.held,
-                "{0} is held, so it is not updated. Release it with: recipe unhold {0}",
-                installed.name
-            );
             // A package fetched from a remote source is updated from that
             // source, unless the command names another.
             let named = match &installed.source {
@@ -344,18 +331,7 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Commands::Installed => {
-            let mut kept = package_store.kept()?;
-            let packages = package_store
-                .list()?
-                .into_iter()
-                .map(|package| {
-                    let earlier = kept.remove(&package.name).unwrap_or_default();
-                    let mut entry = serde_json::to_value(&package)?;
-                    entry["kept"] = serde_json::to_value(earlier)?;
-                    entry["held"] = package.held.into();
-                    Ok(entry)
-                })
-                .collect::<Result<Vec<_>>>()?;
+            let packages = package_store.list()?;
             let result =
                 serde_json::json!({"packages": packages, "profile": package_store.profile_path()});
             emit_result(&result, json_output.as_deref(), json, "Installed packages")?;
@@ -384,64 +360,14 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
 
-        Commands::Hold { name } | Commands::Unhold { name } => {
-            let held = matches!(command_name, "hold");
-            let installed = installed_package(&package_store, Path::new(&name))?
-                .with_context(|| format!("package {name} is not installed"))?;
-            let changed = package_store.set_held(&installed.name, held)?;
-            let result = serde_json::json!({"name": changed.name, "version": changed.version,
-                "operation": command_name, "held": changed.held, "profile": package_store.profile_path()});
-            emit_result(
-                &result,
-                json_output.as_deref(),
-                json,
-                if held {
-                    "Package held"
-                } else {
-                    "Package released"
-                },
-            )?;
-        }
-
-        Commands::GoBack { name, to } => {
-            let back = package_store.go_back(&name, to.as_deref())?;
-            let result = serde_json::json!({"name": back.name, "version": back.version,
-                "operation": "go-back", "profile": package_store.profile_path()});
-            emit_result(
-                &result,
-                json_output.as_deref(),
-                json,
-                "Earlier version activated",
-            )?;
-        }
-
-        Commands::Storage { clear_earlier } => {
-            let result = if clear_earlier {
-                let cleared = package_store.clear_earlier()?;
-                serde_json::json!({"schema_version": levitate_recipe::catalog::SCHEMA_VERSION,
-                    "operation": "clear-earlier", "cleared_generations": cleared.earlier_generations,
-                    "cleared_bytes": cleared.earlier_bytes, "active_bytes": cleared.active_bytes,
-                    "earlier_generations": 0, "earlier_bytes": 0, "profile": package_store.profile_path()})
-            } else {
-                let storage = package_store.storage()?;
-                serde_json::json!({"schema_version": levitate_recipe::catalog::SCHEMA_VERSION,
-                    "active_bytes": storage.active_bytes, "earlier_generations": storage.earlier_generations,
-                    "earlier_bytes": storage.earlier_bytes, "profile": package_store.profile_path()})
-            };
+        Commands::Storage => {
+            let storage = package_store.storage()?;
+            let result = serde_json::json!({"schema_version": levitate_recipe::catalog::SCHEMA_VERSION,
+                "active_bytes": storage.active_bytes, "profile": package_store.profile_path()});
             if json_output.is_some() || json {
                 emit_result(&result, json_output.as_deref(), json, "Storage")?;
             } else {
-                if clear_earlier {
-                    println!(
-                        "Deleted {} earlier generation(s), {} bytes.",
-                        result["cleared_generations"], result["cleared_bytes"]
-                    );
-                }
                 println!("Installed software: {} bytes", result["active_bytes"]);
-                println!(
-                    "Earlier versions:   {} bytes in {} generation(s)",
-                    result["earlier_bytes"], result["earlier_generations"]
-                );
             }
         }
 
@@ -1254,7 +1180,6 @@ fn updates(store: &PackageStore, lookup: &Lookup) -> Result<serde_json::Value> {
             "to": if to.is_empty() { installed.version.as_str() } else { to },
             "reason": reason,
             "changes": changes,
-            "held": installed.held,
         }));
     }
     Ok(serde_json::json!({
@@ -1278,15 +1203,10 @@ fn print_updates(result: &serde_json::Value) {
             update["from"].as_str().unwrap_or("?"),
             update["to"].as_str().unwrap_or("?"),
         );
-        let held = if update["held"] == true {
-            " (held: 'recipe update' leaves it; 'recipe unhold' releases it)"
-        } else {
-            ""
-        };
         if update["reason"] == "recipe" {
-            println!("  {name} {from}: its source publishes another recipe{held}");
+            println!("  {name} {from}: its source publishes another recipe");
         } else {
-            println!("  {name} {from} -> {to}{held}");
+            println!("  {name} {from} -> {to}");
         }
         match update["changes"].as_array() {
             None => println!(

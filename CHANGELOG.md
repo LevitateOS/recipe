@@ -49,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `recipe install --autofix` and its options, `--llm-profile`, `recipe/llm.toml` and the
   LLM providers were removed; Recipe never asks an AI.
+- `recipe go-back`, `recipe hold`/`unhold`, `recipe storage --clear-earlier` and the
+  `held`/`kept` fields were removed; the package store keeps only the active generation.
 
 ### Fixed
 

@@ -80,8 +80,9 @@ boundary; its implementation checkpoint records exact tested revisions and gaps.
   after publication, through one atomic profile switch into the selected package
   root: root's `/var/lib/recipe`, a user's `~/.local/share/recipe`, or
   `--package-root`. `remove` works from the receipt, without the recipe or a
-  runtime. The user profile's earlier generations (`go-back`, `storage`,
-  `hold`, `history`) are Recipe's own concept.
+  runtime. The store keeps only the active generation: the one a change
+  replaces is deleted once the new one is active. `storage` and `history` are
+  Recipe's own concept.
 - `recipe list --json` carries, for a front end, each recipe's `ABOUT`, `NEEDS`,
   `runs_here` and `not_runnable_reason`, and at the top `host_libc`. A recipe
   whose declared C library this system cannot run is refused at install, unless
