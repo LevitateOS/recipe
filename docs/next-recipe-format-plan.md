@@ -116,13 +116,23 @@ Requirements:
    "Update" button) stays: it installs the version the fetched recipe names.
    Recipe never writes or changes a recipe to do this.
 
-Open, raised the same day: the owner's rule "it is not Recipe's job to send
-out agents". The one place Recipe itself can call an AI is
-`recipe install --autofix` (with `--llm-profile`; `src/core/autofix`,
-`src/llm`, about 1,500 lines): when a run fails it asks a language model for
-a patch to the recipe and tries again. It is off unless asked for; the app
-never uses it; the builder can pass it for a kernel compile. Whether it stays
-is the owner's decision.
+9. **Recipe never asks an AI for anything** (the owner, 2026-11-16: "all
+   the features that would ask an AI to do something have to be removed").
+   Everything that can call a language model goes, in the engine and in what
+   calls it. Surveyed the same day:
+
+   | Where | What goes |
+   |---|---|
+   | Engine | `src/llm/` and `src/core/autofix/` (about 1,300 lines), the options `--autofix`, `--autofix-attempts`, `--autofix-cwd`, `--autofix-prompt-file`, `--autofix-allow-path`, `--llm-profile`, the settings file `recipe/llm.toml`, the test `tests/e2e/managed_autofix.rs`, and the mentions in `lifecycle.rs`, `recipes.rs`, `backend.rs`, `lib.rs`, `core/mod.rs`, `bin/recipe*.rs` |
+   | Builder | the kernel compile's autofix choice (`pipeline/kernel.rs`, `recipe/mod.rs`, `recipe/stamp.rs`) |
+   | xtask | the option that passes it (`cli.rs`, `tasks/kernels/mod.rs`) |
+   | Docs | the autofix section of the README, `docs/runtime-limits.md`, `CHANGELOG.md` |
+
+   No helper lets a recipe itself call an AI, and the desktop app has no such
+   feature (its "Copy for agent" button only copies text to the clipboard,
+   which `docs/product-handoff.md` §2.8 allows). When something fails, Recipe
+   reports the failure. What the user does with it, including asking an agent
+   of their own in their own window, is theirs.
 
 The cost, accepted by the owner's model: updating or reinstalling a program
 downloads and builds it again.
@@ -226,7 +236,7 @@ and with the reference recipes of its part passing `recipe info`.
 | 2a | Read the declarations (`PACKAGE`, `SOURCES`, `FILES`, `PACKAGES`, `ACCOUNTS`, `RERUN`); one API number; `list`, `info`, `index`, `validate` report the new shape | `needs.rs`, `catalog.rs`, `core/executor.rs` (`declared_metadata`), `core/invocation.rs` (`validate_api`), `sources.rs`, `execution.rs` | medium |
 | 2b | The core: no `ctx`. Constants in place of `RUNTIME`; call `build(src, out)`, `configure`, `verify`, `cleanup(reason)`; outputs mapped by the engine; `save`/`saved`/`checkpoint` | `core/invocation.rs`, `core/executor/private/{flow,actions,loaded,context}.rs`, `worker/run.rs`, `worker/protocol.rs`, `launch.rs`, `host.rs`, `publication.rs`, `backend.rs`, `lifecycle.rs` | **highest** |
 | 2c | Built-in steps: fetch and unpack `SOURCES`; copy `FILES`; package groups (pins file, native RPM/APK unpack, accounts, finish the tree) | new step in `flow.rs`; reuses `helpers/acquire`, `helpers/build/extract.rs`, `helpers/target.rs`, `accounts.rs`, `offline_cache.rs`, `inputs/discover.rs` | medium |
-| 2d | "Done" from Recipe's own records; delete build material and saved state after a successful install, move instead of copy, `go-back`, kept generations, `hold`/`unhold` removed, `recipe storage` reporting everything (section 0b); each step as its own command and the states of a program (section 0c); `remove` hook and `Operation::Remove` gone; autofix and narration renamed | `retained.rs`, `host/snapshot.rs`, `packages.rs`, `system.rs`, `core/autofix/*`, `core/output/narration.rs`, `bin/recipe/commands.rs` | high |
+| 2d | "Done" from Recipe's own records; delete build material and saved state after a successful install, move instead of copy, `go-back`, kept generations, `hold`/`unhold`, autofix and all AI code removed, `recipe storage` reporting everything (section 0b); each step as its own command and the states of a program (section 0c); `remove` hook and `Operation::Remove` gone; autofix and narration renamed | `retained.rs`, `host/snapshot.rs`, `packages.rs`, `system.rs`, `core/autofix/*`, `core/output/narration.rs`, `bin/recipe/commands.rs` | high |
 
 With 2a–2c the agents also convert the **reference recipes**, one per shape:
 `ripgrep` (a), `cmake` (b), `network` (c), `pi` (d), `desktop-runtime` (e),
@@ -246,7 +256,7 @@ Can start when the spec is approved; needs 2a only for the JSON shape.
 | Step | What | Model |
 |---|---|---|
 | 3a | `xtask/src/tasks/groups.rs` (about 270 lines in 8 functions), `base.rs` `group_seeds`, `kernels/publish.rs`: read `PACKAGES`, write `NAME.pins` and `os-facts.rhai`, no longer rewrite recipe text. Also `recipes/generators/desktop-runtime-pins.py` | sonnet |
-| 3b | Builder Rust: `recipe/outputs.rs` and `stamp.rs` (read the new result), `default_set.rs` (`deps_of`, `pins_of`, copy pins files to the medium), `update_release.rs` (pins files into the base and `recipes.tar.zst`), `pipeline/kernel.rs` (the `isinstalled` call) | sonnet |
+| 3b | Builder Rust: no autofix option anywhere (also in xtask's kernel command); `recipe/outputs.rs` and `stamp.rs` (read the new result), `default_set.rs` (`deps_of`, `pins_of`, copy pins files to the medium), `update_release.rs` (pins files into the base and `recipes.tar.zst`), `pipeline/kernel.rs` (the `isinstalled` call) | sonnet |
 | 3c | Recipe app: steps from the declarations instead of `hooks`; the Storage page shows everything Recipe holds, by kind, with a way to remove each; the option to keep build material; "Go back", "Update all" and "Keep at this version" removed; a program's state and a button for each single step (section 0c); the stand-in `fixtures/recipe` and `catalog.json`; README | sonnet |
 
 ## 4. The catalog recipes (72)

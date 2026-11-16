@@ -27,6 +27,14 @@ Read these instead of copies here; each fact has one home:
   number at a time (the 2/3 split of 2026-11-15 was such a switch). See
   `docs/next-recipe-format.md`, "The API number and the rewrite".
 
+- Recipe never asks an AI for anything (the owner's rule, 2026-11-16, stated
+  many times). No feature may call a language model or start an agent, in the
+  engine, in a recipe helper, or in anything that runs Recipe: no autofix, no
+  "ask an agent", no automatic repair or rewriting of recipes. A failure is
+  reported; what the user does with it is theirs. The existing `--autofix` and
+  `src/llm` are to be removed, not extended
+  (`docs/next-recipe-format-plan.md`, section 0b, requirement 9).
+
 - Lifecycle: `is_installed` → `is_built` → `is_acquired` checks decide which of
   `acquire()` → `build()` → `install()` run. Each phase does one thing and is
   re-verified by its check.
