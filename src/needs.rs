@@ -298,7 +298,9 @@ impl Needs {
         })
     }
 
-    pub fn validate_inputs(&self, supplied: &[(String, PathBuf)]) -> Result<()> {
+    /// With `require`, every input that is not optional must be supplied;
+    /// `latest()` sees no inputs, so its run does not require them.
+    pub fn validate_inputs(&self, supplied: &[(String, PathBuf)], require: bool) -> Result<()> {
         let mut names = BTreeSet::new();
         for (name, path) in supplied {
             ensure!(names.insert(name), "duplicate input {name}");
@@ -322,7 +324,7 @@ impl Needs {
         }
         for (name, need) in &self.inputs {
             ensure!(
-                need.optional || names.contains(name),
+                !require || need.optional || names.contains(name),
                 "missing required NEEDS.inputs.{name} ({})",
                 need.kind.as_str()
             );

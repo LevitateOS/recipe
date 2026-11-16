@@ -233,9 +233,17 @@ pub(crate) enum Commands {
 
     /// Say which installed packages 'recipe update' would change, and what the newer recipe may use that the installed one may not
     #[command(
-        after_help = "Examples:\n  recipe updates\n  recipe updates --json\n\nReads what is on this computer: the installed receipts and the recipes of the\ncollection and the sources as they were last fetched. Nothing is fetched and\nnothing is run; 'recipe refresh' fetches the sources' lists first. A package\nhas an update when its recipe names another version, or when its source\npublishes another recipe file for it. \"changes\" compares NEEDS with what was\nrecorded when the package was installed, and is null when nothing was."
+        after_help = "Examples:\n  recipe updates\n  recipe updates --json\n\nReads what is on this computer: the installed receipts and the recipes of the\ncollection and the sources as they were last fetched. Nothing is fetched and\nnothing is run; 'recipe refresh' fetches the sources' lists first. A package\nhas an update when its recipe names another version, or when its source\npublishes another recipe file for it. \"changes\" compares NEEDS with what was\nrecorded when the package was installed, and is null when nothing was.\n\nWith --upstream (and optionally recipe names) Recipe also asks upstream, only now\nand only for this command: GitHub's newest release for a recipe with UPSTREAM, or\nthe recipe's latest() run on the host. It tells \"upstream has X, this recipe\ninstalls Y\" in a list of its own and never changes a recipe or installs a version\nthe recipe does not name. A failed question is an error field, not a failure."
     )]
-    Updates,
+    Updates {
+        /// Also ask upstream (GitHub, or the recipe's latest()) which version is newest; the only way a command here reaches the network for it
+        #[arg(long)]
+        upstream: bool,
+
+        /// With --upstream: ask only about these programs (recipe names; need not be installed)
+        #[arg(value_name = "NAME", requires = "upstream")]
+        names: Vec<String>,
+    },
 
     /// Show what was done to the installed software, newest first
     #[command(

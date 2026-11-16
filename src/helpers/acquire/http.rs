@@ -61,6 +61,40 @@ fn github_error(repo: &str, error: ureq::Error) -> String {
     }
 }
 
+/// The newest release of `OWNER/REPO` that is not a pre-release or a draft
+/// (what GitHub calls the latest release), with `prefix` taken off its tag
+/// (docs/recipe-format.md, section 2.9). Asked by Recipe itself on the host
+/// for `UPSTREAM`, not by a recipe: it needs no `NEEDS` entry.
+pub fn github_newest_release(repo: &str, prefix: Option<&str>) -> Result<String, String> {
+    let url = format!("{GITHUB_API_BASE}/repos/{repo}/releases/latest");
+    let response = github_request(&url)
+        .map_err(|error| error.to_string())?
+        .call()
+        .map_err(|error| match error {
+            ureq::Error::Status(404, _) => {
+                format!("GitHub has no release of '{repo}' (or no such repository)")
+            }
+            error => github_error(repo, error),
+        })?;
+    let json = response_json(response).map_err(|error| error.to_string())?;
+    let tag = json
+        .get("tag_name")
+        .and_then(|tag| tag.as_str())
+        .ok_or("GitHub's answer has no tag_name")?;
+    let version = match prefix {
+        Some(prefix) => tag.strip_prefix(prefix).ok_or_else(|| {
+            format!("the newest release of '{repo}' is tagged '{tag}', which does not start with the prefix '{prefix}'")
+        })?,
+        None => tag,
+    };
+    if version.is_empty() {
+        return Err(format!(
+            "the newest release of '{repo}' has an empty version"
+        ));
+    }
+    Ok(version.to_owned())
+}
+
 /// Get the latest release version from a GitHub repository
 ///
 /// # Arguments

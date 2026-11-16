@@ -96,7 +96,13 @@ impl Runner<'_> {
                 serde_json::json!({"event": "plan", "recipes": recipes})
             );
         }
-        let bindings = crate::inputs::bind_inputs(&all, invocation.inputs, invocation.search_path)?;
+        let bindings = crate::inputs::bind_inputs(
+            &all,
+            invocation.inputs,
+            invocation.search_path,
+            // latest() sees no inputs, so it needs none.
+            operation != crate::worker::protocol::Operation::Latest,
+        )?;
         // Resolve all declarations and contracts before the first dependency can
         // execute. Parent restrictions never become dependency grants.
         let main_recipe = &all.last().context("empty recipe graph")?.recipe;
@@ -440,6 +446,7 @@ impl Runner<'_> {
             &invocation.options.execution,
             launcher.as_deref(),
             dependency_inputs,
+            operation != crate::worker::protocol::Operation::Latest,
         )
         .map_err(|err| {
             anyhow::Error::new(crate::failure::Category::Startup.error(format!(

@@ -118,3 +118,63 @@ pub fn changes(before: &Needs, after: &Needs) -> Vec<Change> {
     .flatten()
     .collect()
 }
+
+/// The newest release of a GitHub repository, as `UPSTREAM.github` asks
+/// (docs/recipe-format.md, section 2.9). Contacts GitHub: call it only when
+/// the person asked for the upstream check.
+pub fn github_newest(repo: &str, prefix: Option<&str>) -> Result<String, String> {
+    crate::helpers::acquire::http::github_newest_release(repo, prefix)
+}
+
+/// Whether version text `latest` is newer than `current`: compared in runs of
+/// digits (as numbers) and runs of other characters, left to right; a version
+/// that continues a shorter equal one is newer. Equal texts are not newer.
+pub fn is_newer(latest: &str, current: &str) -> bool {
+    fn chunks(version: &str) -> Vec<(bool, &str)> {
+        let mut out = Vec::new();
+        let mut start = 0;
+        let mut digits = None;
+        for (at, character) in version.char_indices() {
+            if !character.is_ascii_alphanumeric() {
+                if let Some(is_digits) = digits.take() {
+                    out.push((is_digits, &version[start..at]));
+                }
+                continue;
+            }
+            let is_digits = character.is_ascii_digit();
+            match digits {
+                Some(previous) if previous == is_digits => {}
+                Some(previous) => {
+                    out.push((previous, &version[start..at]));
+                    start = at;
+                    digits = Some(is_digits);
+                }
+                None => {
+                    start = at;
+                    digits = Some(is_digits);
+                }
+            }
+        }
+        if let Some(is_digits) = digits {
+            out.push((is_digits, &version[start..]));
+        }
+        out
+    }
+    let (latest, current) = (chunks(latest), chunks(current));
+    for (new, old) in latest.iter().zip(&current) {
+        let order = match (new.0, old.0) {
+            (true, true) => {
+                let (new, old) = (new.1.trim_start_matches('0'), old.1.trim_start_matches('0'));
+                new.len().cmp(&old.len()).then_with(|| new.cmp(old))
+            }
+            // A number is newer than a word at the same place ("1.2.0" over "1.2.rc").
+            (true, false) => std::cmp::Ordering::Greater,
+            (false, true) => std::cmp::Ordering::Less,
+            (false, false) => new.1.cmp(old.1),
+        };
+        if order != std::cmp::Ordering::Equal {
+            return order == std::cmp::Ordering::Greater;
+        }
+    }
+    latest.len() > current.len()
+}

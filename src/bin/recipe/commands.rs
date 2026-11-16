@@ -450,8 +450,18 @@ fn run(cli: Cli) -> Result<()> {
             emit_result(&result, json_output.as_deref(), json, "Installed packages")?;
         }
 
-        Commands::Updates => {
-            let result = updates(&package_store, &lookup)?;
+        Commands::Updates { upstream, names } => {
+            let mut result = updates(&package_store, &lookup)?;
+            if upstream {
+                result["upstream_checked"] = true.into();
+                result["upstream"] = upstream_check(
+                    &package_store,
+                    &lookup,
+                    &engine_options,
+                    &names,
+                    explicit_collection,
+                )?;
+            }
             if json_output.is_some() || json {
                 emit_result(&result, json_output.as_deref(), json, "Updates")?;
             } else {
@@ -1686,9 +1696,120 @@ fn updates(store: &PackageStore, lookup: &Lookup) -> Result<serde_json::Value> {
     }
     Ok(serde_json::json!({
         "schema_version": levitate_recipe::catalog::SCHEMA_VERSION,
+        "upstream_checked": false,
         "updates": found,
         "problems": problems,
     }))
+}
+
+/// `recipe updates --upstream` (docs/recipe-format.md, sections 2.9 and
+/// 8.3): for each installed program, or each named recipe, ask upstream
+/// which version is newest. This is the only place Recipe asks: GitHub itself
+/// for `UPSTREAM`, the recipe's `latest()` on the host otherwise. A question
+/// that fails is the row's `error`; nothing is changed or installed.
+fn upstream_check(
+    store: &PackageStore,
+    lookup: &Lookup,
+    options: &EngineOptions<'_>,
+    names: &[String],
+    explicit_collection: bool,
+) -> Result<serde_json::Value> {
+    let mut targets: Vec<(String, Option<InstalledPackage>)> = Vec::new();
+    if names.is_empty() {
+        for installed in store.list()? {
+            targets.push((installed.name.clone(), Some(installed)));
+        }
+    } else {
+        for name in names {
+            let installed = installed_package(store, Path::new(name))?;
+            targets.push((name.clone(), installed));
+        }
+    }
+    let mut listings = std::collections::BTreeMap::new();
+    let mut rows = Vec::new();
+    for (name, installed) in targets {
+        let row = |recipe_version: Option<&str>,
+                   latest: Option<&str>,
+                   how: Option<&str>,
+                   error: Option<String>| {
+            serde_json::json!({
+                "name": name,
+                "installed": installed.as_ref().map(|installed| installed.version.as_str()),
+                "recipe_version": recipe_version,
+                "latest": latest,
+                "newer": match (latest, recipe_version) {
+                    (Some(latest), Some(version)) => levitate_recipe::updates::is_newer(latest, version),
+                    _ => false,
+                },
+                "how": how,
+                "error": error,
+            })
+        };
+        // The recipe file, resolved the way `recipe update` resolves it.
+        let path_of = || -> Result<PathBuf> {
+            match &installed {
+                Some(installed) => {
+                    let named = match &installed.source {
+                        Some(source) if !explicit_collection => {
+                            PathBuf::from(format!("{source}:{}", installed.name))
+                        }
+                        _ => PathBuf::from(&installed.name),
+                    };
+                    resolve_recipe_path(&named, lookup).or_else(|error| {
+                        if explicit_collection {
+                            Err(error)
+                        } else {
+                            resolve_recipe_path(&installed.recipe, lookup)
+                        }
+                    })
+                }
+                None => resolve_recipe_path(Path::new(&name), lookup),
+            }
+        };
+        let found: Result<(serde_json::Value, Option<PathBuf>)> = match &installed {
+            Some(installed) => {
+                update_candidate(installed, lookup, &mut listings).and_then(|entry| {
+                    entry.map(|entry| (entry, None)).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "no recipe for it is in the collection or the sources any more"
+                        )
+                    })
+                })
+            }
+            None => path_of().and_then(|path| {
+                let entry = levitate_recipe::catalog::entry(&path, path.parent())?;
+                Ok((entry, Some(path)))
+            }),
+        };
+        let (entry, path) = match found {
+            Ok(found) => found,
+            Err(error) => {
+                rows.push(row(None, None, None, Some(format!("{error:#}"))));
+                continue;
+            }
+        };
+        let version = entry["version"].as_str().unwrap_or_default().to_owned();
+        let version = Some(version.as_str()).filter(|version| !version.is_empty());
+        let upstream = &entry["upstream"];
+        let asked: Result<(String, &str), String> = if let Some(repo) = upstream["github"].as_str()
+        {
+            levitate_recipe::updates::github_newest(repo, upstream["prefix"].as_str())
+                .map(|latest| (latest, "github"))
+        } else if upstream["latest"] == true {
+            path.map(Ok)
+                .unwrap_or_else(path_of)
+                .and_then(|path| create_engine(&path, options)?.latest(&path))
+                .map(|latest| (latest.trim().to_owned(), "latest()"))
+                .map_err(|error| format!("{error:#}"))
+        } else {
+            Err("the recipe says nowhere where its newest version is".to_owned())
+        };
+        rows.push(match asked {
+            Ok((latest, how)) => row(version, Some(&latest), Some(how), None),
+            Err(error) => row(version, None, None, Some(error)),
+        });
+    }
+    Ok(serde_json::Value::Array(rows))
 }
 
 fn print_updates(result: &serde_json::Value) {
@@ -1698,6 +1819,25 @@ fn print_updates(result: &serde_json::Value) {
         .unwrap_or_default();
     if found.is_empty() {
         bin_support::info("Everything installed is at its recipe's version");
+    }
+    if result["upstream_checked"] == true {
+        for row in result["upstream"].as_array().into_iter().flatten() {
+            let name = row["name"].as_str().unwrap_or("?");
+            if let Some(error) = row["error"].as_str() {
+                println!("  {name}: upstream could not be asked: {error}");
+            } else if row["newer"] == true {
+                println!(
+                    "  {name}: upstream has {}, this recipe installs {}",
+                    row["latest"].as_str().unwrap_or("?"),
+                    row["recipe_version"].as_str().unwrap_or("?"),
+                );
+            } else {
+                println!(
+                    "  {name}: nothing newer upstream ({})",
+                    row["latest"].as_str().unwrap_or("?")
+                );
+            }
+        }
     }
     for update in found {
         let (name, from, to) = (

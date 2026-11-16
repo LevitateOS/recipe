@@ -21,7 +21,7 @@ pub fn validate(
             path: path.clone(),
         })
         .collect::<Vec<_>>();
-    crate::inputs::bind_inputs(&graph, &supplied, search)?;
+    crate::inputs::bind_inputs(&graph, &supplied, search, true)?;
     inspect(recipe, search, narrowing)
 }
 

@@ -104,6 +104,7 @@ pub fn prepare_invocation(
     options: &crate::ExecutionOptions,
     launcher: Option<&Path>,
     dependency_inputs: &[ExtraInput],
+    require_inputs: bool,
 ) -> Result<PreparedInvocation> {
     let graph = crate::needs::declarations(recipe, search_path)?;
     let declaration = graph.last().context("empty recipe graph")?.clone();
@@ -112,6 +113,7 @@ pub fn prepare_invocation(
             .iter()
             .map(|input| (input.name.clone(), input.path.clone()))
             .collect::<Vec<_>>(),
+        require_inputs,
     )?;
     let execution = declaration.needs.resolve(&options.narrowing, options)?;
     let options = &execution;
@@ -283,6 +285,7 @@ pub(crate) fn bind_inputs(
     graph: &[crate::needs::Declaration],
     supplied: &[ExtraInput],
     search: Option<&Path>,
+    require_inputs: bool,
 ) -> Result<std::collections::BTreeMap<PathBuf, Vec<ExtraInput>>> {
     let main = graph.last().context("empty recipe graph")?;
     let mut aliases =
@@ -324,6 +327,7 @@ pub(crate) fn bind_inputs(
                     .iter()
                     .map(|input| (input.name.clone(), input.path.clone()))
                     .collect::<Vec<_>>(),
+                require_inputs,
             )
             .with_context(|| format!("inputs for {}", node.recipe.display()))?;
         let discovered = discover_inputs(&node.recipe, search, &bindings[&node.recipe])

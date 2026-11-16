@@ -309,10 +309,9 @@ impl RecipeEngine {
 
     /// Call the recipe's `latest()` on the host and return the version it
     /// gives (docs/recipe-format.md, section 2.9).
-    // C5: the upstream check (`recipe updates --upstream`) calls this for a
-    // recipe that defines latest(), and asks GitHub itself for `UPSTREAM`.
-    // Inputs the caller added are still staged and required inputs still
-    // checked; latest() sees no inputs, so C5 runs it without them.
+    /// The inputs the caller added are not staged and no input is required:
+    /// latest() sees none. `recipe updates --upstream` calls this for a
+    /// recipe that defines latest().
     pub fn latest(&self, recipe_path: &Path) -> Result<String> {
         let result = self.invoke(worker::protocol::Operation::Latest, recipe_path)?;
         result["latest"]
@@ -336,6 +335,7 @@ impl RecipeEngine {
         finish: Option<&launch::Finish<'_>>,
     ) -> Result<serde_json::Value> {
         let no_dependencies = Default::default();
+        let no_inputs = Vec::new();
         backend::run(
             self.launcher.as_ref(),
             &launch::Invocation {
@@ -347,7 +347,11 @@ impl RecipeEngine {
                     defines: self.defines.clone(),
                     execution: self.execution.clone(),
                 },
-                inputs: &self.inputs,
+                inputs: if operation == worker::protocol::Operation::Latest {
+                    &no_inputs
+                } else {
+                    &self.inputs
+                },
                 destination: &self.build_dir,
                 state_dir: self.state_dir.as_deref(),
                 // Each run of the graph names its own (`backend`).
