@@ -108,7 +108,7 @@ def validate(kind, ctx):
         require(outputs[name].read_bytes().startswith(b"\x7fELF"), "not an ELF: " + name)
         require(stat.S_IMODE(outputs[name].stat().st_mode) == 0o755, "wrong executable mode: " + name)
     if kind == "sqlite":
-        require(ctx["state"]["result"] == "sqlite-locks: PASS\n", "SQLite contention failed")
+        # The recipe throws unless the two processes met SQLITE_BUSY and both committed.
         # Read-only inspection of the published data, never a host workload substitute.
         with sqlite3.connect(outputs["database"].as_uri() + "?mode=ro", uri=True) as db:
             require(db.execute("SELECT sum(v), count(*) FROM items").fetchone() == (33, 2), "published data differs")
@@ -120,8 +120,7 @@ def validate(kind, ctx):
         require(sum(log.count("Compiling consumer v0.1.0") for log in logs) == 2, "expected exactly one compilation per target")
         require(any("Blocking waiting for file lock" in log for log in logs), "no actual lock contention observed")
         require((outputs["cache"] / ".package-cache").is_file(), "shared package cache lock missing")
-        for target in ("gnu", "musl"):
-            require(ctx["state"][target] == "compiled rust 42\n", "threaded program failed")
+        # The recipe throws unless both built programs printed "compiled rust 42".
         headers = checked(["readelf", "-lW", str(outputs["musl"])])
         require("INTERP" not in headers, "musl product is not static")
     elif kind == "rpm":
@@ -133,8 +132,7 @@ def validate(kind, ctx):
         require(os.readlink(root / "usr/lib64/libz.so.1") == "libz.so.1.3.1.zlib-ng", "RPM symlink differs")
         require((root / "usr/lib/.build-id/f1/616a2a6c431967ce6600fdbb462f917d445430").resolve() == library, "RPM build-ID link differs")
     elif kind == "apk":
-        require(ctx["state"]["uid"] == ctx["state"]["gid"] == "1000", "APK ran as root")
-        require(ctx["state"]["busybox"] == "installed APK executed\n", "installed APK failed")
+        # The recipe throws unless the package tool ran as 1000 and the installed BusyBox executed.
         metadata = json.loads((outputs["rootfs"] / ".recipe-target-metadata.json").read_text())
         busybox = metadata["entries"]["bin/busybox"]
         require(busybox["uid"] == busybox["gid"] == 0 and busybox["mode"] == 0o755, "APK intended metadata differs")

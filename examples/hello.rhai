@@ -1,36 +1,9 @@
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{ outputs: #{ program: "file" } };
-let ctx = #{
-    name: "hello",
-    version: "1.0",
-    program: join_path(RUNTIME.paths.output, "bin/hello"),
-    payload: "#!/bin/sh\nprintf 'hello\\n'\n",
-};
+const PACKAGE = #{ name: "hello", version: "1.0", description: "A one-line shell program" };
 
-fn is_acquired(ctx) { ready(ctx) }
-fn acquire(ctx) { ctx }
-fn is_built(ctx) { ready(ctx) }
-fn build(ctx) { ctx }
-
-fn is_installed(ctx) {
-    if !is_file(ctx.program) { return needs_work(ctx, "hello output is missing"); }
-    if read_file(ctx.program) != ctx.payload {
-        return needs_work(ctx, "hello output has different contents");
-    }
-    ctx.outputs.program = ctx.program;
-    ready(ctx)
-}
-
-fn install(ctx) {
-    mkdir(dirname(ctx.program));
-    write_file(ctx.program, ctx.payload);
-    chmod(ctx.program, 0o755);
-    ctx.outputs.program = ctx.program;
-    ctx
-}
-
-fn remove(ctx) {
-    if is_file(ctx.program) { rm(ctx.program); }
-    ctx.outputs = #{};
-    ctx
+// `out` is where the program's file must be made.
+fn build(src, out) {
+    write_file(out, "#!/bin/sh\nprintf 'hello\\n'\n");
+    chmod(out, 0o755);
 }

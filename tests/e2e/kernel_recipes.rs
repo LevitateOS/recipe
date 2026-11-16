@@ -14,62 +14,35 @@ pub(super) fn copy_kernel_recipes(recipes: &Path) {
     .unwrap();
 }
 
-// Prepare this control's disposable compiler prerequisite through the public
-// graph lifecycle. These cases inspect the production kernel hooks without
-// acquiring a compiler or rebuilding the excluded kernel toolchain.
+/// The kernel.release a variant's pin in `kernel/metadata.rhai` builds
+/// (`<version>-<target>`), read from the copied recipe so the tests follow a
+/// kernel bump.
+pub(super) fn kernel_release(recipes: &Path, target: &str) -> String {
+    let text = std::fs::read_to_string(recipes.join("kernel/metadata.rhai")).unwrap();
+    let pin = text
+        .find(&format!("{target}: #{{"))
+        .unwrap_or_else(|| panic!("no pin for {target}"));
+    let marker = "version: \"";
+    let start = pin + text[pin..].find(marker).expect("pin version") + marker.len();
+    let version = &text[start..start + text[start..].find('"').unwrap()];
+    format!("{version}-{target}")
+}
+
+// The kernel recipe's build dependency, as a disposable fixture: these cases
+// inspect the production kernel recipes against imported artifact trees
+// without acquiring a compiler or building the kernel toolchain.
 fn write_kernel_dependency_fixture(recipes: &Path) {
     write_recipe(
         recipes,
         "linux-deps",
-        r#"const RECIPE_API = 2;
+        r#"const RECIPE_API = 1;
 const NEEDS = #{ outputs: #{ tools: "directory" } };
-let ctx = #{ name: "linux-deps" };
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) { ready(ctx) }
-fn is_installed(ctx) {
-    let marker = "/out/tools/readiness-fixture";
-    if !is_file(marker) { return needs_work(ctx, "prepare the readiness fixture explicitly"); }
-    if read_file(marker) != "managed prerequisite" { throw "changed prerequisite"; }
-    ctx.outputs.tools = "/out/tools"; ready(ctx)
-}
-fn install(ctx) {
+fn build(src, out) {
     print("KERNEL_PREREQUISITE_INSTALL");
-    mkdir("/out/tools"); write_file("/out/tools/readiness-fixture", "managed prerequisite");
-    ctx.outputs.tools = "/out/tools"; ctx
+    write_file(join_path(out, "readiness-fixture"), "managed prerequisite");
 }
 "#,
     );
-}
-
-fn prepare_kernel_dependency_fixture(recipes: &Path) {
-    write_kernel_dependency_fixture(recipes);
-    write_recipe(
-        recipes,
-        "kernel-control-cache",
-        r#"const RECIPE_API = 2;
-const NEEDS = #{};
-let build_deps = ["linux-deps"];
-let ctx = #{ name: "kernel-control-cache" };
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) { ready(ctx) }
-fn install(ctx) { ctx }
-"#,
-    );
-    let mut command = recipe_command(recipes);
-    command
-        .args([
-            "install",
-            "kernel-control-cache",
-            "--define",
-            "KERNEL_TARGET=acorn",
-        ])
-        .arg("--recipes-path")
-        .arg(recipes)
-        .arg("--build-dir")
-        .arg(recipes.parent().unwrap().join("work"));
-    let output = command.output().unwrap();
-    assert_success(&output);
-    assert!(String::from_utf8_lossy(&output.stderr).contains("KERNEL_PREREQUISITE_INSTALL"));
 }
 
 pub(super) fn kernel_command(recipes: &Path, action: &str, recipe: &str) -> Command {
@@ -113,113 +86,102 @@ pub(super) fn invoke_kernel(
     (output, ctx)
 }
 
+/// A complete imported kernel bundle for `release`; `fault` leaves out what
+/// a bundle must hold (`release` writes another release, `modules` has none).
+fn write_artifacts(root: &Path, release: &str, fault: &str) -> std::path::PathBuf {
+    let artifacts = root.join("existing kernel");
+    let build = artifacts.join("kernel-build");
+    let release_file = build.join("include/config/kernel.release");
+    std::fs::create_dir_all(release_file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &release_file,
+        if fault == "release" {
+            "6.18-wrong"
+        } else {
+            release
+        },
+    )
+    .unwrap();
+    std::fs::create_dir_all(build.join("arch/x86/boot")).unwrap();
+    std::fs::write(
+        build.join("arch/x86/boot/bzImage"),
+        "disposable build artifact",
+    )
+    .unwrap();
+    std::fs::create_dir_all(artifacts.join("staging/boot")).unwrap();
+    std::fs::write(artifacts.join("staging/boot/vmlinuz"), "disposable image").unwrap();
+    if fault != "modules" {
+        let modules = artifacts.join("staging/usr/lib/modules").join(release);
+        std::fs::create_dir_all(&modules).unwrap();
+        std::fs::write(modules.join("fixture.ko"), "disposable module").unwrap();
+    }
+    let config_bytes = "CONFIG_LOCALVERSION=\"fixture\"\n";
+    std::fs::write(
+        build.join(".config.kconfig-hash"),
+        format!(
+            "{}  /inputs/kconfig",
+            hex::encode(Sha256::digest(config_bytes))
+        ),
+    )
+    .unwrap();
+    artifacts
+}
+
 #[test]
-fn cli_kernel_readiness_preserves_release_module_and_configuration_rules() {
-    for (target, release) in [("acorn", "7.3.3-acorn"), ("levitate", "6.12.116-levitate")] {
+fn cli_kernel_install_keeps_a_matching_bundle_and_rejects_others_offline() {
+    for target in ["acorn", "levitate"] {
         for recipe in ["linux", "linux-prebuilt"] {
-            let (dir, recipes) = create_test_env();
-            copy_kernel_recipes(&recipes);
-            if recipe == "linux" {
-                // This case checks the real kernel recipe against disposable
-                // imported artifacts, without building a kernel/toolchain.
-                // Give its build dependency a real managed publication and
-                // verify manual checks cannot create that prerequisite. The
-                // production linux-deps acquisition is outside this fixture.
-                write_kernel_dependency_fixture(&recipes);
-                let (missing, _) = invoke_kernel(
-                    kernel_command_for_target(&recipes, "isbuilt", recipe, target),
-                    dir.path(),
-                );
-                assert!(!missing.status.success());
-                let stderr = String::from_utf8_lossy(&missing.stderr);
-                assert!(
-                    stderr.contains("requires matching cached products"),
-                    "{stderr}"
-                );
-                assert!(!stderr.contains("KERNEL_PREREQUISITE_INSTALL"), "{stderr}");
-            }
-            let artifacts = dir.path().join("existing kernel");
-            let build = artifacts.join("kernel-build");
-            let release_file = build.join("include/config/kernel.release");
-            let modules = artifacts.join("staging/usr/lib/modules").join(release);
-            std::fs::create_dir_all(release_file.parent().unwrap()).unwrap();
-            std::fs::write(&release_file, release).unwrap();
-            std::fs::create_dir_all(build.join("arch/x86/boot")).unwrap();
-            std::fs::write(
-                build.join("arch/x86/boot/bzImage"),
-                "disposable build artifact",
-            )
-            .unwrap();
-            std::fs::create_dir_all(artifacts.join("staging/boot")).unwrap();
-            std::fs::write(artifacts.join("staging/boot/vmlinuz"), "disposable image").unwrap();
-            std::fs::create_dir_all(&modules).unwrap();
-            std::fs::write(modules.join("fixture.ko"), "disposable module").unwrap();
-            let kconfig = dir.path().join("config");
-            let config_bytes = "CONFIG_LOCALVERSION=\"fixture\"\n";
-            std::fs::write(&kconfig, config_bytes).unwrap();
-            std::fs::write(
-                build.join(".config.kconfig-hash"),
-                format!(
-                    "{}  /inputs/kconfig",
-                    hex::encode(Sha256::digest(config_bytes))
-                ),
-            )
-            .unwrap();
-            let run = |action: &str| {
-                let mut cmd = kernel_command_for_target(&recipes, action, recipe, target);
-                cmd.args(["--input", &format!("target={}", artifacts.display())]);
-                invoke_kernel(cmd, dir.path())
-            };
-            if recipe == "linux" {
-                // Install the graph explicitly. The imported complete kernel
-                // makes the real parent ready, so no kernel build is run; the
-                // child publication is retained at its normal graph destination.
-                let (prepared, _) = run("install");
-                assert_success(&prepared);
-                assert!(
-                    String::from_utf8_lossy(&prepared.stderr)
-                        .contains("KERNEL_PREREQUISITE_INSTALL")
-                );
-            }
-            for action in ["isbuilt", "isinstalled"] {
-                let (output, ctx) = run(action);
-                assert_success(&output);
-                assert!(
-                    !String::from_utf8_lossy(&output.stderr)
-                        .contains("KERNEL_PREREQUISITE_INSTALL"),
-                    "manual readiness must not install its dependency"
-                );
-                let ctx = ctx.unwrap();
-                assert_eq!(ctx["kernel_version"], release);
-                assert_eq!(ctx["build_dir"], "/out/kernel-build");
-                if action == "isinstalled" {
-                    let published = Path::new(ctx["outputs"]["kernel"].as_str().unwrap());
+            for fault in ["none", "release", "modules"] {
+                let (dir, recipes) = create_test_env();
+                copy_kernel_recipes(&recipes);
+                if recipe == "linux" {
+                    write_kernel_dependency_fixture(&recipes);
+                }
+                let release = kernel_release(&recipes, target);
+                let artifacts = write_artifacts(dir.path(), &release, fault);
+                // The fixture's kconfig is the one whose hash the bundle records.
+                std::fs::write(
+                    dir.path().join("config"),
+                    "CONFIG_LOCALVERSION=\"fixture\"\n",
+                )
+                .unwrap();
+                let mut command = kernel_command_for_target(&recipes, "install", recipe, target);
+                command
+                    .args(["--no-persist-state", "--no-network"])
+                    .args(["--input", &format!("target={}", artifacts.display())]);
+                let (output, result) = invoke_kernel(command, dir.path());
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if fault == "none" {
+                    // The imported bundle already is the pinned kernel: nothing
+                    // is built or downloaded, and it is published.
+                    assert_success(&output);
                     assert_eq!(
-                        std::fs::read_to_string(published).unwrap(),
+                        stderr.contains("KERNEL_PREREQUISITE_INSTALL"),
+                        recipe == "linux",
+                        "{stderr}"
+                    );
+                    let result = result.unwrap();
+                    assert_eq!(result["state"], "installed");
+                    let published = Path::new(result["outputs"]["bundle"].as_str().unwrap());
+                    assert_eq!(
+                        std::fs::read_to_string(published.join("staging/boot/vmlinuz")).unwrap(),
                         "disposable image"
                     );
-                    assert_ne!(published, artifacts.join("staging/boot/vmlinuz"));
+                    assert_ne!(published, artifacts);
+                } else {
+                    // Another release or missing modules means the kernel is
+                    // fetched, which the run may not do.
+                    assert!(
+                        !output.status.success(),
+                        "{recipe} accepted a bundle with {fault}: {stderr}"
+                    );
+                    assert!(result.is_none());
                 }
+                assert_eq!(
+                    std::fs::read_to_string(artifacts.join("staging/boot/vmlinuz")).unwrap(),
+                    "disposable image"
+                );
             }
-            std::fs::write(&release_file, "6.18-wrong").unwrap();
-            let (output, _) = run("isinstalled");
-            assert!(!output.status.success());
-            assert!(String::from_utf8_lossy(&output.stderr).contains("Wrong kernel"));
-            std::fs::write(&release_file, release).unwrap();
-            std::fs::rename(&modules, modules.with_extension("stale")).unwrap();
-            let (output, _) = run("isinstalled");
-            assert!(!output.status.success());
-            assert!(String::from_utf8_lossy(&output.stderr).contains("modules"));
-            if recipe == "linux" {
-                std::fs::write(&kconfig, "CONFIG_CHANGED=y\n").unwrap();
-                let (output, _) = run("isbuilt");
-                assert!(!output.status.success());
-                assert!(String::from_utf8_lossy(&output.stderr).contains("configuration changed"));
-            }
-            assert_eq!(
-                std::fs::read_to_string(artifacts.join("staging/boot/vmlinuz")).unwrap(),
-                "disposable image"
-            );
         }
     }
 }
@@ -234,15 +196,12 @@ fn cli_kernel_removal_preserves_imported_artifact_tree() {
         let image = artifacts.join("staging/boot/vmlinuz");
         std::fs::create_dir_all(image.parent().unwrap()).unwrap();
         std::fs::write(&image, "immutable imported image").unwrap();
-        if recipe == "linux" {
-            prepare_kernel_dependency_fixture(&recipes);
-        }
         let mut command = kernel_command_for_target(&recipes, "remove", recipe, "acorn");
         command.args(["--input", &format!("target={}", artifacts.display())]);
-        let (output, ctx) = invoke_kernel(command, dir.path());
+        let (output, result) = invoke_kernel(command, dir.path());
         assert_success(&output);
         assert!(!String::from_utf8_lossy(&output.stderr).contains("KERNEL_PREREQUISITE_INSTALL"));
-        assert!(ctx.unwrap()["outputs"].as_object().unwrap().is_empty());
+        assert!(result.unwrap()["outputs"].as_object().unwrap().is_empty());
         assert_eq!(
             std::fs::read_to_string(&image).unwrap(),
             "immutable imported image"
@@ -252,36 +211,4 @@ fn cli_kernel_removal_preserves_imported_artifact_tree() {
             original
         );
     }
-}
-
-#[test]
-fn cli_kernel_cleanup_rejects_paths_outside_owned_work() {
-    let (dir, recipes) = create_test_env();
-    copy_kernel_recipes(&recipes);
-    let outside = dir.path().join("outside");
-    std::fs::create_dir_all(&outside).unwrap();
-    std::fs::write(outside.join("preserve"), "preserve").unwrap();
-    use std::io::Write;
-    let mut child = std::fs::OpenOptions::new()
-        .append(true)
-        .open(recipes.join("linux.rhai"))
-        .unwrap();
-    writeln!(
-        child,
-        "ctx.source_dir_name = \"../outside\"; ctx.tarball_filename = \"../outside.tar.xz\";"
-    )
-    .unwrap();
-    prepare_kernel_dependency_fixture(&recipes);
-    let (output, _) = invoke_kernel(
-        kernel_command_for_target(&recipes, "cleanup", "linux", "acorn"),
-        dir.path(),
-    );
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("unsafe kernel cleanup"), "{stderr}");
-    assert!(!stderr.contains("KERNEL_PREREQUISITE_INSTALL"), "{stderr}");
-    assert_eq!(
-        std::fs::read_to_string(outside.join("preserve")).unwrap(),
-        "preserve"
-    );
 }

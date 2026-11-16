@@ -8,8 +8,8 @@ fn public_cli_worker_environment_never_selects_unconfined_execution() {
     let (dir, recipes) = create_test_env();
     let sentinel = dir.path().join("host-effect");
     let source = format!(
-        "const RECIPE_API = 2;
-const NEEDS = #{{}}; write_file({:?},\"host effect\"); let ctx=#{{name:\"guard\"}}; fn is_installed(ctx) {{ ready(ctx) }}",
+        "const RECIPE_API = 1;
+const NEEDS = #{{}}; write_file({:?},\"host effect\"); fn build(src, out) {{}}",
         sentinel.to_str().unwrap()
     );
     write_recipe(&recipes, "check", &source);
@@ -25,13 +25,7 @@ const NEEDS = #{{}}; write_file({:?},\"host effect\"); let ctx=#{{name:\"guard\"
         }
         // Ginux was asked for and is missing: nothing runs.
         let output = command
-            .args([
-                "isinstalled",
-                "check",
-                "--execution",
-                "ginux",
-                "--recipes-path",
-            ])
+            .args(["install", "check", "--execution", "ginux", "--recipes-path"])
             .arg(&recipes)
             .output()
             .unwrap();
@@ -43,7 +37,7 @@ const NEEDS = #{{}}; write_file({:?},\"host effect\"); let ctx=#{{name:\"guard\"
     // outside the run's directories is refused.
     let output = host_command(&recipes)
         .env("GINUX_BIN", dir.path().join("missing-ginux"))
-        .args(["isinstalled", "check", "--recipes-path"])
+        .args(["install", "check", "--recipes-path"])
         .arg(&recipes)
         .output()
         .unwrap();
@@ -56,7 +50,7 @@ const NEEDS = #{{}}; write_file({:?},\"host effect\"); let ctx=#{{name:\"guard\"
     );
     assert!(!sentinel.exists());
     let output = host_command(&recipes)
-        .args(["isinstalled", "check", "--backend", "host"])
+        .args(["install", "check", "--backend", "host"])
         .output()
         .unwrap();
     assert!(!output.status.success());
@@ -75,8 +69,8 @@ fn private_worker_rejects_missing_bootstrap_before_recipe_setup() {
         &recipes,
         "check",
         &format!(
-            "const RECIPE_API = 2;
-const NEEDS = #{{}}; write_file({:?},\"unexpected setup\"); let ctx=#{{name:\"guard\"}};",
+            "const RECIPE_API = 1;
+const NEEDS = #{{}}; write_file({:?},\"unexpected setup\"); fn build(src, out) {{}}",
             sentinel.to_str().unwrap()
         ),
     );

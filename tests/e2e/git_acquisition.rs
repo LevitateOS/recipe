@@ -74,61 +74,45 @@ fn managed_pinned_git_selects_exact_commits_and_preserves_invalid_checkouts() {
             "git-payload",
             &format!(
                 r##"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{{ inputs: #{{ "source.git": "directory" }}, outputs: #{{ product: "file" }} }};
-let ctx = #{{name: "git-payload", source: join_path(RUNTIME.paths.build, "exact checkout 'quoted'"),
-    origin: "file:///inputs/source.git", state: #{{acquired: false, installed: false}}}};
-fn is_acquired(ctx) {{
-    if ctx.state.acquired {{ return ready(ctx); }}
-    needs_work(ctx, "acquire exact commit")
-}}
-fn is_built(ctx) {{ needs_work(ctx, "source preparation required") }}
-fn is_installed(ctx) {{
-    if ctx.state.installed {{ return ready(ctx); }}
-    needs_work(ctx, "install pinned source")
-}}
-fn acquire(ctx) {{
-    ctx.source = git_checkout(ctx.origin, ctx.source, {first:?});
-    if read_file(join_path(ctx.source, "payload.txt")) != "first source payload" {{ throw "wrong first commit"; }}
+const ORIGIN = "file:///inputs/source.git";
+fn build(src, out) {{
+    let source = join_path(WORK, "exact checkout 'quoted'");
+    git_checkout(ORIGIN, source, {first:?});
+    if read_file(join_path(source, "payload.txt")) != "first source payload" {{ throw "wrong first commit"; }}
     // Cached exact commit reuse and changing selection use the same owner.
-    git_checkout(ctx.origin, ctx.source, {first:?});
-    git_checkout(ctx.origin, ctx.source, {second:?});
-    if read_file(join_path(ctx.source, "payload.txt")) != "second source payload" {{ throw "wrong second commit"; }}
-    if {failure:?} == "dirty" {{ write_file(join_path(ctx.source, "payload.txt"), "local edits"); }}
+    git_checkout(ORIGIN, source, {first:?});
+    git_checkout(ORIGIN, source, {second:?});
+    if read_file(join_path(source, "payload.txt")) != "second source payload" {{ throw "wrong second commit"; }}
+    if {failure:?} == "dirty" {{ write_file(join_path(source, "payload.txt"), "local edits"); }}
     else if {failure:?} == "origin" {{
-        exec_checked("git", ["-C", ctx.source, "config", "remote.origin.url", "file:///inputs/wrong.git"]);
+        exec_checked("git", ["-C", source, "config", "remote.origin.url", "file:///inputs/wrong.git"]);
     }} else if {failure:?} == "config" {{
-        let hooks = join_path(ctx.source, ".git/policy-hooks");
+        let hooks = join_path(source, ".git/policy-hooks");
         mkdir(hooks);
         let hook = join_path(hooks, "post-checkout");
         write_file(hook, "#!/bin/sh\nprintf unsafe > /work/build/POLICY_EXECUTED\n");
         chmod(hook, 0o755);
-        let monitor = join_path(ctx.source, ".git/policy-monitor");
+        let monitor = join_path(source, ".git/policy-monitor");
         write_file(monitor, "#!/bin/sh\nprintf unsafe > /work/build/POLICY_EXECUTED\n");
         chmod(monitor, 0o755);
-        exec_checked("git", ["-C", ctx.source, "config", "--local", "core.hooksPath", hooks]);
-        exec_checked("git", ["-C", ctx.source, "config", "--local", "core.fsmonitor", monitor]);
-        exec_checked("git", ["-C", ctx.source, "config", "--local", "http.https://example.invalid/.sslVerify", "false"]);
-        exec_checked("git", ["-C", ctx.source, "config", "--local", "http.https://example.invalid/.proxy", "http://127.0.0.1:9"]);
-        exec_checked("git", ["-C", ctx.source, "config", "--local", "url.ext::unexpected.insteadOf", ctx.origin]);
-        exec_checked("git", ["-C", ctx.source, "config", "--local", "include.path", "/work/build/extra.config"]);
-        write_file("/work/build/extra.config", "[http]\nsslVerify = false\n");
-    }} else {{ write_file(join_path(ctx.source, ".git/HEAD"), "not a Git HEAD"); }}
-    let before = read_file(join_path(ctx.source, "payload.txt"));
+        exec_checked("git", ["-C", source, "config", "--local", "core.hooksPath", hooks]);
+        exec_checked("git", ["-C", source, "config", "--local", "core.fsmonitor", monitor]);
+        exec_checked("git", ["-C", source, "config", "--local", "http.https://example.invalid/.sslVerify", "false"]);
+        exec_checked("git", ["-C", source, "config", "--local", "http.https://example.invalid/.proxy", "http://127.0.0.1:9"]);
+        exec_checked("git", ["-C", source, "config", "--local", "url.ext::unexpected.insteadOf", ORIGIN]);
+        exec_checked("git", ["-C", source, "config", "--local", "include.path", "/work/build/extra.config"]);
+        write_file(join_path(WORK, "extra.config"), "[http]\nsslVerify = false\n");
+    }} else {{ write_file(join_path(source, ".git/HEAD"), "not a Git HEAD"); }}
+    let before = read_file(join_path(source, "payload.txt"));
     let rejected = false;
-    try {{ git_checkout(ctx.origin, ctx.source, {first:?}); }} catch (error) {{ rejected = true; }}
+    try {{ git_checkout(ORIGIN, source, {first:?}); }} catch (error) {{ rejected = true; }}
     if !rejected {{ throw "invalid checkout was accepted"; }}
-    if is_file("/work/build/POLICY_EXECUTED") {{ throw "cached Git policy executed a hook or monitor"; }}
-    if read_file(join_path(ctx.source, "payload.txt")) != before {{ throw "checkout bytes were replaced"; }}
-    if glob_list(join_path(dirname(ctx.source), ".recipe-git.*")).len != 0 {{ throw "Git staging leaked"; }}
-    ctx.state.acquired = true;
-    ctx
-}}
-fn install(ctx) {{
-    copy_file(join_path(ctx.source, "payload.txt"), "/out/product");
-    ctx.outputs.product = "/out/product";
-    ctx.state.installed = true;
-    ctx
+    if is_file(join_path(WORK, "POLICY_EXECUTED")) {{ throw "cached Git policy executed a hook or monitor"; }}
+    if read_file(join_path(source, "payload.txt")) != before {{ throw "checkout bytes were replaced"; }}
+    if glob_list(join_path(dirname(source), ".recipe-git.*")).len != 0 {{ throw "Git staging leaked"; }}
+    copy_file(join_path(source, "payload.txt"), out);
 }}
 "##
             ),
@@ -137,7 +121,7 @@ fn install(ctx) {{
         let output = git_command(&recipes, Some(&bare)).output().unwrap();
         assert_success(&output);
         let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(context["state"]["installed"], true);
+        assert_eq!(context["state"], "installed");
         let product = Path::new(context["outputs"]["product"].as_str().unwrap());
         assert_eq!(
             std::fs::read_to_string(product).unwrap(),
@@ -163,20 +147,16 @@ fn managed_failed_git_acquisition_keeps_staging_private() {
         "git-payload",
         &format!(
             r##"
-const RECIPE_API = 2;
-const NEEDS = #{{ inputs: #{{ "source.git": "directory" }} }};
-let ctx = #{{name: "git-payload", source: join_path(RUNTIME.paths.build, "checkout")}};
-fn is_acquired(ctx) {{ needs_work(ctx, "acquire missing commit") }}
-fn is_built(ctx) {{ needs_work(ctx, "source preparation required") }}
-fn is_installed(ctx) {{ needs_work(ctx, "install requested") }}
-fn acquire(ctx) {{ git_checkout("file:///inputs/source.git", ctx.source, {missing:?}); ctx }}
-fn cleanup(ctx, reason) {{
-    if reason == "auto.acquire.failure" {{
-        if is_dir(ctx.source) {{ throw "failed Git checkout was published"; }}
-        if glob_list(join_path(dirname(ctx.source), ".recipe-git.*")).len != 0 {{ throw "Git staging leaked"; }}
+const RECIPE_API = 1;
+const NEEDS = #{{ inputs: #{{ "source.git": "directory" }}, outputs: #{{ product: "file" }} }};
+fn source() {{ join_path(WORK, "checkout") }}
+fn build(src, out) {{ git_checkout("file:///inputs/source.git", source(), {missing:?}); }}
+fn cleanup(reason) {{
+    if reason == "auto.build.failure" {{
+        if is_dir(source()) {{ throw "failed Git checkout was published"; }}
+        if glob_list(join_path(dirname(source()), ".recipe-git.*")).len != 0 {{ throw "Git staging leaked"; }}
         log("GIT_STAGING_PRESERVED");
     }}
-    ctx
 }}
 "##,
             missing = "0".repeat(40)
@@ -208,16 +188,12 @@ fn managed_git_rejects_unpinned_revisions_and_unsupported_origins_before_spawn()
             "git-payload",
             &format!(
                 r##"
-const RECIPE_API = 2;
-const NEEDS = #{{}};
-let ctx = #{{name: "git-payload"}};
-fn is_acquired(ctx) {{ needs_work(ctx, "validate source") }}
-fn is_built(ctx) {{ needs_work(ctx, "source preparation required") }}
-fn is_installed(ctx) {{ needs_work(ctx, "install requested") }}
-fn acquire(ctx) {{ git_checkout({origin:?}, "/work/build/checkout", {commit:?}); ctx }}
-fn cleanup(ctx, reason) {{
-    if is_dir("/work/build/checkout") {{ throw "invalid arguments created a checkout"; }}
-    log("GIT_INVALID_INPUT_PRESERVED"); ctx
+const RECIPE_API = 1;
+const NEEDS = #{{ outputs: #{{ product: "file" }} }};
+fn build(src, out) {{ git_checkout({origin:?}, join_path(WORK, "checkout"), {commit:?}); }}
+fn cleanup(reason) {{
+    if is_dir(join_path(WORK, "checkout")) {{ throw "invalid arguments created a checkout"; }}
+    log("GIT_INVALID_INPUT_PRESERVED");
 }}
 "##
             ),
@@ -245,18 +221,13 @@ fn managed_stalled_git_deadline_reaps_transport_and_releases_destination() {
     let endpoint = listener.local_addr().unwrap().to_string();
     let source = format!(
         r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{{ network: [{endpoint:?}], outputs: #{{ product: "file" }} }};
-let ctx = #{{name: "git-stall"}};
-fn is_acquired(ctx) {{ needs_work(ctx, "acquire stalled Git origin") }}
-fn is_built(ctx) {{ needs_work(ctx, "acquire source before build") }}
-fn is_installed(ctx) {{ needs_work(ctx, "install requested") }}
-fn acquire(ctx) {{
+fn build(src, out) {{
     print("GIT_STALL_STARTED");
-    git_checkout("http://{endpoint}/source.git", "/work/build/checkout", "0000000000000000000000000000000000000000");
-    ctx
+    git_checkout("http://{endpoint}/source.git", join_path(WORK, "checkout"), "0000000000000000000000000000000000000000");
+    throw "stalled acquisition reached the end of build";
 }}
-fn install(ctx) {{ throw "stalled acquisition reached install"; }}
 "#
     );
     write_recipe(&recipes, "git-payload", &source);
@@ -431,16 +402,11 @@ fn install(ctx) {{ throw "stalled acquisition reached install"; }}
         &recipes,
         "git-payload",
         r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{ outputs: #{ product: "file" } };
-let ctx = #{name: "git-stall", state: #{installed: false}};
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) { ready(ctx) }
-fn is_installed(ctx) { if ctx.state.installed { ctx.outputs.product="/out/product"; return ready(ctx); } needs_work(ctx,"install") }
-fn install(ctx) {
-    if is_dir("/work/build/checkout") || glob_list("/work/build/.recipe-git.*").len != 0 { throw "stalled Git staging crossed source identities"; }
-    write_file("/out/product","recovered after stalled Git");
-    ctx.outputs.product="/out/product"; ctx.state.installed=true; ctx
+fn build(src, out) {
+    if is_dir(join_path(WORK, "checkout")) || glob_list(join_path(WORK, ".recipe-git.*")).len != 0 { throw "stalled Git staging crossed source identities"; }
+    write_file(out, "recovered after stalled Git");
 }
 "#,
     );

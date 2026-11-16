@@ -1,19 +1,25 @@
-use super::kernel_recipes::{copy_kernel_recipes, kernel_command};
+use super::kernel_recipes::{copy_kernel_recipes, kernel_command, kernel_release};
 use super::*;
 use sha2::{Digest, Sha256};
 
-fn prebuilt_archive(fault: &str) -> Vec<u8> {
+fn prebuilt_archive(release: &str, fault: &str) -> Vec<u8> {
     let encoder = xz2::write::XzEncoder::new(Vec::new(), 1);
     let mut archive = tar::Builder::new(encoder);
     // These are disposable artifact trees, not bootable kernel images/modules.
     let mut files = vec![
-        ("kernel-build/include/config/kernel.release", "7.3.3-acorn"),
-        ("staging/boot/vmlinuz", "downloaded disposable image"),
+        (
+            "kernel-build/include/config/kernel.release".to_owned(),
+            release.to_owned(),
+        ),
+        (
+            "staging/boot/vmlinuz".to_owned(),
+            "downloaded disposable image".to_owned(),
+        ),
     ];
     if fault != "layout" {
         files.push((
-            "staging/usr/lib/modules/7.3.3-acorn/payload.ko",
-            "disposable module payload",
+            format!("staging/usr/lib/modules/{release}/payload.ko"),
+            "disposable module payload".to_owned(),
         ));
     }
     for (path, bytes) in files {
@@ -50,7 +56,8 @@ fn cli_prebuilt_kernel_offline_acquisition_validates_before_publication() {
         let outside = dir.path().join("outside");
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("preserve"), "unrelated payload").unwrap();
-        let archive = prebuilt_archive(fault);
+        let release = kernel_release(&recipes, "acorn");
+        let archive = prebuilt_archive(&release, fault);
         let expected = if fault == "digest" {
             "0".repeat(64)
         } else {
@@ -80,20 +87,19 @@ fn cli_prebuilt_kernel_offline_acquisition_validates_before_publication() {
         std::fs::write(&path, &source).unwrap();
         let mut command = kernel_command(&recipes, "install", "linux-prebuilt");
         command
-            .args(["--force-acquire", "--force-install"])
             .args(["--input", &format!("kernel_archive={}", supplied.display())])
             .args(["--input", &format!("target={}", previous.display())]);
         let (output, ctx) = super::kernel_recipes::invoke_kernel(command, dir.path());
         if fault == "valid" {
             assert_success(&output);
             let ctx = ctx.unwrap();
-            assert_eq!(ctx["kernel_version"], "7.3.3-acorn");
-            let published = Path::new(ctx["outputs"]["kernel"].as_str().unwrap());
+            assert_eq!(ctx["state"], "installed");
+            let published = Path::new(ctx["outputs"]["bundle"].as_str().unwrap());
             assert_eq!(
-                std::fs::read_to_string(published).unwrap(),
+                std::fs::read_to_string(published.join("staging/boot/vmlinuz")).unwrap(),
                 "downloaded disposable image"
             );
-            assert!(ctx["outputs"].get("source").is_none());
+            assert_eq!(ctx["outputs"].as_object().unwrap().len(), 1);
         } else {
             assert!(!output.status.success(), "accepted invalid payload {fault}");
             assert!(ctx.is_none(), "failed acquisition published a result");

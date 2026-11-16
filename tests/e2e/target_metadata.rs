@@ -2,7 +2,7 @@ use super::*;
 use std::fs::{self, File};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-/// Real managed extraction, checkpoint recovery, publication/import, image
+/// Real managed extraction, publication/import, image
 /// assembly. Actual recstrap deployment runs separately in the retained PRD12
 /// libvirt fixture, using this exact image on an EROFS-zstd-capable kernel. No host chown/chmod is used to install
 /// package privileges into staging.
@@ -80,54 +80,36 @@ fn cli_target_metadata_survives_publication_reimport_and_erofs_production() {
         &recipes,
         "target",
         r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{ inputs: #{ "package": "file" }, outputs: #{ rootfs: "directory" } };
-let ctx = #{name: "target-metadata"};
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) {
-    if !is_file("/out/rootfs/.recipe-target-metadata.json") { return needs_work(ctx, "extract package"); }
-    ready(ctx)
-}
-fn build(ctx) {
+fn build(src, out) {
     if trim(exec_output("id", ["-u"], #{uid: 1000, gid: 1000})) != "1000" {
         throw "child virtual identity was not selected";
     }
     if trim(exec_output("id", ["-u"])) != "0" { throw "child changed worker identity"; }
-    target_extract_tar("/inputs/package", "/out/rootfs");
-    target_mode("/out/rootfs", "bin/through-alias", 0o5111);
+    target_extract_tar("/inputs/package", out);
+    target_mode(out, "bin/through-alias", 0o5111);
     // Package clients can leave execute-only staging inodes.
-    chmod("/out/rootfs/usr/bin/helper", 0o111);
-    target_finalize("/out/rootfs");
-    ctx
-}
-fn is_installed(ctx) {
-    if !is_file("/out/rootfs/finished") { return needs_work(ctx, "finish after build checkpoint"); }
-    ctx.outputs = #{rootfs: "/out/rootfs"}; ready(ctx)
-}
-fn install(ctx) {
-    write_file("/out/rootfs/finished", "ready\n");
-    target_finalize("/out/rootfs");
-    ctx.outputs = #{rootfs: "/out/rootfs"}; ctx
+    chmod(join_path(out, "usr/bin/helper"), 0o111);
+    write_file(join_path(out, "finished"), "ready\n");
+    target_finalize(out);
 }
 "#,
     );
     let output_json = dir.path().join("first.json");
-    for _ in 0..2 {
-        // Second execution restores the saved build/install checkpoints.
-        let out = recipe_command(&recipes)
-            .args(["install", "target"])
-            .arg("--recipes-path")
-            .arg(&recipes)
-            .arg("--build-dir")
-            .arg(dir.path().join("work"))
-            .arg("--input")
-            .arg(format!("package={}", archive.display()))
-            .arg("--json-output")
-            .arg(&output_json)
-            .output()
-            .unwrap();
-        assert_success(&out);
-    }
+    let out = recipe_command(&recipes)
+        .args(["install", "target"])
+        .arg("--recipes-path")
+        .arg(&recipes)
+        .arg("--build-dir")
+        .arg(dir.path().join("work"))
+        .arg("--input")
+        .arg(format!("package={}", archive.display()))
+        .arg("--json-output")
+        .arg(&output_json)
+        .output()
+        .unwrap();
+    assert_success(&out);
     let ctx: serde_json::Value = serde_json::from_slice(&fs::read(output_json).unwrap()).unwrap();
     let published = Path::new(ctx["outputs"]["rootfs"].as_str().unwrap());
     // Staging never acquired the package's host privileges.
@@ -142,18 +124,11 @@ fn install(ctx) {
         &recipes,
         "import",
         r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{ inputs: #{ target: "directory" }, outputs: #{ rootfs: "directory" } };
-let ctx = #{name: "target-import"};
-fn is_built(ctx) { ready(ctx) }
-fn is_installed(ctx) {
-    if !is_file("/out/roundtrip") { return needs_work(ctx, "record import"); }
-    ctx.outputs = #{rootfs: "/out"}; ready(ctx)
-}
-fn install(ctx) {
-    write_file("/out/roundtrip", "imported\n");
-    target_finalize("/out");
-    ctx.outputs = #{rootfs: "/out"}; ctx
+fn build(src, out) {
+    write_file(join_path(out, "roundtrip"), "imported\n");
+    target_finalize(out);
 }
 "#,
     );

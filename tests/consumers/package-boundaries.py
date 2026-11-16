@@ -14,26 +14,13 @@ from pathlib import Path
 import subprocess
 
 
-FIXTURE = '''const RECIPE_API = 2;
+FIXTURE = '''const RECIPE_API = 1;
 const NEEDS = #{ inputs: #{ program: "file" }, outputs: #{ "package": "directory" }, timeout_secs: 120 };
-let ctx = #{ name: @NAME@, version: @VERSION@,
-    source: join_path(RUNTIME.paths.inputs, "program"),
-    package_root: join_path(RUNTIME.paths.output, "package") };
-fn is_acquired(ctx) { ready(ctx) }
-fn acquire(ctx) { ctx }
-fn is_built(ctx) { ready(ctx) }
-fn build(ctx) { ctx }
-fn is_installed(ctx) {
-    if !is_file(join_path(ctx.package_root, "bin/rg")) { return needs_work(ctx, "copy rg"); }
-    ctx.outputs["package"] = ctx.package_root;
-    ready(ctx)
-}
-fn install(ctx) {
-    mkdir(join_path(ctx.package_root, "bin"));
-    copy_file(ctx.source, join_path(ctx.package_root, "bin/rg"));
-    chmod(join_path(ctx.package_root, "bin/rg"), 0o755);
-    ctx.outputs["package"] = ctx.package_root;
-    ctx
+const PACKAGE = #{ name: @NAME@, version: @VERSION@, description: "A copy of the verified rg executable" };
+fn build(src, out) {
+    mkdir(join_path(out, "bin"));
+    copy_file(INPUTS.program, join_path(out, "bin/rg"));
+    chmod(join_path(out, "bin/rg"), 0o755);
 }
 '''
 

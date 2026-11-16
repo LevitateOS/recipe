@@ -55,17 +55,15 @@ def main():
         if found != "recipe-activation-needle\n":
             raise RuntimeError("active rg failed the real search")
 
-    # Both archives and payload hashes were verified against upstream releases.
+    # Both archives were verified against upstream releases (the archive's
+    # SHA-256 is the only digest the recipe holds).
     # Keep the earlier version here to exercise an actual executable replacement.
     previous = source
     for current, old in [
         ('version: "15.2.0"', 'version: "15.1.0"'),
+        ("download/15.2.0/ripgrep-15.2.0-", "download/15.1.0/ripgrep-15.1.0-"),
         ("33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c",
          "1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599"),
-        ("e62198eb19b136b88c330af83647b5a962cb99b6b1f066758568f12de1974849",
-         "ebeaf56f8a25e102e9419933423738b3a2a613a444fd749d695e15eba53f71f2"),
-        ("2b0db3d436bc1b79c2da556bb75ef1797c00476208c1fe04e0f6e012690912bf",
-         "f2097dadba0668217de5af6728b929fb78f82e2bbe4b0c3392244f78da4bddc1"),
     ]:
         if previous.count(current) != 1:
             raise RuntimeError("ripgrep pin changed; refresh the verified update fixture")
@@ -73,7 +71,9 @@ def main():
     recipe.write_text(previous)
     invoke("install-15.1.0", "install", "ripgrep")
     version("15.1.0")
-    invoke("isinstalled", "isinstalled", "ripgrep", offline=True)
+    state = invoke("state-installed", "state", "ripgrep", offline=True)
+    if state["state"] != "installed" or state["installed_version"] != "15.1.0":
+        raise RuntimeError(f"state after install: {state}")
     before = os.readlink(package_root / "profile")
 
     recipe.write_text(source)
@@ -101,7 +101,9 @@ def main():
     remaining = invoke("installed-empty", "installed", offline=True)
     if remaining["packages"]:
         raise RuntimeError("removed package remains in active receipt")
-    invoke("isinstalled-after-remove", "isinstalled", "ripgrep", offline=True, success=False)
+    state = invoke("state-after-remove", "state", "ripgrep", offline=True)
+    if state is None or state["state"] != "none":
+        raise RuntimeError(f"state after remove: {state}")
     (root / "verified.json").write_text(json.dumps({
         "install": "15.1.0", "update": "15.2.0", "real_search": True,
         "failed_update_preserves_profile": True, "removal_without_catalog_or_runtime": True,

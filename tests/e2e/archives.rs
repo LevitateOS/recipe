@@ -23,16 +23,10 @@ fn write_extraction_recipe(recipes: &Path, archive_name: &str) {
         "extract-archive",
         &format!(
             r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{{ inputs: #{{ "{archive_name}": "file" }}, outputs: #{{ extracted: "directory" }} }};
-let ctx = #{{ name: "extract-archive", state: #{{installed: false}} }};
-fn is_installed(ctx) {{ if ctx.state.installed {{ return ready(ctx); }} needs_work(ctx, "extract archive") }}
-fn is_acquired(ctx) {{ ready(ctx) }}
-fn is_built(ctx) {{ ready(ctx) }}
-fn install(ctx) {{
-    extract("/inputs/{archive_name}", join_path(RUNTIME.paths.build, "extract"));
-    ctx.outputs.extracted = join_path(RUNTIME.paths.build, "extract");
-    ctx.state.installed = true; ctx
+fn build(src, out) {{
+    extract("/inputs/{archive_name}", out);
 }}
 "#
         ),
@@ -210,23 +204,19 @@ fn cli_zip_rejects_existing_symlink_components() {
             "extract-archive",
             &format!(
                 r#"
-const RECIPE_API = 2;
-const NEEDS = #{{ inputs: #{{ "payload.zip": "file" }} }};
-let ctx = #{{name: "zip-boundary"}};
-fn is_acquired(ctx) {{ ready(ctx) }}
-fn is_built(ctx) {{ ready(ctx) }}
-fn is_installed(ctx) {{ needs_work(ctx, "validate ZIP boundary") }}
-fn install(ctx) {{
+const RECIPE_API = 1;
+const NEEDS = #{{ inputs: #{{ "payload.zip": "file" }}, outputs: #{{ extracted: "directory" }} }};
+fn build(src, out) {{
     mkdir("/work/build/outside");
     write_file("/work/build/outside/payload.txt", "preserve existing content");
     {prepare}
     extract("/inputs/payload.zip", "{destination}");
     throw "extraction through symlink unexpectedly succeeded";
 }}
-fn cleanup(ctx, reason) {{
+fn cleanup(reason) {{
     if read_file("/work/build/outside/payload.txt") != "preserve existing content" {{ throw "symlink target overwritten"; }}
     if is_dir("/work/build/outside/new") || is_dir("/work/build/outside/extract") {{ throw "symlink target received archive data"; }}
-    log("ZIP_TARGET_PRESERVED"); ctx
+    log("ZIP_TARGET_PRESERVED");
 }}
 "#
             ),

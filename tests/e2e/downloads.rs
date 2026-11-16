@@ -115,45 +115,29 @@ fn download_recipe(recipes: &Path, url: &str, digest: &str, prefix: Option<&str>
         "download-payload",
         &format!(
             r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{{ outputs: #{{ product: "file" }}, network: {endpoints:?} }};
-let ctx = #{{name: "download-payload", url: {url:?}, digest: {digest:?},
-    payload: join_path(RUNTIME.paths.build, "payload.dat"),
-    state: #{{downloaded: false, installed: false}}}};
-fn is_acquired(ctx) {{
-    if ctx.state.downloaded {{ return ready(ctx); }}
-    needs_work(ctx, "fetch verified payload")
+const URL = {url:?};
+const DIGEST = {digest:?};
+const PREVIOUS = {prefix:?};
+fn payload() {{ join_path(WORK, "cache/payload.dat") }}
+fn build(src, out) {{
+    mkdir(dirname(payload()));
+    if {existing} {{ write_file(payload(), PREVIOUS); }}
+    download(URL, payload(), DIGEST, {resume});
+    verify_sha256(payload(), DIGEST);
+    copy_file(payload(), out);
 }}
-fn is_built(ctx) {{ needs_work(ctx, "source preparation required") }}
-fn is_installed(ctx) {{
-    if ctx.state.installed {{ return ready(ctx); }}
-    needs_work(ctx, "install verified payload")
-}}
-fn acquire(ctx) {{
-    mkdir(dirname(ctx.payload));
-    if {existing} {{ write_file(ctx.payload, {prefix:?}); }}
-    ctx.payload = download(ctx.url, ctx.payload, ctx.digest, {resume});
-    ctx.state.downloaded = true;
-    ctx
-}}
-fn install(ctx) {{
-    verify_sha256(ctx.payload, ctx.digest);
-    copy_file(ctx.payload, "/out/product");
-    ctx.outputs.product = "/out/product";
-    ctx.state.installed = true;
-    ctx
-}}
-fn cleanup(ctx, reason) {{
-    if reason == "auto.acquire.failure" {{
+fn cleanup(reason) {{
+    if reason == "auto.build.failure" {{
         if {existing} {{
-            if read_file(ctx.payload) != {prefix:?} {{ throw "previous payload changed"; }}
-        }} else if is_file(ctx.payload) {{ throw "failed transfer was published"; }}
-        if glob_list(join_path(dirname(ctx.payload), ".recipe-download.*")).len != 0 {{
+            if read_file(payload()) != PREVIOUS {{ throw "previous payload changed"; }}
+        }} else if is_file(payload()) {{ throw "failed transfer was published"; }}
+        if glob_list(join_path(dirname(payload()), ".recipe-download.*")).len != 0 {{
             throw "download staging leaked";
         }}
         log("DOWNLOAD_CACHE_PRESERVED");
     }}
-    ctx
 }}
 "#,
             existing = prefix.is_some(),
@@ -200,8 +184,8 @@ fn managed_verified_download_checks_digest_before_publication() {
             server.join().unwrap();
             if payload == "hello world" {
                 assert_success(&output);
-                let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-                assert_eq!(ctx["state"]["installed"], true);
+                let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(result["state"], "installed");
             } else {
                 assert!(!output.status.success());
                 let diagnostic = String::from_utf8_lossy(&output.stderr);
@@ -390,19 +374,13 @@ fn managed_download_rejects_directory_destinations_without_network() {
         "download-payload",
         &format!(
             r#"
-const RECIPE_API = 2;
-const NEEDS = #{{}};
-let ctx = #{{name: "download-payload", state: #{{checked: false}}}};
-fn is_acquired(ctx) {{ ready(ctx) }}
-fn is_built(ctx) {{ ready(ctx) }}
-fn is_installed(ctx) {{
-    if ctx.state.checked {{ return ready(ctx); }}
-    needs_work(ctx, "validate destinations")
-}}
-fn install(ctx) {{
-    mkdir("/work/build/cache");
-    write_file("/work/build/cache/previous", "keep verified bytes");
-    for destination in ["/work/build/cache", "/"] {{
+const RECIPE_API = 1;
+const NEEDS = #{{ outputs: #{{ product: "file" }} }};
+fn build(src, out) {{
+    let cache = join_path(WORK, "cache");
+    mkdir(cache);
+    write_file(join_path(cache, "previous"), "keep verified bytes");
+    for destination in [cache, "/"] {{
         let rejected = false;
         try {{ download("https://example.invalid/payload", destination, {digest:?}); }}
         catch (error) {{
@@ -411,9 +389,8 @@ fn install(ctx) {{
         }}
         if !rejected {{ throw "directory destination accepted"; }}
     }}
-    if read_file("/work/build/cache/previous") != "keep verified bytes" {{ throw "cache was changed"; }}
-    ctx.state.checked = true;
-    ctx
+    if read_file(join_path(cache, "previous")) != "keep verified bytes" {{ throw "cache was changed"; }}
+    write_file(out, "checked");
 }}
 "#,
             digest = "0".repeat(64)
@@ -421,8 +398,12 @@ fn install(ctx) {{
     );
     let output = download_command(&recipes, None).output().unwrap();
     assert_success(&output);
-    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(context["state"]["checked"], true);
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["state"], "installed");
+    assert_eq!(
+        std::fs::read_to_string(result["outputs"]["product"].as_str().unwrap()).unwrap(),
+        "checked"
+    );
 }
 
 #[test]
@@ -555,71 +536,56 @@ fn managed_concurrent_download_cache_survives_offline_reinstall() {
         "cached",
         &format!(
             r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{{ outputs: #{{ product: "file" }}, network: [{endpoint:?}] }};
-let ctx = #{{name: "cached-acquisition", source: join_path(RUNTIME.paths.build, "source"), digest: {digest:?}}};
-fn is_acquired(ctx) {{
-    if !is_file(ctx.source) {{ return needs_work(ctx, "fetch source"); }}
-    verify_sha256(ctx.source, ctx.digest); ready(ctx)
+fn build(src, out) {{
+    let source = join_path(WORK, "source");
+    download({url:?}, source, {digest:?});
+    verify_sha256(source, {digest:?});
+    copy_file(source, out);
 }}
-fn is_built(ctx) {{ is_acquired(ctx) }}
-fn is_installed(ctx) {{
-    if !is_file("/out/product") {{ return needs_work(ctx, "install source"); }}
-    verify_sha256("/out/product", ctx.digest);
-    ctx.outputs.product = "/out/product"; ready(ctx)
-}}
-fn acquire(ctx) {{ download({url:?}, ctx.source, ctx.digest); ctx }}
-fn install(ctx) {{
-    verify_sha256(ctx.source, ctx.digest);
-    copy_file(ctx.source, "/out/product");
-    ctx.outputs.product = "/out/product"; ctx
-}}
-fn remove(ctx) {{ rm("/out/product"); ctx.outputs = #{{}}; ctx }}
 "#
         ),
     );
-    let command = |operation: &str| {
+    let command = |operation: &str, online: bool| {
         let mut command = recipe_command(&recipes);
         command
-            .args([operation, "cached", "--recipes-path"])
+            .args([operation, "cached", "--keep", "--recipes-path"])
             .arg(&recipes)
             .arg("--build-dir")
             .arg(dir.path().join("destination"))
             .arg("--state-dir")
             .arg(dir.path().join("retained"))
-            .args([
-                "--network-host",
-                url.strip_prefix("http://")
-                    .unwrap()
-                    .split('/')
-                    .next()
-                    .unwrap(),
-            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if online {
+            command.args(["--network-host", endpoint]);
+        } else {
+            command.arg("--no-network");
+        }
         command
     };
-    let first = command("install").spawn().unwrap();
-    let second = command("install").spawn().unwrap();
+    // Two builds race for the one destination; the second finds the first's
+    // kept result, so the server answers a single request.
+    let first = command("build", true).spawn().unwrap();
+    let second = command("build", true).spawn().unwrap();
     let first = first.wait_with_output().unwrap();
     let second = second.wait_with_output().unwrap();
     assert_success(&first);
     assert_success(&second);
-    // The server handles one request then closes. A second fetch cannot succeed.
     server.join().unwrap();
     for output in [&first, &second] {
-        let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(
-            std::fs::read(context["outputs"]["product"].as_str().unwrap()).unwrap(),
-            payload
-        );
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["state"], "built");
+        assert_eq!(result["kept"], true);
     }
-    assert_success(&command("remove").output().unwrap());
-    let offline = command("install").output().unwrap();
+    // The kept result is installed without the network.
+    let offline = command("install", false).output().unwrap();
     assert_success(&offline);
-    let context: serde_json::Value = serde_json::from_slice(&offline.stdout).unwrap();
+    let result: serde_json::Value = serde_json::from_slice(&offline.stdout).unwrap();
+    assert_eq!(result["state"], "installed");
     assert_eq!(
-        std::fs::read(context["outputs"]["product"].as_str().unwrap()).unwrap(),
+        std::fs::read(result["outputs"]["product"].as_str().unwrap()).unwrap(),
         payload
     );
 }

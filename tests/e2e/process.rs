@@ -7,36 +7,27 @@ fn cli_exec_streams_diagnostics_to_stderr_and_preserves_status_result() {
         &recipes,
         "exec-status",
         r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{ outputs: #{ work: "directory" } };
-let ctx = #{ name: "exec-status", state: #{installed: false} };
-fn is_installed(ctx) { if ctx.state.installed { return ready(ctx); } needs_work(ctx, "execute child") }
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) { ready(ctx) }
-fn install(ctx) {
-    ctx.status = exec("sh", ["-c", "printf 'child stdout\\n'; printf 'child stderr\\n' >&2; exit 23"]);
-    if ctx.status != 23 { throw "unexpected child status"; }
-    write_file(join_path(RUNTIME.paths.build, "handled-status"), "child failure was handled explicitly");
-    ctx.outputs.work = RUNTIME.paths.build;
-    ctx.state.installed = true; ctx
+fn build(src, out) {
+    let status = exec("sh", ["-c", "printf 'child stdout\\n'; printf 'child stderr\\n' >&2; exit 23"]);
+    if status != 23 { throw "unexpected child status"; }
+    write_file(join_path(out, "status"), status.to_string());
+    write_file(join_path(out, "handled-status"), "child failure was handled explicitly");
 }
-
-
 "#,
     );
 
     let output = run_recipe(&["install", "exec-status", "--no-persist-state"], &recipes);
     assert_success(&output);
-    let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(ctx["status"], 23);
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let work = Path::new(result["outputs"]["work"].as_str().unwrap());
+    assert_eq!(std::fs::read_to_string(work.join("status")).unwrap(), "23");
     let diagnostics = String::from_utf8_lossy(&output.stderr);
     assert!(diagnostics.contains("child stdout"));
     assert!(diagnostics.contains("child stderr"));
     assert_eq!(
-        std::fs::read_to_string(
-            Path::new(ctx["outputs"]["work"].as_str().unwrap()).join("handled-status")
-        )
-        .unwrap(),
+        std::fs::read_to_string(work.join("handled-status")).unwrap(),
         "child failure was handled explicitly"
     );
 }
@@ -67,27 +58,30 @@ fn cli_large_asset_hash_progress_does_not_corrupt_json() {
             "verify-large",
             &format!(
                 r#"
-const RECIPE_API = 2;
-const NEEDS = #{{ inputs: #{{ "large.bin": "file" }} }};
-let ctx = #{{ name: "verify-large", digest: "{digest}" }};
-fn is_installed(ctx) {{
-    {helper}("/inputs/large.bin", ctx.digest);
-    ctx.verified = true;
-    ready(ctx)
+const RECIPE_API = 1;
+const NEEDS = #{{ inputs: #{{ "large.bin": "file" }}, outputs: #{{ verified: "file" }} }};
+fn build(src, out) {{
+    {helper}("/inputs/large.bin", "{digest}");
+    write_file(out, "verified");
 }}
 "#
             ),
         );
         let output = recipe_command(&recipes)
-            .args(["isinstalled", "verify-large", "--recipes-path"])
+            .args([
+                "install",
+                "verify-large",
+                "--no-persist-state",
+                "--recipes-path",
+            ])
             .arg(&recipes)
             .arg("--input")
             .arg(format!("large.bin={}", recipes.join("large.bin").display()))
             .output()
             .unwrap();
         assert_success(&output);
-        let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(ctx["verified"], true);
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["state"], "installed");
         let stderr = String::from_utf8_lossy(&output.stderr);
         let algorithm = if helper == "verify_sha256" {
             "sha256"
