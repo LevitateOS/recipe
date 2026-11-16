@@ -1,6 +1,6 @@
 # Implementation plan: the next Recipe
 
-Status: a plan, 2026-11-16. Nothing in it has been started. It covers
+Status: carried out on 2026-11-16 (phases A to H) while the owner was away, under their standing go; see the last section for every decision taken in their place. Nothing was run except the checks the plan allows and H3/H4. It covers
 everything the owner decided that day: the recipe format
 ([`next-recipe-format.md`](next-recipe-format.md)), disk space, single steps,
 the features that go, update checks, and the app. It was written from four
@@ -451,7 +451,22 @@ The owner went to sleep with a standing go ("the entire implementation should be
 | Gate 2, the second clone and the freeze | yes: phases C to G are done in `/home/vince/Projects/recipe-next/LevitateOS`; the freeze on recipe changes is in force; baselines in `/home/vince/Projects/recipe-next/NOTES.md` | the owner's standing go; other sessions were idle |
 | Step A3, the Disk app (Recdirstat) | its "Kept by Recipe" row, its `recipe storage` read, the "Open Recipe…" button and its stand-in were removed with the earlier versions | they existed only to show earlier versions; the storage kinds come back in phase F |
 | Step A2, existing package stores | no migration: a store whose receipts still carry `previous` or `held` no longer loads and must be removed and reinstalled | no backwards compatibility; Recipe has no users |
+| Order of phase F | The app (F1-F3) started right after the specification was approved, before the engine's JSON existed | The specification fixes the JSON; the app is a separate repository |
+| Order of phase G tests | G1-G3 ran after C4b and C5, not right after C3 | Tests compile against the engine; running them while C4 changed it would not compile |
+| `desktop-libs` names no packages on purpose | A `PACKAGES` key with an empty list plus a pins section is a shared group the generator fills | Simplest rule; keeps the old generator behaviour |
+| `FILES` entry whose source is for the other C library (`rec-apps`) | Skipped together with that source | The engine refused it on every system; typos are still caught |
+| `src.packages[i].var` does not compile in Rhai | Renamed `keep_var` | `var` is a Rhai reserved word |
+| Review C6: downloads kept apart from build material | A Downloaded generation is kept beside a checkpoint or built result; `--build` and `--downloads` remove only their kind; each program keeps its own downloads (no store shared between programs) | The specification promises the two kinds can be removed separately; a shared store is new work |
+| Review C6: a `FILES` folder entry plus a renaming file entry left both names | The renamed file is not also placed at its old name | Section 2.5 "rename one" |
+| Review C6: a producer's run says "installed" while `recipe state` says "built" or "none" | Behaviour kept and documented | Decision 23 (installed = outputs published) against section 6.2 (installed = in a receipt) |
+| Review C6: shape of `contract` in a run's result | The specification describes what the engine prints | No reader depends on the shorter form |
+| A musl build of `claude-code` and `opencode` | Not added; they ship glibc only, as before | Not adding features; now possible with `libc:` sources |
+
+Smaller choices taken by the agents while building (names, edge cases, where the specification was silent) are listed in `recipe-format.md` section 12, "Clarifications from the build".
 
 ## Not decided, left for the owner
 
 - During step A1 an agent ran `cargo fmt` over the whole superproject by mistake. About 55 files in `xtask/` and `distro/builder/` in the shared checkout `/home/vince/Projects/LevitateOS` are reformatted, uncommitted, with no change in meaning. Restoring them was refused by the permission check and was not forced. To drop them: `git -C /home/vince/Projects/LevitateOS checkout -- xtask` and `git -C /home/vince/Projects/LevitateOS/distro/builder checkout -- .` (check first that no other session has edits there).
+- The terminal apps' docs snapshots (`cargo xtask check tui`) were not regenerated. Blessing them runs every TUI story, about 20 minutes. The docs pages changed, so that check will report differences until someone runs `cargo xtask check tui --bless`. It already failed before this work (a system-setup story and the same snapshots).
+- Not checked, without running anything: whether the archives placed as whole folders (`antigravity`, `pi`, `gh`, `btop`, `zoxide`) contain symbolic links. Package activation refuses links. Also whether, inside Ginux, the move of `FILES` into the output becomes a copy, because `/work` and `/out` are separate storage.
+- Possible follow-ups, not done: a musl build for `claude-code` and `opencode` (now possible with `libc:` sources); `installed-system.rhai` reading `INPUTS` itself instead of a folder of all inputs; a download store shared between programs.
