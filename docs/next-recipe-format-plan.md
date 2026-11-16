@@ -436,3 +436,22 @@ started. Deleting build material is new behaviour in code that guards against
 losing work, and a mistake there shows only when a run is interrupted. The
 first real proof is H4 if the owner allows it, and after that the owner's
 build and a look at the app on a desktop.
+
+# Decisions taken while the owner was away (2026-11-16)
+
+The owner went to sleep with a standing go ("the entire implementation should be finished when I wake up... if it asks anything use the recommended answer"). The orchestrator took these choices in the owner's place. Each can be reversed.
+
+| Asked | Chosen | Why |
+|---|---|---|
+| Gate 1, the specification (`recipe-format.md`) | approved with the recommended answers: decisions 1-13 and 15-26 of its section 11 as proposed | the owner's standing go; each answer was checked by the drafting agent against the engine and all 106 recipes |
+| Decision 14, `cleanup(reason)` | stays, optional, without `ctx` (the plan's answer 12), not removed as the draft proposed | the owner said the plan's proposed answers are the recommended ones |
+| Answers 4 and 14 both define the OS facts | only the generated `os-facts.rhai` module, no `OS` constant | the plan described the same facts twice; one home |
+| Answer 6, `target:` source field | dropped; only `libc:` | no recipe fits it; nothing is added that nothing uses |
+| Answer 10, kernel outputs | `linux` and `linux-prebuilt` get one output, `bundle`; the builder checks kernel and modules inside it | the other two outputs sit inside the bundle at a release-dependent path |
+| Gate 2, the second clone and the freeze | yes: phases C to G are done in `/home/vince/Projects/recipe-next/LevitateOS`; the freeze on recipe changes is in force; baselines in `/home/vince/Projects/recipe-next/NOTES.md` | the owner's standing go; other sessions were idle |
+| Step A3, the Disk app (Recdirstat) | its "Kept by Recipe" row, its `recipe storage` read, the "Open Recipe…" button and its stand-in were removed with the earlier versions | they existed only to show earlier versions; the storage kinds come back in phase F |
+| Step A2, existing package stores | no migration: a store whose receipts still carry `previous` or `held` no longer loads and must be removed and reinstalled | no backwards compatibility; Recipe has no users |
+
+## Not decided, left for the owner
+
+- During step A1 an agent ran `cargo fmt` over the whole superproject by mistake. About 55 files in `xtask/` and `distro/builder/` in the shared checkout `/home/vince/Projects/LevitateOS` are reformatted, uncommitted, with no change in meaning. Restoring them was refused by the permission check and was not forced. To drop them: `git -C /home/vince/Projects/LevitateOS checkout -- xtask` and `git -C /home/vince/Projects/LevitateOS/distro/builder checkout -- .` (check first that no other session has edits there).
