@@ -2,16 +2,15 @@
 use super::*;
 
 #[test]
-fn declaration_commands_never_evaluate_setup_and_reject_widening() {
+fn declaration_commands_never_evaluate_top_level_code_and_reject_widening() {
     let (dir, recipes) = create_test_env();
     let marker = dir.path().join("setup-effect");
     let source = format!(
-        r#"const RECIPE_API = 2;
+        r#"const RECIPE_API = 1;
 const NEEDS = #{{ inputs: #{{ required: "file", optional: "directory?" }},
     outputs: #{{ product: "file" }}, network: ["127.0.0.1:12345"],
     memory_mib: 4096, storage_max_objects: 20000, timeout_secs: 120, network_max_bytes: 65536 }};
 write_file({marker:?}, "SETUP_EXECUTED"); throw "SETUP_EXECUTED";
-let ctx = #{{name:"static-needs"}};
 "#,
         marker = marker.to_str().unwrap()
     );
@@ -19,7 +18,7 @@ let ctx = #{{name:"static-needs"}};
     write_recipe(
         &recipes,
         "old",
-        "const RECIPE_API = 2;\nconst NEEDS = #{};\nthrow \"SETUP_EXECUTED\";\nlet ctx = #{name:\"old\"};",
+        "const RECIPE_API = 1;\nconst NEEDS = #{};\nthrow \"SETUP_EXECUTED\";",
     );
     let input = dir.path().join("selected");
     std::fs::write(&input, "explicit input").unwrap();
@@ -110,9 +109,7 @@ fn literal_authority_and_dependency_graph_fail_before_any_setup() {
         write_recipe(
             &recipes,
             "invalid",
-            &format!(
-                "const RECIPE_API = 2;\n{declaration}\nprint(\"SETUP_EXECUTED\");\nlet ctx = #{{name:\"invalid\"}};"
-            ),
+            &format!("const RECIPE_API = 1;\n{declaration}\nprint(\"SETUP_EXECUTED\");"),
         );
         let result = run_recipe(&["inspect", "invalid"], &recipes);
         assert!(!result.status.success());
@@ -129,34 +126,19 @@ fn managed_typed_outputs_validate_before_final_retention_and_publication() {
         (
             "valid",
             "#{product:\"file\",tree:\"directory\"}",
-            "write_file(\"/out/product\",\"typed bytes\"); mkdir(\"/out/tree\"); ctx.outputs = #{product:\"/out/product\",tree:\"/out/tree\"};",
+            "write_file(out.product,\"typed bytes\"); write_file(join_path(out.tree,\"leaf\"),\"in tree\");",
             true,
         ),
         ("missing", "#{product:\"file\"}", "", false),
-        (
-            "wrong-kind",
-            "#{product:\"file\"}",
-            "mkdir(\"/out/product\"); ctx.outputs.product=\"/out/product\";",
-            false,
-        ),
-        (
-            "undeclared",
-            "#{}",
-            "write_file(\"/out/product\",\"bytes\"); ctx.outputs.product=\"/out/product\";",
-            false,
-        ),
+        ("wrong-kind", "#{product:\"file\"}", "mkdir(out);", false),
     ] {
         write_recipe(
             &recipes,
             name,
             &format!(
-                r#"const RECIPE_API = 2;
+                r#"const RECIPE_API = 1;
 const NEEDS = #{{outputs:{outputs}}};
-let ctx = #{{name:{name:?},state:#{{done:false}},contract:"recipe-owned contract fact",network_usage:"recipe-owned usage fact"}};
-fn is_acquired(ctx) {{ ready(ctx) }}
-fn is_built(ctx) {{ ready(ctx) }}
-fn is_installed(ctx) {{ if ctx.state.done {{ return ready(ctx); }} needs_work(ctx,"install") }}
-fn install(ctx) {{ {body} ctx.state.done=true; ctx }}
+fn build(src, out) {{ {body} }}
 "#
             ),
         );
@@ -174,9 +156,8 @@ fn install(ctx) {{ {body} ctx.state.done=true; ctx }}
                 "typed bytes"
             );
             assert!(Path::new(value["outputs"]["tree"].as_str().unwrap()).is_dir());
-            assert_eq!(value["runtime"]["contract"]["catalog"], 1002);
-            assert_eq!(value["contract"], "recipe-owned contract fact");
-            assert_eq!(value["network_usage"], "recipe-owned usage fact");
+            assert_eq!(value["contract"]["catalog"], 1002);
+            assert!(value["network_usage"].is_object());
         } else {
             assert!(String::from_utf8_lossy(&result.stderr).contains("NEEDS.outputs"));
             assert!(result.stdout.is_empty());
@@ -201,48 +182,37 @@ fn managed_dependency_authority_inputs_and_products_are_separate() {
     write_recipe(
         &recipes,
         "leaf",
-        &format!(
-            r#"const RECIPE_API = 2;
-const NEEDS = #{{ inputs: #{{ asset: "file" }}, outputs: #{{ proof: "directory", alias: "file" }}, network: [{endpoint:?}] }};
-let ctx = #{{name:"authority-leaf",state:#{{done:false}}}};
-fn is_acquired(ctx) {{ ready(ctx) }}
-fn is_built(ctx) {{ ready(ctx) }}
-fn is_installed(ctx) {{ if ctx.state.done {{ ctx.outputs.proof="/out/proof"; ctx.outputs.alias="/out/proof/asset"; return ready(ctx); }} needs_work(ctx,"produce") }}
-fn install(ctx) {{
-    mkdir("/out/proof");
-    write_file("/out/proof/payload",exec_output("curl",["--noproxy","*","-fsS",{url:?}]));
-    copy_file("/inputs/asset","/out/proof/asset");
-    ln("/usr/bin/true", "/out/proof/absolute");
-    ctx.state.done=true; ctx.outputs.proof="/out/proof"; ctx.outputs.alias="/out/proof/asset"; ctx
-}}
+        &r#"const RECIPE_API = 1;
+const NEEDS = #{ inputs: #{ asset: "file" }, outputs: #{ proof: "directory", note: "file" }, network: [@ENDPOINT@] };
+fn build(src, out) {
+    write_file(join_path(out.proof, "payload"), exec_output("curl", ["--noproxy", "*", "-fsS", @URL@]));
+    copy_file(INPUTS.asset, join_path(out.proof, "asset"));
+    ln("/usr/bin/true", join_path(out.proof, "absolute"));
+    write_file(out.note, "leaf note");
+}
 "#
-        ),
+        .replace("@ENDPOINT@", &format!("{endpoint:?}"))
+        .replace("@URL@", &format!("{url:?}")),
     );
     write_recipe(
         &recipes,
         "parent",
-        &format!(
-            r#"const RECIPE_API = 2;
-const NEEDS = #{{}};
-let deps=["leaf"];
-let ctx=#{{name:"authority-parent",state:#{{done:false}}}};
-fn is_acquired(ctx) {{ ready(ctx) }}
-fn is_built(ctx) {{ ready(ctx) }}
-fn is_installed(ctx) {{ if ctx.state.done {{ return ready(ctx); }} needs_work(ctx,"consume") }}
-fn install(ctx) {{
-    let proof=join_path(RUNTIME.paths.dependencies,"leaf/proof");
-    ctx.state.payload=read_file(join_path(proof,"payload"));
-    ctx.state.asset=read_file(join_path(proof,"asset"));
-    let alias=join_path(RUNTIME.paths.dependencies,"leaf/alias");
-    if exec_output("stat",["-c","%i",alias]) != exec_output("stat",["-c","%i",join_path(proof,"asset")]) {{ throw "dependency transfer split a published hardlink"; }}
-    if trim(exec_output("readlink",[join_path(proof,"absolute")])) != "/usr/bin/true" {{ throw "dependency rootfs link changed"; }}
-    if is_file("/inputs/asset") {{ throw "dependency input leaked into parent"; }}
-    ctx.state.denied=exec("curl",["--noproxy","*","--connect-timeout","1","--max-time","2","-fsS",{url:?}]);
-    if ctx.state.denied==0 {{ throw "parent borrowed dependency network authority"; }}
-    ctx.state.done=true; ctx
-}}
+        &r#"const RECIPE_API = 1;
+const NEEDS = #{ outputs: #{ report: "file" } };
+let deps = ["leaf"];
+fn build(src, out) {
+    let proof = DEPS["leaf"].proof;
+    let payload = read_file(join_path(proof, "payload"));
+    let asset = read_file(join_path(proof, "asset"));
+    if read_file(DEPS["leaf"].note) != "leaf note" { throw "dependency output map is wrong"; }
+    if trim(exec_output("readlink", [join_path(proof, "absolute")])) != "/usr/bin/true" { throw "dependency rootfs link changed"; }
+    if is_file("/inputs/asset") { throw "dependency input leaked into parent"; }
+    let denied = exec("curl", ["--noproxy", "*", "--connect-timeout", "1", "--max-time", "2", "-fsS", @URL@]);
+    if denied == 0 { throw "parent borrowed dependency network authority"; }
+    write_file(out, "payload=" + payload + "\nasset=" + asset + "\ndenied=" + denied.to_string() + "\n");
+}
 "#
-        ),
+        .replace("@URL@", &format!("{url:?}")),
     );
     let asset = dir.path().join("dependency-only-input");
     std::fs::write(&asset, "explicit child binding").unwrap();
@@ -258,10 +228,14 @@ fn install(ctx) {{
     assert_success(&result);
     server.join().unwrap();
     let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
-    assert_eq!(value["state"]["payload"], "dependency network product");
-    assert_eq!(value["state"]["asset"], "explicit child binding");
-    assert_ne!(value["state"]["denied"], 0);
-    assert_eq!(value["runtime"]["network_usage"]["status"], "complete");
+    let report = std::fs::read_to_string(value["outputs"]["report"].as_str().unwrap()).unwrap();
+    let lines = report.lines().collect::<Vec<_>>();
+    assert_eq!(lines[0], "payload=dependency network product", "{report}");
+    assert_eq!(lines[1], "asset=explicit child binding", "{report}");
+    assert_ne!(lines[2], "denied=0", "{report}");
+    assert_eq!(value["network_usage"]["status"], "complete");
+    assert_eq!(value["dependencies"].as_array().unwrap().len(), 1);
+    assert_eq!(value["dependencies"][0]["name"], "leaf");
     let logs = dir.path().join("state/recipe/logs");
     let mut parent_log = None;
     let mut child_seen = false;
@@ -284,14 +258,8 @@ fn install(ctx) {{
             parent_log = Some(entry.path());
         } else {
             child_seen = true;
-            assert_eq!(
-                result["worker"]["ctx_summary"]["runtime"]["network_usage"]["endpoints"][0]["attempted"],
-                true
-            );
-            assert_eq!(
-                result["worker"]["ctx_summary"]["runtime"]["network_usage"]["warnings"],
-                serde_json::json!([])
-            );
+            assert_eq!(result["network_usage"]["endpoints"][0]["attempted"], true);
+            assert_eq!(result["network_usage"]["warnings"], serde_json::json!([]));
         }
     }
     assert!(child_seen);
@@ -337,23 +305,19 @@ fn managed_unused_network_grant_is_a_warning_with_complete_observation() {
         &recipes,
         "unused",
         &format!(
-            r#"const RECIPE_API=2;
-const NEEDS=#{{network:[{endpoint:?}]}};
-let ctx=#{{name:"unused-grant"}};
-fn is_installed(ctx) {{ ready(ctx) }}
+            r#"const RECIPE_API = 1;
+const NEEDS = #{{ outputs: #{{ product: "file" }}, network: [{endpoint:?}] }};
+fn build(src, out) {{ write_file(out, "no network used"); }}
 "#
         ),
     );
     let output = run_recipe(&["install", "unused"], &recipes);
     assert_success(&output);
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["runtime"]["network_usage"]["status"], "complete");
-    assert_eq!(
-        value["runtime"]["network_usage"]["endpoints"][0]["attempted"],
-        false
-    );
+    assert_eq!(value["network_usage"]["status"], "complete");
+    assert_eq!(value["network_usage"]["endpoints"][0]["attempted"], false);
     assert!(
-        value["runtime"]["network_usage"]["warnings"][0]
+        value["network_usage"]["warnings"][0]
             .as_str()
             .unwrap()
             .contains(&endpoint)
@@ -382,11 +346,10 @@ fn managed_network_address_subset_matches_hosts_and_authority() {
     }
     write_recipe(
         &recipes,
-        "pins",
-        r#"const RECIPE_API=2;
-const NEEDS=#{network:["many.example:443","other.example:443","127.79.0.99:443"]};
-let ctx=#{name:"bounded-network-pins",state:#{hosts:""}};
-fn is_installed(ctx) { ctx.state.hosts=read_file("/etc/hosts"); ready(ctx) }
+        "addresses",
+        r#"const RECIPE_API = 1;
+const NEEDS = #{ outputs: #{ hosts: "file" }, network: ["many.example:443", "other.example:443", "127.79.0.99:443"] };
+fn build(src, out) { write_file(out, read_file("/etc/hosts")); }
 "#,
     );
     for reverse in [false, true] {
@@ -398,7 +361,7 @@ fn is_installed(ctx) { ctx.state.hosts=read_file("/etc/hosts"); ready(ctx) }
             std::ffi::CString::new(hosts_file.as_os_str().as_encoded_bytes()).unwrap();
         let mut command = recipe_command(&recipes);
         command
-            .args(["install", "pins", "--recipes-path"])
+            .args(["install", "addresses", "--recipes-path"])
             .arg(&recipes)
             .arg("--build-dir")
             .arg(dir.path().join("build"));
@@ -433,7 +396,7 @@ fn is_installed(ctx) { ctx.state.hosts=read_file("/etc/hosts"); ready(ctx) }
         assert_success(&output);
         assert!(String::from_utf8_lossy(&output.stderr).contains("selected"));
         let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        let hosts = result["state"]["hosts"].as_str().unwrap();
+        let hosts = std::fs::read_to_string(result["outputs"]["hosts"].as_str().unwrap()).unwrap();
         for number in 1..=10 {
             assert_eq!(
                 hosts.contains(&format!("127.79.1.{number} many.example\n")),
@@ -484,11 +447,10 @@ fn managed_transport_rejects_the_old_grant_model_before_setup() {
     write_recipe(
         &recipes,
         "version-guard",
-        r#"const RECIPE_API=2;
-const NEEDS=#{};
+        r#"const RECIPE_API = 1;
+const NEEDS = #{ outputs: #{ product: "file" } };
 print("WORKER_SETUP_EXECUTED");
-let ctx=#{name:"version-guard"};
-fn is_installed(ctx) { ready(ctx) }
+fn build(src, out) { write_file(out, "unreachable"); }
 "#,
     );
     let launcher = std::env::var("GINUX_BIN").unwrap();
@@ -534,7 +496,7 @@ sys.exit(child.returncode)
     assert!(!result.status.success());
     let error = String::from_utf8_lossy(&result.stderr);
     assert!(
-        error.contains("protocol version mismatch") && error.contains("want 9"),
+        error.contains("protocol version mismatch") && error.contains("got 8, want "),
         "{error}"
     );
     assert!(!error.contains("WORKER_SETUP_EXECUTED"), "{error}");
@@ -548,19 +510,19 @@ fn managed_inheritance_uses_child_authority_and_effective_dependencies() {
     write_recipe(
         &recipes,
         "base",
-        r#"const RECIPE_API=2;
-const NEEDS=#{network:["127.0.0.1:9"]};
-let deps=["unused-missing-dependency"];
-let ctx=#{name:"base-authority"};
-fn is_installed(ctx) { ready(ctx) }
+        r#"const RECIPE_API = 1;
+const NEEDS = #{ outputs: #{ product: "file" }, network: ["127.0.0.1:9"] };
+let deps = ["unused-missing-dependency"];
+fn build(src, out) { write_file(out, "base build"); }
 "#,
     );
     write_recipe(
         &recipes,
         "child",
         r#"//! extends: base.rhai
-const NEEDS=#{};
-let deps=[];
+const RECIPE_API = 1;
+const NEEDS = #{ outputs: #{ product: "file" } };
+let deps = [];
 "#,
     );
     assert_success(&run_recipe(&["validate", "child"], &recipes));
@@ -568,16 +530,13 @@ let deps=[];
     assert_success(&output);
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(
-        !value["runtime"]["contract"]["contract"]["allow"]
+        !value["contract"]["contract"]["allow"]
             .as_array()
             .unwrap()
             .iter()
             .any(|selector| selector == "network.inet.tcp.connect")
     );
-    assert_eq!(
-        value["runtime"]["network_usage"]["endpoints"],
-        serde_json::json!([])
-    );
+    assert_eq!(value["network_usage"]["endpoints"], serde_json::json!([]));
 }
 
 #[test]
@@ -587,17 +546,17 @@ fn dependency_product_namespaces_cannot_overlap_aliases() {
     write_recipe(
         &recipes,
         "leaf",
-        "const RECIPE_API=2; const NEEDS=#{outputs:#{nested:\"directory\"}}; let ctx=#{name:\"leaf\"};",
+        "const RECIPE_API = 1; const NEEDS = #{outputs: #{nested: \"directory\"}};",
     );
     write_recipe(
         &recipes,
         "leaf/nested/child",
-        "const RECIPE_API=2; const NEEDS=#{}; let ctx=#{name:\"child\"};",
+        "const RECIPE_API = 1; const NEEDS = #{};",
     );
     write_recipe(
         &recipes,
         "parent",
-        "const RECIPE_API=2; const NEEDS=#{}; let deps=[\"leaf\",\"leaf/nested/child\"]; let ctx=#{name:\"parent\"};",
+        "const RECIPE_API = 1; const NEEDS = #{}; let deps = [\"leaf\", \"leaf/nested/child\"];",
     );
     let output = run_recipe(&["inspect", "parent"], &recipes);
     assert!(!output.status.success());
@@ -607,20 +566,20 @@ fn dependency_product_namespaces_cannot_overlap_aliases() {
 }
 
 #[test]
-fn authority_diff_reports_grants_without_confusing_dependency_hook_text() {
+fn authority_diff_reports_grants_without_confusing_dependency_function_text() {
     let (_dir, recipes) = create_test_env();
-    for (version, body) in [("old", "old hook"), ("new", "new hook")] {
+    for (version, body) in [("old", "old build"), ("new", "new build")] {
         std::fs::create_dir(recipes.join(version)).unwrap();
         write_recipe(
             &recipes,
             &format!("{version}/parent"),
-            "const RECIPE_API=2; const NEEDS=#{}; let deps=[\"leaf\"]; let ctx=#{name:\"parent\"};",
+            "const RECIPE_API = 1; const NEEDS = #{}; let deps = [\"leaf\"];",
         );
         write_recipe(
             &recipes,
             &format!("{version}/leaf"),
             &format!(
-                "const RECIPE_API=2; const NEEDS=#{{}}; let ctx=#{{name:\"leaf\"}}; fn install(ctx) {{ throw {body:?}; }}"
+                "const RECIPE_API = 1; const NEEDS=#{{}}; fn build(src, out) {{ throw {body:?}; }}"
             ),
         );
     }
@@ -662,7 +621,7 @@ fn managed_caller_caps_cover_transitive_dependencies_without_lending_grants() {
             ),
             "",
             format!(
-                "let status=exec(\"curl\",[\"--noproxy\",\"*\",\"--max-time\",\"2\",\"-fsS\",{url:?}]); write_file(\"/out/status\",status.to_string());"
+                "let status=exec(\"curl\",[\"--noproxy\",\"*\",\"--max-time\",\"2\",\"-fsS\",{url:?}]); write_file(out,status.to_string());"
             ),
         ),
         (
@@ -672,7 +631,7 @@ fn managed_caller_caps_cover_transitive_dependencies_without_lending_grants() {
             ),
             "let deps=[\"leaf\"];",
             format!(
-                "let status=exec(\"curl\",[\"--noproxy\",\"*\",\"--max-time\",\"2\",\"-fsS\",\"http://{denied_endpoint}/denied\"]); if status==0 {{ throw \"dependency borrowed caller endpoint authority\"; }} write_file(\"/out/status\",read_file(join_path(RUNTIME.paths.dependencies,\"leaf/status\")));"
+                "let status=exec(\"curl\",[\"--noproxy\",\"*\",\"--max-time\",\"2\",\"-fsS\",\"http://{denied_endpoint}/denied\"]); if status==0 {{ throw \"dependency borrowed caller endpoint authority\"; }} write_file(out,read_file(DEPS[\"leaf\"]));"
             ),
         ),
         (
@@ -681,22 +640,17 @@ fn managed_caller_caps_cover_transitive_dependencies_without_lending_grants() {
                 "network:[{endpoint:?}],memory_mib:4096,storage_max_objects:20000,storage_max_bytes:134217728,timeout_secs:300,network_max_bytes:8192"
             ),
             "let deps=[\"child\"];",
-            "copy_file(join_path(RUNTIME.paths.dependencies,\"child/status\"),\"/out/status\");"
-                .into(),
+            "copy_file(DEPS[\"child\"],out);".into(),
         ),
     ] {
         write_recipe(
             &recipes,
             name,
             &format!(
-                r#"const RECIPE_API=2;
+                r#"const RECIPE_API = 1;
 const NEEDS=#{{outputs:#{{status:"file"}},{declaration}}};
 {deps}
-let ctx=#{{name:{name:?}}};
-fn is_acquired(ctx) {{ ready(ctx) }}
-fn is_built(ctx) {{ ready(ctx) }}
-fn is_installed(ctx) {{ if is_file("/out/status") {{ ctx.outputs.status="/out/status"; return ready(ctx); }} needs_work(ctx,"exercise this invocation's effective authority") }}
-fn install(ctx) {{ {body} ctx.outputs.status="/out/status"; ctx }}
+fn build(src, out) {{ {body} }}
 "#
             ),
         );
@@ -856,306 +810,5 @@ fn install(ctx) {{ {body} ctx.outputs.status="/out/status"; ctx }}
                         .any(|field| matches!(field, "syscall=41" | "first-syscall=41"))),
             "no actual socket denial recorded: {audit}"
         );
-    }
-}
-
-#[test]
-fn managed_phase_outputs_allow_typed_subsets_and_require_complete_installed_reuse() {
-    let (dir, recipes) = create_test_env();
-    let source = r#"const RECIPE_API=2;
-const NEEDS=#{outputs:#{source:"file",product:"file"}};
-let ctx=#{name:"phase-products"};
-fn is_acquired(ctx) { if is_file("/work/source") { return ready(ctx); } needs_work(ctx,"acquire") }
-fn is_built(ctx) { if is_file("/work/built") { return ready(ctx); } needs_work(ctx,"build") }
-fn is_installed(ctx) {
-    if !is_file("/out/product") { return needs_work(ctx,"install"); }
-    ctx.outputs=#{source:"/work/source",product:"/out/product"}; ready(ctx)
-}
-fn acquire(ctx) { write_file("/work/source","source"); ctx.outputs.source="/work/source"; ctx }
-fn build(ctx) { copy_file("/work/source","/work/built"); ctx }
-fn install(ctx) { copy_file("/work/built","/out/product"); ctx.outputs.product="/out/product"; ctx }
-"#;
-    write_recipe(&recipes, "phases", source);
-    for _ in 0..2 {
-        let output = run_recipe(&["install", "phases"], &recipes);
-        assert_success(&output);
-        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(value["outputs"].as_object().unwrap().len(), 2);
-        assert_eq!(
-            std::fs::read_to_string(value["outputs"]["product"].as_str().unwrap()).unwrap(),
-            "source"
-        );
-    }
-    // A manual installed check which omits a declared product cannot publish.
-    write_recipe(
-        &recipes,
-        "missing-reuse",
-        r#"const RECIPE_API=2;
-const NEEDS=#{outputs:#{source:"file",product:"file"}};
-let ctx=#{name:"missing-reuse"};
-fn is_installed(ctx) { write_file("/out/product","present"); ctx.outputs.product="/out/product"; ready(ctx) }
-"#,
-    );
-    let output = run_recipe(&["isinstalled", "missing-reuse"], &recipes);
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("missing required NEEDS.outputs.source")
-    );
-    let invalid = source
-        .replace(
-            "write_file(\"/work/source\",\"source\");",
-            "mkdir(\"/work/source\");",
-        )
-        .replace(
-            "if is_file(\"/work/source\")",
-            "if is_dir(\"/work/source\")",
-        );
-    write_recipe(&recipes, "bad-intermediate", &invalid);
-    let output = run_recipe(&["install", "bad-intermediate"], &recipes);
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("NEEDS.outputs.source requires file"));
-    let logs = dir.path().join("state/recipe/logs");
-    let result = std::fs::read_dir(logs)
-        .unwrap()
-        .map(Result::unwrap)
-        .filter_map(|entry| std::fs::read(entry.path().join("result.json")).ok())
-        .map(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).unwrap())
-        .find(|value| {
-            value
-                .to_string()
-                .contains("NEEDS.outputs.source requires file")
-        })
-        .unwrap();
-    assert_eq!(result["checkpoints"], serde_json::json!([]));
-}
-
-#[test]
-fn managed_manual_checks_require_cached_dependency_products_without_installing() {
-    let (dir, recipes) = create_test_env();
-    write_recipe(
-        &recipes,
-        "cached-leaf",
-        r#"const RECIPE_API=2;
-const NEEDS=#{inputs:#{asset:"file"},outputs:#{tool:"file"}};
-let ctx=#{name:"cached-leaf",state:#{done:false}};
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) { ready(ctx) }
-fn is_installed(ctx) {
-    if !ctx.state.done || !is_file("/out/tool") { return needs_work(ctx,"leaf must be installed explicitly"); }
-    ctx.outputs.tool="/out/tool"; ready(ctx)
-}
-fn install(ctx) { print("INSTALL_HOOK_CALLED"); copy_file("/inputs/asset","/out/tool");ctx.state.done=true;ctx.outputs.tool="/out/tool";ctx }
-"#,
-    );
-    write_recipe(
-        &recipes,
-        "cached-middle",
-        r#"const RECIPE_API=2;
-const NEEDS=#{outputs:#{tree:"directory"}};
-let build_deps=["cached-leaf"];
-let ctx=#{name:"cached-middle",state:#{done:false}};
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) { ready(ctx) }
-fn is_installed(ctx) {
-    if !ctx.state.done || !is_file("/out/tree/tool") { return needs_work(ctx,"middle must be installed explicitly"); }
-    ctx.outputs.tree="/out/tree"; ready(ctx)
-}
-fn install(ctx) { print("INSTALL_HOOK_CALLED");mkdir("/out/tree");copy_file(join_path(RUNTIME.paths.dependencies,"cached-leaf/tool"),"/out/tree/tool");ctx.state.done=true;ctx.outputs.tree="/out/tree";ctx }
-"#,
-    );
-    write_recipe(
-        &recipes,
-        "cached-main",
-        r#"const RECIPE_API=2;
-const NEEDS=#{outputs:#{proof:"file"}};
-let deps=["cached-middle"];
-let ctx=#{name:"cached-main",state:#{acquired:false,built:false,done:false}};
-fn is_acquired(ctx) { if ctx.state.acquired { return ready(ctx); } needs_work(ctx,"acquire") }
-fn acquire(ctx) { print("ACQUIRE_HOOK_CALLED");ctx.state.acquired=true;ctx }
-fn is_built(ctx) { if ctx.state.built { return ready(ctx); } needs_work(ctx,"build") }
-fn build(ctx) { print("BUILD_HOOK_CALLED");ctx.state.payload=read_file(join_path(RUNTIME.paths.dependencies,"cached-middle/tree/tool"));ctx.state.built=true;ctx }
-fn is_installed(ctx) {
-    if !ctx.state.done || !is_file("/out/proof") { return needs_work(ctx,"install"); }
-    if read_file("/out/proof") != ctx.state.payload { throw "cached parent bytes changed"; }
-    ctx.outputs.proof="/out/proof"; ready(ctx)
-}
-fn install(ctx) { print("INSTALL_HOOK_CALLED");write_file("/out/proof",ctx.state.payload);ctx.state.done=true;ctx.outputs.proof="/out/proof";ctx }
-"#,
-    );
-    let asset = dir.path().join("cached-asset");
-    std::fs::write(&asset, "original cached bytes").unwrap();
-    let binding = format!("cached-leaf::asset={}", asset.display());
-    assert_success(&run_recipe(
-        &["install", "cached-main", "--input", &binding],
-        &recipes,
-    ));
-    for phase in ["isacquired", "isbuilt", "isinstalled"] {
-        let output = run_recipe(&[phase, "cached-main", "--input", &binding], &recipes);
-        assert_success(&output);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        for hook in [
-            "ACQUIRE_HOOK_CALLED",
-            "BUILD_HOOK_CALLED",
-            "INSTALL_HOOK_CALLED",
-        ] {
-            assert!(!stderr.contains(hook), "{phase}: {stderr}");
-        }
-        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(value["state"]["payload"], "original cached bytes");
-        if phase == "isinstalled" {
-            assert_eq!(
-                std::fs::read_to_string(value["outputs"]["proof"].as_str().unwrap()).unwrap(),
-                "original cached bytes"
-            );
-        }
-    }
-    // A changed typed input cannot borrow the previous dependency generation,
-    // and a manual check may not repair the miss by installing the dependency.
-    std::fs::write(&asset, "changed input bytes").unwrap();
-    let failed = run_recipe(
-        &["isinstalled", "cached-main", "--input", &binding],
-        &recipes,
-    );
-    assert!(!failed.status.success());
-    let stderr = String::from_utf8_lossy(&failed.stderr);
-    assert!(
-        stderr.contains("requires matching cached products"),
-        "{stderr}"
-    );
-    assert!(!stderr.contains("INSTALL_HOOK_CALLED"), "{stderr}");
-    assert!(failed.stdout.is_empty());
-    // The failed check preserves the earlier matching generation.
-    std::fs::write(&asset, "original cached bytes").unwrap();
-    assert_success(&run_recipe(
-        &["isinstalled", "cached-main", "--input", &binding],
-        &recipes,
-    ));
-}
-
-#[test]
-fn managed_manual_remove_cleanup_require_cached_dependencies_without_installing() {
-    for operation in ["remove", "cleanup"] {
-        let (dir, recipes) = create_test_env();
-        write_recipe(
-            &recipes,
-            "cached-leaf",
-            r#"const RECIPE_API=2;
-const NEEDS=#{inputs:#{asset:"file"},outputs:#{tool:"file"}};
-let ctx=#{name:"cached-leaf",state:#{done:false}};
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) { ready(ctx) }
-fn is_installed(ctx) {
-    if !ctx.state.done || !is_file("/out/tool") { return needs_work(ctx,"install leaf explicitly"); }
-    ctx.outputs.tool="/out/tool"; ready(ctx)
-}
-fn install(ctx) { print("INSTALL_DEPENDENCY_HOOK");copy_file("/inputs/asset","/out/tool");ctx.state.done=true;ctx.outputs.tool="/out/tool";ctx }
-"#,
-        );
-        write_recipe(
-            &recipes,
-            "cached-middle",
-            r#"const RECIPE_API=2;
-const NEEDS=#{outputs:#{tool:"file"}};
-let build_deps=["cached-leaf"];
-let ctx=#{name:"cached-middle",state:#{done:false}};
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) { ready(ctx) }
-fn is_installed(ctx) {
-    if !ctx.state.done || !is_file("/out/tool") { return needs_work(ctx,"install middle explicitly"); }
-    ctx.outputs.tool="/out/tool"; ready(ctx)
-}
-fn install(ctx) { print("INSTALL_DEPENDENCY_HOOK");copy_file(join_path(ctx.runtime.paths.dependencies,"cached-leaf/tool"),"/out/tool");ctx.state.done=true;ctx.outputs.tool="/out/tool";ctx }
-"#,
-        );
-        write_recipe(
-            &recipes,
-            "cached-main",
-            r#"const RECIPE_API=2;
-const NEEDS=#{outputs:#{proof:"file"}};
-let deps=["cached-middle"];
-let ctx=#{name:"cached-main",state:#{done:false,hook:""}};
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) { ready(ctx) }
-fn is_installed(ctx) {
-    if !ctx.state.done || !is_file("/out/proof") { return needs_work(ctx,"install main explicitly"); }
-    ctx.outputs.proof="/out/proof";ready(ctx)
-}
-fn install(ctx) { print("INSTALL_MAIN_HOOK");copy_file(join_path(ctx.runtime.paths.dependencies,"cached-middle/tool"),"/out/proof");write_file("/work/build-marker","retained work");ctx.state.done=true;ctx.outputs.proof="/out/proof";ctx }
-fn check_cached(ctx) {
-    if !ctx.state.done || read_file("/out/proof") != "original cached bytes" { throw "wrong installed parent identity"; }
-    if read_file(join_path(ctx.runtime.paths.dependencies,"cached-middle/tool")) != "original cached bytes" { throw "wrong cached dependency"; }
-    if !is_file("/work/build-marker") { throw "lost saved work"; }
-}
-fn remove(ctx) { print("REMOVE_MAIN_HOOK");check_cached(ctx);rm("/out/proof");ctx.outputs=#{};ctx.state.done=false;ctx.state.hook="remove";ctx }
-fn cleanup(ctx,reason) {
-    if reason != "manual" { return ctx; }
-    print("CLEANUP_MAIN_HOOK");check_cached(ctx);rm("/work/build-marker");ctx.outputs.proof="/out/proof";ctx.state.hook="cleanup";ctx
-}
-"#,
-        );
-        let asset = dir.path().join("cached-asset");
-        std::fs::write(&asset, "original cached bytes").unwrap();
-        let binding = format!("cached-leaf::asset={}", asset.display());
-        let installed = run_recipe(&["install", "cached-main", "--input", &binding], &recipes);
-        assert_success(&installed);
-        let value: serde_json::Value = serde_json::from_slice(&installed.stdout).unwrap();
-        let previous = std::path::PathBuf::from(value["outputs"]["proof"].as_str().unwrap());
-        std::fs::write(&asset, "changed input bytes").unwrap();
-        let failed = run_recipe(&[operation, "cached-main", "--input", &binding], &recipes);
-        assert!(!failed.status.success());
-        let stderr = String::from_utf8_lossy(&failed.stderr);
-        assert!(
-            stderr.contains("requires matching cached products"),
-            "{operation}: {stderr}"
-        );
-        for hook in [
-            "INSTALL_DEPENDENCY_HOOK",
-            "INSTALL_MAIN_HOOK",
-            "REMOVE_MAIN_HOOK",
-            "CLEANUP_MAIN_HOOK",
-        ] {
-            assert!(!stderr.contains(hook), "{operation}: {stderr}");
-        }
-        assert!(failed.stdout.is_empty());
-        assert_eq!(
-            std::fs::read_to_string(&previous).unwrap(),
-            "original cached bytes"
-        );
-        std::fs::write(&asset, "original cached bytes").unwrap();
-        let output = run_recipe(&[operation, "cached-main", "--input", &binding], &recipes);
-        assert_success(&output);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            !stderr.contains("INSTALL_DEPENDENCY_HOOK"),
-            "{operation}: {stderr}"
-        );
-        assert!(
-            !stderr.contains("INSTALL_MAIN_HOOK"),
-            "{operation}: {stderr}"
-        );
-        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(value["state"]["hook"], operation);
-        if operation == "remove" {
-            assert_eq!(value["outputs"], serde_json::json!({}));
-            assert_eq!(value["state"]["done"], false);
-        } else {
-            assert_eq!(
-                std::fs::read_to_string(value["outputs"]["proof"].as_str().unwrap()).unwrap(),
-                "original cached bytes"
-            );
-            assert_eq!(value["state"]["done"], true);
-        }
-        let readiness = run_recipe(
-            &["isinstalled", "cached-main", "--input", &binding],
-            &recipes,
-        );
-        if operation == "remove" {
-            assert!(!readiness.status.success());
-        } else {
-            assert_success(&readiness);
-            let saved: serde_json::Value = serde_json::from_slice(&readiness.stdout).unwrap();
-            assert_eq!(saved["state"]["hook"], "cleanup");
-        }
-        assert!(!String::from_utf8_lossy(&readiness.stderr).contains("INSTALL_DEPENDENCY_HOOK"));
     }
 }

@@ -1,6 +1,6 @@
 use super::*;
 
-fn query_context(
+fn query_json(
     output: &std::process::Output,
     recipes: &Path,
     name: &str,
@@ -12,203 +12,107 @@ fn query_context(
         source,
         "query/cleanup must not rewrite the recipe source"
     );
-    serde_json::from_slice(&output.stdout).expect("CLI must return the resulting context as JSON")
+    serde_json::from_slice(&output.stdout).expect("the CLI must print its result as JSON")
 }
 
 #[test]
 fn test_cli_cleanup_success() {
     let (_dir, recipes) = create_test_env();
-    let source = r#"
-const RECIPE_API = 2;
+    let source = r#"const RECIPE_API = 1;
 const NEEDS = #{};
-let ctx = #{name: "cleanable", state: #{cache_path: "cache", cleanup_reason: ""}};
-fn cleanup(ctx, reason) {
-    ctx.state.cache_path = "";
-    ctx.state.cleanup_reason = reason;
-    ctx
-}
+fn cleanup(reason) { log("CLEANUP_REASON " + reason); }
 "#;
     write_recipe(&recipes, "cleanable", source);
     let output = run_recipe(&["cleanup", "cleanable"], &recipes);
-    let ctx = query_context(&output, &recipes, "cleanable", source);
-    assert_eq!(ctx["state"]["cache_path"], "");
-    assert_eq!(ctx["state"]["cleanup_reason"], "manual");
+    let result = query_json(&output, &recipes, "cleanable", source);
+    assert_eq!(result["schema_version"], 1);
+    assert_eq!(result["operation"], "cleanup");
+    assert_eq!(result["name"], "cleanable");
+    assert_eq!(
+        result["steps"],
+        serde_json::json!([{"step": "cleanup", "status": "done"}])
+    );
+    assert_eq!(result["outputs"], serde_json::json!({}));
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("CLEANUP_REASON manual"), "{error}");
 }
 
 #[test]
 fn test_cli_cleanup_define_injected() {
     let (_dir, recipes) = create_test_env();
-    let source = r#"
-const RECIPE_API = 2;
-const NEEDS = #{};
-let ctx = #{name: "cleanup-define", state: #{cleanup_note: ""}};
-fn cleanup(ctx, reason) {
-    ctx.state.cleanup_note = `${reason}:${CLEAN_TAG}`;
-    ctx
-}
+    let source = r#"const RECIPE_API = 1;
+const NEEDS = #{ defines: #{ CLEAN_TAG: "none" } };
+fn cleanup(reason) { log("CLEANUP_NOTE " + reason + ":" + DEFINES.CLEAN_TAG); }
 "#;
     write_recipe(&recipes, "cleanup-define", source);
     let output = run_recipe(
-        &[
-            "cleanup",
-            "cleanup-define",
-            "--reason",
-            "manual.debug",
-            "--define",
-            "CLEAN_TAG=nightly",
-        ],
+        &["cleanup", "cleanup-define", "--define", "CLEAN_TAG=nightly"],
         &recipes,
     );
-    let ctx = query_context(&output, &recipes, "cleanup-define", source);
-    assert_eq!(ctx["state"]["cleanup_note"], "manual.debug:nightly");
+    query_json(&output, &recipes, "cleanup-define", source);
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("CLEANUP_NOTE manual:nightly"), "{error}");
 }
 
 #[test]
-fn test_cli_cleanup_custom_reason() {
+fn test_cli_state_of_a_program_nothing_was_done_for_is_none() {
     let (_dir, recipes) = create_test_env();
-    let source = r#"
-const RECIPE_API = 2;
-const NEEDS = #{};
-let ctx = #{name: "cleanable-custom", state: #{cleanup_reason: ""}};
-fn cleanup(ctx, reason) { ctx.state.cleanup_reason = reason; ctx }
+    let source = r#"const RECIPE_API = 1;
+const NEEDS = #{ outputs: #{ product: "file" } };
+fn build(src, out) { write_file(out, "built"); }
 "#;
-    write_recipe(&recipes, "cleanable-custom", source);
-    let output = run_recipe(
-        &["cleanup", "cleanable-custom", "--reason", "manual.debug"],
+    write_recipe(&recipes, "untouched", source);
+    let output = run_recipe(&["state", "untouched"], &recipes);
+    let state = query_json(&output, &recipes, "untouched", source);
+    assert_eq!(state["schema_version"], 1);
+    assert_eq!(state["name"], "untouched");
+    assert_eq!(state["state"], "none");
+    assert_eq!(state["installed_version"], serde_json::Value::Null);
+    assert_eq!(state["keep"], false);
+    assert_eq!(
+        state["steps"],
+        serde_json::json!(["build", "install", "cleanup"])
+    );
+    assert_eq!(
+        state["on_disk"],
+        serde_json::json!({"downloads": 0, "build": 0, "unfinished": 0})
+    );
+}
+
+#[test]
+fn test_cli_state_after_build_is_built_and_after_install_is_installed() {
+    let (_dir, recipes) = create_test_env();
+    let source = r#"const RECIPE_API = 1;
+const NEEDS = #{ outputs: #{ "package": "directory" } };
+const PACKAGE = #{ version: "2.0.0" };
+fn build(src, out) { write_file(join_path(out, "marker"), "built"); }
+"#;
+    write_recipe(&recipes, "stateful", source);
+    let built = run_recipe(&["build", "stateful"], &recipes);
+    let result = query_json(&built, &recipes, "stateful", source);
+    assert_eq!(result["operation"], "build");
+    assert_eq!(result["state"], "built");
+    let state = query_json(
+        &run_recipe(&["state", "stateful"], &recipes),
         &recipes,
+        "stateful",
+        source,
     );
-    let ctx = query_context(&output, &recipes, "cleanable-custom", source);
-    assert_eq!(ctx["state"]["cleanup_reason"], "manual.debug");
-}
+    assert_eq!(state["state"], "built");
+    assert_eq!(state["version"], "2.0.0");
+    assert_eq!(state["installed_version"], serde_json::Value::Null);
 
-#[test]
-fn test_cli_cleanup_empty_reason_defaults_to_manual() {
-    let (_dir, recipes) = create_test_env();
-    let source = r#"
-const RECIPE_API = 2;
-const NEEDS = #{};
-let ctx = #{name: "cleanable-empty-reason", state: #{cleanup_reason: ""}};
-fn cleanup(ctx, reason) { ctx.state.cleanup_reason = reason; ctx }
-"#;
-    write_recipe(&recipes, "cleanable-empty-reason", source);
-    let output = run_recipe(
-        &["cleanup", "cleanable-empty-reason", "--reason", "   "],
+    let installed = run_recipe(&["install", "stateful"], &recipes);
+    let result = query_json(&installed, &recipes, "stateful", source);
+    assert_eq!(result["state"], "installed");
+    let state = query_json(
+        &run_recipe(&["state", "stateful"], &recipes),
         &recipes,
+        "stateful",
+        source,
     );
-    let ctx = query_context(&output, &recipes, "cleanable-empty-reason", source);
-    assert_eq!(ctx["state"]["cleanup_reason"], "manual");
-}
-
-#[test]
-fn test_cli_isinstalled_success() {
-    let (_dir, recipes) = create_test_env();
-    let source = r#"
-const RECIPE_API = 2;
-const NEEDS = #{};
-let ctx = #{name: "installed-ok", state: #{installed: true}};
-fn is_installed(ctx) {
-    if ctx.state.installed { return ready(ctx); }
-    needs_work(ctx, "not installed")
-}
-"#;
-    write_recipe(&recipes, "installed-ok", source);
-    let output = run_recipe(&["isinstalled", "installed-ok"], &recipes);
-    let ctx = query_context(&output, &recipes, "installed-ok", source);
-    assert_eq!(ctx["state"]["installed"], true);
-}
-
-#[test]
-fn test_cli_isinstalled_failure_when_not_installed() {
-    let (_dir, recipes) = create_test_env();
-    let source = r#"
-const RECIPE_API = 2;
-const NEEDS = #{};
-let ctx = #{name: "installed-fail", state: #{installed: false}};
-fn is_installed(ctx) {
-    if ctx.state.installed { return ready(ctx); }
-    needs_work(ctx, "not installed")
-}
-"#;
-    write_recipe(&recipes, "installed-fail", source);
-    let output = run_recipe(&["isinstalled", "installed-fail"], &recipes);
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("is_installed is not ready: not installed"),
-        "{stderr}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(recipes.join("installed-fail.rhai")).unwrap(),
-        source
-    );
-}
-
-#[test]
-fn test_cli_isbuilt_success() {
-    let (_dir, recipes) = create_test_env();
-    let source = r#"
-const RECIPE_API = 2;
-const NEEDS = #{};
-let ctx = #{name: "built-ok", state: #{built: true}};
-fn is_built(ctx) { ready(ctx) }
-"#;
-    write_recipe(&recipes, "built-ok", source);
-    let output = run_recipe(&["isbuilt", "built-ok"], &recipes);
-    let ctx = query_context(&output, &recipes, "built-ok", source);
-    assert_eq!(ctx["state"]["built"], true);
-}
-
-#[test]
-fn test_cli_isbuilt_missing_function() {
-    let (_dir, recipes) = create_test_env();
-    let source = "const RECIPE_API = 2;
-const NEEDS = #{}; let ctx = #{name: \"built-missing\"};";
-    write_recipe(&recipes, "built-missing", source);
-    let output = run_recipe(&["isbuilt", "built-missing"], &recipes);
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("built-missing has no is_built function"),
-        "{stderr}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(recipes.join("built-missing.rhai")).unwrap(),
-        source
-    );
-}
-
-#[test]
-fn test_cli_isacquired_success() {
-    let (_dir, recipes) = create_test_env();
-    let source = r#"
-const RECIPE_API = 2;
-const NEEDS = #{};
-let ctx = #{name: "acquired-ok", state: #{acquired: true}};
-fn is_acquired(ctx) { ready(ctx) }
-"#;
-    write_recipe(&recipes, "acquired-ok", source);
-    let output = run_recipe(&["isacquired", "acquired-ok"], &recipes);
-    let ctx = query_context(&output, &recipes, "acquired-ok", source);
-    assert_eq!(ctx["state"]["acquired"], true);
-}
-
-#[test]
-fn test_cli_isacquired_missing_function() {
-    let (_dir, recipes) = create_test_env();
-    let source = "const RECIPE_API = 2;
-const NEEDS = #{}; let ctx = #{name: \"acquired-missing\"};";
-    write_recipe(&recipes, "acquired-missing", source);
-    let output = run_recipe(&["isacquired", "acquired-missing"], &recipes);
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("acquired-missing has no is_acquired function"),
-        "{stderr}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(recipes.join("acquired-missing.rhai")).unwrap(),
-        source
-    );
+    assert_eq!(state["state"], "installed");
+    assert_eq!(state["installed_version"], "2.0.0");
 }
 
 // =============================================================================
@@ -227,33 +131,46 @@ fn test_cli_list_empty() {
 fn test_cli_list_recipes() {
     let (_dir, recipes) = create_test_env();
 
-    write_recipe(
-        &recipes,
-        "pkg1",
-        r#"
-let ctx = #{
-    name: "pkg1",
-    version: "1.0.0",
-};
-"#,
-    );
-
-    write_recipe(
-        &recipes,
-        "pkg2",
-        r#"
-let ctx = #{
-    name: "pkg2",
-    version: "2.0.0",
-};
-"#,
-    );
+    for (name, version) in [("pkg1", "1.0.0"), ("pkg2", "2.0.0")] {
+        write_recipe(
+            &recipes,
+            name,
+            &format!(
+                r#"const RECIPE_API = 1;
+const NEEDS = #{{ outputs: #{{ "package": "directory" }} }};
+const PACKAGE = #{{ name: "{name}", version: "{version}", description: "Package {name}" }};
+"#
+            ),
+        );
+    }
 
     let output = run_recipe(&["list"], &recipes);
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("pkg1"), "pkg1 missing from list: {stdout}");
     assert!(stdout.contains("pkg2"), "pkg2 missing from list: {stdout}");
+
+    let output = run_recipe(&["list", "--json"], &recipes);
+    assert_success(&output);
+    let list: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(list["schema_version"], 1);
+    assert_eq!(list["problems"], serde_json::json!([]));
+    let recipes_listed = list["recipes"].as_array().unwrap();
+    assert_eq!(recipes_listed.len(), 2);
+    for entry in recipes_listed {
+        let name = entry["name"].as_str().unwrap();
+        assert_eq!(
+            entry["version"],
+            if name == "pkg1" { "1.0.0" } else { "2.0.0" }
+        );
+        assert_eq!(entry["description"], format!("Package {name}"));
+        assert_eq!(entry["state"], "none");
+        assert_eq!(entry["installed_version"], serde_json::Value::Null);
+        assert_eq!(entry["keep"], false);
+        assert_eq!(entry["steps"], serde_json::json!(["install", "cleanup"]));
+        assert_eq!(entry["functions"], serde_json::json!([]));
+        assert!(entry.get("hooks").is_none());
+    }
 }
 
 // =============================================================================
@@ -267,12 +184,9 @@ fn test_cli_info_shows_details() {
     write_recipe(
         &recipes,
         "mypackage",
-        r#"
-let ctx = #{
-    name: "mypackage",
-    version: "1.2.3",
-    description: "A test package",
-};
+        r#"const RECIPE_API = 1;
+const NEEDS = #{ outputs: #{ "package": "directory" } };
+const PACKAGE = #{ name: "mypackage", version: "1.2.3", description: "A test package" };
 "#,
     );
 
@@ -287,22 +201,23 @@ let ctx = #{
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("mypackage"));
     assert!(stdout.contains("1.2.3"));
+    assert!(stdout.contains("A test package"));
 }
 
 /// Metadata queries must use the same declarations as execution while never
-/// evaluating setup on the host, even when its side effect would be dangerous.
+/// evaluating top-level code on the host, even when its side effect would be
+/// dangerous.
 #[test]
-fn test_cli_metadata_inherits_without_evaluating_setup() {
+fn test_cli_metadata_inherits_without_evaluating_top_level_code() {
     let (dir, recipes) = create_test_env();
     let marker = dir.path().join("metadata-setup-ran");
     write_recipe(
         &recipes,
         "base",
         &format!(
-            r#"
-const RECIPE_API = 2;
+            r#"const RECIPE_API = 1;
 const NEEDS = #{{}};
-let ctx = #{{name: "base", version: "3.2.1", description: "Inherited description"}};
+const PACKAGE = #{{ version: "3.2.1", description: "Inherited description" }};
 write_file("{}", "must never run");
 "#,
             marker.display()
@@ -312,8 +227,8 @@ write_file("{}", "must never run");
         &recipes,
         "child",
         r#"//! extends: base.rhai
+const RECIPE_API = 1;
 const NEEDS = #{};
-ctx.name = "child";
 "#,
     );
     let output = run_recipe(&["info", "child"], &recipes);
@@ -323,24 +238,23 @@ ctx.name = "child";
         text.contains("child") && text.contains("3.2.1") && text.contains("Inherited description"),
         "{text}"
     );
-    assert!(!marker.exists(), "metadata query executed recipe setup");
+    assert!(!marker.exists(), "metadata query executed top-level code");
 }
 
 #[test]
-fn test_cli_metadata_reports_dynamic_values_without_execution() {
+fn test_cli_metadata_refuses_values_that_are_not_literal() {
     let (_dir, recipes) = create_test_env();
     write_recipe(
         &recipes,
         "dynamic",
-        r#"
-const RECIPE_API = 2;
+        r#"const RECIPE_API = 1;
 const NEEDS = #{};
-let ctx = #{name: "dynamic", version: exec_output("definitely-unavailable", [])};
+const PACKAGE = #{ version: exec_output("definitely-unavailable", []) };
 "#,
     );
     let output = run_recipe(&["info", "dynamic"], &recipes);
-    assert_success(&output);
-    assert!(String::from_utf8_lossy(&output.stdout).contains("<dynamic>"));
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("must be literal"));
 }
 
 #[test]
@@ -349,13 +263,35 @@ fn test_cli_metadata_rejects_malformed_declarations() {
     write_recipe(
         &recipes,
         "wrong-type",
-        "const RECIPE_API = 2;
-const NEEDS = #{}; let ctx = #{name: 5};",
+        "const RECIPE_API = 1;\nconst NEEDS = #{};\nconst PACKAGE = #{ name: 5 };\n",
     );
     let output = run_recipe(&["info", "wrong-type"], &recipes);
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("metadata name must be a string"));
-    write_recipe(&recipes, "broken", "let ctx = #{name:");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("PACKAGE.name must be a literal string")
+    );
+    write_recipe(
+        &recipes,
+        "broken",
+        "const RECIPE_API = 1;\nconst PACKAGE = #{name:",
+    );
     let output = run_recipe(&["info", "broken"], &recipes);
     assert!(!output.status.success());
+}
+
+#[test]
+fn test_cli_info_refuses_an_old_recipe_form_with_the_line_to_change() {
+    let (_dir, recipes) = create_test_env();
+    write_recipe(
+        &recipes,
+        "old-form",
+        "const RECIPE_API = 1;\nconst NEEDS = #{};\nlet ctx = #{name: \"old-form\"};\n",
+    );
+    let output = run_recipe(&["info", "old-form"], &recipes);
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("line 3:") && error.contains("ctx"),
+        "{error}"
+    );
 }

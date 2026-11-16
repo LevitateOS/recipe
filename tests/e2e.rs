@@ -119,9 +119,6 @@ mod process;
 #[path = "e2e/query.rs"]
 mod query;
 
-#[path = "e2e/api2.rs"]
-mod api2;
-
 #[path = "e2e/cleanup.rs"]
 mod cleanup;
 

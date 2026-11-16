@@ -1,30 +1,36 @@
-//! Cleanup is optional, phase-aware and cannot hide failures.
+//! Cleanup is optional, step-aware and cannot hide failures.
 use super::*;
 #[test]
-fn cli_optional_cleanup_preserves_installed_product() {
+fn cli_optional_cleanup_preserves_installed_program() {
     let (_dir, recipes) = create_test_env();
     write_recipe(
         &recipes,
         "tool",
-        r#"const RECIPE_API = 2;
-const NEEDS = #{ outputs: #{ tool: "file" } };
-let ctx=#{name:"optional-cleanup"};
-fn is_installed(ctx) { if !is_file("/out/tool") { return needs_work(ctx,"install"); } ctx.outputs.tool="/out/tool"; ready(ctx) }
-fn is_built(ctx) { ready(ctx) }
-fn install(ctx) { write_file("/out/tool","installed"); ctx }
+        r#"const RECIPE_API = 1;
+const NEEDS = #{ outputs: #{ "package": "directory" } };
+const PACKAGE = #{ version: "1.0.0" };
+fn build(src, out) { write_file(join_path(out, "tool"), "installed"); }
 "#,
     );
-    for operation in ["install", "cleanup", "isinstalled"] {
-        let output = run_recipe(&[operation, "tool"], &recipes);
+    let output = run_recipe(&["install", "tool"], &recipes);
+    assert_success(&output);
+    let installed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let tool =
+        std::path::PathBuf::from(installed["outputs"]["package"].as_str().unwrap()).join("tool");
+    for flags in [vec![], vec!["--downloads"], vec!["--build"]] {
+        let mut args = vec!["cleanup", "tool"];
+        args.extend(flags);
+        let output = run_recipe(&args, &recipes);
         assert_success(&output);
-        if operation == "isinstalled" {
-            let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-            assert_eq!(
-                std::fs::read_to_string(ctx["outputs"]["tool"].as_str().unwrap()).unwrap(),
-                "installed"
-            );
-        }
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["operation"], "cleanup");
+        assert_eq!(result["state"], "installed");
+        assert_eq!(std::fs::read_to_string(&tool).unwrap(), "installed");
     }
+    let output = run_recipe(&["state", "tool"], &recipes);
+    assert_success(&output);
+    let state: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(state["state"], "installed");
 }
 #[test]
 fn cli_cleanup_errors_fail_success_and_keep_primary_failure() {
@@ -32,26 +38,23 @@ fn cli_cleanup_errors_fail_success_and_keep_primary_failure() {
     for (name, body, expected) in [
         (
             "cleanup-after-success",
-            "write_file(\"/out/product\",\"installed\"); ctx.state.installed=true; ctx",
+            "write_file(out, \"installed\");",
             "CLEANUP_FAILED",
         ),
         (
             "cleanup-after-failure",
-            "throw \"PRIMARY_INSTALL_FAILED\"; ctx",
-            "PRIMARY_INSTALL_FAILED",
+            "throw \"PRIMARY_BUILD_FAILED\";",
+            "PRIMARY_BUILD_FAILED",
         ),
     ] {
         write_recipe(
             &recipes,
             name,
             &format!(
-                r#"const RECIPE_API = 2;
-const NEEDS = #{{}};
-let ctx=#{{name:{name:?},state:#{{installed:false}}}};
-fn is_installed(ctx) {{ if ctx.state.installed {{ return ready(ctx); }} needs_work(ctx,"install") }}
-fn is_built(ctx) {{ ready(ctx) }}
-fn install(ctx) {{ {body} }}
-fn cleanup(ctx,reason) {{ throw "CLEANUP_FAILED"; ctx }}
+                r#"const RECIPE_API = 1;
+const NEEDS = #{{ outputs: #{{ product: "file" }} }};
+fn build(src, out) {{ {body} }}
+fn cleanup(reason) {{ throw "CLEANUP_FAILED"; }}
 "#
             ),
         );
@@ -68,45 +71,40 @@ fn cli_malformed_cleanup_precedes_setup_and_dependency_cleanup_stops_parent() {
     write_recipe(
         &recipes,
         "malformed",
-        r#"const RECIPE_API = 2;
+        r#"const RECIPE_API = 1;
 const NEEDS = #{};
-print("UNEXPECTED_MALFORMED_SETUP"); let ctx=#{name:"malformed"};
-fn is_installed(ctx) { needs_work(ctx,"install") }
-fn install(ctx) { log("UNEXPECTED_INSTALL"); ctx }
-fn cleanup(ctx) { ctx }
+print("UNEXPECTED_MALFORMED_SETUP");
+fn build(src, out) { log("UNEXPECTED_BUILD"); }
+fn cleanup() { }
 "#,
     );
     let output = run_recipe(&["install", "malformed"], &recipes);
     assert!(!output.status.success());
     let error = String::from_utf8_lossy(&output.stderr);
-    assert!(error.contains("cleanup"), "{error}");
+    assert!(error.contains("cleanup(reason)"), "{error}");
     assert!(!error.contains("UNEXPECTED_MALFORMED_SETUP"));
+    assert!(!error.contains("UNEXPECTED_BUILD"));
     write_recipe(
         &recipes,
         "tool",
-        r#"const RECIPE_API = 2;
-const NEEDS = #{};
-let ctx=#{name:"tool",state:#{installed:false}};
-fn is_installed(ctx) { if ctx.state.installed { return ready(ctx); } needs_work(ctx,"tool") }
-fn is_built(ctx) { ready(ctx) }
-fn install(ctx) { ctx.state.installed=true; ctx }
-fn cleanup(ctx,reason) { throw "TOOL_CLEANUP_FAILED"; ctx }
+        r#"const RECIPE_API = 1;
+const NEEDS = #{ outputs: #{ product: "file" } };
+fn build(src, out) { write_file(out, "tool"); }
+fn cleanup(reason) { throw "TOOL_CLEANUP_FAILED"; }
 "#,
     );
     write_recipe(
         &recipes,
         "parent",
-        r#"const RECIPE_API = 2;
-const NEEDS = #{};
-let deps=["tool"]; let ctx=#{name:"parent"};
-fn is_installed(ctx) { needs_work(ctx,"parent") }
-fn is_built(ctx) { ready(ctx) }
-fn install(ctx) { log("UNEXPECTED_PARENT_INSTALL"); ctx }
+        r#"const RECIPE_API = 1;
+const NEEDS = #{ outputs: #{ product: "file" } };
+let deps = ["tool"];
+fn build(src, out) { log("UNEXPECTED_PARENT_BUILD"); write_file(out, "parent"); }
 "#,
     );
     let output = run_recipe(&["install", "parent"], &recipes);
     assert!(!output.status.success());
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(error.contains("TOOL_CLEANUP_FAILED"), "{error}");
-    assert!(!error.contains("UNEXPECTED_PARENT_INSTALL"));
+    assert!(!error.contains("UNEXPECTED_PARENT_BUILD"));
 }
