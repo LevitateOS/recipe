@@ -233,33 +233,10 @@ The examples in this note leave the API line out only to stay short.
 
 ## How the rewrite is to be done (plan, not started)
 
-The full plan, with every step and the model that does it, is
-[`next-recipe-format-plan.md`](next-recipe-format-plan.md). In short:
-
-1. One agent writes the engine and converts one recipe of each shape. Those
-   are the reference recipes, with the new writing guide.
-2. The mass conversion runs against the references. Counted on 2026-11-16:
-   46 system groups (one conversion script, they all end in the same block),
-   19 that download, unpack and copy files, 5 toolchains with a per-file
-   checksum list, 2 that run programs, 34 OS-building recipes.
-3. The readers follow: the pin generator, the builder, the desktop app, the
-   docs.
-4. The work is done in separate working copies and reaches the repositories
-   in one commit each when everything compiles and every recipe passes
-   `recipe info`. Nothing is run to prove it; the first proof is the owner's
-   build.
-
-## What it would take
-
-- Engine work in Recipe: the declared sources, the built-in steps, the
-  identity-based "done", the package-group source, the pins file.
-- All catalog recipes rewritten (mostly mechanical).
-- The OS-building recipes (`distro/builder/os-recipes` in LevitateOS, 34 files,
-  about 4,400 lines) use `ctx` too. They are more procedural and shrink less;
-  each keeps a `build` function. Moving them as well leaves one format.
-- The desktop app reads a recipe's steps from its functions today
-  (`hooks` in `recipe list --json`); it would read them from the declarations.
-- `WRITING_RECIPES.md`, the man pages and the helper catalog.
+The full plan, with every phase, every step and the model that does it, is
+[`next-recipe-format-plan.md`](next-recipe-format-plan.md). It also holds
+what the owner decided after this note: disk space, single steps, the
+features that go, update checks and the app.
 
 ## Open questions
 

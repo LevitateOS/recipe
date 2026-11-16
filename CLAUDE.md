@@ -33,7 +33,7 @@ Read these instead of copies here; each fact has one home:
   "ask an agent", no automatic repair or rewriting of recipes. A failure is
   reported; what the user does with it is theirs. The existing `--autofix` and
   `src/llm` are to be removed, not extended
-  (`docs/next-recipe-format-plan.md`, section 0b, requirement 9).
+  (`docs/next-recipe-format-plan.md`, section 2, requirement 9; phase A1).
 
 - Lifecycle: `is_installed` → `is_built` → `is_acquired` checks decide which of
   `acquire()` → `build()` → `install()` run. Each phase does one thing and is

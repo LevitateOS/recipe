@@ -1,23 +1,51 @@
-# Implementation plan: the next recipe format
+# Implementation plan: the next Recipe
 
-Status: a plan, 2026-11-16. Nothing in it has been started. It follows
-[`next-recipe-format.md`](next-recipe-format.md) (the idea and the owner's
-decisions). It was written from three read-only surveys of the code made the
-same day: the engine, all recipes, and everything else that reads recipes.
+Status: a plan, 2026-11-16. Nothing in it has been started. It covers
+everything the owner decided that day: the recipe format
+([`next-recipe-format.md`](next-recipe-format.md)), disk space, single steps,
+the features that go, update checks, and the app. It was written from four
+read-only surveys of the code: the engine, all recipes, everything else that
+reads recipes, and what Recipe leaves on disk.
 
-Rules that hold for every step:
+## How the work is done
 
 - The main session plans, briefs, reviews and commits. It changes no code.
   Every change is made by an agent on the model named here.
-- No backwards compatibility. One format, `RECIPE_API = 1`. The old form is
-  deleted in the same step.
+- No backwards compatibility. One format, `RECIPE_API = 1`. Old forms and
+  removed features are deleted, not kept beside the new.
+- Recipe never asks an AI. No step adds anything that calls a model.
 - Nothing is run to prove the work: no installs, no builds, no test suites.
   Allowed checks are compiling, linting and `recipe info FILE` (seconds).
   Two exceptions need the owner's yes and are marked **[ask]**.
-- The work happens in a second copy of the repositories, not in the shared
-  checkout, and reaches the real repositories only at the end (step 9).
+- Phase A is done in the shared checkout: small removals, committed as they
+  finish. Phases C to G are done in a second clone of the repositories and
+  reach the real ones in one landing (phase H). No branch is created.
+- While phases C to G run, no other session changes a recipe or an
+  OS-building recipe. One that does is converted again at landing.
 
-## 0. What the surveys found
+## The phases at a glance
+
+| Phase | What | Models | Lands |
+|---|---|---|---|
+| A | Removals: everything that asks an AI, "go back", "Update all", "Keep at this version" | sonnet ×2, opus ×1 | at once, by itself |
+| B | The complete specification, for the owner's approval | opus ×1 | as a document |
+| C | The engine | opus ×6, sonnet ×1 | with H |
+| D | The pin generator and the builder | sonnet ×2 | with H |
+| E | All 106 recipes | haiku ×2, sonnet ×6, opus ×4 | with H |
+| F | The Recipe app | sonnet ×3 | with H |
+| G | Recipe's own tests, the documentation, the strays | sonnet ×5, haiku ×2 | with H |
+| H | Review, final checks, landing | sonnet ×1, haiku ×2, the main session | |
+
+About 12 opus runs, 20 sonnet and 6 haiku. For scale only: on 2026-11-15 an
+opus agent on engine work used between 250,000 and 630,000 tokens.
+
+The owner decides four things along the way: to start phase A; to approve the
+specification (end of B); the freeze and the second clone (start of C); and
+the two **[ask]** checks in H.
+
+# Part 1: what is decided
+
+## 1. What the surveys found
 
 | Fact | Number |
 |---|---|
@@ -40,7 +68,7 @@ How the recipes convert:
 
 The catalog fits the idea. The OS-building recipes mostly do not, as the note
 stands: 32 of 34 need things it never mentions. That is the main finding, and
-it is why step 1 exists.
+it is why phase B exists.
 
 What the note does not cover yet:
 
@@ -64,7 +92,7 @@ What the note does not cover yet:
     seven.
 15. The name and form of the pins file.
 
-## 0b. Disk space: requirements (the owner, 2026-11-16)
+## 2. Disk space: requirements (the owner, 2026-11-16)
 
 The owner's model of a recipe: download, build, install, and then nothing is
 left but the installed program. Recipe must respect the user's disk. A survey
@@ -137,18 +165,10 @@ Requirements:
 The cost, accepted by the owner's model: updating or reinstalling a program
 downloads and builds it again.
 
-Where this lands in the steps below:
+Requirements 7, 8 and 9 are removals and are done first (phase A). The rest
+is built in the engine in phase C4 and shown in the app in phase F.
 
-- Step 1 (the specification) states these rules, the option's name, and what
-  `recipe storage --json` reports.
-- Step 2d (the engine decides what is done from its own records) is what
-  makes requirement 1 possible: a finished install no longer needs the build
-  material as proof. Step 2d also does requirements 1, 3, 4, 6 and 7.
-- Step 3c (the Recipe app) gains the Storage page of requirement 5 and the
-  "keep build material" option of requirement 2.
-- Step 8a's review checks, by reading, that no step copies where it can move.
-
-## 0c. Every step by itself (the owner, 2026-11-16)
+## 3. Every step by itself (the owner, 2026-11-16)
 
 The user decides how far a recipe goes. Each step can be done alone, and the
 app shows it.
@@ -175,7 +195,7 @@ What follows from it:
 - A program has a visible state: nothing here, downloaded, built, installed.
   The app's page for a program shows that state and the next possible
   actions.
-- This fits the disk rule of section 0b. Downloads and build material exist
+- This fits the disk rule of section 2. Downloads and build material exist
   only between steps: after "only download" the download stays until the user
   builds, installs or removes it. After a successful install they are
   deleted, unless the user chose to keep them.
@@ -188,7 +208,7 @@ What follows from it:
   whatever is left of its download and build. The user does not have to
   remove each kind separately; the finer removals are optional too.
 - Clean-up is a step like the others: download, build, install, clean up.
-  It runs by itself after a successful install (section 0b, requirement 1)
+  It runs by itself after a successful install (section 2, requirement 1)
   unless the user chose to keep the material, and the user can run it alone
   at any time, for one program or for everything.
 
@@ -202,14 +222,12 @@ The app's page for a program (the owner, 2026-11-16):
 - A recipe that compiles nothing shows no build step.
 - Two different marks, never mixed up: "Update" (the fetched recipe names a
   newer version; one press installs it) and "Newer upstream" (the recipe does
-  not name it yet; nothing to press, see section 0d).
+  not name it yet; nothing to press, see section 4).
 - No Updates page: the installed list shows both marks per program.
 
-Where this lands: step 1 names the commands and the states; step 2d builds
-them into the engine (it owns what is done and what is kept); step 3c builds
-the buttons, the state and the Storage rows into the app.
+Built in the engine in phase C4 and in the app in phase F.
 
-## 0d. Knowing that a newer version exists (the owner, 2026-11-16)
+## 4. Knowing that a newer version exists (the owner, 2026-11-16)
 
 Surveyed: Recipe has no way to learn that a program has a newer version
 upstream, and no hook for it. `recipe updates` runs nothing and fetches
@@ -231,26 +249,42 @@ Decided:
   its checksum.
 - **Changing the recipe is the user's.** A newer version upstream means the
   recipe has to be updated, by hand or by the user's own agent in the user's
-  own window. Recipe does not ask an AI (section 0b, requirement 9); the app
+  own window. Recipe does not ask an AI (section 2, requirement 9); the app
   may offer the facts to copy.
 - An update that can be installed still means what it means today: the
   recipe, as fetched, names a newer version than the one installed.
 
-Where this lands: step 1 defines `UPSTREAM` and `latest()` and what
-`recipe updates --json` reports for the two cases; step 2a reads the
-declaration; step 2d adds the check; step 3c shows it in the app; the recipe
-conversions (steps 4 and 5) add `UPSTREAM` to each recipe that has one.
+Built in phase C5; each recipe gets its `UPSTREAM` line when it is converted
+(phase E); shown in the app in phase F.
 
-## 1. Finish the format: the specification
+# Part 2: the work
+
+## Phase A: removals
+
+Small, low risk, and they shrink what the rewrite has to carry. Each is its
+own commit in the shared checkout. Check: the workspace compiles and lints.
+
+| Step | What goes | Where | Model |
+|---|---|---|---|
+| A1 | Everything that asks an AI (section 2, requirement 9): `src/llm/`, `src/core/autofix/`, the `--autofix*` and `--llm-profile` options, `recipe/llm.toml`, `tests/e2e/managed_autofix.rs`, the mentions in the engine; the builder's kernel autofix choice; xtask's option for it; the README section | `tools/recipe`, `distro/builder`, `xtask` | sonnet |
+| A2 | "Go back", "Keep at this version" and the kept generations (requirements 7, 8): the commands `go-back`, `hold`, `unhold`, `storage --clear-earlier`; the package store keeps exactly one generation, and the one it replaces is deleted once the new one is active; `recipe remove` frees the space; `recipe updates` and `installed` lose `held` and the kept versions | `tools/recipe` (`packages.rs`, `packages/history.rs`, `bin/recipe/{cli,commands}.rs`, man page, README) | opus |
+| A3 | The same in the app: the "Go back", "Update all", "Keep at this version" and "Clear earlier versions" actions, the receipt page's go-back, the earlier-versions numbers; the stand-in and the story follow | `tools/gui/recipe` | sonnet |
+
+Why opus for A2: the package store switches generations atomically. Deleting
+the old one at the wrong moment loses an installed program without any error.
+
+## Phase B: the specification
 
 **Who:** one opus agent drafts; the main session reviews; the owner approves.
-**Output:** `docs/recipe-format.md`: the complete format, every declaration,
-every function and its arguments, every constant, the pins file, the JSON
-that `recipe list` and a finished run return, and the commands that remain.
-**Why opus:** each answer must be checked against what the engine and the 34
-OS recipes actually do; a wrong answer here is copied into 106 recipes.
+**Output:** `docs/recipe-format.md`: every declaration, every function and its
+arguments, every constant, the pins file, the commands and the states of a
+program, what `recipe list`, `installed`, `updates`, `storage` and a finished
+run return as JSON.
+**Why opus:** each answer must hold for what the engine and the 34
+OS-building recipes actually do; a wrong one is copied into 106 recipes.
 
-The draft starts from these proposed answers (numbers as in section 0):
+The draft starts from these proposed answers to the 15 gaps of section 1,
+plus the three that sections 2 to 4 add:
 
 | # | Proposed answer |
 |---|---|
@@ -266,150 +300,139 @@ The draft starts from these proposed answers (numbers as in section 0):
 | 10 | The single output keeps its name in `NEEDS.outputs`; the recipe body never uses the name. |
 | 11 | Unchanged: the caller's tree comes in as the `target` input, as today. |
 | 12 | `cleanup(reason)` stays, without `ctx`. |
-| 13 | To be settled with section 0c: the checks `isinstalled`, `isbuilt`, `isacquired` report a program's state; the `--force-*` options are replaced by the single-step commands. |
+| 13 | To be settled with section 3: the checks `isinstalled`, `isbuilt`, `isacquired` report a program's state; the `--force-*` options are replaced by the single-step commands. |
 | 14 | One shared module `look.rhai`; one generated `os-facts.rhai` module instead of seven copied blocks. |
 | 15 | `NAME.pins`: one line per package, written only by the generator, staged with the recipe so it counts toward its identity. |
-| 16 | Disk space (section 0b): the option that keeps build material, and the kinds `recipe storage --json` reports. No earlier versions: `go-back` is removed. |
-| 17 | Every step by itself (section 0c): the commands for download only, build only, remove the download, remove the build; the states a program can be in and how `recipe list`/`installed` report them. |
-| 18 | Newer versions upstream (section 0d): `UPSTREAM`, `latest()`, and what `recipe updates --json` reports. Recipe only tells. |
+| 16 | Disk space (section 2): the option that keeps build material, and the kinds `recipe storage --json` reports. No earlier versions: `go-back` is removed. |
+| 17 | Every step by itself (section 3): the commands for download only, build only, remove the download, remove the build; the states a program can be in and how `recipe list`/`installed` report them. |
+| 18 | Newer versions upstream (section 4): `UPSTREAM`, `latest()`, and what `recipe updates --json` reports. Recipe only tells. |
 
-The owner sees the spec with the decisions that are theirs marked, before
-step 2 starts.
+Also to be stated in the specification:
 
-## 2. The engine (`tools/recipe`)
+- The commands for single steps (section 3): proposed `recipe download NAME`,
+  `recipe build NAME`, `recipe install NAME`, `recipe remove NAME`,
+  `recipe cleanup NAME` (with `--downloads` or `--build` for one kind, and
+  without a name for everything not installed).
+- The option that keeps the download and build after installing: proposed
+  `--keep`, off by default, remembered per program.
+- The kinds `recipe storage --json` reports: installed, downloaded, built,
+  kept by choice, unfinished runs, build image, logs; each with bytes and
+  whether it can be removed.
+- What stays of `recipe history` (the log of changes; it costs no space
+  worth naming).
 
-Four opus agents, one after the other in the same working copy, because the
-parts depend on each other. Each ends with the crate compiling and lint-clean,
-and with the reference recipes of its part passing `recipe info`.
+The owner sees the specification with the decisions that are theirs marked.
+Nothing after phase B starts before it is approved.
 
-| Step | What | Where (from the survey) | Risk |
-|---|---|---|---|
-| 2a | Read the declarations (`PACKAGE`, `SOURCES`, `FILES`, `PACKAGES`, `ACCOUNTS`, `RERUN`); one API number; `list`, `info`, `index`, `validate` report the new shape | `needs.rs`, `catalog.rs`, `core/executor.rs` (`declared_metadata`), `core/invocation.rs` (`validate_api`), `sources.rs`, `execution.rs` | medium |
-| 2b | The core: no `ctx`. Constants in place of `RUNTIME`; call `build(src, out)`, `configure`, `verify`, `cleanup(reason)`; outputs mapped by the engine; `save`/`saved`/`checkpoint` | `core/invocation.rs`, `core/executor/private/{flow,actions,loaded,context}.rs`, `worker/run.rs`, `worker/protocol.rs`, `launch.rs`, `host.rs`, `publication.rs`, `backend.rs`, `lifecycle.rs` | **highest** |
-| 2c | Built-in steps: fetch and unpack `SOURCES`; copy `FILES`; package groups (pins file, native RPM/APK unpack, accounts, finish the tree) | new step in `flow.rs`; reuses `helpers/acquire`, `helpers/build/extract.rs`, `helpers/target.rs`, `accounts.rs`, `offline_cache.rs`, `inputs/discover.rs` | medium |
-| 2d | "Done" from Recipe's own records; delete build material and saved state after a successful install, move instead of copy, `go-back`, kept generations, `hold`/`unhold`, autofix and all AI code removed, `recipe storage` reporting everything (section 0b); each step as its own command and the states of a program (section 0c); `remove` hook and `Operation::Remove` gone; autofix and narration renamed | `retained.rs`, `host/snapshot.rs`, `packages.rs`, `system.rs`, `core/autofix/*`, `core/output/narration.rs`, `bin/recipe/commands.rs` | high |
+## Phase C: the engine (`tools/recipe`)
 
-With 2a–2c the agents also convert the **reference recipes**, one per shape:
-`ripgrep` (a), `cmake` (b), `network` (c), `pi` (d), `desktop-runtime` (e),
-`steam` (group with a second source), and from the OS set `busybox-static`,
-`locked-preseed` with `fedora-rpm-preseed` (template), `linux-deps`,
-`install-tools` (two outputs, eight inputs, three defines).
+Opus agents, one after the other in the same working copy, because the parts
+depend on each other. Each ends with the crate compiling and lint-clean, and
+with the reference recipes of its part passing `recipe info`.
+
+| Step | What | Where (from the survey) | Risk | Model |
+|---|---|---|---|---|
+| C1 | Read the declarations (`PACKAGE`, `SOURCES`, `FILES`, `PACKAGES`, `ACCOUNTS`, `UPSTREAM`, `RERUN`); one API number; `list`, `info`, `index`, `validate` report the new shape | `needs.rs`, `catalog.rs`, `core/executor.rs`, `core/invocation.rs` (`validate_api`), `sources.rs`, `execution.rs` | medium | opus |
+| C2 | The core without `ctx`: constants in place of `RUNTIME`; calling `build(src, out)`, `configure`, `verify`, `cleanup(reason)`; outputs mapped by the engine; `save`/`saved`/`checkpoint` | `core/invocation.rs`, `core/executor/private/*`, `worker/run.rs`, `worker/protocol.rs`, `launch.rs`, `host.rs`, `publication.rs`, `backend.rs`, `lifecycle.rs` | **highest** | opus |
+| C3 | Built-in steps: fetch and unpack `SOURCES`; copy `FILES`; package groups (pins file, native RPM/APK unpack, accounts, finish the tree) | new step in `flow.rs`; reuses `helpers/acquire`, `helpers/build/extract.rs`, `helpers/target.rs`, `accounts.rs`, `offline_cache.rs`, `inputs/discover.rs` | medium | opus |
+| C4a | Recipe decides what is done from its own records; the states of a program (nothing, downloaded, built, installed); the single-step commands `download`, `build`, `install`, `remove`, `cleanup`; the `remove` hook and `Operation::Remove` gone | `retained.rs`, `host/snapshot.rs`, `core/executor/private/flow.rs`, `worker/protocol.rs`, `bin/recipe/{cli,commands}.rs`, `core/output/narration.rs` | high | opus |
+| C4b | Disk (section 2): after a successful install the engine deletes downloads, source, build material and saved state; the keep option; saved state only while a run is unfinished and never twice; moves instead of copies from download to installed file; `recipe storage` reports every kind with a way to remove it; the same for system installs (`system-producer`) | `retained.rs`, `publication.rs`, `packages.rs`, `temporary.rs`, `invocation_log.rs`, `inputs/image_cache.rs`, `bin/recipe/system_route.rs`, `bin/recipe/commands.rs` | high | opus |
+| C5 | Newer versions upstream (section 4): the check behind `UPSTREAM` and `latest()`, run only on request; `recipe updates --json` tells "installable update" from "newer upstream" | `helpers/acquire/http.rs`, `bin/recipe/commands.rs`, `updates.rs` | low | sonnet |
+| C6 | Independent review of the whole engine change against the specification, by an agent that has not seen the work. It looks for what compiles but is wrong: outputs lost, a result taken as done when it is not, material deleted that an unfinished run needs, the worker and the coordinator disagreeing. Fixes go back to the agent that wrote the part | all of the above | | opus |
+
+With C1 to C3 the agents also convert the **reference recipes**, one per
+shape: `ripgrep` (a), `cmake` (b), `network` (c), `pi` (d), `desktop-runtime`
+(e), `steam` (a group with a second source), and from the OS set
+`busybox-static`, `locked-preseed` with `fedora-rpm-preseed` (a template),
+`linux-deps`, `install-tools` (two outputs, eight inputs, three defines).
+
+## Phase D: the pin generator and the builder
+
+Can start when the specification is approved; needs C1 only for the JSON.
 
 | Step | What | Model |
 |---|---|---|
-| 2e | Independent review of the whole engine change against the spec, by an agent that has not seen the work. It looks for what compiles but is wrong: outputs lost, a result taken as done when it is not, the worker and the coordinator disagreeing | opus |
-| 2f | Fixes from the review | the agent that wrote the part (resumed) |
+| D1 | `xtask/src/tasks/groups.rs` (about 270 lines in 8 functions), `base.rs` `group_seeds`, `kernels/publish.rs`: read `PACKAGES`, write `NAME.pins` and `os-facts.rhai`, no longer rewrite recipe text. Also `recipes/generators/desktop-runtime-pins.py` | sonnet |
+| D2 | Builder Rust: `recipe/outputs.rs` and `stamp.rs` (read the new result), `default_set.rs` (`deps_of`, `pins_of`, pins files onto the medium), `update_release.rs` (pins files into the base and `recipes.tar.zst`), `pipeline/kernel.rs` (the `isinstalled` call), the `--force-*` options it passes | sonnet |
 
-## 3. The pin generator and the other text readers
+## Phase E: the recipes (106)
 
-Can start when the spec is approved; needs 2a only for the JSON shape.
-
-| Step | What | Model |
-|---|---|---|
-| 3a | `xtask/src/tasks/groups.rs` (about 270 lines in 8 functions), `base.rs` `group_seeds`, `kernels/publish.rs`: read `PACKAGES`, write `NAME.pins` and `os-facts.rhai`, no longer rewrite recipe text. Also `recipes/generators/desktop-runtime-pins.py` | sonnet |
-| 3b | Builder Rust: no autofix option anywhere (also in xtask's kernel command); `recipe/outputs.rs` and `stamp.rs` (read the new result), `default_set.rs` (`deps_of`, `pins_of`, copy pins files to the medium), `update_release.rs` (pins files into the base and `recipes.tar.zst`), `pipeline/kernel.rs` (the `isinstalled` call) | sonnet |
-| 3c | Recipe app: steps from the declarations instead of `hooks`; the Storage page shows everything Recipe holds, by kind, with a way to remove each; the option to keep build material; "Go back", "Update all" and "Keep at this version" removed; a program's state and a button for each single step (section 0c); the stand-in `fixtures/recipe` and `catalog.json`; README | sonnet |
-
-## 4. The catalog recipes (72)
-
-All against the reference recipes and the spec. Check per recipe:
-`recipe info`.
+All against the reference recipes and the specification. Check per recipe:
+`recipe info`. Each catalog recipe gets its `UPSTREAM` line as it is converted
+(for the many that come from GitHub releases it follows from the source URL).
 
 | Step | Recipes | How | Model |
 |---|---|---|---|
-| 4a | 12 plain downloads: bat, delta, codex, claude-code, opencode, muse, fzf, micro, fd, jq, rclone, uv | by hand, one batch | haiku |
-| 4b | zoxide, eza, ninja, btop, gh (and ripgrep is the reference) | by hand; gh and btop fold file lists into folders | haiku |
-| 4c | Toolchains: python, go, gxx (cmake and pi are references) | by hand; the run-the-program checks go, since `verify` only reads | sonnet |
-| 4d | 28 groups with no configuration and 7 with a small one | one conversion script moves the pins into `NAME.pins` and drops the copied block; the script is thrown away after | sonnet |
-| 4e | printing, firefox, login-screen | by hand | sonnet |
-| 4f | The five look groups: konsole, qterminal, pcmanfm-qt, lxqt, plasma, onto the shared `look.rhai` and `os-facts.rhai` | by hand | sonnet |
-| 4g | The hard five: lib32, xlibre, rec-apps, antigravity (steam and desktop-runtime are references) | by hand | opus |
+| E1 | 12 plain downloads: bat, delta, codex, claude-code, opencode, muse, fzf, micro, fd, jq, rclone, uv | by hand, one batch | haiku |
+| E2 | zoxide, eza, ninja, btop, gh | by hand; gh and btop fold file lists into folders | haiku |
+| E3 | Toolchains: python, go, gxx | by hand; the run-the-program checks go, since `verify` only reads | sonnet |
+| E4 | 28 groups with no configuration and 7 with a small one | one conversion script moves the pins into `NAME.pins` and drops the copied block; the script is thrown away after | sonnet |
+| E5 | printing, firefox, login-screen | by hand | sonnet |
+| E6 | The five look groups (konsole, qterminal, pcmanfm-qt, lxqt, plasma) onto the shared `look.rhai` and `os-facts.rhai` | by hand | sonnet |
+| E7 | The hard ones: lib32, xlibre, rec-apps, antigravity | by hand | opus |
+| E8 | OS set: the six preseeds, bun-toolchain, prebuilt-fetch | by hand | sonnet |
+| E9 | OS set: shared modules system-files, installed-system, kernel/metadata. The 7 lock modules keep their form | by hand | sonnet |
+| E10 | OS set: package-tree steps (package-effects and both effects recipes, rootfs-producer and both source-rootfs, alpine-apk-base-tree, fedora-rpm-unpack, both apps-build-roots) | by hand | opus |
+| E11 | OS set: builds (desktop-apps, reclogin, xlibre, tool-crate, live-overlay, release-medium, root-effects) | by hand | opus |
+| E12 | OS set: long builds (tui-binary, linux-prebuilt, linux) | by hand | opus |
 
-## 5. The OS-building recipes (34) and their modules
+## Phase F: the Recipe app (`tools/gui/recipe`)
 
-| Step | Recipes | Model |
-|---|---|---|
-| 5a | The six preseeds, bun-toolchain, prebuilt-fetch (locked-preseed and busybox-static are references) | sonnet |
-| 5b | Shared modules: system-files, installed-system, kernel/metadata. The 7 lock modules keep their form | sonnet |
-| 5c | Package-tree steps: package-effects and both effects recipes, rootfs-producer and both source-rootfs, alpine-apk-base-tree, fedora-rpm-unpack, both apps-build-roots | opus |
-| 5d | Builds: desktop-apps, reclogin, xlibre, tool-crate, live-overlay, release-medium, root-effects (install-tools is a reference) | opus |
-| 5e | Long builds: tui-binary, linux-prebuilt, linux (linux-deps is a reference) | opus |
-
-## 6. Recipe's own tests and examples
-
-About 150 embedded recipes in 26 files, plus 7 example and consumer recipes.
-They are rewritten and compiled (`cargo check --tests`); they cannot be
-proven without a sandbox run. Tests of things that no longer exist (the API
-split, the removed commands) are deleted.
-
-| Step | Files | Model |
-|---|---|---|
-| 6a | `managed_inputs.rs` (33 recipes), `managed_state.rs`, `managed_storage.rs`, `managed_retention.rs`, `managed_target.rs`, `managed_cancellation.rs`, `managed_autofix.rs` | sonnet |
-| 6b | `needs.rs` (24), `query.rs` (13), `invocation.rs`, `api2.rs`, `cli.rs`, `cleanup.rs`, `failures.rs` | sonnet |
-| 6c | `downloads.rs`, `git_acquisition.rs`, `archives.rs`, `dependencies.rs`, `command_options.rs`, `process.rs`, `worker_entry.rs`, `target_metadata.rs`, kernel and preseed tests, `library_backend.rs`, `examples/`, `tests/consumers/` | sonnet |
-
-## 7. Documentation and the strays
+The app as decided in sections 2 to 4. About 6,800 lines today; three pages
+change shape. Check: it compiles. Nothing is started, no pictures are taken.
 
 | Step | What | Model |
 |---|---|---|
-| 7a | `WRITING_RECIPES.md` (nearly all of 560 lines), the three man pages, `HELPERS_AUDIT.md`, the README sections, `CLAUDE.md`, the in-source doc comments | sonnet |
-| 7b | Docs pages (`02-recipe-format`, the helper pages, the FAQ, the CLI reference: about 450 lines), the website's Recipe page, `docs/package-recipe-format.md`, parts of `recipe-declared-needs.md` and `ginux-recipe-interfaces.md`, the builder's two READMEs, `recipes/README.md` | sonnet |
-| 7c | Strays: the probe recipe in `testing/install-tests/test-scripts/runtime.sh`, `tools/reclogin/dist/recipe/login-screen.rhai` with its `SWITCH.md`; a dated "superseded" line on the historical design notes | haiku |
-| 7d | Generated files: `recipes/index.json` (`recipe index`), the docs' generated index, the two terminal-app snapshots of the docs page | haiku |
+| F1 | What the window reads and runs: the new `list`, `installed`, `updates` and `storage` JSON; a program's state; the single-step commands; the keep option; the two marks "Update" and "Newer upstream"; steps taken from the declarations instead of `hooks` (`model.*`, `client.*`, `beforewords.*`) | sonnet |
+| F2 | The pages: a program's page with one main button and the steps behind "One step at a time"; Installed with sizes and both marks per program, no Updates page; Storage with one total and one line per kind, each removable, and "Clean up everything not installed" (`pages.*`, `storage.*`, `window.*`, kit pieces if needed) | sonnet |
+| F3 | The stand-in `fixtures/recipe` and `catalog.json` in the new shapes, the story code, the README | sonnet |
 
-## 8. Review before landing
+## Phase G: tests, documentation, strays
+
+About 150 recipes embedded in 26 test files, plus 7 example and consumer
+recipes. They are rewritten and compiled (`cargo check --tests`); they cannot
+be proven without a sandbox run. Tests of things that no longer exist are
+deleted. No test is added that is a unit test.
 
 | Step | What | Model |
 |---|---|---|
-| 8a | Sample 20 converted recipes of all shapes against their old text: every file, mode, link, account and service of the old recipe must still be there | sonnet |
-| 8b | The whole workspace compiles; every recipe in both sets passes `recipe info`; `recipe index --check`; `cargo xtask gen --check`; no `ctx`, `RECIPE_API = 2` or `= 3` left anywhere | haiku |
-| 8c | **[ask]** `cargo xtask base groups <distro> --check`: about a minute per OS, reads the package repositories. It proves the moved pins still equal the locks | haiku |
-| 8d | **[ask]** Recipe's acceptance suite on CI (the run that passed 146 of 146 on 2026-11-15). It is the only proof of the engine short of an image build | no model; a CI run |
+| G1 | `managed_inputs.rs` (33 recipes), `managed_state.rs`, `managed_storage.rs`, `managed_retention.rs`, `managed_target.rs`, `managed_cancellation.rs` | sonnet |
+| G2 | `needs.rs` (24), `query.rs` (13), `invocation.rs`, `api2.rs`, `cli.rs`, `cleanup.rs`, `failures.rs` | sonnet |
+| G3 | `downloads.rs`, `git_acquisition.rs`, `archives.rs`, `dependencies.rs`, `command_options.rs`, `process.rs`, `worker_entry.rs`, `target_metadata.rs`, the kernel and preseed tests, `library_backend.rs`, `examples/`, `tests/consumers/` | sonnet |
+| G4 | `WRITING_RECIPES.md` (nearly all of 560 lines), the three man pages, `HELPERS_AUDIT.md`, the README, `CLAUDE.md`, the in-source doc comments | sonnet |
+| G5 | Docs pages (the recipe format page, the helper pages, the FAQ, the CLI reference: about 450 lines), the website's Recipe page, `docs/package-recipe-format.md`, parts of `recipe-declared-needs.md` and `ginux-recipe-interfaces.md`, the builder's READMEs, `recipes/README.md`, the app's pictures list | sonnet |
+| G6 | Strays: the probe recipe in `testing/install-tests/test-scripts/runtime.sh`, `tools/reclogin/dist/recipe/login-screen.rhai` with its `SWITCH.md`; a dated "superseded" line on the historical design notes | haiku |
+| G7 | Generated files: `recipes/index.json`, the docs' generated index, the two terminal-app snapshots of the docs page | haiku |
 
-## 9. Landing
+## Phase H: review and landing
 
-The main session commits and pushes, submodules first, then the main
-repository with all pointers in one commit: `tools/recipe`, `recipes`,
-`distro/builder`, `tools/gui`, `docs/content`, `docs/website`, `tools/tui`,
-`testing/install-tests`, `tools/reclogin`, then LevitateOS itself. CI is
-checked on each.
-
-Two things to settle before step 2 starts:
-
-- **Where the work happens.** A second clone of the main repository with its
-  submodules. No branch is created; it is pushed from there at the end.
-- **A freeze.** While the rewrite runs, no other session changes a recipe or
-  an OS-building recipe. Any that does is converted again at landing.
-
-## 10. Order and what can run side by side
-
-```
-1  spec ──► 2a ──► 2b ──► 2c ──► 2d ──► 2e ──► 2f
-              │              │
-              │              ├──► 4a 4b 4c 4d 4e 4f 4g   (catalog, side by side)
-              │              ├──► 5a 5b ──► 5c 5d 5e     (OS recipes)
-              │              └──► 6a 6b 6c               (tests)
-              └──► 3a 3b 3c                              (readers)
-                                   7a 7b 7c  after 2c
-                                   7d, 8, 9  last
-```
-
-## 11. Size
-
-| Model | Agent runs | For |
+| Step | What | Model |
 |---|---|---|
-| opus | 10 | the spec, the engine (4), its review, the hard catalog five, the OS recipes (3) |
-| sonnet | 14 | readers (3), catalog (4), OS recipes (2), tests (3), docs (2) |
-| haiku | 6 | plain catalog recipes (2), strays, generated files, final checks (2) |
+| H1 | Sample 20 converted recipes of all shapes against their old text: every file, mode, link, account and service of the old recipe must still be there. Read the engine once more for any step that copies where it can move | sonnet |
+| H2 | The whole workspace compiles; every recipe in both sets passes `recipe info`; `recipe index --check`; `cargo xtask gen --check`; nothing left of `ctx`, `RECIPE_API = 2` or `= 3`, `go-back`, `hold`, `autofix` | haiku |
+| H3 | **[ask]** `cargo xtask base groups <distro> --check`: about a minute per OS, reads the package repositories. It proves the moved pins still equal the locks | haiku |
+| H4 | **[ask]** Recipe's acceptance suite on CI (the run that passed 146 of 146 on 2026-11-15). It is the only proof of the engine short of an image build | a CI run, no model |
+| H5 | Landing: commit and push, submodules first (`tools/recipe`, `recipes`, `distro/builder`, `tools/gui`, `docs/content`, `docs/website`, `tools/tui`, `testing/install-tests`, `tools/reclogin`), then the main repository with all pointers in one commit; CI checked on each | the main session |
 
-For scale only: on 2026-11-15 an opus agent on engine work used between
-250,000 and 630,000 tokens. This is larger than everything written that day
-for the Recipe-installed desktop.
+## Order
 
-## 12. What stays unproven
+```
+A1 A2 A3            removals, land by themselves
+B                   specification, owner approves
+C1 > C2 > C3 > C4a > C4b > C6
+ |         |      \> C5
+ |         +--> E1..E7 (catalog)   E8 E9 > E10 E11 E12 (OS recipes)   G1 G2 G3 (tests)
+ +--> D1 D2 (readers)              F1 > F2 > F3 (app, after C4b's JSON is fixed by the spec)
+G4 G5 G6 after C3;  G7, H last
+```
+
+## What stays unproven
 
 Even when every step is done, nothing has run. The engine's core is replaced
-without a single execution, 150 test recipes are rewritten without being
-run, and the OS-building recipes are rewritten on top of a builder that has
-not produced an image since 2026-11-15 either. The first real proof is step
-8d if the owner allows it, and after that the owner's build.
+without a single execution, 150 test recipes are rewritten without being run,
+the OS-building recipes are rewritten on top of a builder that has not
+produced an image since 2026-11-15, and the app is rebuilt without being
+started. Deleting build material is new behaviour in code that guards against
+losing work, and a mistake there shows only when a run is interrupted. The
+first real proof is H4 if the owner allows it, and after that the owner's
+build and a look at the app on a desktop.
