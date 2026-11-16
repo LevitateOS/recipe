@@ -233,7 +233,11 @@ fn pending() -> std::sync::MutexGuard<'static, Option<(PathBuf, Manifest)>> {
 
 /// Write the manifest a package helper deferred, if any.
 pub fn flush_pending() -> Result<()> {
-    if let Some((root, manifest)) = pending().take() {
+    // The guard must be gone before `save`, which locks `PENDING` itself: a
+    // guard taken in an `if let` scrutinee lives through the body, and the
+    // second lock on this thread never returns.
+    let taken = pending().take();
+    if let Some((root, manifest)) = taken {
         save(&root, &manifest)?;
     }
     Ok(())
