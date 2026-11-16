@@ -181,7 +181,12 @@ What follows from it:
   deleted, unless the user chose to keep them.
 - The Storage page lists what is downloaded and what is built but not
   installed, each with its size and a way to remove it.
-- One click still installs: "Install" does every step that is missing.
+- One click still installs: "Install" does all four steps by itself
+  (download, build, install, clean up), skipping what is already done. The
+  single steps are optional, for the user who wants to go one at a time.
+- One click removes: "Remove" on a program removes the installed program and
+  whatever is left of its download and build. The user does not have to
+  remove each kind separately; the finer removals are optional too.
 - Clean-up is a step like the others: download, build, install, clean up.
   It runs by itself after a successful install (section 0b, requirement 1)
   unless the user chose to keep the material, and the user can run it alone
@@ -190,6 +195,38 @@ What follows from it:
 Where this lands: step 1 names the commands and the states; step 2d builds
 them into the engine (it owns what is done and what is kept); step 3c builds
 the buttons, the state and the Storage rows into the app.
+
+## 0d. Knowing that a newer version exists (the owner, 2026-11-16)
+
+Surveyed: Recipe has no way to learn that a program has a newer version
+upstream, and no hook for it. `recipe updates` runs nothing and fetches
+nothing; it compares the installed version with the version written in the
+recipe file as last fetched. So "update available" today means only that
+somebody edited the recipe. The helpers `github_latest_release` and
+`github_latest_tag` exist; no recipe calls them.
+
+Decided:
+
+- **Each recipe says where its newest version can be found.** A declaration
+  for the common case, such as `const UPSTREAM = #{ github: "OWNER/REPO" };`,
+  and an optional function `latest()` that returns the newest version number
+  for programs with an unusual release page.
+- **Recipe only tells.** When the user asks ("Check for updates"), Recipe
+  asks upstream and shows "upstream has 15.3.0, this recipe installs 15.2.0".
+  It never checks by itself, never changes a recipe, and never installs a
+  version the recipe does not name. A recipe keeps pinning one version and
+  its checksum.
+- **Changing the recipe is the user's.** A newer version upstream means the
+  recipe has to be updated, by hand or by the user's own agent in the user's
+  own window. Recipe does not ask an AI (section 0b, requirement 9); the app
+  may offer the facts to copy.
+- An update that can be installed still means what it means today: the
+  recipe, as fetched, names a newer version than the one installed.
+
+Where this lands: step 1 defines `UPSTREAM` and `latest()` and what
+`recipe updates --json` reports for the two cases; step 2a reads the
+declaration; step 2d adds the check; step 3c shows it in the app; the recipe
+conversions (steps 4 and 5) add `UPSTREAM` to each recipe that has one.
 
 ## 1. Finish the format: the specification
 
@@ -221,6 +258,7 @@ The draft starts from these proposed answers (numbers as in section 0):
 | 15 | `NAME.pins`: one line per package, written only by the generator, staged with the recipe so it counts toward its identity. |
 | 16 | Disk space (section 0b): the option that keeps build material, and the kinds `recipe storage --json` reports. No earlier versions: `go-back` is removed. |
 | 17 | Every step by itself (section 0c): the commands for download only, build only, remove the download, remove the build; the states a program can be in and how `recipe list`/`installed` report them. |
+| 18 | Newer versions upstream (section 0d): `UPSTREAM`, `latest()`, and what `recipe updates --json` reports. Recipe only tells. |
 
 The owner sees the spec with the decisions that are theirs marked, before
 step 2 starts.
