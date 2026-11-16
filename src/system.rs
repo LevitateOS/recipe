@@ -1439,7 +1439,15 @@ pub fn seed(state_root: &Path, payloads: &[Payload]) -> Result<Vec<String>> {
                     "seed {} is not a regular file",
                     source.display()
                 );
-                fs::copy(&source, &dest)?;
+                // The payload is deleted afterwards: move the file when it
+                // shares the disk and no other name uses it, else reflink/copy.
+                let md = fs::symlink_metadata(&source)?;
+                let same_disk = std::os::unix::fs::MetadataExt::nlink(&md) == 1
+                    && std::os::unix::fs::MetadataExt::dev(&fs::metadata(state_root)?)
+                        == std::os::unix::fs::MetadataExt::dev(&md);
+                if !same_disk || fs::rename(&source, &dest).is_err() {
+                    crate::fsx::copy_reflink(&source, &dest)?;
+                }
                 fs::set_permissions(&dest, fs::Permissions::from_mode(entry.mode))?;
             }
             other => anyhow::bail!("unsupported seed kind {other} for {name}"),

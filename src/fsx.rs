@@ -320,6 +320,22 @@ pub fn reflink(input: &File, output: &File) -> Result<bool> {
     }
 }
 
+/// Copy the regular file `source` to the new file `dest` (mode 0600; callers
+/// set the final mode): a reflink where the filesystem can, else a plain copy.
+pub fn copy_reflink(source: &Path, dest: &Path) -> Result<()> {
+    let mut input = open_regular(source)?;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(dest)
+        .with_context(|| format!("cannot create {}", dest.display()))?;
+    if !reflink(&input, &output)? {
+        std::io::copy(&mut input, &mut output)?;
+    }
+    Ok(())
+}
+
 /// Like [`copy_hashed`] from the start of `input` into an empty `output`
 /// (open for reading and writing), but clone the data when the filesystem can
 /// and hash the clone, read back through `output`, instead of writing a second

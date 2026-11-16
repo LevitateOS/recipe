@@ -722,7 +722,9 @@ fn copy_package(source: &Path, destination: &Path, placing: Placing) -> Result<V
                         .create_new(true)
                         .mode(0o600)
                         .open(&output)?;
-                    std::io::copy(&mut input, &mut target)?;
+                    if !crate::fsx::reflink(&input, &target)? {
+                        std::io::copy(&mut input, &mut target)?;
+                    }
                     placed.push((output, mode));
                 }
                 Err(error) => {

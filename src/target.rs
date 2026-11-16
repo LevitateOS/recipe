@@ -698,7 +698,7 @@ pub fn merge_tree(source: &Path, destination: &Path) -> Result<()> {
                 if let Some(first) = inodes.get(&(md.dev(), md.ino())) {
                     fs::hard_link(first, &dest)?;
                 } else {
-                    fs::copy(item.path(), &dest)?;
+                    crate::fsx::copy_reflink(item.path(), &dest)?;
                     inodes.insert((md.dev(), md.ino()), dest.clone());
                 }
                 fs::set_permissions(
