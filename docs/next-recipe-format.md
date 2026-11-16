@@ -233,6 +233,9 @@ The examples in this note leave the API line out only to stay short.
 
 ## How the rewrite is to be done (plan, not started)
 
+The full plan, with every step and the model that does it, is
+[`next-recipe-format-plan.md`](next-recipe-format-plan.md). In short:
+
 1. One agent writes the engine and converts one recipe of each shape. Those
    are the reference recipes, with the new writing guide.
 2. The mass conversion runs against the references. Counted on 2026-11-16:
