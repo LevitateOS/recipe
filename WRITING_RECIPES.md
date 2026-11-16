@@ -669,6 +669,13 @@ failed work is not published.
 See the [README recovery section](README.md#state-diagnostics-and-recovery) for
 log paths, retention, cancellation and timeouts.
 
+## Events
+
+With `--machine-events` Recipe prints one JSON object per line. A `step` event
+(`recipe`, `step`, `status`, `msg`) has a status of exactly `running`, `done`,
+`already`, `none`, `skipped` or `failed`. The last event is `done` (`recipe`) or
+`failed` (`recipe`, `step`, `reason`). A recipe's own text is not an event.
+
 ## Checking a recipe
 
 `recipe info FILE.rhai` reads a recipe in seconds without running it: its

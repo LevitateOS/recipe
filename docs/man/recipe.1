@@ -531,11 +531,11 @@ with done 0, total 0 and an empty what. With --machine-events a progress event
 Emit machine-readable events alongside stderr progress, one JSON object per
 line with an "event" field. plan: every recipe of the run in order, with its
 steps (download, build, install, cleanup). step: one step of a recipe (recipe,
-step, status; status is running, done, already, none, or says that the step was
-skipped or failed). fetch: how far a download is (recipe, source, bytes, total;
+step, status, msg; status is running, done, already, none, skipped or failed;
+the step is download, build, install or cleanup). fetch: how far a download is (recipe, source, bytes, total;
 total is null when the server did not say). progress: the recipe's progress()
 reports (recipe, phase, what, done, total). The last event of a run is done
-(recipe), or failed (recipe, step where a step failed, reason). A failed install
+(recipe), or failed (recipe, step, reason; step is null when no step failed). A failed install
 whose Ginux log records a denied connection also has refused: endpoint, the
 numeric address the audit line names, and declared, the recipe's NEEDS.network.
 Build progress inside a step is not reported. There is no agent event.

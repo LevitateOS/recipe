@@ -1217,10 +1217,18 @@ and uses that.
 
 ### 8.7 Events
 
-With `--machine-events`, as today, one JSON object per line: `plan` (every
-recipe of the run in order, with its `steps`), `step` (replacing
-`recipe-hook`: `recipe`, `step`, `status`), `fetch`, `progress`, `done`,
-`failed`, `refused`. The `agent` event is gone with autofix.
+With `--machine-events`, one JSON object per line with an `event` field:
+
+- `plan`: every recipe of the run in order, with its `steps`.
+- `step`: `recipe`, `step`, `status`, `msg`. `status` is exactly one of
+  `running`, `done`, `already`, `none`, `skipped`, `failed`.
+- `fetch`: `recipe`, `source`, `bytes`, `total` (null when unknown).
+- `progress`: `recipe`, `phase`, `what`, `done`, `total`.
+- `done`: `recipe`; the last event of a run that succeeded.
+- `failed`: `recipe`, `step` (null when no step failed), `reason`, and
+  `refused` when Ginux denied a connection; the last event of a run that failed.
+
+The engine emits no `output` or `say` event, and there is no `agent` event.
 
 ## 9. Examples
 
@@ -1660,9 +1668,9 @@ of the format.
 - `recipe installed --json` carries no `files`; programs and menu entries come
   from `ABOUT.adds`. `recipe list --json` carries each recipe's `sources`.
 - The `step` event has a fixed set of statuses: `running`, `done`, `already`,
-  `none`, and a skipped or failed step says so. `output` and `say` events carry a
-  recipe's text for a front end. `recipe updates --upstream` takes recipe names
-  as plain arguments.
+  `none`, `skipped`, `failed`; the `failed` event's field is `step`. The engine
+  emits no `output` or `say` event (the app's fixtures do). `recipe updates
+  --upstream` takes recipe names as plain arguments.
 - State and disk figures for programs not installed come from the computer's
   store; a person's own store may differ. A kept program's material counts under
   `kept`; an unfinished run's only under `unfinished`.

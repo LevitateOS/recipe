@@ -10,7 +10,7 @@ pub struct ExecutionOptions {
     pub jobs: u16,
     /// Optional restrictions on the authority declared by the recipe.
     pub narrowing: crate::needs::Narrowing,
-    /// Emit lifecycle JSON events through the worker diagnostic channel.
+    /// Emit step and progress JSON events through the worker diagnostic channel.
     pub machine_events: bool,
     /// Host file the coordinator keeps current with the running recipe's
     /// `progress()` reports. Coordinator only: never sent to the worker.

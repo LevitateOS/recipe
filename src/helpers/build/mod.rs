@@ -1,7 +1,7 @@
-//! BUILD phase helpers - transforming sources
+//! Build helpers - transforming sources
 //!
-//! Pure functions for extracting and transforming downloaded sources.
-//! These are the second step in the recipe lifecycle: acquire -> build -> install.
+//! Pure functions for extracting and transforming downloaded sources, for
+//! use inside `build()` and `configure()`.
 //!
 //! ## Functions
 //!

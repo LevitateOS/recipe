@@ -1,5 +1,5 @@
 //! The engine's constants of one run (docs/recipe-format.md, section 4),
-//! which replace `RUNTIME` and `ctx.runtime`. All are read-only and visible
+//! All are read-only and visible
 //! everywhere (`crate::core::invocation::set_constants`).
 
 use super::loaded::Load;

@@ -554,7 +554,7 @@ fn check_diagnostic(p: &DiagnosticPayload) -> Result<(), ProtocolError> {
 #[serde(deny_unknown_fields)]
 pub struct ProgressPayload {
     pub recipe: String,
-    /// The lifecycle step running (`acquire`, `build`, `install`, ...).
+    /// The lifecycle step running (`download`, `build`, `install`, ...).
     pub phase: String,
     /// What is being counted (`packages`); may be empty.
     pub what: String,

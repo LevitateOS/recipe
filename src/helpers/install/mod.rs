@@ -1,7 +1,6 @@
-//! INSTALL phase helpers - placing files
+//! Install helpers - placing files
 //!
-//! Pure functions for installing files to the system.
-//! These are the third step in the recipe lifecycle: acquire -> build -> install.
+//! Pure functions for placing files, for use inside `build()` and `configure()`.
 //!
 //! ## Functions
 //!

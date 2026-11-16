@@ -16,21 +16,21 @@
 //! extract(archive, WORK);
 //! ```
 //!
-//! ## Module Organization (by lifecycle phase)
+//! ## Module Organization (by kind)
 //!
 //! - **internal**: Internal utilities (NOT exposed to Rhai scripts)
 //!   - cmd, fs_utils, hash, progress
 //!
-//! - **acquire**: ACQUIRE phase - getting sources
+//! - **acquire**: getting sources
 //!   - download, verify_sha256/512/blake3, http_get, git_checkout
 //!
-//! - **build**: BUILD phase - transforming sources
+//! - **build**: transforming sources
 //!   - extract, extract_with_format
 //!
-//! - **install**: INSTALL phase - placing files
+//! - **install**: placing files
 //!   - exists, mkdir, rm, mv, ln, chmod, read_file, write_file, check_disk_space
 //!
-//! - **util**: Cross-phase utilities
+//! - **util**: General utilities
 //!   - join_path, basename, dirname, trim, contains, replace, split
 //!   - shell, shell_in, shell_output, exec_checked, exec, exec_output
 //!   - env, log, debug, warn
@@ -39,7 +39,7 @@
 // Internal utility modules (used by other helpers, NOT exposed to Rhai)
 pub mod internal;
 
-// Recipe-facing helper modules organized by lifecycle phase
+// Recipe-facing helper modules organized by kind
 pub mod acquire;
 pub mod build;
 pub(crate) mod confine;

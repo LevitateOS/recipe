@@ -1,7 +1,6 @@
 //! Writing into a system tree (docs/recipe-format.md, section 5, decision
 //! 17): `put`, `put_link`, `tree_text` and `enable_service`, with the tree as
-//! their first argument. They replace the copies 45 group recipes carried,
-//! which took `ctx` instead of the tree.
+//! their first argument. They replace the copies 45 group recipes carried.
 //!
 //! The tree is the system output `configure(tree)` receives (or any
 //! directory a recipe passes); `path` is relative to it. A mode goes into the
