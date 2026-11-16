@@ -464,9 +464,14 @@ The owner went to sleep with a standing go ("the entire implementation should be
 
 Smaller choices taken by the agents while building (names, edge cases, where the specification was silent) are listed in `recipe-format.md` section 12, "Clarifications from the build".
 
-## Not decided, left for the owner
+## Settled with the owner afterwards (2026-11-16, morning)
 
-- During step A1 an agent ran `cargo fmt` over the whole superproject by mistake. About 55 files in `xtask/` and `distro/builder/` in the shared checkout `/home/vince/Projects/LevitateOS` are reformatted, uncommitted, with no change in meaning. Restoring them was refused by the permission check and was not forced. To drop them: `git -C /home/vince/Projects/LevitateOS checkout -- xtask` and `git -C /home/vince/Projects/LevitateOS/distro/builder checkout -- .` (check first that no other session has edits there).
-- The terminal apps' docs snapshots (`cargo xtask check tui`) were not regenerated. Blessing them runs every TUI story, about 20 minutes. The docs pages changed, so that check will report differences until someone runs `cargo xtask check tui --bless`. It already failed before this work (a system-setup story and the same snapshots).
-- Not checked, without running anything: whether the archives placed as whole folders (`antigravity`, `pi`, `gh`, `btop`, `zoxide`) contain symbolic links. Package activation refuses links. Also whether, inside Ginux, the move of `FILES` into the output becomes a copy, because `/work` and `/out` are separate storage.
-- Possible follow-ups, not done: a musl build for `claude-code` and `opencode` (now possible with `libc:` sources); `installed-system.rhai` reading `INPUTS` itself instead of a folder of all inputs; a download store shared between programs.
+- The stray `cargo fmt` changes in the shared checkout were dropped on the owner's yes.
+- The owner kept every decision above.
+- The terminal apps' docs snapshots were re-blessed (`cargo xtask check tui --bless`).
+- LevitateOS's Fedora lock was refreshed because the mirror no longer served `tpm2-tss-4.2.1` (now 4.2.2; `ibus-libs` 1.5.35-2); the pins follow.
+- `claude-code` and `opencode` gained upstream's musl builds.
+- `installed-system.rhai` reads `INPUTS` itself.
+- The archives placed as whole folders into packages (`antigravity`, `pi`, `gh`, `btop`, `zoxide`) were checked: none contains a link. `python` and `gxx` contain links but are `tools` outputs, not packages.
+
+Still open: whether, inside Ginux, moving `FILES` into the output becomes a copy because `/work` and `/out` are separate storage; and a download store shared between programs.
