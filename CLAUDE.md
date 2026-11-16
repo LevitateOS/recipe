@@ -10,7 +10,7 @@ Read these instead of copies here; each fact has one home:
 | For | Read |
 | --- | --- |
 | Running recipes, environment (`GINUX_BIN`, `GINUX_ROOTFS`, `GINUX_ROOT`, `RECIPE_WORKER_BIN`), options, state and logs | `README.md`, `docs/man/recipe.1` |
-| Writing recipes: API 2, `RUNTIME`/`ctx`, hooks, readiness, cleanup reasons, `deps`/`build_deps`, `extends` | `WRITING_RECIPES.md`, `docs/man/recipe-recipe.5` |
+| Writing recipes: API 1 declarations, functions, constants, steps and states, saved values, `deps`/`build_deps`, `extends` | `WRITING_RECIPES.md`, `docs/man/recipe-recipe.5`; the full contract is `docs/recipe-format.md` |
 | Helper catalog | `HELPERS_AUDIT.md`, `docs/man/recipe-helpers.7` (registration: `src/helpers/mod.rs`) |
 | Compiler images | `bootstrap/README.md`, `src/bin/recipe-image.rs` |
 | Why the code is shaped as it is | `UNTANGLE.md` |
@@ -23,8 +23,8 @@ Read these instead of copies here; each fact has one home:
   old form working beside a new one, accept two spellings of a field, or shape
   a change so an older Recipe can still read it. When a format changes, change
   every recipe and every reader and delete the old form. The `RECIPE_API` line
-  stays and becomes `1` with the rewrite; the engine accepts one
-  number at a time (the 2/3 split of 2026-11-15 was such a switch). See
+  is `1`: the engine accepts that number and nothing else (the 2/3 split of
+  2026-11-15 was such a switch; `ctx`, `RUNTIME` and the hooks are gone). See
   `docs/next-recipe-format.md`, "The API number and the rewrite".
 
 - Recipe never asks an AI for anything (the owner's rule, 2026-11-16, stated
@@ -35,12 +35,25 @@ Read these instead of copies here; each fact has one home:
   `src/core/autofix` were removed on 2026-11-16; nothing replaces them
   (`docs/next-recipe-format-plan.md`, section 2, requirement 9; phase A1).
 
-- Lifecycle: `is_installed` → `is_built` → `is_acquired` checks decide which of
-  `acquire()` → `build()` → `install()` run. Each phase does one thing and is
-  re-verified by its check.
-- Recipes never rewrite their own source. Resumable state is `ctx.state`,
-  checkpointed by the coordinator with a matching filesystem snapshot.
-- The domain layout (`/inputs`, `/work/{build,tools,tmp}`, `/out`) is defined
+- Recipe decides what is done from its own records, never from recipe code:
+  a download by its SHA-256 in the download store, a result by its identity and
+  the checksums recorded for its files, an installed program by its receipt
+  (`recipe state NAME`). A recipe has declarations and optional functions
+  (`build`, `configure`, `verify`, `latest`, `cleanup`); there are no hooks and
+  no readiness checks. Every step (download, build, install, cleanup) can be run
+  alone, and `install` does the missing ones.
+- Recipes never rewrite their own source. A value that must survive an
+  interruption is `save`d and kept with a `checkpoint` (coordinator snapshot of
+  the files and the values together); `saved` reads it, `reached` says where a
+  resumed `build` stopped. A saved value never proves work is done; one
+  checkpoint at most, deleted when the install succeeds (`src/core/saved.rs`).
+- Disk rules: after a successful install the downloads, unpacked sources, `WORK`
+  and saved state are deleted unless the keep option is on (`--keep`, remembered
+  per program, `--no-keep` undoes it); files are moved into place, not copied,
+  where both places are on one disk; a download two programs name goes only when
+  neither needs it; `remove` frees everything at once; nothing is hidden in
+  `storage`. There are no earlier versions and no go-back.
+- The domain layout (`/inputs`, `/work`, `/out`) is defined
   once in `src/domain.rs`; the coordinator/worker wire contract in
   `src/worker/protocol.rs`; failure categories in `src/failure.rs`.
 - Commands run through `src/process.rs`; human output goes through
@@ -56,12 +69,16 @@ src/
 ├── backend.rs, launch.rs, host.rs  coordinator: invocation → Ginux or host run
 ├── execution.rs                   where each recipe runs (host or Ginux)
 ├── inputs/                        input discovery, staging, domain config, root
+├── declarations.rs                the literal declarations (API line, ABOUT, PACKAGE, SOURCES, FILES, PACKAGES, ACCOUNTS, UPSTREAM, RERUN, functions, imports)
+├── pins.rs                        the `NAME.pins` file beside a recipe with PACKAGES
 ├── needs.rs, needs/               NEEDS declarations, derived Ginux contract, authority reports
 ├── target.rs                      target metadata manifest (helpers in helpers/target.rs)
 ├── retained.rs, invocation_log.rs, temporary.rs, publication.rs   coordinator stores
 ├── worker/                        protocol + in-domain worker
 ├── core/                          engine: invocation, lifecycle, deps, events, output
-├── helpers/                       Rhai-facing helpers
+│   ├── saved.rs                   save, saved, checkpoint, reached
+│   └── executor/private/builtin/  the steps Recipe does itself: fetch.rs, place.rs, system.rs
+├── helpers/                       Rhai-facing helpers (tree.rs: put, put_link, tree_text, enable_service)
 └── domain.rs, failure.rs, diagnostics.rs, process.rs, fsx.rs, image.rs   shared leaves
 ```
 

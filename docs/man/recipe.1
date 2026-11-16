@@ -1,15 +1,18 @@
-.TH RECIPE 1 "2026-11-15" "Recipe" "User Commands"
+.TH RECIPE 1 "2026-11-16" "Recipe" "User Commands"
 .SH NAME
 recipe \- execute Rhai package recipes through Ginux
 .SH SYNOPSIS
 .B recipe
-[options] install|update|remove|cleanup|isinstalled|isbuilt|isacquired recipe
+[options] download|build|install|update|remove|cleanup|state recipe
+.br
+.B recipe
+[options] cleanup [\-\-logs]
 .br
 .B recipe
 [options] list|installed|updates|storage|history|index|info|hash|refresh [argument]
 .br
 .B recipe
-\-\-system [options] install|update|remove|isinstalled recipe
+\-\-system [options] install|update|remove|state recipe
 .br
 .B recipe
 \-\-system [options] installed
@@ -21,7 +24,7 @@ recipe \- execute Rhai package recipes through Ginux
 \-\-system \-\-root TREE record\-base \-\-release FILE
 .br
 .B recipe
-runtime status|fetch|stage
+runtime status|fetch|stage|remove
 .br
 .B recipe
 [options] source list|add|remove [argument]
@@ -29,18 +32,24 @@ runtime status|fetch|stage
 .B recipe
 [options] validate|inspect|explain|diff [arguments]
 .SH DESCRIPTION
-Recipe imports explicitly selected immutable inputs, runs API 2 recipes in a
-configured Ginux domain, or on the host when a recipe starts no program, and
-publishes named outputs after successful execution and independent archive
-validation. A recipe that can start a program always runs in Ginux; a recipe
-that cannot runs as a confined host process. See EXECUTION MODES.
+Recipe reads a recipe (an API 1 Rhai file, see recipe-recipe(5)), downloads its
+sources, checks them, unpacks them, places the listed files, runs the recipe's
+own build code when it has some, finishes the result, installs it, removes it
+and cleans up. It does these steps itself from the recipe's declarations; a
+recipe says what a program is and where it comes from, not how to fetch or
+install it. Code the recipe does contain runs in a configured Ginux domain, or on
+the host when the recipe starts no program, and the named outputs are published
+after successful execution and independent archive validation. A recipe that can
+start a program always runs in Ginux; a recipe that cannot runs as a confined
+host process. See EXECUTION MODES.
 .PP
-Executable recipes declare const RECIPE_API = 2 or 3 (WRITING_RECIPES.md lists what 3 adds) and literal const NEEDS.
-NEEDS owns typed input/output names, network endpoints and upper limits; callers
-bind inputs and can only narrow authority. Checks return ready(ctx) or
-needs_work(ctx, reason); check errors fail execution. Only ctx.state is restored,
-paired with its durable filesystem snapshot. Final JSON contains published host
-paths in ctx.outputs; hooks use domain paths.
+Every recipe declares const RECIPE_API = 1 and a literal const NEEDS. NEEDS owns
+typed input and output names, network endpoints and upper limits; callers bind
+inputs and can only narrow authority. Recipe decides what is done from its own
+records (a download by its checksum, a result by its identity, an installed
+program by its receipt); no recipe code runs to decide it. Only values the recipe
+saved with save() are restored after an interruption, together with their
+checkpoint. Final JSON carries the published host paths in outputs.
 .PP
 OS artifact producers and user-managed software use the same format and engine.
 In the LevitateOS workspace, distro/builder/os-recipes is the builder's collection
@@ -48,6 +57,35 @@ and the top-level recipes directory is the user catalog (starting with ripgrep).
 The builder composes OS images from published outputs; recab owns the two roots of an A/B system.
 The CLI activates directory outputs named package through an atomic profile switch.
 The library and builder (--no-activate) continue to consume outputs only.
+.SH STEPS AND STATES
+A program has four steps. download fetches its sources and pins into the download
+store. build unpacks the sources and packages, places the recipe's FILES, runs
+its build or configure function, finishes a system tree, runs its verify
+function and keeps the result. install activates a package output, writes a
+system output into the root, or publishes a producer's outputs. cleanup deletes
+the program's downloads, unpacked sources, build material and saved state.
+install does every step still missing, in order, and then cleanup, unless the
+keep option is on. Each step can also be run alone. A recipe without sources and
+packages has no download step of its own; a recipe without a build function
+shows no build step.
+.PP
+The state of a program is none (nothing of it here, or only part of its
+downloads), downloaded (all its sources and pins for this system are in the
+download store), built (a result with the current identity is kept, not
+installed) or installed (the receipt lists it). The identity of a build is the
+recipe's text, its base, its modules, its pins file, the checksums of the selected
+sources and pins, its inputs' contents, its defines, its dependencies'
+identities, the prefix, the root image and the engine's behaviour versions.
+.PP
+After a successful install the downloads, the unpacked source, the build material
+and the saved state are deleted, unless the keep option is on; files are moved
+into place, not copied, where both places are on one disk. A download two
+programs name is deleted only when neither still needs it. remove frees the
+program's space at once: there are no earlier versions and no go-back. Recipe
+reports what each program holds on disk beside its installed files: downloads,
+build material (unpacked sources, work folder, a result not installed) and an
+unfinished run's saved state. These rules also apply to producer runs
+(--no-activate, the OS builder), with install meaning outputs published.
 .SH RUNTIME SELECTION
 Installed defaults are libexec/recipe/ginux and
 share/recipe/runtime/rootfs.tar with its root-reference file, under the prefix of
@@ -83,13 +121,13 @@ needed. There Recipe's helpers resolve every path beneath the run's inputs
 only NEEDS.network at pinned addresses (a host name resolving to a loopback or
 private address is refused) within network_max_bytes, the program helpers are
 not registered, and a seccomp filter refuses execve and new processes.
-RUNTIME.paths name the host directories. Checkpoints, restore, publication and
+The recipe sees host paths for its inputs, work folder and output. Checkpoints, restore, publication and
 the deadline work as in Ginux; storage bounds are checked at checkpoints and at
 the end. Each run states which way every recipe went and why.
 .SH SYSTEM SCOPE
 Software for the computer's root, not for one user: \fB\-\-system\fR with
-install, update, remove, installed or isinstalled. Without --package-root, root
-running install, update, remove, installed or isinstalled on an A/B system takes
+install, update, remove, installed or state. Without --package-root, root
+running install, update, remove, installed or state on an A/B system takes
 the same route.
 .PP
 An A/B system is one whose kernel command line has recab.immutable. Its booted
@@ -126,7 +164,7 @@ usr/lib/sysusers.d/*.conf files and the accounts its recipe declares, the way th
 builder creates them (g lines, then u lines; existing accounts kept; "-" is the
 highest free id below 1000), and recorded with the package in the receipt; removing
 the package keeps them. Account lines may also be m USER GROUP (group membership).
-target_finalize's seed: "var" makes the tree's var/ state seeds, created in the
+Recipe finishes every system tree so that its var/ holds state seeds, created in the
 system's /var only where missing (on an A/B system the running root's shared /var),
 never overwritten, owned or removed. A configuration file under etc/ that was changed since it was
 installed is kept and reported: a removal leaves it, an update writes the new version
@@ -156,12 +194,21 @@ for an image tree at build time. base is listed by installed \-\-json only, and
 cannot be installed, updated or removed.
 .SH COMMANDS
 .TP
+.B download RECIPE
+The download step only: fetch the recipe's sources and the pins for this system
+into the download store (the offline cache is used first). Nothing is unpacked.
+.TP
+.B build RECIPE
+Download what is missing, then build: unpack the sources and packages, place
+FILES, run build or configure, finish a system tree and run verify. The result is
+kept, not installed. The materials stay until install or cleanup.
+.TP
 .B install RECIPE
-Run necessary acquisition, build and installation into the owned output tree,
-with custom readiness checks, and publish the named products.
+Run every missing step in order (download, build, install), then cleanup unless
+the keep option is on, and publish the named products.
 A directory output named package activates regular bin/COMMAND and share/PATH
 files in the selected package root's profile, unless --no-activate is set.
-Before anything is acquired, Recipe compares the C library the recipe declares
+Before anything is downloaded, Recipe compares the C library the recipe declares
 (ABOUT.libc) with this system's, for the recipe and its runtime dependencies.
 When they differ, Recipe prints what the build is linked against, what this
 system's C library is, and the command that installs it anyway
@@ -170,15 +217,18 @@ also prints a record whose kind is libc_mismatch.
 With \fB\-\-system\fR, see SYSTEM SCOPE.
 .TP
 .B update RECIPE
-Update an already installed package using the current selected recipe's pin.
-Does not discover upstream versions or edit pins. Failure preserves the old profile;
-success deletes the replaced generation once the new one is active.
+Install the version the recipe as fetched names, replacing the installed one.
+Never edits a recipe and never installs a version the recipe does not name. A
+failure preserves the old profile; the replaced files are deleted once the new
+ones are active.
 .TP
-.B remove RECIPE
-Deactivate an installed package using its receipt, without a recipe or Ginux,
-and free its space: the replaced generation is deleted once the new one is
-active. With --no-activate (or an output-only producer),
-run the removal hook against the owned selected target; prior publications stay immutable.
+.B remove RECIPE [\-\-keep]
+Remove the installed files by the receipt, without a recipe or Ginux, and then
+whatever is left of the program's downloads and build material; its space is
+freed at once. With \fB\-\-keep\fR only the installed program is removed and its
+downloads and build material stay. Remove forgets the program's keep option.
+With --no-activate (or an output-only producer) the published outputs and the
+program's material are removed instead; prior publications stay immutable.
 .TP
 .B installed
 List active packages and versions from the installed receipt, without Ginux.
@@ -186,11 +236,16 @@ With --json each package also names what its recipe was allowed to use when it
 was installed (needs), when (installed_on) and the length of its files
 (size_bytes).
 .TP
-.B updates
+.B updates [\-\-upstream] [NAME...]
 Say which installed packages update would change, and what the newer recipe may
 use that the installed one may not (the NEEDS recorded at install, compared).
 Reads the receipts, the collection and the sources as last fetched; fetches and
-runs nothing. A package has an update when its recipe names another version or
+runs nothing. With \fB\-\-upstream\fR (optionally with recipe names as plain
+arguments) Recipe also asks upstream for each installed program, or each named
+recipe, through its UPSTREAM declaration or its latest() function, and tells what
+it found in a separate list (installed, recipe_version, latest, newer, how,
+error). It only tells: a recipe is never edited and a version the recipe does not
+name is never installed. A package has an update when its recipe names another version or
 its source publishes another recipe file for it. A package whose name the release
 source carries (see \fBsource\fR) is at the release's version and is never listed.
 .TP
@@ -203,30 +258,39 @@ source, null where one does not apply. The log keeps the newest entries. With
 --json (and when piped) prints {"schema_version": 1, "history": [...]}.
 .TP
 .B storage
-Show what the active generation takes on disk. The package store keeps one
-generation; a generation an interrupted change left behind is not counted and is
-deleted by the next install, update or remove.
+Show everything Recipe holds on disk, by kind, each byte counted once. With
+--json, always these seven kinds in this order, each with its bytes, whether it
+can be removed, the command that removes it and the programs holding it:
+installed (recipe remove NAME), downloaded (recipe cleanup NAME --downloads),
+built (recipe cleanup NAME --build), kept (recipe cleanup NAME; material of
+installed programs with the keep option), unfinished (recipe cleanup NAME
+--build; saved state of interrupted runs), build_image (the cached compiler
+image, about 1.3 GB; recipe runtime remove) and logs (recipe cleanup --logs).
 .TP
-.B cleanup RECIPE [--reason TEXT]
-Run optional cleanup, with reason manual by default.
-Explicit remove and cleanup use matching cached dependency products and never
-install them. Missing or changed products fail before the main hook, preserving
-prior state and publications.
+.B cleanup RECIPE [\-\-downloads|\-\-build]
+Delete the program's downloads, unpacked sources, build material and saved state;
+the installed program stays. \fB\-\-downloads\fR deletes its downloads only,
+\fB\-\-build\fR its build material only (an unfinished run included). It also
+deletes kept material but leaves the keep option on, so the next install keeps
+again. When the recipe defines cleanup(reason), it is called with the reason
+manual after the engine's own deletion. This is also how a step is redone: clean
+it up and run it again; there are no force options.
 .TP
-.B isinstalled|isbuilt|isacquired RECIPE
-Run the actual custom readiness check. Work needed returns nonzero.
-For an active user package, isinstalled verifies its profile files and links;
---no-activate selects the producer's check instead.
-Dependencies, including build dependencies, must have matching cached products.
-Their installed checks run in dependency order without acquire/build/install
-hooks. Missing or changed products fail explicitly; run install separately to
-prepare them. The checked products preserve the parent's installed input identity.
+.B cleanup [\-\-logs]
+Without a recipe, delete the downloads and build material of every program.
+\fB\-\-logs\fR deletes the diagnostic logs.
+.TP
+.B state RECIPE
+Print the program's state (none, downloaded, built or installed) from Recipe's
+own records; no recipe code runs. It exits 0 whatever the state. With --json:
+name, version, state, installed_version, keep, the steps the recipe has and
+on_disk (downloads, build, unfinished bytes).
 .TP
 .B list
 List declared recipe metadata without evaluating setup/helper code.
 This lists available recipe files, not installed applications.
 With \fB\-\-json\fR, print one entry per recipe for a front end: name, version,
-description, path, ABOUT (including its libc list), NEEDS, dependency names and defined hooks,
+description, path, ABOUT (including its libc list), NEEDS, dependency names and the steps it has, the functions it defines, its upstream and its state on this system (none, downloaded, built or installed) with the keep option,
 and for each recipe runs_here and not_runnable_reason (whether this system's C
 library can run it, and the message install would give, else null), and its
 source. The release source is listed first. On a root with a release source, a
@@ -315,13 +379,15 @@ Compare typed inputs/outputs, endpoints, raised/lowered limits and digests.
 .B hash FILE
 Compute SHA256, SHA512 and BLAKE3 for a local file.
 .TP
-.B runtime status | fetch | stage
+.B runtime status | fetch | stage | remove
 status shows the selected runtime image, the launcher and the shipped sources
 (JSON when piped or with --json). fetch downloads the image now. stage writes a
 runtime tree into --root (--launcher, --reference, --catalog, optional --image
 and --prefix); packagers use it. --apparmor also writes etc/apparmor.d/recipe-ginux,
 which hosts that restrict unprivileged user namespaces (Ubuntu 23.10 and later)
 need before an ordinary user can run recipes; load it with apparmor_parser -r.
+remove deletes the cached build image (about 1.3 GB); it is fetched again when a
+recipe needs it. An image installed with the system is not removed.
 .SH OPTIONS
 .TP
 .B -r, --recipes-path DIR
@@ -331,7 +397,7 @@ the per-user application-data recipe directory, followed by the sources (see
 Explicit --recipes-path or RECIPE_PATH uses that directory alone.
 .TP
 .B --system
-System scope (see SYSTEM SCOPE): install, update, remove, installed and isinstalled
+System scope (see SYSTEM SCOPE): install, update, remove, installed and state
 act on the computer's root. install takes several recipes (recipe --system install A B C) and
 skips a recipe or dependency the root holds at the same recipe digest and version. On an A/B system the change is written into the other
 (unlocked) root and becomes active when that root is booted; the booted root is
@@ -339,7 +405,7 @@ never written.
 .TP
 .B --root DIR
 With --system, given before the command: write the change into DIR, a root that is
-not running, and read installed and isinstalled from DIR. No recab call, no A/B
+not running, and read installed and state from DIR. No recab call, no A/B
 record (see SYSTEM SCOPE).
 .TP
 .B --no-effects
@@ -393,14 +459,16 @@ folder to look in instead of /; a system change sets it to the root it writes in
 For install and update: go ahead when the recipe's ABOUT.systems does not list the
 os-release ID of this system (or of the root a system change writes into).
 .TP
-.B --force-install
-Rerun installation for the main recipe.
+.B --keep
+For build, install and update: the downloads and build material stay after a
+successful install. Off by default. It is remembered per program: later
+installs and updates of that program keep too. The builder passes it where it
+wants material kept.
 .TP
-.B --force-build
-Rerun build and installation for the main recipe.
-.TP
-.B --force-acquire
-Rerun acquisition, build and installation for the main recipe.
+.B --no-keep
+For build, install and update: turn the keep option off and, when the program is
+installed, delete the material at once. remove forgets the option; cleanup
+deletes kept material but leaves the setting on.
 .TP
 .B --timeout-secs N
 Lower NEEDS.timeout_secs for recipe execution, including silent commands.
@@ -428,7 +496,7 @@ Each dependency keeps the stricter limit and intersects its own endpoints with
 the caller subset. No restriction lends another recipe an endpoint.
 .TP
 .B --no-persist-state
-Disable state/files recovery. Managed execution and output publication still run.
+Turn checkpoints off (see save and checkpoint in recipe-helpers(7)). Managed execution and output publication still run.
 .TP
 .B --execution auto|ginux|host
 Where recipes run. auto (the default) runs a recipe on the host when it starts
@@ -447,7 +515,7 @@ states when each is bumped); inputs, recipe closure, defines, options and the
 root image are always named by content.
 .TP
 .B --json-output FILE
-Write final context JSON to this file. Diagnostics go to stderr.
+Write the final result JSON (see FINISHED RUN) to this file. Diagnostics go to stderr.
 .TP
 .B --progress-file PATH
 Keep PATH current with the running recipe's progress() reports: one JSON object,
@@ -461,33 +529,48 @@ with done 0, total 0 and an empty what. With --machine-events a progress event
 .TP
 .B --machine-events
 Emit machine-readable events alongside stderr progress, one JSON object per
-line with an "event" field. recipe-hook: one lifecycle step of a recipe (recipe,
-hook, status, msg). plan with "recipes": every recipe of an install in the order
-they run, each with the steps it defines; plan with "recipe" and "steps": the
-steps that recipe needs this time, once its checks have run. fetch: how far a
-download is (recipe, source, bytes, total; total is null when the server did not
-say). The last event of install, update and remove is done (recipe), or failed (recipe, hook where a step
-failed, reason). A failed install whose Ginux log records a denied connection
-also has refused: endpoint, the numeric address the audit line names, and
-declared, the recipe's NEEDS.network. Build progress inside a step is not
-reported.
+line with an "event" field. plan: every recipe of the run in order, with its
+steps (download, build, install, cleanup). step: one step of a recipe (recipe,
+step, status; status is running, done, already, none, or says that the step was
+skipped or failed). fetch: how far a download is (recipe, source, bytes, total;
+total is null when the server did not say). progress: the recipe's progress()
+reports (recipe, phase, what, done, total). The last event of a run is done
+(recipe), or failed (recipe, step where a step failed, reason). A failed install
+whose Ginux log records a denied connection also has refused: endpoint, the
+numeric address the audit line names, and declared, the recipe's NEEDS.network.
+Build progress inside a step is not reported. There is no agent event.
+.SH FINISHED RUN
+download, build, install, update, remove and cleanup print one result at the end
+(when stdout is a terminal, a readable summary; with --json or when piped, JSON;
+also written to --json-output FILE). schema_version 1. Fields: operation, name,
+version, state (after the run), steps (per step of this run: step and status,
+done, already when it was done before, or none when the recipe has no such step),
+outputs (output name to absolute published path for a run that built or
+published; empty otherwise), activation (profile and bin when a package was
+activated, else null), kept, freed_bytes (deleted by cleanup or remove in this
+run), dependencies (per dependency that ran: name, state, steps), contract
+(the compiled contract digest) and network_usage (the bounded network summary).
+A failed run exits nonzero and prints {"failure": {...}} (libc_mismatch,
+system_mismatch, a denied connection's refused). A system change (--system) keeps
+its own result fields (action, package, other_root, effects, ...) and adds state
+and freed_bytes. installed --json carries, for each package, keep, on_disk
+(downloads, build, unfinished) and update (null, or to, reason and source, known
+offline from the recipes as last fetched).
 .SH RECOVERY AND DIAGNOSTICS
-Checkpoints require durable matching filesystem/state records before ack.
-Interrupted unacknowledged work is discarded; previous publications remain.
-Successful failure cleanup is recoverable with its returned state and matching
-files; the producer still fails without publication. Cleanup/checkpoint errors
-preserve the original producer diagnostic.
+A recipe's checkpoint (see checkpoint in recipe-helpers(7)) is kept only when its
+files and its saved values are durable together; interrupted unacknowledged work
+is discarded and previous publications remain. Recipe keeps one checkpoint at
+most per program and deletes it when the install succeeds. An interrupted build
+resumes from it.
 Corrupt current state fails before startup. Preserve it for diagnosis and choose
 an explicit new state directory to start fresh.
 .PP
-Per recipe/destination scope, retention keeps four recent input identities and
-two complete generations each, under the destination lock. Published products
-are not state-pruning candidates. Published paths retain coordinator ownership and
+Published products are not saved state. Published paths retain coordinator ownership and
 private export permissions. Privileged producers need appropriately privileged
 consumers or explicit product installation; a selection symlink grants no access. Diagnostic files live in
 state-root/logs/invocation-id: worker.log, supervisor-stderr.log, authority.json
 and result.json. The receipt preserves the actual declaration, config, pinned
-endpoints and compiled contract digest; completed contexts include runtime.contract and bounded runtime.network_usage and unused-grant warnings when observation is complete.
+endpoints and compiled contract digest; the result includes contract and bounded network_usage, and unused-grant warnings when observation is complete.
 Up to 32 recent completed diagnostic directories remain; active leases protect
 in-flight logs/scratch. Later invocations reclaim recognized abandoned scratch.
 Scratch is a private directory on disk, ~/.cache/recipe/scratch; RECIPE_SCRATCH_DIR
@@ -523,7 +606,9 @@ any other value is an error).
 .nf
 recipe install ./tool.rhai --input source=./offline-source \
   --build-dir .artifacts/work/tool --json-output .artifacts/tool.json
-recipe isinstalled ./tool.rhai --input source=./offline-source \
+recipe state ./tool.rhai --input source=./offline-source \
+  --build-dir .artifacts/work/tool
+recipe cleanup ./tool.rhai --input source=./offline-source \
   --build-dir .artifacts/work/tool
 .fi
 .SH LIMITATIONS

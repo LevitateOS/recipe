@@ -1,142 +1,212 @@
-.TH RECIPE-RECIPE 5 "2026-11-08" "Recipe" "File Formats"
+.TH RECIPE-RECIPE 5 "2026-11-16" "Recipe" "File Formats"
 .SH NAME
-recipe-recipe \- managed API 2 and 3 Rhai recipe contract
+recipe-recipe \- the API 1 Rhai recipe format
 .SH DESCRIPTION
-Every executable recipe declares const RECIPE_API = 2, or 3 when it uses
-target_extract_apk, target_finalize(root, options), ABOUT.systems or the other
-additions WRITING_RECIPES.md lists (an engine that knows only API 2 refuses 3 before
-setup), its own literal const
-NEEDS map, and initializes ctx with
-current package facts. Setup executes once per invocation, in a Ginux domain or, for a recipe that starts no program, on the host (see recipe(1), EXECUTION MODES).
-Pure imported facts modules need no executable lifecycle.
-.SH RUNTIME AND STATE
-Setup reads immutable RUNTIME. Hooks receive the same ctx.runtime together with
-ctx.state and ctx.outputs. Runtime paths are:
-.TP
-.B paths.inputs
-/inputs, explicitly imported immutable files/trees.
-.TP
-.B paths.build
-/work/build, owned acquisition/build work.
-.TP
-.B paths.tools
-/work/tools, private copies of declared dependency tools.
-.TP
-.B paths.dependencies
-Immutable direct dependency products at /inputs/recipe-dependencies/DEP/OUTPUT.
-.TP
-.B paths.temp
-/work/tmp, owned scratch.
-.TP
-.B paths.output, paths.target
-/out, owned product/installed-target tree.
-.TP
-.B paths.recipe_dir, paths.base_recipe_dir
-Staged current/base recipe directories.
-.TP
-.B paths.prefix
-The folder the package output will live in once activated:
-PROFILE/.packages/NAME, through the profile symlink of the selected store.
-Unit with --no-activate, for a dependency, or when the recipe's name is not
-a literal. It is part of the saved-state identity, so a build belongs to the
-store it was made for, and activation refuses a package built for another
-folder.
+A recipe is a Rhai file. It states facts in literal declarations and writes
+code only for what is unusual. Recipe downloads, checks, unpacks, places files,
+unpacks distribution packages, finishes system trees, records what is done,
+installs, removes and cleans up. docs/recipe-format.md is the full contract and
+WRITING_RECIPES.md the practical guide; this page is a summary.
 .PP
-runtime.target.os and .arch describe the selected execution target.
-runtime.host.libc is the C library of the system the package will be installed on:
-"glibc", "musl" or "unknown". Recipe decides it from the system's dynamic loaders,
-not the worker's image; both or neither present is "unknown". A recipe declares
-the C libraries its build works with in ABOUT.libc, a list from "glibc" and "musl"
-(absent means any); ABOUT.libc_carried true says its package brings its own C
-library and loader. Before an install, Recipe compares the two and, when they
-differ, states the facts and the flag that installs anyway, \fB\-\-any\-libc\fR.
-The comparison is advice with that override.
-runtime.options includes jobs, force_acquire, force_build, force_install and
-persist_state. Package versions, URLs and digests remain ordinary recipe facts.
+The first line of every recipe, and of every base a recipe extends, is
+const RECIPE_API = 1; the engine accepts that number and nothing else. Every
+recipe, and every child of a base, also declares a literal const NEEDS. There are
+no hooks and no ctx: a recipe that defines a function named acquire, install,
+remove, is_acquired, is_built or is_installed, or declares ctx or RUNTIME, is
+refused with the line to change.
 .PP
-Only ctx.state is serialized/restored, with matching filesystem checkpoints.
-Current setup, runtime and named outputs are not overwritten by an old context.
-State values must be JSON-compatible, with finite numbers; unsupported values
-fail with their field path. Readiness still checks real files/products.
-.SH CHECKS AND PHASES
-Checks is_installed(ctx), is_built(ctx) and is_acquired(ctx) return ready(ctx) or
-needs_work(ctx, nonempty_reason). Exceptions and malformed results fail execution.
-Ordinary context maps and booleans are not readiness results.
+"Literal" means plain data: no helper calls, no variables, no arithmetic. Recipe
+reads every declaration without running the recipe (list, info, index,
+validate, the pin generator and the app do).
+.SH DECLARATIONS
+.TP
+.B NEEDS
+Required. inputs (name to "file", "directory", "file?" or "directory?"), defines
+(name to its default; () means required), outputs (name to "file" or
+"directory"), network ("host:port" endpoints, redirect hosts included),
+network_max_bytes (default 8 GiB), memory_mib (2048), storage_max_objects
+(16384), storage_max_bytes and timeout_secs (3600, 1 to 86400). Callers can only
+narrow it. outputs holds one name in a normal recipe (package, system, tools or
+a product name); the body never uses it. Every host of a SOURCES URL, redirects
+included, must be in network.
+.TP
+.B ABOUT
+What a front end shows, checked for form only: kind, category, libc, libc_carried,
+systems, details, homepage, license, adds, steps (keys download, build, install)
+and keeps. ABOUT.libc and ABOUT.systems drive the \-\-any\-libc and
+\-\-any\-system advice.
+.TP
+.B PACKAGE
+name, version and description, literal strings. name equals the file name
+without .rhai and may be left out. version is required for a package or system
+output, except for a recipe with PACKAGES, whose version is the pins file's
+version line.
+.TP
+.B SOURCES
+A map from a source name to url and sha256, or git and commit; optional file,
+unpack (false keeps one file), format (tar.gz, tar.xz, tar.bz2, tar.zst, zip or
+rpm), strip (false keeps a single top folder), libc ("glibc" or "musl": fetched
+only on that C library) and tag (informational). Downloads go into Recipe's
+download store, named by SHA-256, offline cache first. In build, src.NAME is the
+path of the unpacked folder, the single file or the checkout. A single top
+folder of an archive is left out unless strip is false.
+.TP
+.B FILES
+A list of [from, to] or [from, to, mode]. from starts with the source's name
+(left out when there is exactly one source; a plain-file source is always named).
+A from ending in / is a whole folder ("NAME/" the whole source, "" with one
+source); a to ending in / or "" is a folder. A single file without a mode gets
+0644; files of a whole folder keep their modes. In a recipe whose output is a
+file, the entry with to "" makes the output. Files are moved into the output;
+a from that does not exist fails the run. FILES are placed before build runs.
+.TP
+.B PACKAGES
+Distribution package seeds for the pin generator: a map from glibc (Fedora RPMs),
+musl (Alpine APKs) or glibc_i686 to a list, or a plain list for every system.
+Recipe reads only the pins file NAME.pins beside the recipe (written by the
+generator, never edited by hand; part of the identity).
+.TP
+.B ACCOUNTS
+A map from C library to sysusers.d u, g and m lines, only with a system output,
+for accounts the packages' own sysusers.d does not make.
+.TP
+.B UPSTREAM
+github (OWNER/REPO, newest release that is not a pre-release) and optional
+prefix (text taken off the tag). Asked only by recipe updates \-\-upstream.
+.TP
+.B RERUN
+const RERUN = true; the recipe runs every time it is asked for and is never
+"built".
+.TP
+.B deps, build_deps
+let lists of recipe names. deps stay installed; build_deps are there only while
+the recipe builds. Each runs under its own NEEDS and reaches the consumer
+through DEPS.
+.TP
+.B extends, import
+//! extends: base.rhai on the first line makes the file a child (one level). A
+function the child defines replaces the base's of the same name and arity; a
+declaration is taken whole from the child, else whole from the base; NEEDS must be
+in the child. import "path.rhai" as name; has a literal path relative to the
+recipe's folder; a module has no RECIPE_API and no NEEDS.
+.SH FUNCTIONS
+.TP
+.B build(src, out)
+The recipe's own work. src maps source names to paths (src.packages with
+PACKAGES: a list in pin order of name, path, sha256, bytes, var, licence). out is
+the output folder (placed FILES inside; a copy of the target input) or, for a
+file output, the path to make; with several outputs a map from output name to
+path. It returns nothing. May start programs (then the recipe runs in Ginux),
+download when the recipe has no SOURCES, and use WORK.
+.TP
+.B configure(tree) or configure(tree, src)
+Only with PACKAGES and no build. Called after the packages are unpacked into the
+tree and FILES placed; writes the group's own configuration with put, put_link,
+tree_text and enable_service. The second argument is the other SOURCES.
+.TP
+.B verify(out)
+Optional read-only check of the result after build or configure. Starts no
+program. A throw fails the run. Not run again later.
+.TP
+.B latest()
+Returns the newest upstream version as a string. Runs alone on the host, starts no
+program, sees no inputs and reaches only NEEDS.network.
+.TP
+.B cleanup(reason)
+Optional. reason is manual, auto.PHASE.success or auto.PHASE.failure, where PHASE
+is download, build or install. Called once at the end of a run after the engine's
+own clean-up; must not delete installed files.
 .PP
-Install checks installation first, then determines build/acquisition work. It
-executes required dependencies and phases, rechecking custom readiness after
-success. acquire(ctx), build(ctx), install(ctx) and remove(ctx) return updated
-context maps. Prebuilt packages can omit build work. Missing required work fails
-instead of silently succeeding.
+A recipe may define other functions and constants. Functions see their arguments,
+the engine's constants, the recipe's own constants whose value is literal data,
+its declarations and imported modules (through their alias); a top-level value
+computed with a call is not visible inside a function. Statements outside
+functions, other than declarations, run once per run before the first function,
+only for steps that run recipe code.
+.SH CONSTANTS
+Read-only, visible everywhere:
+.TP
+.B PREFIX
+Where a package output will live once activated; () with \-\-no-activate, for a
+dependency and for other outputs.
+.TP
+.B JOBS
+The jobs the user asked for, 1 to 16.
+.TP
+.B HOST_LIBC
+glibc, musl or unknown: the C library of the system the result is installed on
+(the root written into, for a system change).
+.TP
+.B PACKAGE_FORMAT
+rpm or apk, the format of the pins in use; () without PACKAGES.
+.TP
+.B INPUTS, DEFINES, DEPS
+Maps: each declared input to its read-only path (() when an optional input was not
+given); each declared define to its value; each dependency to the path of its
+output (a map from output name to path for a dependency with several outputs).
+.TP
+.B WORK
+A private folder for build material, deleted after a successful run unless kept.
+.SH STEPS, STATES AND SAVED VALUES
+Four steps: download, build, install and cleanup (see recipe(1)). install does
+every missing step, then cleanup unless the keep option is on. The state of a
+program (none, downloaded, built, installed) is Recipe's own record; no recipe code
+runs to decide it. After a successful install the downloads, the unpacked
+sources, WORK and the saved state are deleted.
 .PP
-Optional cleanup(ctx, reason) returns context. Reasons are manual and
-auto.phase.success or auto.phase.failure. Guard cleanup of useful products/cache
-by reason. Errors after success fail the command; errors while handling failure
-are reported with the original failure. Successful failure cleanup is checkpointed
-with its returned state and matching files; the producer still fails without
-publication. No no-op cleanup stub is required.
+A recipe that must remember a value across an interruption calls save(name,
+value), saved(name), checkpoint(name) and reached(name) (see recipe-helpers(7)).
+A value is saved only together with the files of its checkpoint, a saved value
+never proves that work is done, and Recipe keeps one checkpoint at most.
+checkpoint works only inside build and configure. An interrupted build resumes from
+the newest checkpoint: Recipe restores it and calls build(src, out) again from
+the top; the recipe skips what reached(name) says is done.
+.SH SYSTEM OUTPUTS
+A system output is a root-relative tree that recipe \-\-system writes into a root
+with a receipt. Recipe finishes it after configure or build: it removes the folders
+a system package does not own (run, tmp, boot, home, root, proc, sys, dev,
+lost+found, var/run, var/tmp, var/lock) and finalizes the tree with owners resolved
+in the root written into, var/ as state seeds and ACCOUNTS. A recipe does not call
+target_finalize on it. Trees for images (rootfs, overlay, medium) are not system
+outputs; their recipes finalize them. See docs/target-metadata.md.
 .SH INPUTS AND OUTPUTS
-NEEDS.inputs maps names to file, directory, file? or directory?; ? permits omission.
-Callers bind exactly declared inputs with --input NAME=PATH read-only at
-/inputs/NAME; DEP::NAME binds a dependency input. Defines select genuine
-recipe facts/choices; they do not grant host filesystem access. A named target
-input seeds /out for fresh state; retained state restores that owned target.
-Compiler-image files cannot establish installation in the selected product.
+Callers bind exactly declared inputs with \-\-input NAME=PATH, read-only;
+DEP::NAME binds a dependency input. An input named target is the caller's existing
+tree and seeds the output before build runs. Defines select genuine recipe
+choices (DEFINES.NAME); a define given on the command line reaches every recipe of
+the graph that declares it, and an undeclared define is refused. Names beginning
+with RECIPE_ are the engine's. Defines grant no host access.
 .PP
-NEEDS.outputs maps exact product names to file or directory. Select those actual
-files/directories under assigned /out or /work using ctx.outputs. Completed
-installation and installed reuse must supply the complete declaration.
-Intermediate phases may expose a subset; every present output is checked before
-checkpointing/publication.
-Archive modification times have whole-second precision. Target ownership,
-special modes and capabilities/xattrs travel through the validated target
-metadata manifest, independently of staging privileges; see docs/target-metadata.md.
-Consumers validate required names and kinds. Successful execution plus validated,
-bounded archive publication returns absolute host output paths in final JSON.
-Hooks continue to use domain paths. Imported inputs and earlier publications
-remain immutable across remove, cleanup and changed-input invocations.
-.SH ACQUISITION AND COMMANDS
-Downloads use download(url, exact_dest, sha256[, resume_bool]); the full SHA256 is
-required and staged bytes are checked before replacing a valid destination.
-Pinned Git uses git_checkout(url, exact_dest, full_commit), requiring a full
-40/64-hex commit. Endpoint grants and limits belong in literal NEEDS; caller
-flags can only narrow them. Explicit restrictions cap every dependency's own
-limits and intersect its endpoints; no grant is lent. NEEDS.network_max_bytes
-defaults to 8 GiB.
-.PP
-exec_checked and exec_output fail on nonzero; exec returns a status. Their
-argument arrays avoid shell parsing. Optional cwd/env maps affect only that
-child. Shell pipelines must check every producer/extractor failure. Commands
-exist only in a Ginux run (see recipe(1), EXECUTION MODES) and require suitable image/tools support.
-.SH DEPENDENCIES AND INHERITANCE
-Literal deps and build_deps declarations select recipes from the search path.
-They use the same lifecycle in separate instances (Ginux or host, each by its own source), retaining separate
-state/files pairs and their own NEEDS. No parent grant is lent. Declared products
-are immutable consumer inputs; a tools directory output contributes to its
-private /work/tools prefix.
-.PP
-The leading declaration //! extends: base.rhai compiles/merges the base first;
-child functions of the same name/arity override it. Setup runs base-first.
-Literal module paths are preserved. Cycles and dynamic import/dependency
-declarations fail before anything runs. Discovery never evaluates setup.
+Archive modification times have whole-second precision. Target ownership, special
+modes and capabilities travel through the validated target metadata manifest. A
+package output refuses setuid and setgid bits. Successful execution plus validated,
+bounded archive publication returns absolute host paths in the result's outputs.
+.SH ACQUISITION
+Prefer SOURCES. Inside build, a recipe with no SOURCES may call download(url,
+exact_dest, sha256[, resume_bool]), download_exact, fetch_bounded and
+git_checkout(url, exact_dest, full_commit) within NEEDS.network; the full SHA256
+and a full 40/64-hex commit are required. Every redirect host needs a grant.
+Explicit restrictions from the caller cap every dependency's own limits and
+intersect its endpoints; no grant is lent.
 .SH EXAMPLE
 .nf
-const RECIPE_API = 2;
-const NEEDS = #{ outputs: #{ program: "file" } };
-let ctx = #{name: "hello", program: "/out/hello"};
-fn is_acquired(ctx) { ready(ctx) }
-fn acquire(ctx) { ctx }
-fn is_built(ctx) { ready(ctx) }
-fn is_installed(ctx) {
-    if !is_file(ctx.program) { return needs_work(ctx, "missing hello"); }
-    ctx.outputs.program = ctx.program;
-    ready(ctx)
-}
-fn install(ctx) {
-    write_file(ctx.program, "hello\n");
-    ctx.outputs.program = ctx.program;
-    ctx
-}
+const RECIPE_API = 1;
+const NEEDS = #{
+    outputs: #{ "package": "directory" },
+    network: ["github.com:443", "release-assets.githubusercontent.com:443"],
+};
+const PACKAGE = #{ name: "ripgrep", version: "15.2.0", description: "Fast recursive text search with rg" };
+const UPSTREAM = #{ github: "BurntSushi/ripgrep" };
+const SOURCES = #{
+    release: #{
+        url: "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz",
+        sha256: "33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c",
+    },
+};
+const FILES = [
+    ["rg", "bin/rg", 0o755],
+    ["doc/rg.1", "share/man/man1/rg.1"],
+];
 .fi
 .SH SEE ALSO
-recipe(1), recipe-helpers(7), WRITING_RECIPES.md
+recipe(1), recipe-helpers(7), WRITING_RECIPES.md, docs/recipe-format.md

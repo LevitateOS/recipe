@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Recipe format API 1 (`docs/recipe-format.md`) replaces API 2/3, `ctx`, `RUNTIME` and the hooks.
+
 ### Added
 
 - `ABOUT.libc` (a list from `"glibc"` and `"musl"`) names the C libraries a

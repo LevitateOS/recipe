@@ -1,11 +1,15 @@
-.TH RECIPE-HELPERS 7 "2026-11-08" "Recipe" "Recipe Helpers"
+.TH RECIPE-HELPERS 7 "2026-11-16" "Recipe" "Recipe Helpers"
 .SH NAME
 recipe-helpers \- registered managed Rhai helpers
 .SH DESCRIPTION
-Helpers execute inside the configured Ginux domain. Paths refer to its assigned
-filesystem; network access requires explicit invocation endpoint grants.
-Readiness checks return ready(ctx) or needs_work(ctx, reason). Native errors fail
-execution. Only ctx.state is restored between invocations.
+Helpers are called from a recipe's functions (build, configure, verify, latest,
+cleanup; see recipe-recipe(5)). A recipe that can reach a helper that starts a
+program runs in the configured Ginux domain; any other recipe runs on the host,
+where the program helpers are not registered and every file helper is confined
+to the run's own directories. Network access requires NEEDS.network grants.
+Native errors fail the run. Only values saved with save() are restored between
+invocations. The registered list is src/helpers/mod.rs; there are no ready or
+needs_work helpers, because there are no readiness checks.
 .SH HELPERS
 .TP
 \fBapk_add_repo(url) -> ()\fR
@@ -38,6 +42,12 @@ appends exact line once
 \fBcheck_disk_space(path, required_bytes) -> ()\fR
 `df -k` based
 .TP
+\fBcheckpoint(name) -> ()\fR
+Records the work folders, the sources, the output and every saved value as one
+checkpoint named name. Only inside build and configure. Recipe keeps one
+checkpoint at most and deletes it when the install succeeds; \-\-no\-persist\-state
+turns checkpoints off.
+.TP
 \fBchmod(path, mode) -> ()\fR
 unix mode
 .TP
@@ -52,7 +62,7 @@ Experimental. Copies into package/lib/ the loader and every shared library that
 the programs in package/bin/, and the programs and plug-ins the recipe put
 under package/lib/, load, from the search folders and then the build image,
 and writes into each file its loader and library folder under prefix
-(pass RUNTIME.paths.prefix). A file linked with carry_link_flags() is
+(pass PREFIX). A file linked with carry_link_flags() is
 settled in its reserved room; any other (an upstream prebuilt release) is
 rewritten with a new loadable segment holding the loader path and
 $ORIGIN-relative library folders. The C library comes whole from the first
@@ -102,6 +112,11 @@ Runs the matching package command inside the domain; requires its binary, assign
 .TP
 \fBdownload(url, dest, sha256[, resume:bool]) -> String\fR
 Required SHA256; staged verified replacement; failure preserves valid destination. In a host run a payload the offline cache holds (RECIPE_CACHE_DIR, else /usr/share/recipe/cache: CACHE/sha256/HEX) is copied from there, with no network.
+.TP
+\fBenable_service(tree, unit, service) -> ()\fR
+On an rpm tree (PACKAGE_FORMAT) creates the links systemctl enable makes for the
+systemd unit, with its Alias= names; on an apk tree adds the OpenRC service to the
+default runlevel. An empty name skips that system.
 .TP
 \fBends_with(s, suffix) -> bool\fR
 
@@ -185,9 +200,6 @@ side-effecting
 \fBmv(src, dst) -> ()\fR
 rename
 .TP
-\fBneeds_work(ctx, reason) -> Map\fR
-Check requests work with a nonempty reason.
-.TP
 \fBparse_version(s) -> String\fR
 strips v/release-/version-
 .TP
@@ -197,16 +209,24 @@ stderr; keeps JSON/protocol stdout intact
 \fBprogress(done, total[, what]) -> ()\fR
 Report how far a long step is: done of total (0 when unknown) what is counted,
 for example "packages". The coordinator writes it to --progress-file; without
-that option it does nothing. Callable from any hook, cheap to call in a loop.
+that option it does nothing. Callable from any function, cheap to call in a loop.
+.TP
+\fBput(tree, path, text, mode) -> ()\fR
+Writes text at path (relative, inside tree) replacing what is there, with mode
+recorded in the target metadata.
+.TP
+\fBput_link(tree, path, target) -> ()\fR
+A symbolic link at path in tree pointing to target.
+.TP
+\fBreached(name) -> bool\fR
+True when this run was restored from checkpoint name or a later one; how a
+resumed build skips finished work.
 .TP
 \fBread_file(path) -> String\fR
 
 .TP
 \fBread_file_or_empty(path) -> String\fR
 
-.TP
-\fBready(ctx) -> Map\fR
-Check succeeds with updated context.
 .TP
 \fBreplace(s, from, to) -> String\fR
 
@@ -222,6 +242,14 @@ Runs the matching package command inside the domain; requires its binary, assign
 .TP
 \fBrpm_version(name) -> String\fR
 Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used.
+.TP
+\fBsave(name, value) -> ()\fR
+Keeps a JSON-compatible value (map, array, string, boolean, (), finite number)
+under name. Kept only together with the files of its checkpoint; it never proves
+that work is done. Allowed anywhere in a recipe function.
+.TP
+\fBsaved(name) -> Dynamic\fR
+The value saved under name, or ().
 .TP
 \fBshell(cmd) -> ()\fR
 uses `sh -c`
@@ -246,6 +274,10 @@ returns exit code
 .TP
 \fBstarts_with(s, prefix) -> bool\fR
 
+.TP
+\fBtree_text(tree, path) -> String\fR
+The text of a packaged file in tree; fails naming the file when the packages no
+longer ship it.
 .TP
 \fBtrim(s) -> String\fR
 
@@ -276,8 +308,9 @@ data segment of an Alpine .apk (its signature and control segments, with the ins
 scripts, are skipped) and records modes, owner names and links the same way.
 Both record owners by name only and read no account file, so they run on the host.
 Capture package metadata before policy,
-then finalize the tree after policy changes. A tree for a system output finalizes with
-target_finalize(root, #{ owners: "apply", accounts: [LINES], seed: "var" }) (RECIPE_API 3):
+then finalize the tree after policy changes. Recipe finishes a tree for a system output itself, so a recipe does not call
+target_finalize on one; the options form target_finalize(root, #{ owners: "apply",
+accounts: [LINES], seed: "var" }) is what that finishing does:
 owner names stay in the manifest and are resolved in the root the system change writes;
 seed: "var" keeps var/ as state seeds created there only where missing; accounts is an
 optional list of sysusers.d "u"/"g"/"m" lines (for Alpine packages, whose install scripts would have
@@ -293,15 +326,17 @@ See docs/target-metadata.md.
 exec returns a status; exec_checked and exec_output fail on nonzero exit.
 Their optional options map accepts child-only cwd and env. Shell strings need
 proper quoting and checked pipelines. Diagnostics go to stderr.
-.SH OUTPUTS
-Use ctx.runtime.paths.build for work and ctx.runtime.paths.tools for shared
-dependency tools. Inputs are immutable below /inputs. The owned target is /out.
-Select real files/directories in ctx.outputs; the coordinator validates them
-before publication and returns their published host paths in the final context.
+.SH PATHS AND OUTPUTS
+Use WORK for build material and the paths INPUTS, DEPS and out (build) or tree
+(configure) give. Inputs are read-only. On a host run paths outside the run's
+own directories, and paths using .., are refused. Select nothing: the output is
+the folder or file Recipe hands to build, and the coordinator validates it before
+publication and returns its published host path in the result's outputs.
 .SH ACQUISITION
-Downloads require SHA256 and replace a valid destination only after complete
-verification. Git acquisition requires an exact destination and full commit id.
-Every redirect endpoint also needs a network grant. Package facts stay in Rhai.
+Prefer the SOURCES declaration. Downloads inside build require SHA256 and replace
+a valid destination only after complete verification. Git acquisition requires an
+exact destination and full commit id. Every redirect endpoint also needs a network
+grant. Package facts stay in the recipe.
 .SH SEE ALSO
 recipe(1), recipe-recipe(5), HELPERS_AUDIT.md, WRITING_RECIPES.md,
 docs/runtime-limits.md

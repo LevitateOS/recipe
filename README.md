@@ -1,10 +1,15 @@
 # Recipe
 
-Recipe executes Rhai package recipes. A recipe that can start a program runs
-inside a configured Ginux domain. A recipe that cannot runs as a confined host
-process (see "Execution modes"). Either way the coordinator imports explicit
-immutable inputs, retains matching state/filesystem checkpoints and publishes
-the recipe's named outputs, and no recipe code runs unconfined.
+Recipe executes Rhai package recipes (the API 1 format, [`docs/recipe-format.md`](docs/recipe-format.md)).
+A recipe mostly declares what a program is and where it comes from; Recipe
+downloads, checks, unpacks, places files, installs, removes and cleans up. Code
+a recipe does contain, if it can start a program, runs inside a configured Ginux
+domain; if it cannot, as a confined host process (see "Execution modes"). Either
+way the coordinator imports explicit immutable inputs, keeps checkpoints of what
+the recipe saved and publishes the recipe's named outputs, and no recipe code runs
+unconfined. After a successful install Recipe deletes the downloads, the
+unpacked source, the build material and the saved state, unless you chose
+`--keep`.
 
 ## One engine, two consumers
 
@@ -14,18 +19,17 @@ catalog, starting with ripgrep. The builder selects its own collection
 with `--recipes-path DIR` and `--no-activate`; normal CLI lookup uses an explicitly selected
 catalog, or the user's XDG recipe directory and then the sources, of which the
 image ships the official one in `/usr/share/recipe/sources`.
-Both use this engine, the same Rhai API (2, or 3 for the additions listed in
-`WRITING_RECIPES.md`) and the same Ginux
-execution rules. Directory placement expresses ownership, not a new recipe type
+Both use this engine, the same recipe format (API 1, see
+`WRITING_RECIPES.md`) and the same Ginux execution rules. Directory placement expresses ownership, not a new recipe type
 or permission boundary. This repository's `examples/` and `tests/` are engine
 examples and fixtures, not the application catalog.
 
 The OS builder assembles published products into images; `recab` owns the two
 roots of an A/B system (see "System software on A/B installations"). Apps bundled in a desktop image belong to that
 OS lifecycle. For user software, the CLI activates a directory output named
-`package` after managed execution and publication succeed. The engine's hooks
-still operate on their isolated output tree. `--no-activate` keeps product-only
-behavior. `list` lists recipe declarations; `installed` lists active packages.
+`package` after managed execution and publication succeed. `--no-activate` keeps
+product-only behavior (the builder's route, with the same disk rules; the builder
+passes `--keep` where it wants material kept). `list` lists recipe declarations; `installed` lists active packages.
 
 ## System software on A/B installations
 
@@ -38,7 +42,7 @@ into, remount or unlock the booted root. Root's install/update/remove commands
 ```sh
 sudo recipe --system install ripgrep   # written into the other root
 sudo recipe --system installed         # the booted root's software, and the other root's
-sudo recipe --system isinstalled ripgrep
+sudo recipe --system state ripgrep
 sudo recab boot-other                  # start the other root at the next boot
 sudo reboot
 rg --version
@@ -52,7 +56,7 @@ directory outputs carry root-relative intended metadata from `target_finalize`.
 Dependencies are produced through the existing Recipe graph. Updates and removals
 refuse conflicting ownership and administrator edits.
 
-`recipe installed` and `isinstalled` say which software is in the running (booted)
+`recipe installed` and `state` say which software is in the running (booted)
 root and which is in the other root and becomes active when that root is booted.
 `update` resolves the current catalog first, then falls back to the recipe the
 package was installed from. When the running root has software the other root's
@@ -77,7 +81,7 @@ recab; `system` outputs (a desktop, say) install there like anywhere else. Witho
 ## System software in a root that is not running
 
 `--system --root DIR` writes a system change into DIR and reads `installed` and
-`isinstalled` from it: an installer's target before the first boot, or an image
+`state` from it: an installer's target before the first boot, or an image
 tree. It does what a change to the other root does, without recab and without the
 `other-root.json` record; `--root` given the booted root of an A/B system is refused.
 
@@ -104,10 +108,10 @@ GIO modules, pixbuf loaders, MIME and icon caches, fonts, desktop database, ...)
 which package scripts would have rebuilt; the OS provides it. Its contract:
 
 - it receives the root, read-only, as its input `root`
-  (`NEEDS.inputs: #{ root: "directory" }`, at `RUNTIME.paths.inputs + "/root"`), and
+  (`NEEDS.inputs: #{ root: "directory" }`, as `INPUTS.root`), and
   runs where its helpers put it (in Ginux when it runs the root's own programs);
-- it returns one `system` output, finalized with `target_finalize`, holding only the
-  cache files; it has no runtime `deps`;
+- it returns one `system` output (Recipe finishes the tree), holding only the
+  cache files; it has no runtime `deps`; it declares `const RERUN = true;`;
 - `system-effects` is in the receipt but not listed by `installed`, cannot be
   removed by itself, and no recipe may take the name;
 - a failed effects run is reported (JSON `effects: {"status": "failed", "error"}`,
@@ -190,7 +194,7 @@ the target root decides what the recipes see of "this system" (below).
 **The target decides.** For every system change, the root written into (the
 `--root` directory, the other root of an A/B system, or the running root) is
 "this system" for the recipe: Recipe hands it to the producer
-(`RECIPE_HOST_LIBC_ROOT`), so `RUNTIME.host.libc`, the `ABOUT.libc` check and the
+(`RECIPE_HOST_LIBC_ROOT`), so `HOST_LIBC`, the `ABOUT.libc` check and the
 `ABOUT.systems` check use that root's loaders and `etc/os-release`, not those of
 the machine Recipe runs on.
 
@@ -199,7 +203,7 @@ Writing into any root (the other root, the running root, or `--root`):
 - **Accounts.** File owners in a `system` output are names, resolved against the
   root's `etc/passwd` and `etc/group`. Accounts the change needs are created first,
   from its own `usr/lib/sysusers.d/*.conf` files and the `accounts` its recipe
-  declares (`target_finalize(root, #{ owners: "apply", accounts: [...] })`), the way
+  declares (`ACCOUNTS`), the way
   the OS builder creates them; the receipt records them with the package
   (`accounts`), and removing the package keeps them. Ownership is applied when
   Recipe runs as root.
@@ -212,8 +216,8 @@ Writing into any root (the other root, the running root, or `--root`):
   added to GROUP's member list in `group` and `gshadow` (creating a missing user or
   group as `u USER -` / `g GROUP -`); already a member, nothing changes. The receipt
   records it as `{"kind": "member", "name": USER, "group": GROUP, "id": GID}`.
-- **State seeds under `/var`.** `target_finalize(root, #{ owners: "apply",
-  seed: "var" })` keeps the tree's `var/` as seeds: each directory, file or link
+- **State seeds under `/var`.** Recipe finishes every `system` tree with `var/`
+  kept as seeds: each directory, file or link
   there is created in the system's `/var` with its mode and owner only where
   nothing exists; it is never overwritten, never owned by the package and never
   removed (JSON: `var_seeded`). A seed below a link (`var/run -> ../run`) is left
@@ -248,11 +252,40 @@ sudo recipe update ripgrep
 sudo recipe remove ripgrep
 ```
 
-`update` runs the current selected recipe and activates its pinned version. It
-does not discover upstream releases or rewrite recipe pins. A reviewed newer
-recipe can be placed in the user's override catalog independently of an OS image
-update. Explicit `--recipes-path` or `$RECIPE_PATH` selects only that catalog;
-otherwise the XDG recipe directory overrides matching shipped recipe filenames.
+`update` installs the version the recipe as fetched names, replacing the installed
+one. It never edits a recipe and never installs a version the recipe does not
+name. A reviewed newer recipe can be placed in the user's override catalog
+independently of an OS image update. Explicit `--recipes-path` or `$RECIPE_PATH`
+selects only that catalog; otherwise the XDG recipe directory overrides matching
+shipped recipe filenames. `recipe updates --upstream [NAME...]` asks upstream
+(each recipe's `UPSTREAM` or `latest()`) whether a newer version exists and only
+tells; nothing is changed.
+
+Each step also runs alone:
+
+```sh
+recipe download ripgrep     # sources into the download store
+recipe build ripgrep        # download what is missing, then build; no install
+recipe state ripgrep        # none, downloaded, built or installed
+recipe install ripgrep --keep   # keep downloads and build material afterwards
+recipe cleanup ripgrep      # delete its downloads and build material
+recipe cleanup              # the same for every program
+recipe cleanup --logs       # the diagnostic logs
+recipe remove ripgrep       # the program and all its material (--keep: only the program)
+recipe runtime remove       # the cached build image
+```
+
+States are `none`, `downloaded` (all sources and pins for this system are in the
+download store), `built` (a result with the current identity is kept) and
+`installed` (the receipt lists it); Recipe decides them from its own records and
+no recipe code runs. `--keep` is remembered per program; `--no-keep` turns it off
+and deletes the material at once; `remove` forgets it; `cleanup` deletes kept
+material but leaves the setting on. To redo a step, clean it up and run it again.
+Downloads two programs name are deleted only when neither needs them, and a placed
+file is moved from the unpacked source rather than copied where both are on one
+disk. Nothing is hidden: `recipe storage` lists seven kinds (installed,
+downloaded, built, kept, unfinished, build_image, logs), each with the command
+that removes it.
 
 Packages publish regular `bin/COMMAND` and `share/PATH` files, with a name and
 version. The coordinator copies them into an owned profile generation and commits
@@ -262,7 +295,7 @@ activation script executes on the host. Failed acquisition or activation preserv
 the previous profile. The store keeps exactly one generation: an install, update or
 remove deletes the generation it replaced once the new one is active (after the
 switch and its directory sync), and the next change deletes any generation an
-interrupted one left behind.
+interrupted one left behind. There are no earlier versions and no go-back.
 
 Outside the A/B system route, root's package root is `/var/lib/recipe`; an ordinary user's is
 `$XDG_DATA_HOME/recipe` (normally `~/.local/share/recipe`). `--package-root PATH`
@@ -270,19 +303,21 @@ selects another store. Its `profile/bin` contains active commands; installed log
 profiles add the booted root's system path and ordinary user paths to PATH. On a host without an A/B system, software installed for this computer (`/var/lib/recipe/profile/bin`) is on every user's PATH, and a user's own store comes first. `remove` uses the installed receipt
 without the recipe or runtime. `installed` only reads, so an ordinary user may
 also read a store root owns (`recipe installed --package-root /var/lib/recipe`);
-changing a store still requires owning it. `isinstalled` checks active files and links. Removed
-packages disappear from the profile and their files are deleted; build/publication
-caches remain. They are not an installed-package inventory.
+changing a store still requires owning it. Removed packages disappear from the
+profile and their files are deleted, with their downloads and build material
+unless `remove --keep`.
 
 For a front end, all read-only and without Ginux: `recipe installed --json`
 adds to each package what its recipe was allowed to use when it was installed
 (`needs`), when (`installed_on`) and the length of its files (`size_bytes`).
-`recipe updates` says which installed
+`recipe installed --json` also gives each package its `keep` option, what it
+holds on disk beside its files (`on_disk`: downloads, build, unfinished) and an
+`update` mark (`null`, or the version and why, known offline). `recipe updates` says which installed
 packages `recipe update` would change, from the receipts, the collection and
 the sources as last fetched, and lists under `changes` every NEEDS field in
 which the newer recipe differs from what was recorded (`added` and `raised`
 mean it may use more; `null` when the receipt predates the record).
-`recipe storage` reports what the active generation takes.
+`recipe storage` reports everything Recipe holds, by kind.
 `recipe history [--json]` lists what was done to the store,
 newest first (install, update, remove),
 from `history.jsonl` in the package root: one JSON object per line with `at`
@@ -307,7 +342,7 @@ whole-coordinator bootstrap privileges, as described below.
 
 ## Shared execution contract
 
-The executable interface is API 2 with a literal `const NEEDS = #{...};`.
+The executable interface is API 1 (`const RECIPE_API = 1;`) with a literal `const NEEDS = #{...};`.
 Recipes own their typed inputs/outputs, endpoint grants and resource limits.
 Callers bind declared inputs and may explicitly narrow authority. A caller cannot
 add an input, endpoint or larger limit that the named recipe did not declare.
@@ -350,12 +385,12 @@ anything runs:
   host:port pairs, at the addresses Recipe pinned (never a loopback or
   private address a host name resolved to), within `network_max_bytes`; the
   program helpers are not registered at all; and a seccomp filter refuses
-  `execve` and new processes. `RUNTIME.paths` name the run's host directories
-  there.
+  `execve` and new processes. The run's inputs, work folder and output are host
+  directories there.
 - **In Ginux.** Everything else runs in a Ginux domain exactly as before.
 
 The helpers that put a recipe in Ginux are `exec`, `exec_checked`,
-`exec_output`, `shell*`, `git_checkout`, `target_extract_rpm`, `target_extract_tar`,
+`exec_output`, `shell*`, `git_checkout`, `target_extract_tar`,
 `command_exists`, `rpm_installed`, `rpm_version`, `dnf_*`, `apk_*`,
 `carry_link_flags` and `carry_libraries` (one list: `PROGRAM_HELPERS` in
 `src/helpers/mod.rs`). So does anything the analysis cannot read: `eval`, a
@@ -458,13 +493,13 @@ recipe install tools/recipe/examples/hello.rhai \
   --build-dir .artifacts/work/example \
   --state-dir .artifacts/state/example \
   --json-output .artifacts/example-result.json
-recipe isinstalled tools/recipe/examples/hello.rhai --build-dir .artifacts/work/example \
+recipe state tools/recipe/examples/hello.rhai --build-dir .artifacts/work/example \
   --state-dir .artifacts/state/example
 ```
 
-Pass the same recipe, inputs and destination for retained lifecycle operations.
-Use the returned `ctx.outputs` paths; they identify published host files or
-directories. Paths in recipe hooks refer to the domain filesystem instead.
+Pass the same recipe, inputs and destination for retained operations.
+Use the result's `outputs` paths; they identify published host files or
+directories (output name to absolute path).
 Logs and tool output go to stderr; stdout or `--json-output` contains final JSON.
 Published paths and retained state keep the coordinator's ownership and private
 export-directory permissions. A privileged producer needs an appropriately
@@ -493,30 +528,33 @@ existing prepared artifacts.
 
 ## Recipe interface
 
-[WRITING_RECIPES.md](WRITING_RECIPES.md) contains a runnable recipe and lifecycle
-details. [HELPERS_AUDIT.md](HELPERS_AUDIT.md) lists registered helpers.
+[WRITING_RECIPES.md](WRITING_RECIPES.md) is the practical guide and
+[docs/recipe-format.md](docs/recipe-format.md) the full contract. [HELPERS_AUDIT.md](HELPERS_AUDIT.md) lists registered helpers.
 
-- Setup reads immutable `RUNTIME`; hooks receive the same data as `ctx.runtime`.
-- Checks return `ready(ctx)` or `needs_work(ctx, "concrete reason")`. Check errors
-  stop execution. Phase hooks return an updated context map.
-- Package/build facts remain recipe fields. Only `ctx.state` is restored between
-  invocations; setup runs again and current facts remain current.
-- `ctx.outputs` names files/directories under owned `/out` or `/work`. Successful
+- A recipe is declarations (`NEEDS`, `ABOUT`, `PACKAGE`, `SOURCES`, `FILES`,
+  `PACKAGES`, `ACCOUNTS`, `UPSTREAM`, `RERUN`, `deps`, `build_deps`) plus the
+  optional functions `build(src, out)`, `configure(tree[, src])`, `verify(out)`,
+  `latest()` and `cleanup(reason)`. Functions read the engine's constants
+  (`PREFIX`, `JOBS`, `HOST_LIBC`, `PACKAGE_FORMAT`, `INPUTS`, `DEFINES`, `DEPS`,
+  `WORK`). There are no hooks, readiness checks or `ctx`.
+- Recipe decides what is done from its own records (downloads by checksum, results
+  by identity, installed programs by receipt). The only values restored after an
+  interruption are those saved with `save`, with a `checkpoint`; a resumed
+  `build` skips finished work with `reached`. Setup (top-level code) runs again
+  and current facts remain current.
+- The output is the folder or file Recipe hands to `build`. Successful
   execution, validated archive data and acknowledged matching checkpoints are
-  required for publication. Install/installed reuse require the complete declared
-  set; intermediate phases allow typed subsets checked before checkpointing.
-  Failed work cannot replace earlier publications.
-- Dependencies run that lifecycle in separate Ginux instances with their own
-  NEEDS. Declared products are snapshotted into the consumer; a directory output
-  named `tools` contributes to its `/work/tools`. No parent grant is lent. Manual
-  readiness checks and explicit remove/cleanup require matching cached dependency
-  products and run only dependency installed checks. Missing or changed products
-  fail before the main operation; dependencies are never installed implicitly.
+  required for publication. Failed work cannot replace earlier publications.
+- Dependencies run in separate instances with their own NEEDS. Declared products
+  are snapshotted into the consumer (`DEPS`); a directory output named `tools`
+  is put on its `PATH`. No parent grant is lent. A dependency is never
+  installed implicitly by `remove` or `cleanup`.
 - `list` and `info` inspect loader-owned declared metadata without running setup
   or helper code. Dynamic metadata is reported unavailable.
 - `list --json` prints one entry per recipe for a front end (`schema_version` 1):
   name, version, description, path, the recipe's `ABOUT` block, NEEDS, dependency
-  names and the hooks it defines, plus `runs_here` and `not_runnable_reason`
+  names, the `steps` it has, the `functions` it defines, its `upstream`, its
+  `state` on this system and its `keep` option, plus `runs_here` and `not_runnable_reason`
   (whether this system's C library can run it, from the same comparison
   `install` makes, and the message `install` would give, else null; the index
   does not carry them). The top level has `host_libc`, this system's C library
@@ -606,12 +644,11 @@ identity and link targets participate in state identity. Confined relative links
 and hardlinks are preserved. Named `rootfs`/`target` trees may contain absolute
 rootfs symlink bytes; they never authorize following host paths.
 
-`--input target=PATH` seeds the owned target `/out` for a fresh identity. With
-retained state, Recipe restores that target instead. Hooks inspect
-`ctx.runtime.paths.target`; compiler-image files under `/usr` cannot establish
-that a selected product is installed. Removal changes the owned target, leaving
-the imported input and earlier published generations unchanged. The CLI handles
-package activation separately; `--no-activate` selects only this producer lifecycle.
+`--input target=PATH` seeds the output before `build` runs (with one output,
+`out` starts as a copy of the input). Compiler-image files under `/usr` cannot
+establish that a selected product is installed. The imported input and earlier
+published generations stay unchanged. The CLI handles package activation
+separately; `--no-activate` selects only the producer route.
 
 ## State, diagnostics and recovery
 
@@ -635,19 +672,16 @@ export format), the coordinator/worker transport version, and the Ginux catalog
 and build-base contract digests Recipe pins and checks. `--exact-identity` (or
 `RECIPE_EXACT_IDENTITY=1`) also names the worker's and the launcher's bytes, so
 only byte-identical tools reuse saved state; release builds use it. Exact and
-default identities never share saved state. Checkpoints become recoverable only after both files and separate
-`ctx.state` records are durable. Interrupted, unacknowledged work is discarded.
-A successful failure-cleanup hook is also checkpointed with its returned state
-and matching files, while the producer operation still fails and publishes
-nothing. Cleanup/checkpoint diagnostics preserve the original producer failure.
+default identities never share saved state. Checkpoints become recoverable only after both files and saved values are
+durable together. Interrupted, unacknowledged work is discarded. Recipe keeps one
+checkpoint at most per program and deletes it when the install succeeds. A
+`cleanup(reason)` function runs once at the end of a run, after Recipe's own
+clean-up; its diagnostics preserve the original failure.
 A corrupt current record/snapshot fails before workload startup; retain it for
 diagnosis and choose a new state directory to start explicitly fresh.
 
-`--no-persist-state` disables state/files recovery; it does not disable managed
-execution or publication. Retention keeps the current and three recent input
-identities per destination/recipe scope, with current and previous complete
-filesystem generations. Pruning runs under the destination lock. Published
-products are not garbage-collected as state snapshots.
+`--no-persist-state` turns checkpoints off; it does not disable managed
+execution or publication. Published products are not saved state.
 
 Diagnostics live in `<state-root>/logs/<invocation-id>/`, outside invocation
 scratch: `worker.log`, `supervisor-stderr.log`, `authority.json` and `result.json`.
@@ -700,16 +734,14 @@ Run `recipe --help` and `recipe install --help` for the complete current syntax.
 | --- | --- |
 | `-r, --recipes-path DIR` | Explicit name/module/dependency search directory. Otherwise the user's recipe folder precedes the sources; `$RECIPE_PATH` selects one directory exclusively. |
 | `--package-root DIR` | Store for installed receipts, generations and the active `profile` symlink. |
-| `--no-activate` | Produce outputs or run hooks only, without installing/removing an active package. |
+| `--no-activate` | Produce outputs only, without installing/removing an active package. |
 | `-b, --build-dir DIR` | Logical destination identity and lock. |
 | `--input NAME=PATH` | Explicit immutable file/tree input. |
 | `--define KEY=VALUE` | Recipe-specific constant; not a runtime path substitute. |
 | `--target-os linux --target-arch x86_64` | Currently supported native execution platform. |
 | `--execution auto\|ginux\|host` | Where recipes run (see Execution modes); default `auto`. |
 | `-j, --jobs N` | Requested jobs, 1–16, default 1; Ginux task limits still apply. |
-| `--force-install` | Rerun installation for the main recipe. |
-| `--force-build` | Rerun build and installation for the main recipe. |
-| `--force-acquire` | Rerun acquisition, build and installation for the main recipe. |
+| `--keep`, `--no-keep` | Keep the downloads and build material after a successful install (remembered per program), or turn that off and delete them. |
 | `--memory-mib N` | Lower `NEEDS.memory_mib` (default declaration 2048 MiB). |
 | `--storage-max-objects N` | Lower `NEEDS.storage_max_objects` (default declaration 16384). |
 | `--storage-max-bytes N` | Lower the declared writable-data cap within effective memory. |
@@ -748,14 +780,9 @@ or restart semantics. Archive timestamps have whole-second precision. See
 [supported runtime limits](docs/runtime-limits.md) before claiming isolation or
 Linux compatibility beyond these boundaries.
 
-Manual `isacquired`, `isbuilt`, `isinstalled`, `remove` and `cleanup` run dependency installed checks
-in graph order and require matching cached dependency products. They never run
-dependency acquire/build/install hooks to repair missing or changed products.
-Use `install` separately to prepare those dependencies. The checked snapshots
-retain the parent's installed input identity and each dependency's own authority.
-For `remove`/`cleanup`, unavailable matching dependency products fail before the
-main hook runs, preserving the prior state and files. Dependency remove/cleanup
-hooks are not run by the parent's operation.
+`remove` and `cleanup` never install a dependency and never run a dependency's
+cleanup function; they act on the named program only. Use `install` to prepare
+dependencies.
 
 ## Read authority without executing setup
 
@@ -774,7 +801,7 @@ which endpoints a future execution will use. Diff shows added/removed/changed
 typed paths, endpoints, raised/lowered limits and contract digests. Invocation
 explain reads the retained receipt and available audit observations, so later
 source edits do not rewrite the explanation. A missing/truncated observation is
-reported as unknown. Completed contexts include `runtime.contract` and `runtime.network_usage`;
+reported as unknown. Finished results include `contract` and `network_usage`;
 a complete bounded endpoint summary produces warnings for unused grants, while
 an absent summary never labels unobserved connections unused. Diagnostics do
 not become success/protocol evidence or grant additional authority.

@@ -1,5 +1,3 @@
-> **Superseded 2026-11-16** by [recipe-format.md](recipe-format.md) (API 1). This note describes the old recipe format (`ctx`, `RUNTIME`, the hooks) as current; it is kept as history and is not the reference.
-
 # Target filesystem metadata
 
 A rootfs producer builds readable, writable staging files in Ginux. Staging
@@ -55,20 +53,24 @@ The native recipe helpers are:
   members. Every installed package must have an available archive. Collect these
   **before** applying recipe-specific filesystem policy.
 - `target_mode(root, relative_path, mode)`: set intended target permissions while
-  keeping staging readable/writable. Use this for deliberate mode overrides.
+  keeping staging readable/writable. Use this for deliberate mode overrides; the
+  mode of a `FILES` entry and of `put` goes into the manifest the same way.
 - `target_remove(root, relative_path)`: remove an output member and record an
   explicit intended removal in manifest version 2. The system consumer permits
   it only for paths previously owned by this producer; it never grants deletion
   of base files, administrator edits or another package's surviving selection.
 - `target_finalize(root)`: resolve target accounts, discard absent package ghosts,
   record generated paths, preserve hardlink identity, and bind metadata to final
-  payload bytes. Call after recipe policy changes and before writing the recipe's
-  success marker. Generated paths default to UID/GID zero and their authored
+  payload bytes. Call after recipe policy changes, at the end of `build`, for a
+  tree that is not a `system` output (an image tree); Recipe finishes `system`
+  outputs itself, below. Generated paths default to UID/GID zero and their authored
   ordinary permissions; use `target_mode` for restrictive or special modes.
 - `target_finalize(root, #{ owners: "apply", accounts: [...], seed: "var" })`
-  (RECIPE_API 3; `seed: "var"` records `var_seed: true`: the tree's `var/` is
-  state seeds, not owned files): finalize a tree
-  that a system change writes into a root later (a `system` output). Owner names
+  (`seed: "var"` records `var_seed: true`: the tree's `var/` is
+  state seeds, not owned files): how a tree
+  that a system change writes into a root later (a `system` output) is finalized.
+  Recipe does this itself for every `system` output after `configure` or `build`,
+  with the recipe's `ACCOUNTS` as `accounts` (a recipe does not call it there). Owner names
   stay in the entries (`owners_at_apply: true` in the manifest) instead of being
   resolved against the tree's own account files, and `accounts` (optional,
   sysusers.d `u`/`g` lines, kept as the manifest's `accounts`) names accounts to
@@ -177,8 +179,8 @@ APK 3 requires a non-root virtual identity for `--usermode`. Per-command
 continues to describe installed UID/GID values. No host credential changes are
 used by the configured runtime.
 
-For system changes, declare `NEEDS.outputs.system = "directory"` and
-publish a finalized root-relative tree as `ctx.outputs.system`. Numeric installed
+For system changes, declare `NEEDS.outputs = #{ system: "directory" }`; the
+output is a root-relative tree, which Recipe finalizes. Numeric installed
 UID/GID, mode, raw xattrs, links and content fingerprints come from this manifest,
 not the Ginux worker's staging inodes. Omitted old owned files are also removed
 when updating the selection. Ordinary `package` outputs are placed in the root's

@@ -1,347 +1,507 @@
 # Writing Recipe recipes
 
-A recipe owns its package facts, lifecycle and literal NEEDS authority. Callers
-bind declared immutable inputs, may narrow grants/limits, and select the managed
-environment. Every executable recipe declares `const RECIPE_API = 2;` (or `3`,
-see [API 3](#api-3)) and its own `const NEEDS = #{...};`, including children that
-extend another recipe.
-This format makes recipes longer than they need to be. A shorter one is written
-down, not built, in [docs/next-recipe-format.md](docs/next-recipe-format.md).
+A practical guide to the recipe format, API 1. The full contract, with every
+rule and the reasons for it, is [docs/recipe-format.md](docs/recipe-format.md);
+this guide shows how to write recipes and points there for the details. The
+reference pages are `recipe-recipe(5)` (the format) and `recipe-helpers(7)` (the
+helpers); [HELPERS_AUDIT.md](HELPERS_AUDIT.md) lists every registered helper.
 
-OS artifact producers and user-managed software use this same format and engine.
+A recipe is a Rhai file. It states facts in literal declarations and writes
+code only for what is unusual. Recipe downloads, checks, unpacks, places files,
+unpacks distribution packages, finishes system trees, records what is done,
+installs, removes and cleans up. A recipe never says how to do those things; it
+says what the program is, where it comes from and what goes where.
+
+Every recipe starts with the API line and declares its authority:
+
+```rhai
+const RECIPE_API = 1;
+const NEEDS = #{ outputs: #{ "package": "directory" }, network: ["github.com:443"] };
+```
+
+The engine accepts the number 1 and nothing else. There is no older form: the
+hooks (`acquire`, `install`, `remove`, `is_acquired`, `is_built`,
+`is_installed`), the `ctx` map and the `RUNTIME` constant do not exist, and a
+recipe that defines one of those functions or declares `ctx` or `RUNTIME` is
+refused with the line to change.
+
+OS artifact producers and user-managed software use the same format and engine.
 In the LevitateOS workspace they live in `distro/builder/os-recipes/` and
-`recipes/`, respectively. Their consumer owns deployment: the builder composes
-OS images, while the CLI activates user package outputs. The `install` hook below
-populates the recipe's owned output tree; activation happens after publication.
+`recipes/`. Their consumer owns deployment: the builder composes OS images, the
+CLI activates `package` outputs.
 
-Caller restrictions must be valid lowerings/subsets for the named recipe. They
-also apply across the dependency graph: each dependency's numeric limits take
-the stricter bound, endpoint sets intersect, and no node acquires another's
-grants. Resource and byte limits remain per instance.
+## The parts of a recipe
 
-Read [runtime limits](docs/runtime-limits.md) when choosing grants: memory is
-per-process address space, CPU selection is real affinity, network authority is
-numeric IP:port, global/vDSO clocks remain visible and archive timestamps have
-whole-second precision. The selected image must support the actual consumer;
-neither a helper signature nor a granted catalog operation proves that it does.
+| Part | Form | Required |
+| --- | --- | --- |
+| `RECIPE_API` | `const`, the number 1 | yes |
+| `NEEDS` | `const`, literal map | yes, also in every child of `extends` |
+| `ABOUT` | `const`, literal map | for catalog recipes |
+| `PACKAGE` | `const`, literal map | for catalog recipes |
+| `SOURCES` | `const`, literal map | no |
+| `FILES` | `const`, literal list | no |
+| `PACKAGES` | `const`, literal list or map | no |
+| `ACCOUNTS` | `const`, literal map | no |
+| `UPSTREAM` | `const`, literal map | no |
+| `RERUN` | `const`, `true` | no |
+| `deps`, `build_deps` | `let`, literal list of names | no |
+| `//! extends: FILE` | first line comment | no |
+| `import "FILE" as NAME;` | Rhai import, literal path | no |
+| `build(src, out)` | function | no |
+| `configure(tree)` or `configure(tree, src)` | function | only with `PACKAGES` |
+| `verify(out)` | function | no |
+| `latest()` | function | no |
+| `cleanup(reason)` | function | no |
 
-## Runnable local example
+"Literal" means plain data: no helper calls, no variables, no arithmetic.
+Recipe reads every declaration without running the recipe, so `recipe list`,
+`info`, `index`, `validate`, the pin generator and the app can show them. A
+recipe may define other functions and constants of its own; the names above are
+reserved.
 
-Save this as `hello.rhai`. It starts no program, so Recipe runs it on the host
-(see [Host or Ginux](#host-or-ginux)) and needs no Ginux launcher:
-`recipe install ./hello.rhai --build-dir ./hello-work` produces a named program
-without downloading or compiling anything.
+## A prebuilt program
+
+Most catalog recipes are declarations only. This is all `ripgrep` needs:
 
 ```rhai
-const RECIPE_API = 2;
-const NEEDS = #{ outputs: #{ program: "file" } };
-let ctx = #{
-    name: "hello",
-    version: "1.0",
-    program: join_path(RUNTIME.paths.output, "bin/hello"),
-    payload: "#!/bin/sh\nprintf 'hello\\n'\n",
+const RECIPE_API = 1;
+const NEEDS = #{
+    outputs: #{ "package": "directory" },
+    network: ["github.com:443", "release-assets.githubusercontent.com:443"],
+    network_max_bytes: 8388608,
+    timeout_secs: 300,
 };
-
-fn is_acquired(ctx) { ready(ctx) }
-fn acquire(ctx) { ctx }
-fn is_built(ctx) { ready(ctx) }
-fn build(ctx) { ctx }
-
-fn is_installed(ctx) {
-    if !is_file(ctx.program) { return needs_work(ctx, "hello output is missing"); }
-    if read_file(ctx.program) != ctx.payload {
-        return needs_work(ctx, "hello output has different contents");
-    }
-    ctx.outputs.program = ctx.program;
-    ready(ctx)
-}
-
-fn install(ctx) {
-    mkdir(dirname(ctx.program));
-    write_file(ctx.program, ctx.payload);
-    chmod(ctx.program, 0o755);
-    ctx.outputs.program = ctx.program;
-    ctx
-}
-
-fn remove(ctx) {
-    if is_file(ctx.program) { rm(ctx.program); }
-    ctx.outputs = #{};
-    ctx
-}
+const ABOUT = #{
+    kind: "tool", category: "utilities",
+    details: "Searches the files under a folder for a text pattern, fast.",
+    homepage: "https://github.com/BurntSushi/ripgrep", license: "MIT OR Unlicense",
+    adds: #{ programs: ["rg"], menu: [] }, keeps: [],
+};
+const PACKAGE = #{ name: "ripgrep", version: "15.2.0", description: "Fast recursive text search with rg" };
+const UPSTREAM = #{ github: "BurntSushi/ripgrep" };
+const SOURCES = #{
+    release: #{
+        url: "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz",
+        sha256: "33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c",
+    },
+};
+// One source: paths are inside it; its single top folder is left out.
+const FILES = [
+    ["rg",          "bin/rg", 0o755],
+    ["doc/rg.1",    "share/man/man1/rg.1"],
+    ["COPYING",     "share/licenses/ripgrep/COPYING"],
+];
 ```
 
-The result's `outputs.program` is a published host path. `/out/bin/hello` is its
-path inside hooks. Use the same recipe/destination with `isinstalled` or `remove`.
-A successful remove does not delete an earlier published generation.
+`package` is a Rhai keyword, so the output key is quoted. Recipe downloads the
+source into its download store (checked against `sha256`), unpacks it, moves the
+listed files into the package folder, records every file's checksum in the
+receipt and, on `install`, activates the package. `recipe install ripgrep` then
+cleans up the downloads and the unpacked source unless you pass `--keep`.
 
-## A package for the active profile
+## NEEDS
 
-Use the existing directory output contract to opt into CLI activation:
+What the recipe may use. Ginux and the host confinement enforce it; callers can
+only narrow it.
 
-```rhai
-const RECIPE_API = 2;
-const NEEDS = #{ outputs: #{ "package": "directory" } };
-// ctx must also declare a name and version.
-// install(ctx) writes package_root/bin/COMMAND and/or package_root/share/PATH.
-// is_installed(ctx) checks those files before publishing the same directory.
-// Both return the updated ctx with:
-// ctx.outputs["package"] = package_root;
-```
-
-`package` is a Rhai keyword, so quote the output key. The files must be regular
-files; commands need executable permission. The initial activation surface is
-`bin/COMMAND` and `share/PATH`; symlinks, special files and setuid/setgid permissions
-are rejected. There are no host installation hooks. A package may also hold
-`lib/`, which stays in the package and is linked nowhere: it is where a program
-carries the shared libraries it loads (`carry_libraries`, an experimental
-feature of the self-contained packages design in the LevitateOS superproject). See the workspace's
-`recipes/ripgrep.rhai` for a complete pinned package producer.
-
-A package that carries libraries calls, at the end of `install`,
-`carry_libraries(package_root, RUNTIME.paths.prefix, search)`, with `search` the
-`sdk` folders of its `build_deps` (under `RUNTIME.paths.dependencies`). It copies
-into `lib/` the loader and every library the package's programs and plug-ins
-load, and tells each file where they are once activated. A program built here
-with `carry_link_flags()` has room reserved for that; one somebody else linked (an
-upstream prebuilt release) is rewritten: its loader becomes
-`PREFIX/lib/ld-linux-x86-64.so.2` and its library folders become `$ORIGIN`-relative
-(its own `$ORIGIN` folders first, then the way to `lib/`), so only the loader path
-names the store. The C library comes whole from the first `search` folder holding
-its loader, else from the build image, so an `sdk` that brings its own glibc gives
-its own loader and C library. Afterwards every program and every file under `lib/`
-must find each library it needs, with the symbol versions it asks for, inside the
-package, or the install fails naming the file and what it misses. Only 64-bit
-x86_64 files are handled.
-
-Because that prefix is written into what is built, it is part of what a kept
-build is matched by: the same recipe installed into another store is built again,
-while `--no-activate` producers keep the identity they had. The package must then
-be activated where it was built for; activation refuses another folder.
-
-`recipe install` activates this output atomically unless `--no-activate` is set.
-`recipe update NAME` consumes the selected recipe's current pin. `recipe remove
-NAME` deactivates a recorded package without running its recipe; its `remove(ctx)`
-hook remains available for producer cleanup with `--no-activate`. The library
-continues to publish outputs only. OS builders pass `--no-activate` explicitly.
-
-## Runtime, package facts and resumable state
-
-Setup runs once per invocation, in the Ginux domain or on the host (see [Host or Ginux](#host-or-ginux)). It can use immutable `RUNTIME` to
-initialize recipe fields. Hooks receive the same engine-owned `ctx.runtime`.
-Never save runtime paths or package versions in `ctx.state` to override current
-setup on a later invocation.
-
-| Field | Contract |
+| Field | Meaning |
 | --- | --- |
-| `runtime.paths.recipe_dir` | Staged directory of the selected recipe. |
-| `runtime.paths.base_recipe_dir` | Staged base directory when extending a recipe; empty otherwise. |
-| `runtime.paths.inputs` | `/inputs`, containing explicitly imported inputs. |
-| `runtime.paths.build` | `/work/build`, owned build/acquisition work. |
-| `runtime.paths.tools` | `/work/tools`, a private copy of declared dependency tools. |
-| `runtime.paths.dependencies` | Immutable direct dependency products at `/inputs/recipe-dependencies/DEP/OUTPUT`. |
-| `runtime.paths.temp` | `/work/tmp`, owned scratch. |
-| `runtime.paths.output` | `/out`, selectable product files/directories. |
-| `runtime.paths.target` | `/out`, the owned installed-target view. |
-| `runtime.paths.prefix` | The folder the `package` output will live in once activated, `PROFILE/.packages/NAME` through the profile symlink of the store installed into (the same in every generation). Unit (`()`) with `--no-activate`, for a dependency, and when `name` is not a literal. |
-| `runtime.target.os`, `.arch` | Explicit supported execution target. |
-| `runtime.host.os`, `.arch` | The worker's own platform. |
-| `runtime.host.libc` | The C library of the system the package will be installed on: `"glibc"`, `"musl"` or `"unknown"`. Recipe decides it in the coordinator from the system's dynamic loaders (glibc: the architecture's `ld-linux` loader, e.g. `/lib64/ld-linux-x86-64.so.2`; musl: `/lib/ld-musl-<arch>.so.1`), not from the worker's image. Both loaders present, or neither, is `"unknown"`. |
-| `runtime.operation` | The running operation (`install`, `remove`, `cleanup`, `is_installed`, `is_built`, `is_acquired`). |
-| `runtime.options.jobs` | Requested job count. |
-| `runtime.options.force_acquire`, `.force_build`, `.force_install` | Current force selection for the main recipe. |
-| `runtime.options.persist_state` | Whether recovery is enabled. |
+| `inputs` | name to `"file"`, `"directory"`, `"file?"` or `"directory?"` |
+| `defines` | name to its default value; `()` means required |
+| `outputs` | name to `"file"` or `"directory"` |
+| `network` | `"host:port"` endpoints, redirect hosts included |
+| `network_max_bytes` | bytes sent and received, default 8 GiB |
+| `memory_mib` | default 2048 |
+| `storage_max_objects` | default 16384 |
+| `storage_max_bytes` | default bounded by memory |
+| `timeout_secs` | default 3600, 1 to 86400 |
 
-After worker completion, the coordinator adds `runtime.contract` (catalog,
-digest and derived rules) and `runtime.network_usage` to the returned context.
-These are completion metadata in the engine-owned namespace; ordinary recipe
-facts named `contract` or `network_usage` stay intact. Each dependency has its own
-retained invocation receipt. Dependency products obey the same import bounds,
-including the `DEP/OUTPUT` path prefix. Dependency aliases must identify one
-recipe when binding inputs and cannot descend into another dependency's product
-namespace.
+`outputs` holds exactly one name in a normal recipe. The name tells Recipe and
+the caller what the output is: `package` (a package activated in a profile),
+`system` (a tree written into a system root), `tools` (put on the `PATH` of a
+consumer) or any other name (a product the caller picks up). The body never
+uses the name. A few OS-building recipes declare several outputs (see
+[Several outputs](#several-outputs)).
 
-Top-level `ctx.name`, `ctx.version`, source URLs/digests, target ABI choices and
-other package facts are initialized from the current recipe. Put only genuinely
-resumable recipe data in `ctx.state`, for example a verified internal progress
-marker. Readiness must still inspect the real files.
+Every host of a `SOURCES` URL, and every redirect host, must be in `network`;
+`recipe validate` and `recipe info` say which one is missing. An optional
+input is `()` when it was not given; a supplied path must still have its kind.
+`--network-host` selects a subset and resource flags select lower limits;
+widening fails with the declaration field to edit. Read
+[runtime limits](docs/runtime-limits.md) when choosing grants: memory is
+per-process address space, CPU selection is real affinity, network authority is
+numeric IP:port and archive timestamps have whole-second precision.
 
-Only `ctx.state` is serialized/restored. JSON-compatible maps, arrays, strings,
-booleans, null and finite numbers are accepted. Unsupported values fail with a
-field path. A matching state record and filesystem snapshot form one checkpoint;
-state alone cannot establish completed work.
+### Defines
 
-## Lifecycle and readiness
-
-Install checks `is_installed` first, then determines whether build/acquisition
-are needed from `is_built` and `is_acquired`. Dependencies and necessary phases
-run in dependency order. Each defined check returns exactly one of:
+Defines are genuine choices a caller makes (`KERNEL_TARGET`, `INIT`). A recipe
+declares each define it reads, with its default, and reads it as
+`DEFINES.NAME`:
 
 ```rhai
-ready(ctx);
-needs_work(ctx, "a concrete reason");
+const NEEDS = #{ defines: #{ KERNEL_TARGET: "levitate", INIT: () } };
 ```
 
-A check exception is an error. Do not use exceptions, booleans or ordinary context
-maps to request work. Custom checks should verify relevant bytes, release, ABI,
-configuration or companion products, not just a saved boolean. After successful
-work the executor rechecks readiness. Rediscover `ctx.outputs` when reusing an
-installation.
+A default of `()` means required: a run without it fails before anything runs.
+A define given with `--define NAME=VALUE` reaches every recipe of the graph that
+declares it; a define no recipe of the graph declares is refused. Names starting
+with `RECIPE_` are the engine's own and cannot be declared. A define grants no
+host path.
 
-`acquire(ctx)`, `build(ctx)`, `install(ctx)` and `remove(ctx)` return the updated
-context. Prebuilt recipes may omit build work. Missing checks indicate work is
-needed; a missing required action fails instead of inventing an implementation.
-Manual `isacquired`, `isbuilt` and `isinstalled` execute their actual custom check
-and return nonzero when it reports work needed. With dependencies, they first
-require matching cached dependency products and run only their installed checks,
-in dependency order. They never run dependency acquire/build/install hooks to
-repair a cache miss. Explicit `remove`/`cleanup` uses the same cached-dependency
-rule to recover the parent's exact saved state/files. A missing or changed cache
-fails before the main hook; dependencies are never installed or removed by the
-parent's operation. See [the runtime limits](docs/runtime-limits.md).
+## ABOUT and PACKAGE
+
+`ABOUT` is what a front end shows, the author's claim, checked only for form:
+`kind`, `category`, `libc`, `libc_carried`, `systems`, `details`, `homepage`,
+`license`, `adds`, `steps` and `keeps`. The keys of `ABOUT.steps` are the step
+names `download`, `build` and `install`.
+
+`PACKAGE` holds `name`, `version` and `description`, all literal strings.
+`name` equals the file name without `.rhai` and may be left out. `version` is
+required for a recipe with a `package` or `system` output, because receipts and
+updates compare it, except for a recipe with `PACKAGES`, whose version is the
+`version` line of its pins file.
+
+`ABOUT.libc` is a list from `"glibc"` and `"musl"`: the C libraries the build
+works with (absent means any). Before `install` or `update` acquires anything,
+Recipe compares it with `HOST_LIBC` for the recipe and its runtime `deps` (not
+`build_deps`). On a difference it states the facts and the flag that installs
+anyway, `--any-libc`, and exits nonzero; with `--json` it adds a record of kind
+`libc_mismatch`. `ABOUT.libc_carried: true` says the package brings its own C
+library and loader (see `carry_libraries`); the facts then say where it was
+made and tried. `ABOUT.systems` is a list of os-release `ID`s (`["levitateos",
+"acornos"]`); the recipe runs only where the root's `etc/os-release` has one of
+them, and `--any-system` goes ahead anyway (JSON kind `system_mismatch`). For a
+system change, "this system" is the root written into. Write the recipe's own
+`details` and comments the same way: state the facts and the way forward.
+
+## SOURCES
+
+What Recipe downloads before anything else: a map from a source name to one
+source. Source names are free; the convention is `release` for the main archive
+or file and `licence*` for licence files.
+
+| Field | Meaning |
+| --- | --- |
+| `url` | HTTPS address; its host is in `NEEDS.network` |
+| `sha256` | 64 hex digits, required with `url` |
+| `file` | the saved file's name; default the last part of the URL's path (needed when the URL ends in a query; allowed characters are letters, digits, `.`, `_`, `+`, `-`) |
+| `unpack` | `false` keeps the download as one file even when it looks like an archive |
+| `format` | `tar.gz`, `tar.xz`, `tar.bz2`, `tar.zst`, `zip` or `rpm`, when the file name does not say it |
+| `strip` | `false` keeps a single top folder |
+| `libc` | `"glibc"` or `"musl"`: only fetched on that C library |
+| `git`, `commit` | a Git repository and a full commit id, instead of `url` and `sha256` |
+| `tag` | for `git`: informational only |
+
+The download goes into Recipe's download store, named by its SHA-256, and is
+done when the file is there and matches. The offline cache (`RECIPE_CACHE_DIR`,
+`/usr/share/recipe/cache`) is used first. An archive is unpacked into its own
+folder (the endings `.tgz`, `.txz`, `.tbz2` and `.tzst` count; `.tar` and `.apk`
+stay single files), an `rpm` source natively without scripts, a `git` source is
+checked out at `commit`. In `build(src, out)`, `src.NAME` is the path of the
+unpacked folder, of the single file or of the checkout.
+
+When every entry of an archive sits under one top folder, `src.NAME` is that
+folder and `FILES` paths leave it out; `strip: false` keeps it. An archive that
+holds one file is unchanged. A `libc` source is fetched only when `HOST_LIBC`
+matches; a recipe whose every source and pin is left out on this system has no
+build there. There is no `target:` field: a recipe that chooses by a define or
+an input's contents declares no `SOURCES` and downloads inside `build`.
+
+## FILES
+
+Which files of the sources go where in the output: a list of `[from, to]` or
+`[from, to, mode]`.
+
+```rhai
+const FILES = [
+    ["release/rg",          "bin/rg", 0o755],
+    ["release/doc/rg.1",    "share/man/man1/rg.1"],
+    ["docs/",               "share/doc/ripgrep/"],
+];
+```
+
+- `from` starts with the source's name. With exactly one source the name is
+  left out (`["rg", "bin/rg", 0o755]`); a source that is one plain file is
+  always named by its source name.
+- `from` ending in `/` is a whole folder; `"NAME/"` is the whole source, and with
+  one source `""` is. `to` ending in `/` (or `""`, the output's top) is the
+  folder it goes into. Several whole folders into one output merge.
+- A single file without a mode gets 0644. Files of a whole folder keep the
+  archive's own modes. Symbolic links inside a whole folder are kept.
+  Setuid and setgid bits are refused in a `package` output. In a `system` output
+  the mode goes into the tree's target metadata.
+- Files are moved from the unpacked source into the output; a source file
+  named by two entries is copied for the later one.
+- In a recipe whose output is a `file`, the entry whose `to` is `""` makes the
+  output itself (`["busybox", "", 0o755]`). `FILES` is only for recipes with one
+  output.
+- A `from` that does not exist fails the run, naming it.
+- A recipe may have both `FILES` and `build`: `FILES` are placed first, then
+  `build(src, out)` runs on the result.
+
+There are no per-file checksum lists: the archive's checksum covers its
+contents, and Recipe records every installed file's checksum in the receipt.
+
+## build(src, out)
+
+The recipe's own work: compiling, adjusting, writing. Optional; a recipe that
+compiles nothing has no build step.
+
+- `src`: a map from source name to path; `src.packages` with `PACKAGES`
+  (see [Package groups](#package-groups)). An empty map without sources.
+- `out`: the output. For a `directory` output the folder, which exists and holds
+  the placed `FILES` (or a copy of the `target` input). For a `file` output the
+  path where the file must be made; its folder exists. With several outputs,
+  a map from output name to path.
+- It returns nothing; a throw fails the run. It may replace the whole output
+  folder (`rm(out); mv(dir, out)`).
+
+```rhai
+// pi: a whole folder is placed by FILES, build adds a launcher.
+fn build(src, out) {
+    let launcher = join_path(out, "bin/pi");
+    mkdir(dirname(launcher));
+    write_file(launcher, LAUNCHER);
+    chmod(launcher, 0o755);
+}
+```
+
+A compiled program is configured for `PREFIX`, where the package will be once
+activated, and installed through a staging folder, because `out` is the package
+folder itself (`make install DESTDIR=out` with `--prefix=PREFIX` would put the
+files under `out/PREFIX/...`):
+
+```rhai
+fn build(src, out) {
+    if PREFIX == () { throw "htop is built for the folder it is activated in; install it with activation"; }
+    let dir = src.source;
+    exec_checked("./configure", ["--prefix=" + PREFIX], #{ cwd: dir });
+    exec_checked("make", ["-j" + JOBS], #{ cwd: dir });
+    let staged = join_path(WORK, "staged");
+    exec_checked("make", ["install", "DESTDIR=" + staged], #{ cwd: dir });
+    rm(out);
+    mv(staged + PREFIX, out);
+}
+```
+
+A recipe that declares no `SOURCES` may download in `build` with `download`,
+`download_exact`, `fetch_bounded`, `git_checkout` and their relatives, within
+`NEEDS.network`. Recipe then has no download step for it; its downloads are
+build material. Use `WORK` for anything that is not the result.
+
+### What a function can see
+
+- Its arguments.
+- The engine's constants (below).
+- The recipe's own top-level constants whose value is literal data, and its
+  declarations (`PACKAGE`, `SOURCES`, ...).
+- Imported modules through their alias (`lock::packages()`).
+
+This holds for the functions the engine calls, for every function they call, for
+the base of `extends` and for imported modules. A value computed at the top level
+(`let x = f(...)`, `const X = f(...)`) is not visible inside a function: compute
+it inside the function. Statements outside functions, other than declarations,
+run once per run before the first function, only for steps that run recipe code
+(build, configure, verify, latest), never for `list`, `info` or `download`. A
+throw there fails the run.
+
+### The engine's constants
+
+All are read-only and visible everywhere.
+
+| Constant | Value |
+| --- | --- |
+| `PREFIX` | where the `package` output will live once activated (`PROFILE/.packages/NAME`); `()` with `--no-activate`, for a dependency and for other outputs; part of the identity |
+| `JOBS` | how many jobs the user asked for, 1 to 16 (`"-j" + JOBS`; `JOBS.to_string()` for an environment value) |
+| `HOST_LIBC` | `"glibc"`, `"musl"` or `"unknown"`: the C library of the system the result is installed on (for a system change, the root written into) |
+| `PACKAGE_FORMAT` | `"rpm"` or `"apk"`, the format of the pins in use; `()` without `PACKAGES` |
+| `INPUTS` | map from each declared input to its read-only path; `()` for an optional input not given |
+| `DEFINES` | map from each declared define to its value (given, else the default) |
+| `DEPS` | map from each dependency name to the path of its output; for a multi-output dependency a map from output name to path |
+| `WORK` | a private folder for build material, deleted after a successful run unless kept |
+
+`DEPS["desktop-runtime"]` is a single path; `DEPS["bun-toolchain"].compiler` is
+one of a multi-output dependency's. The engine has no `OS` constant: a recipe
+that needs the distribution's facts imports `os-facts.rhai` and reads
+`os_facts::of(PACKAGE_FORMAT)` (`rpm`: LevitateOS, `apk`: AcornOS).
+
+## Package groups
+
+`PACKAGES` lists the distribution packages a group is made of: the seeds the pin
+generator starts from. A map from C library to seeds (`glibc`: Fedora RPMs,
+`musl`: Alpine APKs; a library left out or empty has no build there), or a plain
+list for the same packages on every system. `glibc_i686` holds 32-bit seeds
+(glibc only).
+
+```rhai
+const PACKAGES = #{
+    glibc: ["NetworkManager", "NetworkManager-wifi", "wpa_supplicant"],
+    musl:  ["networkmanager", "networkmanager-cli", "networkmanager-wifi", "wpa_supplicant"],
+};
+const ACCOUNTS = #{ musl: ["g plugdev -"] };
+
+fn configure(tree) {
+    enable_service(tree, "NetworkManager.service", "networkmanager");
+}
+```
+
+Recipe reads only the pins file `NAME.pins` beside the recipe (written by the
+generator, never by Recipe, never by hand); it counts toward the recipe's
+identity. Its form is in [docs/recipe-format.md](docs/recipe-format.md), section
+2.7. A group's version is the pins file's `version` line; Recipe adds the pins'
+bytes to `NEEDS.network_max_bytes`, so the recipe declares only the budget for
+its other sources. For a recipe with `PACKAGES` and no `build`, Recipe:
+
+1. downloads every pin for this system (offline cache first);
+2. unpacks every package into the output tree, natively and without scripts,
+   packages whose `var/` is not kept first, then deleting `var/`, then the
+   packages whose `var/` is kept as state seeds;
+3. places `FILES`;
+4. calls `configure(tree)` or `configure(tree, src)` (`src` is the other
+   `SOURCES`; `steam` takes Valve's tarball, the `xlibre` group its prebuilt
+   server);
+5. finishes the tree.
+
+`configure` writes the group's own configuration into the tree with the tree
+helpers, and exists only with `PACKAGES` and no `build`. It may read `src` but
+the pins stay Recipe's.
+
+A recipe with `PACKAGES` and its own `build(src, out)` (`desktop-runtime`,
+`lib32`) does its own unpacking: Recipe still downloads the pins, skips steps 2
+to 4 and gives `src.packages`, a list in pin order of `#{ name, path, sha256,
+bytes, var, licence }`; the recipe unpacks with `target_extract_rpm` or
+`target_extract_apk`, and a `system` output is still finished by Recipe.
+`packages` is then a reserved source name (written `src.packages`; in a `for`
+loop name the variable `pin`, because `package` is a reserved word in Rhai).
+
+### System trees
+
+A `system` directory output is a root-relative tree (`etc/...`, `usr/...`) that
+`recipe --system` writes into a root with a receipt, so it can be removed again.
+Recipe finishes every `system` output after `configure` or `build`: it removes
+the folders a system package does not own (`run`, `tmp`, `boot`, `home`, `root`,
+`proc`, `sys`, `dev`, `lost+found`, `var/run`, `var/tmp`, `var/lock`) and
+finalizes the tree with owners resolved in the root it is written into, `var/`
+as state seeds (created in the system's `/var` where missing, never overwritten,
+owned or removed) and `ACCOUNTS`. A recipe does not call `target_finalize` on a
+`system` output. Trees for images (`rootfs`, `overlay`, `medium`) are not
+`system` outputs; their recipes finalize them.
+
+`ACCOUNTS` is a map from C library to sysusers.d lines (`u`, `g`, `m`) for
+accounts a tree needs that its packages' own `usr/lib/sysusers.d` does not make
+(Alpine packages make theirs in scripts, which never run). It is only valid with
+a `system` output. Accounts are made as the OS builder makes them: `g` lines,
+then `u` lines, an existing account kept, `-` the highest free id below 1000,
+`u NAME -` takes the group NAME when it exists, `m USER GROUP` adds USER to
+GROUP once. An owner no account resolves fails the change naming the line to
+declare.
+
+### Tree helpers
+
+| Helper | Does |
+| --- | --- |
+| `put(tree, path, text, mode)` | writes `text` at `path` in the tree, replacing what is there, with `mode` in the target metadata |
+| `put_link(tree, path, target)` | a symbolic link at `path` to `target` |
+| `tree_text(tree, path)` | the text of a packaged file; fails naming the file when the packages no longer ship it |
+| `enable_service(tree, unit, service)` | on an `rpm` tree the links `systemctl enable` makes for the systemd `unit`, with its `Alias=` names; on an `apk` tree the OpenRC `service` in the default runlevel; an empty name skips that system |
+
+## verify(out)
+
+An optional check of the result, after `build` or `configure` and before
+installing. It only reads (files and their contents) and starts no program. A
+throw fails the run. It is not run again later: "installed" is Recipe's record.
+
+```rhai
+fn verify(out) {
+    if !is_file(join_path(out, "bin/tool")) { throw "the package has no bin/tool"; }
+}
+```
+
+A check that must run a program (`tool --version`) belongs in `build`. There is
+no helper that reads a link's target, so `verify` cannot check one.
+
+## Steps, states and saved values
+
+Recipe has four steps. `download` fetches `SOURCES` and the pins into the
+download store. `build` unpacks the sources and packages, places `FILES`, runs
+`build` or `configure`, finishes a `system` tree, runs `verify` and keeps the
+result. `install` activates a `package` output, writes a `system` output into
+the root or publishes a producer's outputs. `cleanup` deletes the program's
+downloads, unpacked sources, build material and saved state. `install` does
+every step still missing, in order, then cleanup unless you chose `--keep`; each
+step can be run alone. A recipe without `SOURCES` and `PACKAGES` has no
+download step of its own; a recipe without `build` shows no build step.
+
+The state of a program is `none`, `downloaded`, `built` or `installed`. Recipe
+decides it from its own records (a download by its SHA-256, a result by its
+identity and recorded checksums, an installed program by its receipt); no recipe
+code runs to decide it, and `recipe state NAME` prints it. After a successful
+install the downloads, unpacked source, `WORK` and saved state are deleted;
+files are moved into place, not copied, where both places are on one disk.
+
+An interrupted `build` resumes from the newest checkpoint: Recipe restores it
+and calls `build(src, out)` again from the top. Four helpers:
+
+| Helper | Does |
+| --- | --- |
+| `save(name, value)` | keeps a JSON-compatible value (map, array, string, boolean, `()`, finite number) under `name` |
+| `saved(name)` | the value saved under `name`, or `()` |
+| `checkpoint(name)` | records the work folders, the sources, the output and every saved value as one checkpoint; only inside `build` and `configure` |
+| `reached(name)` | `true` when this run was restored from checkpoint `name` or a later one |
+
+```rhai
+fn build(src, out) {
+    let dir = src.source;
+    if !reached("configured") {
+        exec_checked("./configure", ["--prefix=" + PREFIX], #{ cwd: dir });
+        checkpoint("configured");
+    }
+    exec_checked("make", ["-j" + JOBS], #{ cwd: dir });
+}
+```
+
+A value is saved only together with the files of its checkpoint, a saved value
+never proves work is done (inspect the real files), and Recipe keeps one
+checkpoint at most, deleting it when the install succeeds. `--no-persist-state`
+turns checkpoints off. Most recipes need none of this: in one `build` function
+what used to cross hooks is a local variable. They are for long builds.
 
 A long step can report how far it is with `progress(done, total, what)` (or
-`progress(done, total)`; `total` 0 means unknown, `what` is a short unit such as
-`"packages"`). It is cheap to call in a loop and shows only when the run was
-started with `--progress-file PATH`, which keeps PATH current with the latest report.
+`progress(done, total)`; `total` 0 means unknown). It is cheap in a loop and
+shows with `--progress-file PATH`.
 
-`--force-install`, `--force-build` and `--force-acquire` select progressively more
-work for the main recipe. Dependencies retain their own readiness. Current force
-options are available under `ctx.runtime.options` if a recipe needs to refresh
-its acquisition cache explicitly.
+## Several outputs
 
-## Immutable inputs and target trees
+A recipe that declares several outputs gets `out` as a map from output name to
+path and uses each by name; `install-tools` (`program`, `rootfs`),
+`bun-toolchain` (`compiler`, `runtime`) and `prebuilt-fetch` (`files`,
+`manifest`) are the ones. The kernel recipes have one output, `bundle`. A
+consumer reads `DEPS["bun-toolchain"].compiler`.
+
+```rhai
+fn build(src, out) {
+    copy_file(INPUTS.program, out.program);    // an input is read-only: copied
+    chmod(out.program, 0o755);
+}
+```
+
+## Inputs and target trees
 
 ```sh
 recipe install ./tool.rhai --input source=./offline-source
-recipe isinstalled ./kernel.rhai --input target=./existing-bundle \
+recipe build ./kernel.rhai --input target=./existing-bundle \
   --input kconfig=./kconfig --define KERNEL_TARGET=acorn
 ```
 
-Inputs are read-only at `/inputs/<name>`. Use named inputs for source trees,
-archives, configuration and executable inputs. Defines are genuine recipe
-choices such as a target ABI; they do not expose a host path. Changes to imported
-bytes/modes/links change retained-state identity.
-
-The named `target` input seeds owned `/out` on fresh execution; retained state
-restores the same owned tree. Inspect `ctx.runtime.paths.target` for installation
-and removal. A compiler-image binary under `/usr` is a build tool, not evidence
-that it is installed in the selected product.
-
-Rootfs/target absolute symlink bytes are preserved without host traversal.
-Ordinary source trees require confined relative links. Hardlinks, directory/file
-modes and empty directories survive input/checkpoint/publication. Mutating an
-owned alias affects its owned peers, not the imported input.
-
-## Named output contracts
-
-```rhai
-ctx.outputs.program = join_path(ctx.runtime.paths.output, "bin/tool");
-ctx.outputs.rootfs = join_path(ctx.runtime.paths.output, "rootfs");
-```
-
-Select actual regular files or directories under assigned `/out` or `/work`.
-Choose a complete bundle once when that is the consumer contract; overlapping
-selections can account duplicate published bytes. A successful phase alone is
-not publication: the coordinator validates the complete archive, bounds, links
-and selected paths before publishing the final generation. The returned context
-contains absolute host publication paths; hooks keep using domain paths. Products
-retain coordinator ownership/private export-directory permissions. Privileged
-producers require matching consumer privileges or explicit product installation;
-a returned path or selection symlink grants no additional access.
-
-`NEEDS.outputs` declares the exact names and file/directory kinds. Recipe checks
-the completed installation and cache reuse against that declaration before
-publication. Intermediate phases may expose a subset; every present output is
-validated before checkpointing/publication and must identify its declared kind. Consumers also
-validate the products they use. Never guess a sibling
-build path, accept stale JSON from another invocation or search for an old
-host-built executable. Deleting a published product does not modify retained
-owned files; a later successful invocation can publish a fresh generation.
-
-## Verified acquisition
-
-Source package facts belong in the recipe or an imported facts module:
-
-```rhai
-fn acquire(ctx) {
-    let archive = join_path(ctx.runtime.paths.build, "source.tar.xz");
-    download(ctx.url, archive, ctx.sha256);
-    ctx
-}
-```
-
-Use `download(url, exact_dest, sha256[, resume_bool])`. A full 64-hex SHA256 is
-required. The helper stages bytes, validates status/length/hash and replaces the
-destination only after success. Resume validates response identity/ranges;
-truncated, malformed or wrong-digest transfers cannot replace valid bytes.
-`verify_sha256`, `verify_sha512` and `verify_blake3` validate existing files.
-
-Use `git_checkout(url, exact_dest, full_commit)` for pinned Git. The destination
-is exact, the commit is a full 40/64-hex object id, and acquisition validates the
-origin and selected tree. Git URLs must identify the direct repository; Git
-redirects are disabled. Cached repositories with includes, URL rewrites,
-TLS/proxy overrides, filters or duplicate origins are rejected without changing
-the cache. Hooks, fsmonitor, replacement objects and submodule recursion are
-disabled. Local repositories must be explicit imported inputs; remote transport
-uses the invocation's mediated network grants.
-
-Declare grants as literal data, without helper calls, variables or computed maps:
-
-```rhai
-const NEEDS = #{
-    inputs: #{ source: "directory", config: "file?" },
-    outputs: #{ program: "file", rootfs: "directory" },
-    network: ["publisher.example:443"],
-    memory_mib: 4096,
-    storage_max_objects: 32768,
-    timeout_secs: 3600,
-    network_max_bytes: 8589934592,
-};
-```
-
-An absent field means no inputs/outputs/network, or the existing default limit.
-Optional input kinds end in `?`; absence is allowed, a supplied path must still
-have that kind. Every endpoint, including HTTP redirect destinations, belongs
-in NEEDS. `--network-host` selects a subset and resource flags select lower
-limits; widening fails with the declaration field to edit. Network byte bounds
-and teardown apply to helpers and subprocess clients alike. The configured
-contract pins configured downstream catalog 1002 (separate from upstream Gate 11
-catalog 2), grants outbound connect only for nonempty effective
-network, grants no listener and denies direct MMIO/DMA/raw packets. It still
-relies on Ginux's path, descriptor, resource and numeric endpoint owners.
-
-Dependencies declare their own NEEDS and run in separate instances. Bind their
-inputs explicitly as `DEP::NAME`; no parent's input or grant is inherited. A
-`tools: "directory"` output contributes to the consumer's private tools prefix.
-Other declared products are available at `RUNTIME.paths.dependencies/DEP/OUTPUT`.
-Metadata inspection does not execute setup; invocation explanation uses retained
-authority rather than today's source. Unused endpoint warnings rely on a complete
-bounded network summary, never on absent syscall-log lines.
-
-## Commands and extraction
-
-`exec_checked(program, args[, options])` throws on nonzero exit;
-`exec_output(...)` returns checked stdout; `exec(...)` returns a status that the
-recipe handles deliberately. Arguments are an array. An optional map supports
-child-only `cwd`, `env`, and integer `uid`/`gid` options, without mutating the worker's global environment:
-
-```rhai
-exec_checked("cargo", ["build", "--release", "--locked", "--offline"], #{
-    cwd: "/inputs/source",
-    env: #{CARGO_HOME: join_path(ctx.runtime.paths.build, "cargo")},
-});
-```
-
-Commands only exist in a Ginux run, and need binaries/libraries in the selected image or
-shared tools. Use `shell` only when shell syntax is necessary and quote data.
-For pipelines, use a checked `bash -o pipefail -c ...` or separately checked
-producer/consumer steps. Do not discard extraction failures.
-
-`extract(archive, dest)` and `extract_with_format(archive, dest, format)` use the
-archive helper. Archive extraction remains subject to domain storage ownership,
-path validation and supported runtime operations. A helper existing in the
-registry is not evidence that every external package's executable works.
+Inputs are read-only; `INPUTS.name` is the path. Use named inputs for source
+trees, archives, configuration and executable inputs. Changes to imported
+bytes, modes or links change the identity. The input named `target` is the
+caller's existing tree and seeds the output before `build` runs, so a recipe can
+add to it (with one output, `out` starts as a copy of `INPUTS.target`; with other
+output shapes `target` is refused). A compiler-image binary under `/usr` is a
+build tool, not evidence that something is installed. Rootfs absolute symlink
+bytes are preserved without host traversal; ordinary source trees require
+confined relative links.
 
 ## Host or Ginux
 
@@ -351,87 +511,87 @@ image; everything else runs in Ginux. These helpers put a recipe in Ginux:
 `target_extract_tar`, `command_exists`, `rpm_installed`, `rpm_version`,
 `dnf_*`, `apk_*`, `carry_link_flags` and `carry_libraries`. So do `eval`,
 `Fn(name)` with a computed name and a dynamic `import`. The rule covers the
-recipe, its `extends` base and every module it imports, and any code in them,
-called or not. `recipe info NAME` shows where a recipe runs and, for Ginux, the
-first call that keeps it there.
+recipe, its `extends` base and every module it imports, called or not. `recipe
+info NAME` shows where a recipe runs and, for Ginux, the first call that keeps
+it there.
 
-On the host, spell paths with `RUNTIME.paths`: helpers reach only the run's
-inputs, build/work and output directories, and refuse a literal `/work/...`,
-`/out/...` or any other path, including through a symbolic link that leads
-out. Paths may not use `..`; build them from `RUNTIME.paths`. Downloads reach
-only `NEEDS.network`, and a host name there that resolves to a loopback,
-link-local, private, CGNAT or unique-local address is refused unless the entry
-is that address itself (`"127.0.0.1:8080"`). A recipe that downloads, checks
-digests, unpacks and copies needs nothing else.
+On the host, helpers reach only the run's inputs, work and output paths and
+refuse any other path, `..` and links that lead out; build paths from `INPUTS`,
+`WORK`, `out` and `tree`. Downloads reach only `NEEDS.network`, and a host name
+there that resolves to a loopback, link-local, private, CGNAT or unique-local
+address is refused unless the entry is that address itself. A recipe that
+downloads, checks digests, unpacks and copies needs nothing else; the
+declarations above cover it without any code.
 
-## API 3
+## Verified acquisition inside build
 
-`const RECIPE_API = 3;` declares that a recipe needs what this engine added for
-software written into a system root. This engine runs API 2 and API 3 recipes; an
-engine that knows only API 2 (every engine since API 2 began, 2026-11-06) refuses
-`RECIPE_API = 3` when it compiles the recipe, before setup or any hook runs, with
-"Recipe must declare const RECIPE_API = 2". The released 0.1.x builds predate
-RECIPE_API altogether and cannot run API 2 recipes either. API 3 adds:
-
-- `target_extract_apk(archive, root)`;
-- `target_finalize(root, #{ owners: "apply", accounts: [...], seed: "var" })`:
-  owner names resolved in the root written into, declared `u`/`g`/`m` account
-  lines, and `var/` as state seeds;
-- `ABOUT.systems`, checked against the target root's os-release `ID`, with
-  `--any-system`;
-- `RUNTIME.host.libc` and the `ABOUT.libc` check describe the root a system
-  change writes into, not the machine Recipe runs on;
-- pinned downloads served from the offline cache.
-
-A recipe that declares API 2 and uses `target_extract_apk`, the options form of
-`target_finalize` or `ABOUT.systems` is refused with the line to change.
-
-## Software for the computer's root (`system` outputs)
-
-A `system` directory output is a root-relative tree (`etc/…`, `usr/…`) that
-`recipe --system` writes into a root with a receipt, so it can be removed again.
-It must be finished with `target_finalize`, and may not own `var/`, `run/`,
-`home/`, `boot/` and other shared or runtime data. What a package needs under
-`/var` (spool and lib directories, seed files) is kept as state seeds with
-`seed: "var"`: created in the system's `/var` where missing, with their mode and
-owner, never overwritten, owned or removed. Delete the rest (`run`, `tmp`, ...). Unpack package
-archives with the native helpers, which start no program, so the recipe runs on
-the host:
+Source facts belong in `SOURCES`; `build` downloads only when it cannot declare
+them (rows from a lock module, a store input, a define-selected pin):
 
 ```rhai
-const NEEDS = #{ outputs: #{ system: "directory" }, network: ["dl.fedoraproject.org:443"] };
-// acquire: download(url, archive, sha256) for each pinned package
-fn install(ctx) {
-    for archive in ctx.archives { target_extract_rpm(archive, ctx.tree); }   // or target_extract_apk
-    for d in ["run", "tmp"] { let p = join_path(ctx.tree, d); if exists(p) { rm(p); } }
-    target_finalize(ctx.tree, #{ owners: "apply", seed: "var", accounts: [
-        "g messagebus -",
-        "u messagebus - 'System Message Bus' /var/run/dbus /sbin/nologin",
-        "m sddm video",
-    ] });
-    ctx.outputs.system = ctx.tree;
-    ctx
-}
+download(url, join_path(WORK, "source.tar.xz"), sha256);
 ```
 
-- `target_extract_rpm(archive, root)` reads an RPM, `target_extract_apk(archive,
-  root)` an Alpine `.apk` (its data segment; the signature and control segments,
-  with the install scripts, are skipped). Neither runs package scripts. Both record
-  modes, links, file capabilities (RPM) and owners **by name**.
-- `target_finalize(root, #{ owners: "apply" })` keeps those names: the system change
-  resolves them in the root it writes, after creating the accounts the tree needs
-  there from its own `usr/lib/sysusers.d/*.conf` (Fedora packages ship them) and
-  from `accounts`, a list of sysusers.d `u`/`g`/`m` lines the recipe declares (Alpine
-  packages create theirs in install scripts, which never run, so an Alpine group
-  recipe declares them). Accounts are made as the OS builder makes them: `g` lines,
-  then `u` lines; an existing account is kept; `-` is the highest free id below
-  1000; `u NAME -` takes the group NAME when it exists and otherwise makes it;
-  `m USER GROUP` (after those) adds USER to GROUP, once. An owner no account
-  resolves fails the change, naming the line to declare.
-- `target_finalize(root)` without options resolves names against the tree's own
-  `etc/passwd`/`etc/group` (an image tree), as before.
-- Pinned downloads come from the offline cache when it holds them (see the README),
-  so the same recipe installs offline from an install medium.
+`download(url, exact_dest, sha256[, resume_bool])` requires a full 64-hex
+SHA256, stages bytes, validates status, length and hash and replaces the
+destination only after success. `verify_sha256`, `verify_sha512` and
+`verify_blake3` validate existing files. `git_checkout(url, exact_dest,
+full_commit)` needs a full 40/64-hex commit and a direct repository URL; Git
+redirects are disabled. Declare grants as literal data; every endpoint,
+including redirect destinations, belongs in `NEEDS.network`.
+
+## Commands and extraction
+
+`exec_checked(program, args[, options])` throws on nonzero exit,
+`exec_output(...)` returns checked stdout, `exec(...)` returns a status you
+handle. Arguments are an array; the optional map has child-only `cwd`, `env` and
+integer `uid`/`gid`:
+
+```rhai
+exec_checked("cargo", ["build", "--release", "--locked", "--offline"], #{
+    cwd: INPUTS.source,
+    env: #{ CARGO_HOME: join_path(WORK, "cargo") },
+});
+```
+
+Commands exist only in a Ginux run and need binaries in the selected image or
+dependency tools. Use `shell` only when shell syntax is needed and quote data;
+for pipelines use a checked `bash -o pipefail -c ...` or separately checked
+steps. `extract(archive, dest)` and `extract_with_format` are checked archive
+helpers; `target_extract_rpm`, `target_extract_apk` and `target_extract_tar`
+extract into a target tree with its metadata (see
+[docs/target-metadata.md](docs/target-metadata.md)).
+
+## Dependencies and inheritance
+
+```rhai
+let deps = ["desktop-libs"];
+let build_deps = ["desktop-runtime"];
+```
+
+`deps` are installed before the recipe and stay (runtime); `build_deps` are
+there only while it builds. Each dependency runs separately under its own
+`NEEDS`; no parent grant is lent. A dependency's outputs reach the consumer
+through `DEPS`; a `tools` output is also put on the consumer's `PATH`. Bind a
+dependency's input with `--input DEP::NAME=PATH`.
+
+`//! extends: base.rhai` on the first line makes the file a child of a base
+recipe. The base holds the shared code and the child completes it. A function
+the child defines replaces the base's of the same name and arity, and a function
+the base calls and only the child defines is the child's part of the template.
+A declaration is taken whole from the child when it has it, else whole from the
+base; maps are never merged field by field, and `NEEDS` must be in the child.
+One level only. Templates in use: `locked-preseed` (the child imports its lock,
+defines `rows()`), `package-effects` (the child defines `verify_inputs()`,
+`unpack(root)` and `package_effects(root)`) and `rootfs-producer` (the child
+sets `const INIT_SYSTEM = "systemd";`).
+
+`import "path.rhai" as name;` has a literal path relative to the recipe's folder.
+A module has no `RECIPE_API` and no `NEEDS`, and `recipe list` skips it. Its
+functions see the engine's constants. Shared modules in the LevitateOS
+workspace: `look.rhai` (palette), `os-facts.rhai` (generated), the lock modules
+(`fn packages()` returning `[name, id, URL, SHA256]` rows). A remote source
+carries the modules its recipes import.
 
 ## A root's effects recipe
 
@@ -441,120 +601,86 @@ run). After every successful system change Recipe runs it once against the root
 it changed:
 
 ```rhai
-const RECIPE_API = 3;
+const RECIPE_API = 1;
 const NEEDS = #{ inputs: #{ root: "directory" }, outputs: #{ system: "directory" } };
-// RUNTIME.paths.inputs + "/root" is the changed root, read-only. Write only the
-// cache files (e.g. usr/lib64/gdk-pixbuf-2.0/2.10.0/loaders.cache) under a tree,
-// target_finalize it, and set ctx.outputs.system to it. No runtime deps.
+const PACKAGE = #{ name: "root-effects", version: "1", description: "Caches of a root" };
+const RERUN = true;
+// INPUTS.root is the changed root, read-only. Write only the cache files
+// under `out`; Recipe finishes the system tree afterwards.
+fn build(src, out) { /* ... */ }
 ```
 
 Its `system` output is written into the root as the reserved package
-`system-effects`, which replaces its own previous files at each run. A recipe
-that runs the root's own programs runs in Ginux, like any recipe that starts a
-program. A failure is reported and does not undo the change; `--no-effects`
-skips the run (README, "Root effects").
+`system-effects`. `RERUN = true` means the recipe is run every time it is asked
+for and never "built". A recipe that runs the root's own programs runs in Ginux.
+A failure is reported and does not undo the change; `--no-effects` skips the run
+(README, "Root effects").
 
-## Dependencies and inheritance
+## UPSTREAM and latest()
 
-Literal declarations are discovered before launch without evaluating Rhai:
+Where the newest version can be found. Recipe asks only when the user asks
+(`recipe updates --upstream`), never by itself, and only tells; it never edits a
+recipe or installs a version the recipe does not name.
 
 ```rhai
-let deps = ["runtime-tools"];
-let build_deps = ["compiler-tools"];
+const UPSTREAM = #{ github: "sharkdp/bat", prefix: "v" };
 ```
 
-Each dependency runs in its own Ginux instance under its own NEEDS and matching
-state/filesystem identity. Caller restrictions narrow every instance across the
-graph; the parent never lends a grant. Validated direct dependency products are
-snapshotted into the consumer at `runtime.paths.dependencies`. A directory output
-named `tools` also populates that consumer's private `runtime.paths.tools`, whose
-executables are prepended to worker PATH. Custom dependency readiness remains
-active. Do not depend on host build-directory conventions or paths in another
-instance.
+`github` is `OWNER/REPO` (the newest release that is not a pre-release);
+`prefix` is text to take off the tag (`"v"`, `"jq-"`; default none). For a
+release page Recipe cannot read this way, define `latest()`, which returns the
+newest version as a string:
 
-A child can start with `//! extends: base.rhai`. The loader compiles/merges the
-base first; child functions of the same name/arity override it. Setup statements
-run base-first. Only one level is supported: a base that itself extends fails.
-Literal imports preserve module paths. Cycles and dynamic imports/dependency
-declarations fail preparation. Pure facts modules need no
-executable lifecycle.
+```rhai
+fn latest() {
+    http_get("https://go.dev/VERSION?m=text").split("\n")[0].sub_string(2)
+}
+```
 
-## Cleanup and failure
+`UPSTREAM.github` is asked by Recipe itself over HTTPS, without `NEEDS`.
+`latest()` runs alone on the host, may not start programs, sees no inputs and no
+output, and reaches only `NEEDS.network`. A recipe has `UPSTREAM`, `latest()` or
+neither; groups have neither (their versions follow the locks).
 
-Omit `cleanup` when there is no recipe-specific cleanup. A defined hook accepts
-`cleanup(ctx, reason)` and returns updated context. Reasons are `manual` and
-`auto.<phase>.<success|failure>`. Manual `recipe cleanup --reason TEXT` passes the
-explicit reason. Guard cleanup of useful cache/product files by the reason;
-automatic success cleanup must not erase a product needed by readiness.
+## cleanup(reason)
 
-A cleanup error after success fails the command. Failure cleanup errors are
-reported alongside the original failure. A completed failure-cleanup hook has its
-returned `ctx.state` and matching files checkpointed, so restart restores that
-last complete cleanup. The producer operation still fails and publishes nothing;
-cleanup/checkpoint diagnostics preserve its primary failure. Source inputs and previous publications
-remain immutable; failed work is not published. `remove` modifies the owned
-selected target, not the live host system.
+An optional function for something of the recipe's own to delete. Recipe
+already deletes downloads, unpacked sources, `WORK` and saved state after a
+successful install, so most recipes need none. It receives `reason`: `manual`
+(what `recipe cleanup` passes) or `auto.<phase>.success` and
+`auto.<phase>.failure`, where `<phase>` is the step that just ended: `download`,
+`build` or `install` (the worker's last step is `build` when the recipe defines
+`build()`, else `install`; `auto.install.*` appears only for recipes without
+`build`). Top-level code runs before it. It runs once at the end of a run, after
+the engine's own clean-up, cannot stop the engine deleting material, sees the
+constants and helpers, has no `src` and no `out`, may delete files and start
+programs, and must not delete installed files. A failure after a success fails
+the command; after a failure it is reported next to the first error.
+
+## Failure
+
+A throw fails the run and is reported with the step and the line; what to do
+about it is the user's. Recipe never asks an AI: no declaration, function,
+helper, command or option calls a language model or starts an agent. Write a
+failure message that gives the facts and the way forward. Cleanup errors after a
+success fail the command. Source inputs and earlier publications stay immutable;
+failed work is not published.
 
 See the [README recovery section](README.md#state-diagnostics-and-recovery) for
-checkpoint/log paths, retention, cancellation and timeouts. Optional coordinator
-repair is explicit and cannot rewrite readiness checks to obtain success.
+log paths, retention, cancellation and timeouts.
 
-## Metadata and verification
+## Checking a recipe
 
-`recipe list` and `recipe info` use the loader's merged declared metadata.
-Literal inherited name/version/description are available without running setup.
-Dynamic expressions are unavailable metadata; malformed literals fail clearly.
-No coordinator-side Rhai evaluation is used for discovery.
+`recipe info FILE.rhai` reads a recipe in seconds without running it: its
+declarations, where it runs, what it is missing (for example a source host not
+in `NEEDS.network`). `recipe validate` also checks dependencies, input bindings
+and compiled contracts. Extra rules the declarations check: `ACCOUNTS` only with
+a `system` output; `configure` only with `PACKAGES` and no `build`; `PACKAGES`
+without `build` needs exactly one directory output; a whole-folder `from` goes
+to a folder `to` without a mode; a `file` output takes exactly one `[from, ""]`
+entry; a pins file beside a recipe without `PACKAGES` is refused; a source host
+missing from `NEEDS.network` is an error. A successful compile is source
+evidence; a managed run proves only its observed image, recipe and workload.
 
-A recipe may also say what a front end should show about it, in a literal
-`const ABOUT = #{...};` beside NEEDS: `kind`, `category`, `details`, `homepage`,
-`license`, `adds`, per-hook `steps` notes and `keeps` (the superproject's
-`docs/recipe-front-end-format.md` has the fields). Like NEEDS it holds no helper
-calls or variables. `recipe list --json` passes it through as written; it is the
-author's claim and is not enforced. `recipes/ripgrep.rhai` has one.
-
-`ABOUT.libc` is a list from `"glibc"` and `"musl"`: the C libraries the recipe's
-build works with, e.g. `libc: ["glibc"]` for a package wrapping an upstream build
-linked against glibc. Absent means any (static builds, or builds made for the
-host). Other values are rejected where ABOUT is read. `recipe info`,
-`recipe list --json` and `recipe index` show it. Before `install` or `update`
-acquires anything, Recipe compares it with `RUNTIME.host.libc` for the recipe and
-its runtime `deps` (not `build_deps`, which run in the sandbox image). When the
-host's C library is known and not listed, Recipe states the facts (what the build
-is linked against, what this system's C library is, that as packaged the loader
-would be missing) and the flag that installs it anyway, `--any-libc`, and exits
-nonzero; `--json` adds a record `{"failure": {"kind": "libc_mismatch", "recipe",
-"build_libc", "host_libc", "carried_libc", "override_flag", "needed_by",
-"message"}}`. With `--any-libc` the install goes ahead with one note line.
-
-`ABOUT.systems` (API 3) is a list of os-release `ID`s, e.g. `systems:
-["levitateos", "acornos"]` (the `ID=` the LevitateOS and AcornOS images write,
-from `os_id` in each variant's `distro.toml`). The recipe runs only where the
-root's `etc/os-release` (else `usr/lib/os-release`) has one of them; a root with
-none matches none. The same decision as the C library check gives the facts and
-the flag `--any-system`; `--json` adds `{"failure": {"kind": "system_mismatch",
-"recipe", "systems", "host_system", "override_flag", "needed_by", "message"}}`,
-and `recipe list --json` shows it as `runs_here: false` with
-`not_runnable_reason` and `not_runnable_override` (the flag). For a system
-change, "this system" is the root written into.
-`ABOUT.libc_carried: true`
-says the package brings its own C library and loader (it carries them from a
-library recipe with `carry_libraries`, as `antigravity` does from
-`desktop-runtime`): its program finds its loader on any system, so the facts say
-instead that it was made and tried on the listed C library and not yet on this
-one; the record has `"carried_libc": true`. The check is advice with
-that override. Write the recipe's own `details` and comments the same way: state
-what the build is linked against and the way forward.
-
-Compile syntax before runtime, then exercise the real CLI with representative
-inputs, reuse, changed input, remove and failure paths. A successful compile is
-source evidence; a managed run proves only its observed image/recipe/workload.
-Do not rebuild kernels just to validate caller or prepared-bundle migration.
-
-Kernel producers default to the LevitateOS pin; builders select Acorn explicitly
-with `KERNEL_TARGET=acorn`. Source kernel builds require the selected compiler
-image to contain their build tools. The historical linux-deps DNF fallback has
-no declared mirror grants and is unsupported in this release; a parent kernel
-publisher grant is never borrowed for it. Kernel rebuilds are excluded from
-release acceptance, as recorded by PRD19. This limitation is separate from the
-prebuilt kernel bundle path.
+Kernel producers default to the LevitateOS pin; builders select Acorn with
+`KERNEL_TARGET=acorn`. Kernel rebuilds are excluded from release acceptance.

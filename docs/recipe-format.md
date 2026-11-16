@@ -4,9 +4,9 @@ Status: the specification for API 1, approved 2026-11-16 under the owner's
 standing go (phase B of [`next-recipe-format-plan.md`](next-recipe-format-plan.md)).
 The decisions were taken by the orchestrator with the recommended answers; they
 are listed in section 11 and in the plan's section "Decisions taken while the
-owner was away", and the owner may reverse any of them. Nothing in it is
-built. It replaces [`WRITING_RECIPES.md`](../WRITING_RECIPES.md) and the
-man pages once the engine follows it.
+owner was away", and the owner may reverse any of them. It is the contract:
+[`WRITING_RECIPES.md`](../WRITING_RECIPES.md) and the man pages follow it, and
+section 12 lists the clarifications taken while building.
 
 It starts from the plan's 18 proposed answers and the owner's decisions in
 [`next-recipe-format.md`](next-recipe-format.md). Each answer was checked
@@ -1369,7 +1369,7 @@ const NEEDS = #{ outputs: #{ sdk: "directory" }, network: ["dl.fedoraproject.org
 
 fn build(src, out) {
     let unpacked = join_path(WORK, "unpacked");
-    for package in src.packages { target_extract_rpm(package.path, unpacked); }
+    for pin in src.packages { target_extract_rpm(pin.path, unpacked); }   // `package` is a reserved word in Rhai
     // ... keep the shared libraries flat in out/lib, compile the schemas, check the closure
 }
 ```
@@ -1606,3 +1606,67 @@ it follows the plan's answer 12.
 26. **`recipe cleanup --logs` and `recipe runtime remove` remove logs and the
     build image.** Why: every kind needs a way to be removed, and these two
     have none today.
+
+## 12. Clarifications from the build (2026-11-16)
+
+Choices taken while building where the sections above were silent. They are part
+of the format.
+
+- `package` is a reserved word in Rhai: loop variables over `src.packages` are
+  named `pin` (the example in 9.6 is corrected).
+- `PACKAGES_SOURCE = "packages"` is the reserved source name for
+  `src.packages`. With `PACKAGES` present, the packages count as a source for
+  the "one source, name left out" rule in `FILES`.
+- Network budget: with `PACKAGES` present the budget is 0 plus the pins' bytes;
+  `network_max_bytes` is left out of plain groups.
+- `UPSTREAM`: groups have none; only programs from upstream releases do.
+- Archive endings are the listed formats and their short forms (`.tgz`, `.txz`,
+  `.tbz2`, `.tzst`); `.tar` and `.apk` stay single files.
+- A source host missing from `NEEDS.network` is an error.
+- Declaration rules: `ACCOUNTS` only with a `system` output; `configure` only
+  with `PACKAGES` and no `build`; `PACKAGES` without `build` needs exactly one
+  directory output; a whole-folder `from` goes to a folder `to` without a mode;
+  a `file` output takes exactly one `[from, ""]` entry; a pins file beside a
+  recipe without `PACKAGES` is refused.
+- The pins file is staged at the recipe's domain name with `.pins` (`main.pins`
+  for the main recipe). A group whose `PACKAGES` lists are empty but whose pins
+  file has a section for that C library is a shared group filled by the
+  generator (`desktop-libs`). A C library with no seeds has its key left out of
+  `PACKAGES`.
+- A run-a-program check does not belong in `verify`; it moves into `build`.
+  `verify` cannot check link targets (no read-link helper).
+- A download's saved name allows letters, digits, `.`, `_`, `+` and `-`; a URL
+  ending in anything else needs an explicit `file:`.
+- Several whole folders named into one output merge; later entries do not
+  replace the tree. `FILES` keeps symbolic links inside a whole folder.
+  Whole-folder entries keep the archive's own file modes.
+- A `FILES` list cannot name a different source per C library: a recipe that
+  needs that reads `src.glibc` and `src.musl` in `build`. `ACCOUNTS` is a map
+  from C library.
+- `PACKAGE` must be literal, so a description that was computed from a lock now
+  carries the release in text. Functions see the literal `PACKAGE` constant
+  (`PACKAGE.version`).
+- Top-level code also runs before `cleanup(reason)`. The `<phase>` in a cleanup
+  reason is the worker's last step: `build` when the recipe defines `build()`,
+  else `install`; `auto.install.*` appears only for recipes without `build`.
+- With a single output, `out` is placed at `/out/NAME` and the `target` input
+  seeds that folder; `target` with other output shapes is refused.
+- `checkpoint` works only inside `build` and `configure`; `save` and `saved`
+  anywhere. `latest` runs as a worker operation on the host. `verify`'s
+  read-only rule is not enforced by the engine.
+- Visibility of the engine's constants is a variable resolver, not a module
+  (Rhai's optimizer would inline module variables over same-named parameters).
+- `recipe installed --json` carries no `files`; programs and menu entries come
+  from `ABOUT.adds`. `recipe list --json` carries each recipe's `sources`.
+- The `step` event has a fixed set of statuses: `running`, `done`, `already`,
+  `none`, and a skipped or failed step says so. `output` and `say` events carry a
+  recipe's text for a front end. `recipe updates --upstream` takes recipe names
+  as plain arguments.
+- State and disk figures for programs not installed come from the computer's
+  store; a person's own store may differ. A kept program's material counts under
+  `kept`; an unfinished run's only under `unfinished`.
+- The `--system` scope has `state` only; it has no `download`, `build` or
+  `cleanup`.
+- A cleanup result (8.6) carries `outputs: {}`. The builder passes the same
+  `--define` and `--input` flags to `cleanup` as to install, so recipes with
+  required ones load.

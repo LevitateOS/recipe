@@ -1,6 +1,6 @@
 # Recipe helper reference
 
-The executable contract is `const RECIPE_API = 2;`. This catalog follows
+The executable contract is `const RECIPE_API = 1;` ([docs/recipe-format.md](docs/recipe-format.md)). This catalog follows
 `src/helpers/mod.rs::register_all`. A recipe that can reach a helper that starts
 a program (`PROGRAM_HELPERS` in the same file) runs in Ginux, under its
 configured filesystem, task, memory and network assignments. Any other recipe
@@ -13,10 +13,12 @@ package/tool variant. Use the actual compiler/acquisition image and preserve
 the consumer's locks and metadata checks. [Runtime limits](docs/runtime-limits.md)
 defines the supported clock, poll, resource, network and timestamp boundaries.
 
-Checks use `ready(ctx)`/`needs_work(ctx, reason)`; native helper errors fail the
-check unless the recipe explicitly handles them. Phase hooks return context.
-`RUNTIME` during setup and `ctx.runtime` during hooks provide invocation paths;
-`ctx.state` is the only restored recipe namespace.
+There are no readiness checks, no `ctx` and no `RUNTIME`: `ready` and
+`needs_work` are gone. A native helper error fails the run unless the recipe
+handles it. A recipe reads the engine's constants (`PREFIX`, `JOBS`,
+`HOST_LIBC`, `PACKAGE_FORMAT`, `INPUTS`, `DEFINES`, `DEPS`, `WORK`) for paths and
+facts, and the only values restored after an interruption are those it saved
+with `save` and a `checkpoint`.
 
 ## Registered helpers
 
@@ -32,9 +34,10 @@ check unless the recipe explicitly handles them. Phase hooks return context.
 | `append_line_if_missing` | ``helpers/install/io.rs`` | `append_line_if_missing(path, line) -> bool` | appends exact line once |
 | `basename` | ``helpers/util/paths.rs`` | `basename(path) -> String` |  |
 | `check_disk_space` | ``helpers/install/disk.rs`` | `check_disk_space(path, required_bytes) -> ()` | `df -k` based |
+| `checkpoint` | `core/saved.rs` | `checkpoint(name) -> ()` | Record the work folders, sources, output and every saved value as one checkpoint; only inside `build` and `configure`; one checkpoint at most, deleted when the install succeeds. |
 | `chmod` | ``helpers/install/filesystem.rs`` | `chmod(path, mode) -> ()` | unix mode |
 | `command_exists` | `helpers/util/process.rs` | `command_exists(name) -> bool` | Probe current domain PATH. |
-| `carry_libraries` | `helpers/install/carry.rs` | `carry_libraries(package, prefix, search:Array) -> Array` | Experimental. Copies into `package/lib/` the loader and every shared library that the programs in `package/bin/`, and the programs and plug-ins the recipe put under `package/lib/`, load, from `search` then the build image (the C library whole from the first folder holding its loader), and writes into each file its loader and library folder under `prefix` (`RUNTIME.paths.prefix`): into the room `carry_link_flags()` reserved, or by rewriting a file linked elsewhere with a new loadable segment and `$ORIGIN`-relative folders; then checks that every program and file under `lib/` finds all it needs, with its symbol versions, inside the package. |
+| `carry_libraries` | `helpers/install/carry.rs` | `carry_libraries(package, prefix, search:Array) -> Array` | Experimental. Copies into `package/lib/` the loader and every shared library that the programs in `package/bin/`, and the programs and plug-ins the recipe put under `package/lib/`, load, from `search` then the build image (the C library whole from the first folder holding its loader), and writes into each file its loader and library folder under `prefix` (`PREFIX`): into the room `carry_link_flags()` reserved, or by rewriting a file linked elsewhere with a new loadable segment and `$ORIGIN`-relative folders; then checks that every program and file under `lib/` finds all it needs, with its symbol versions, inside the package. |
 | `carry_link_flags` | `helpers/install/carry.rs` | `carry_link_flags() -> String` | Experimental. Linker flags for every program and library of a package: a long stand-in library folder that reserves the room `carry_libraries` writes into. |
 | `contains` | ``helpers/util/string.rs`` | `contains(s, pat) -> bool` |  |
 | `copy_file` | ``helpers/install/filesystem.rs`` | `copy_file(src, dst) -> ()` | exact destination path |
@@ -50,6 +53,7 @@ check unless the recipe explicitly handles them. Phase hooks return context.
 | `dnf_install_allow_erasing` | ``helpers/util/process.rs`` | `dnf_install_allow_erasing(packages:Array) -> ()` | Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used. |
 | `dnf_package_available` | ``helpers/util/process.rs`` | `dnf_package_available(name) -> bool` | Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used. |
 | `download` | `helpers/acquire/download.rs` | `download(url, dest, sha256[, resume:bool]) -> String` | Required SHA256; staged verified replacement; failure preserves valid destination. In a host run, a payload the offline cache holds (`CACHE/sha256/HEX`) is copied from there with no network. |
+| `enable_service` | `helpers/tree.rs` | `enable_service(tree, unit, service) -> ()` | On an `rpm` tree the links `systemctl enable` makes for the systemd `unit`, with its `Alias=` names; on an `apk` tree the OpenRC `service` in the default runlevel; an empty name skips that system. |
 | `ends_with` | ``helpers/util/string.rs`` | `ends_with(s, suffix) -> bool` |  |
 | `env` | `helpers/util/env.rs` | `env(name) -> String` | Read the explicit worker environment; empty when absent. |
 | `exec` | ``helpers/util/process.rs`` | `exec(cmd, args:Array [, options:Map]) -> int` | explicit exit status; child-only cwd/env/uid/gid |
@@ -74,18 +78,21 @@ check unless the recipe explicitly handles them. Phase hooks return context.
 | `log` | ``helpers/util/log.rs`` | `log(msg) -> ()` | diagnostic stream via `src/diagnostics.rs` |
 | `mkdir` | ``helpers/install/filesystem.rs`` | `mkdir(path) -> ()` | side-effecting |
 | `mv` | ``helpers/install/filesystem.rs`` | `mv(src, dst) -> ()` | rename |
-| `needs_work` | `core readiness` | `needs_work(ctx, reason) -> Map` | Check requests work with a nonempty reason. |
 | `parse_version` | ``helpers/acquire/http.rs`` | `parse_version(s) -> String` | strips v/release-/version- |
 | `print` | `Rhai built-in; callback in `helpers/mod.rs`` | `print(value) -> ()` | stderr; keeps JSON/protocol stdout intact |
 | `progress` | ``helpers/util/log.rs`` | `progress(done, total[, what]) -> ()` | reports to the coordinator's `--progress-file`; `total` 0 is unknown |
+| `put` | `helpers/tree.rs` | `put(tree, path, text, mode) -> ()` | Write `text` at `path` (relative, inside `tree`), replacing what is there, with `mode` in the target metadata. |
+| `put_link` | `helpers/tree.rs` | `put_link(tree, path, target) -> ()` | A symbolic link at `path` in `tree` to `target`. |
+| `reached` | `core/saved.rs` | `reached(name) -> bool` | True when this run was restored from checkpoint `name` or a later one. |
 | `read_file` | ``helpers/install/io.rs`` | `read_file(path) -> String` |  |
 | `read_file_or_empty` | ``helpers/install/io.rs`` | `read_file_or_empty(path) -> String` |  |
-| `ready` | `core readiness` | `ready(ctx) -> Map` | Check succeeds with updated context. |
 | `replace` | ``helpers/util/string.rs`` | `replace(s, from, to) -> String` |  |
 | `replace_in_file` | ``helpers/install/io.rs`` | `replace_in_file(path, from, to) -> ()` | whole-file text replacement |
 | `rm` | ``helpers/install/filesystem.rs`` | `rm(pattern) -> ()` | glob delete |
 | `rpm_installed` | ``helpers/util/process.rs`` | `rpm_installed(name) -> bool` | Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used. |
 | `rpm_version` | ``helpers/util/process.rs`` | `rpm_version(name) -> String` | Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used. |
+| `save` | `core/saved.rs` | `save(name, value) -> ()` | Keep a JSON-compatible value under `name`, together with its checkpoint's files; never proof that work is done. |
+| `saved` | `core/saved.rs` | `saved(name) -> Dynamic` | The value saved under `name`, or `()`. |
 | `shell` | ``helpers/util/shell.rs`` | `shell(cmd) -> ()` | uses `sh -c` |
 | `shell_in` | ``helpers/util/shell.rs`` | `shell_in(dir, cmd) -> ()` | run in directory |
 | `shell_output` | ``helpers/util/shell.rs`` | `shell_output(cmd) -> String` | captures stdout |
@@ -102,8 +109,9 @@ check unless the recipe explicitly handles them. Phase hooks return context.
 | `target_extract_apk` | `helpers/target.rs` | `target_extract_apk(archive, root) -> ()` | Extract the data segment of an Alpine `.apk` natively (signature and control segments skipped, no install script runs), recording modes, owner names and links like `target_extract_tar`; reads no account file, runs on the host. |
 | `target_extract_tar` | `helpers/target.rs` | `target_extract_tar(archive, root) -> ()` | Extract staging payload while retaining target ownership, modes, links and SCHILY xattrs. |
 | `target_finalize` | `helpers/target.rs` | `target_finalize(root) -> ()` | Resolve target accounts and bind final payload bytes to the target metadata manifest; run after recipe policy. |
-| `target_finalize` | `helpers/target.rs` | `target_finalize(root, #{ owners: "apply", accounts: [lines], seed: "var" }) -> ()` | RECIPE_API 3. For a `system` output: keep owner names for the root the system change writes, keep `var/` as state seeds (created there only where missing, never owned), and declare sysusers.d `u`/`g`/`m` lines to create there with the tree's own `usr/lib/sysusers.d` accounts. |
+| `target_finalize` | `helpers/target.rs` | `target_finalize(root, #{ owners: "apply", accounts: [lines], seed: "var" }) -> ()` | What Recipe does itself to every `system` output (a recipe does not call it on one). For such a tree: keep owner names for the root the system change writes, keep `var/` as state seeds (created there only where missing, never owned), and declare sysusers.d `u`/`g`/`m` lines to create there with the tree's own `usr/lib/sysusers.d` accounts. |
 | `target_mode` | `helpers/target.rs` | `target_mode(root, relative_path, mode:int) -> ()` | Set intended target permissions independently of writable staging grants. |
+| `tree_text` | `helpers/tree.rs` | `tree_text(tree, path) -> String` | The text of a packaged file in `tree`; fails naming the file when the packages no longer ship it. |
 | `trim` | ``helpers/util/string.rs`` | `trim(s) -> String` |  |
 | `verify_blake3` | ``helpers/acquire/verify.rs`` | `verify_blake3(path, expected) -> ()` | explicit file |
 | `verify_sha256` | ``helpers/acquire/verify.rs`` | `verify_sha256(path, expected) -> ()` | explicit file |
@@ -140,9 +148,9 @@ recipe and helper diagnostics go to stderr; stdout remains final JSON/protocol.
 
 ## Paths and products
 
-Build work is `ctx.runtime.paths.build`; shared dependency tools are
-`ctx.runtime.paths.tools`; imported inputs are below `ctx.runtime.paths.inputs`.
-Owned target/output is `ctx.runtime.paths.target`/`.output`, both `/out`.
-Select actual files/directories in `ctx.outputs` for validated publication.
-Published generations and imported inputs are immutable. See
-[WRITING_RECIPES.md](WRITING_RECIPES.md) for the full lifecycle and examples.
+Build material goes in `WORK`; imported inputs are `INPUTS.NAME`; dependency
+outputs are `DEPS`; `build(src, out)` receives the output (`out`) and
+`configure(tree)` the system tree. On a host run every file helper refuses a
+path outside those. Published generations and imported inputs are immutable.
+Recipe validates the output before publishing it. See
+[WRITING_RECIPES.md](WRITING_RECIPES.md) for the format and examples.

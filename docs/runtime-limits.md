@@ -1,5 +1,3 @@
-> **Superseded 2026-11-16** by [recipe-format.md](recipe-format.md) (API 1). This note describes the old recipe format (`ctx`, `RUNTIME`, the hooks) as current; it is kept as history and is not the reference.
-
 # Supported execution boundaries
 
 The current configured contract targets Linux/x86-64. macOS and other native
@@ -9,7 +7,7 @@ implement every Linux syscall variant, flag or backend.
 
 Select the source pair that implements the capabilities your consumer requires.
 The [setup guide's delivered baseline](setup-linux.md) predates the local
-compiler FD/path/stack/event and manual-readiness corrections below. Their
+compiler FD/path/stack/event corrections below. Their
 final source delivery and security/product acceptance remain open in the
 superproject's `docs/ginux-contributions/prd15-product-contract.md`; this page
 describes their bounded contract, not a completed release acceptance claim.
@@ -58,16 +56,15 @@ the detailed policy and original source-bound receipts. Current release and VM
 acceptance remain separately tracked in `docs/ginux-contribution-task-list.md`;
 earlier receipts do not certify a later delivered source/image combination.
 
-Manual `isacquired`, `isbuilt` and `isinstalled` checks require matching cached
-products from every dependency, including build dependencies. Dependencies run
-only their installed checks, in dependency order; acquire/build/install hooks
-never run to repair a cache miss. The same checked product snapshots restore the
-parent's installed input identity. Missing or changed dependency inputs/products
-fail explicitly; use `install` separately to prepare them. These checks preserve
-separate dependency authority and caller restrictions.
+A recipe's dependencies run in separate instances with their own authority and
+the caller's restrictions. `recipe remove` and `recipe cleanup` act on the named
+program only: they never install a dependency and never run a dependency's
+`cleanup` function. `recipe state` is Recipe's own record and starts no
+recipe code, so it needs no dependency products. Use an explicit `install` to
+prepare unavailable dependency products.
 
-Explicit `remove`/`cleanup` follows that same cached-dependency rule, restoring
-the parent's matching saved state/files. Missing or changed dependency products
-fail before the main hook, preserving its prior state and publications. Neither
-operation runs dependency acquire/build/install or remove/cleanup hooks. Use an
-explicit install to prepare unavailable matching dependency products.
+Everything a run keeps on disk (downloads, unpacked sources, the work folder, a
+result not installed, an interrupted run's saved state) is bounded by the
+recipe's `NEEDS.storage_max_bytes` and `storage_max_objects` while it runs, and
+deleted after a successful install unless the keep option is on; see
+[recipe-format.md](recipe-format.md), section 6.5.
