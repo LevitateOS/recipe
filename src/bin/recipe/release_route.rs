@@ -39,8 +39,8 @@ use std::path::{Path, PathBuf};
 
 use super::cli::Cli;
 use super::system_route::{
-    Roots, effects, finish, immutable, load_record, now, pending_json, producer_args,
-    roots, save_record, settle, tell, timed, write_into,
+    Roots, effects, finish, immutable, load_record, now, pending_json, producer_args, roots,
+    save_record, settle, tell, timed, write_into,
 };
 
 /// Where the root is, and what kind of root it is.
