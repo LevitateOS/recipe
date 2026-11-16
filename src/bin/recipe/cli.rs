@@ -286,7 +286,7 @@ pub(crate) enum Commands {
 
     /// List recipe declarations in the selected collection, not installed applications
     #[command(
-        after_help = "Examples:\n  recipe list\n  recipe list --recipes-path ./recipes\n  recipe list --json\n\n--json prints one entry per recipe for a front end: name, version, description,\nABOUT, NEEDS, dependency names and defined hooks. Nothing is run and no Ginux\nlauncher is needed. A recipe that cannot be read is reported under \"problems\"."
+        after_help = "Examples:\n  recipe list\n  recipe list --recipes-path ./recipes\n  recipe list --json\n\n--json prints one entry per recipe for a front end: name, version, description,\nABOUT, NEEDS, dependency names, steps, functions, upstream, and the state on this\nsystem. Nothing is run and no Ginux launcher is needed. A recipe that cannot be read is reported under \"problems\"."
     )]
     List,
 
@@ -349,8 +349,10 @@ pub(crate) enum Commands {
         release: PathBuf,
     },
 
-    /// Show recipe information
-    #[command(after_help = "Examples:\n  recipe info kitty\n  recipe info ./recipes/kitty.rhai")]
+    /// Show what a recipe declares, read without running it
+    #[command(
+        after_help = "Examples:\n  recipe info kitty\n  recipe info ./recipes/kitty.rhai --json\n\nReads the declarations (PACKAGE, SOURCES, FILES, PACKAGES with the pins file, ...)\nand refuses an old recipe form with the line to change. --json prints the entry\n'recipe list --json' gives for it."
+    )]
     Info {
         /// Recipe path or recipe name. Name lookup follows the same rules as `recipe install`.
         recipe: PathBuf,

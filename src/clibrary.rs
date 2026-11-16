@@ -505,20 +505,12 @@ fn visit(
         return Ok(());
     }
     seen.push(recipe.to_owned());
-    let name = crate::declared_metadata(recipe, search_path)
-        .ok()
-        .and_then(|declared| {
-            (!declared.dynamic_fields.contains("name"))
-                .then(|| declared.fields.get("name").cloned())
-                .flatten()
-        })
-        .unwrap_or_else(|| {
-            recipe
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or_default()
-                .to_owned()
-        });
+    // The name is the file name (docs/recipe-format.md, decision 3).
+    let name = recipe
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default()
+        .to_owned();
     // A recipe this check cannot read is left to the command itself, which
     // reports why in its own order (options first, then the recipe).
     let (Ok(libc), Ok(declaration)) = (

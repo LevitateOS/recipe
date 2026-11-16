@@ -1145,6 +1145,7 @@ fn read_folder(path: &Path, recipes: &mut Vec<serde_json::Value>, problems: &mut
         .filter(|path| {
             path.extension()
                 .is_some_and(|extension| extension == "rhai")
+                && !catalog::is_module(path)
         })
         .collect();
     names.sort();

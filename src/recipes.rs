@@ -10,6 +10,8 @@ use std::path::{Component, Path, PathBuf};
 pub const DEPENDENCY_FIELDS: [&str; 2] = ["deps", "build_deps"];
 
 /// Recipe bindings the engine owns or reads, which a `--define` must not shadow.
+// C2: defines become `DEFINES.NAME` (declared in NEEDS.defines, checked by
+// `crate::needs::check_defines`), so this list goes with the bare constants.
 pub const RESERVED_NAMES: [&str; 6] = [
     "RUNTIME",
     "RECIPE_API",

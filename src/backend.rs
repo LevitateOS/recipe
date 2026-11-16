@@ -73,26 +73,9 @@ impl Runner<'_> {
             // needs this time when its own checks have run (`plan` with `recipe`).
             let recipes: Vec<_> = graph
                 .iter()
-                .map(|node| {
-                    let entry = crate::catalog::entry(&node.recipe, invocation.search_path).ok();
-                    let name = entry
-                        .as_ref()
-                        .and_then(|entry| entry["name"].as_str().map(str::to_owned))
-                        .or_else(|| Some(node.recipe.file_stem()?.to_str()?.to_owned()))
-                        .unwrap_or_default();
-                    let steps: Vec<&str> = crate::lifecycle::Phase::ALL
-                        .into_iter()
-                        .map(crate::lifecycle::Phase::name)
-                        .filter(|step| {
-                            entry.as_ref().is_none_or(|entry| {
-                                entry["hooks"]
-                                    .as_array()
-                                    .is_some_and(|hooks| hooks.iter().any(|hook| hook == *step))
-                            })
-                        })
-                        .collect();
-                    serde_json::json!({"name": name, "steps": steps})
-                })
+                .map(
+                    |node| serde_json::json!({"name": node.name(), "steps": node.declared.steps()}),
+                )
                 .collect();
             crate::diagnostics::diag!(
                 "{}",
@@ -153,10 +136,7 @@ impl Runner<'_> {
                 .unwrap_or_default();
             if !present.is_empty() {
                 let digest = producer_digest(node)?;
-                let version = crate::declared_metadata(&node.recipe, invocation.search_path)
-                    .ok()
-                    .filter(|d| !d.dynamic_fields.contains("version"))
-                    .and_then(|d| d.fields.get("version").cloned());
+                let version = node.version().map(str::to_owned);
                 if let Some(held) = present
                     .iter()
                     .find(|p| p.digest == digest && Some(&p.version) == version.as_ref())

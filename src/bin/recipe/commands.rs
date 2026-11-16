@@ -9,7 +9,7 @@ use levitate_recipe::sources::{self, Sources};
 
 use super::{
     cli::{Cli, Commands, SourceCommands},
-    metadata::{RecipeMetadata, enumerate_recipes},
+    metadata::enumerate_recipes,
     runtime,
 };
 
@@ -196,6 +196,11 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Validate { recipe } => {
             let recipe = resolve_recipe_path(&recipe, &lookup)?;
             let supplied = parse_inputs(engine_options.inputs)?;
+            let defines = parse_defines(engine_options.defines)?;
+            let graph = levitate_recipe::needs::declarations(&recipe, Some(recipes_path))?;
+            levitate_recipe::needs::check_defines(&graph, &defines)?;
+            let declared =
+                levitate_recipe::catalog::entry_of(graph.last().context("empty recipe graph")?);
             let authority = levitate_recipe::needs::report::validate(
                 &recipe,
                 Some(recipes_path),
@@ -203,7 +208,7 @@ fn run(cli: Cli) -> Result<()> {
                 &engine_options.execution.narrowing,
             )?;
             emit_result(
-                &serde_json::json!({"valid":true,"authority":authority}),
+                &serde_json::json!({"valid":true,"recipe":declared,"authority":authority}),
                 json_output.as_deref(),
                 json,
                 "Validation passed",
@@ -440,7 +445,7 @@ fn run(cli: Cli) -> Result<()> {
             )?;
         }
 
-        Commands::List => list_recipes(&lookup, list_json)?,
+        Commands::List => list_recipes(&lookup, &package_store, list_json)?,
 
         Commands::Source { command } => {
             anyhow::ensure!(
@@ -516,7 +521,7 @@ fn run(cli: Cli) -> Result<()> {
 
         Commands::Info { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
-            show_info(&recipe_path, Some(recipes_path))?;
+            show_info(&recipe_path, Some(recipes_path), list_json)?;
         }
 
         Commands::Runtime { .. } => unreachable!("handled before the engine is set up"),
@@ -542,12 +547,9 @@ fn run(cli: Cli) -> Result<()> {
             println!();
             println!(
                 "{}",
-                "Copy one of these into your recipe's acquire() function:".dimmed()
+                "Copy the SHA-256 into the recipe's SOURCES entry:".dimmed()
             );
-            println!(
-                "  {}",
-                format!("verify_sha256(path, \"{}\");", hashes.sha256).green()
-            );
+            println!("  {}", format!("sha256: \"{}\",", hashes.sha256).green());
         }
     }
 
@@ -892,12 +894,8 @@ fn create_engine(recipe: &Path, options: &EngineOptions<'_>) -> Result<RecipeEng
         engine = engine.with_recipes_path(rp.to_path_buf());
     }
 
-    for define in *defines {
-        if let Some((key, value)) = define.split_once('=') {
-            engine.add_define(key.to_string(), value.to_string());
-        } else {
-            anyhow::bail!("Invalid --define format: '{}' (expected KEY=VALUE)", define);
-        }
+    for (key, value) in parse_defines(defines)? {
+        engine.add_define(key, value);
     }
 
     for (name, path) in parse_inputs(inputs)? {
@@ -907,10 +905,9 @@ fn create_engine(recipe: &Path, options: &EngineOptions<'_>) -> Result<RecipeEng
     Ok(engine)
 }
 
-/// RUNTIME.paths.prefix for a recipe whose package output will be activated
-/// in `store`: the folder the package will live in. It needs the package's
-/// name before anything runs, so the recipe's `name` must be a literal;
-/// otherwise there is no prefix (and carrying refuses to start).
+/// `PREFIX` for a recipe whose package output will be activated in `store`:
+/// the folder the package will live in, named by the recipe's file name
+/// (docs/recipe-format.md, decision 3).
 fn package_prefix(
     store: Option<&PackageStore>,
     recipe: &Path,
@@ -919,15 +916,8 @@ fn package_prefix(
     let Some(store) = store else {
         return Ok(None);
     };
-    let declared = levitate_recipe::declared_metadata(recipe, search)?;
-    let Some(name) = declared
-        .fields
-        .get("name")
-        .filter(|_| !declared.dynamic_fields.contains("name"))
-    else {
-        return Ok(None);
-    };
-    let Ok(prefix) = store.package_prefix(name) else {
+    let declaration = levitate_recipe::needs::declaration(recipe, search)?;
+    let Ok(prefix) = store.package_prefix(declaration.name()) else {
         return Ok(None); // activation refuses the name with its own message
     };
     let prefix = prefix
@@ -1287,7 +1277,7 @@ fn problem_json(problem: &sources::Problem) -> serde_json::Value {
     serde_json::json!({ "path": problem.path, "problem": problem.problem })
 }
 
-fn list_recipes(lookup: &Lookup, json: bool) -> Result<()> {
+fn list_recipes(lookup: &Lookup, store: &PackageStore, json: bool) -> Result<()> {
     use owo_colors::OwoColorize;
 
     // The recipe folder first, as before sources existed.
@@ -1328,15 +1318,6 @@ fn list_recipes(lookup: &Lookup, json: bool) -> Result<()> {
             if !names.insert(path.file_name().unwrap().to_owned()) {
                 continue;
             }
-            if !json {
-                let meta = RecipeMetadata::load(&path, Some(recipes_path))?;
-                recipes.push(serde_json::json!({
-                    "name": meta.name,
-                    "version": meta.version,
-                    "source": folder_name(index),
-                }));
-                continue;
-            }
             // For a front end: every recipe it could offer, read without
             // running anything. One unreadable recipe must not hide the others.
             match levitate_recipe::catalog::entry(&path, Some(recipes_path)) {
@@ -1366,6 +1347,23 @@ fn list_recipes(lookup: &Lookup, json: bool) -> Result<()> {
         }
     }
 
+    // C4: the state comes from the receipt alone until Recipe keeps its own
+    // records of downloads and kept results (docs/recipe-format.md, section
+    // 6.2); then `downloaded` and `built` and the keep option are reported too.
+    let installed = store.list().unwrap_or_default();
+    for recipe in &mut recipes {
+        let receipt = installed
+            .iter()
+            .find(|package| recipe["name"].as_str() == Some(package.name.as_str()));
+        recipe["state"] = if receipt.is_some() {
+            "installed"
+        } else {
+            "none"
+        }
+        .into();
+        recipe["installed_version"] = receipt.map(|package| package.version.clone()).into();
+        recipe["keep"] = false.into();
+    }
     if json {
         let host = levitate_recipe::clibrary::detect();
         let release = lookup.sources.and_then(Sources::release);
@@ -1516,54 +1514,170 @@ fn source_command(all: &Sources, command: SourceCommands, json: bool) -> Result<
     Ok(())
 }
 
-fn show_info(recipe_path: &Path, search_path: Option<&Path>) -> Result<()> {
+fn show_info(recipe_path: &Path, search_path: Option<&Path>, json: bool) -> Result<()> {
     use owo_colors::OwoColorize;
 
-    let meta = RecipeMetadata::load(recipe_path, search_path)?;
+    let declaration = levitate_recipe::needs::declaration(recipe_path, search_path)?;
+    if json {
+        let entry = levitate_recipe::catalog::entry_of(&declaration);
+        writeln!(std::io::stdout(), "{}", serde_json::to_string(&entry)?)?;
+        return Ok(());
+    }
+    let declared = &declaration.declared;
+    let package = &declared.package;
+    let row = |label: &str, value: &str| println!("{:<12} {value}", label.bold());
 
-    println!("{:<12} {}", "Name:".bold(), meta.name.bold().cyan());
+    println!("{:<12} {}", "Name:".bold(), package.name.bold().cyan());
     println!(
         "{:<12} {}",
         "Version:".bold(),
-        meta.version.as_deref().unwrap_or("?").green()
+        package.version.as_deref().unwrap_or("?").green()
     );
-    if let Some(desc) = &meta.description {
-        println!("{:<12} {}", "Description:".bold(), desc);
+    if let Some(desc) = &package.description {
+        row("Description:", desc);
     }
     println!(
         "{:<12} {}",
         "Recipe:".bold(),
         recipe_path.display().to_string().dimmed()
     );
-    // A recipe without a readable API-2 declaration has no C library to show.
-    if let Ok(Some(declared)) = levitate_recipe::catalog::declared_libc(recipe_path, search_path)
-        && !declared.libc.is_empty()
-    {
-        let host = levitate_recipe::clibrary::detect();
-        let build = declared.libc.join(" or ");
-        let carried = if declared.carried {
-            format!(", and its package brings its own {build} and loader")
+    row("Steps:", &declared.steps().join(", "));
+    if !declared.functions.is_empty() {
+        row("Functions:", &declared.functions.join(", "));
+    }
+    let needs = &declaration.needs;
+    let outputs: Vec<String> = needs
+        .outputs
+        .iter()
+        .map(|(name, kind)| format!("{name} ({})", kind.as_str()))
+        .collect();
+    row(
+        "Outputs:",
+        &if outputs.is_empty() {
+            "none (a base its children complete)".to_owned()
         } else {
-            String::new()
+            outputs.join(", ")
+        },
+    );
+    if !needs.inputs.is_empty() {
+        let inputs: Vec<String> = needs
+            .inputs
+            .iter()
+            .map(|(name, need)| {
+                format!(
+                    "{name} ({}{})",
+                    need.kind.as_str(),
+                    if need.optional { ", optional" } else { "" }
+                )
+            })
+            .collect();
+        row("Inputs:", &inputs.join(", "));
+    }
+    if !needs.defines.is_empty() {
+        let defines: Vec<String> = needs
+            .defines
+            .iter()
+            .map(|(name, default)| match default {
+                Some(default) => format!("{name}={default:?}"),
+                None => format!("{name} (required)"),
+            })
+            .collect();
+        row("Defines:", &defines.join(", "));
+    }
+    for (name, source) in &declared.sources {
+        let origin = match &source.origin {
+            levitate_recipe::declarations::Origin::Url { url, .. } => url.clone(),
+            levitate_recipe::declarations::Origin::Git { git, commit, .. } => {
+                format!("{git} at {commit}")
+            }
         };
-        println!(
-            "{:<12} its build is linked against {build}{carried}; this system's C library is {} ({})",
-            "C library:".bold(),
-            host.libc,
-            host.found
+        let libc = source
+            .libc
+            .map(|libc| format!(" ({} only)", libc.as_str()))
+            .unwrap_or_default();
+        row("Source:", &format!("{name}: {origin}{libc}"));
+    }
+    if !declared.files.is_empty() {
+        let count = declared.files.len();
+        row(
+            "Files:",
+            &format!("{count} entr{}", if count == 1 { "y" } else { "ies" }),
         );
     }
-    if let Ok(Some(declared)) = levitate_recipe::catalog::declared_libc(recipe_path, search_path)
-        && !declared.systems.is_empty()
+    if let Some(pins) = &declared.pins {
+        let sections: Vec<String> = pins
+            .sections
+            .iter()
+            .map(|section| {
+                format!(
+                    "{} packages for {} ({}, {} bytes)",
+                    section.packages.len(),
+                    section.libc.as_str(),
+                    section.format.as_str(),
+                    section.bytes()
+                )
+            })
+            .collect();
+        row("Packages:", &sections.join("; "));
+    }
+    if !declared.accounts.is_empty() {
+        let accounts: Vec<String> = declared
+            .accounts
+            .iter()
+            .map(|(libc, lines)| format!("{libc}: {}", lines.join(", ")))
+            .collect();
+        row("Accounts:", &accounts.join("; "));
+    }
+    let deps: Vec<String> = declaration
+        .dependencies
+        .iter()
+        .map(|dependency| {
+            if dependency.build_only {
+                format!("{} (build)", dependency.name)
+            } else {
+                dependency.name.clone()
+            }
+        })
+        .collect();
+    if !deps.is_empty() {
+        row("Needs:", &deps.join(", "));
+    }
+    match (&declared.upstream, declared.functions.contains(&"latest")) {
+        (Some(upstream), _) => row("Upstream:", &format!("github.com/{}", upstream.github)),
+        (None, true) => row("Upstream:", "asked through latest()"),
+        (None, false) => {}
+    }
+    if declared.rerun {
+        row("Reruns:", "every time it is asked for (RERUN)");
+    }
+    if let Some(about) = &declared.about
+        && let Some(declared) = levitate_recipe::clibrary::declared(about)?
     {
-        let host = levitate_recipe::clibrary::detect();
-        println!(
-            "{:<12} made for {} (os-release ID); this system is {} ({})",
-            "Systems:".bold(),
-            declared.systems.join(", "),
-            host.os_id.as_deref().unwrap_or("unknown"),
-            host.os_found
-        );
+        if !declared.libc.is_empty() {
+            let host = levitate_recipe::clibrary::detect();
+            let build = declared.libc.join(" or ");
+            let carried = if declared.carried {
+                format!(", and its package brings its own {build} and loader")
+            } else {
+                String::new()
+            };
+            println!(
+                "{:<12} its build is linked against {build}{carried}; this system's C library is {} ({})",
+                "C library:".bold(),
+                host.libc,
+                host.found
+            );
+        }
+        if !declared.systems.is_empty() {
+            let host = levitate_recipe::clibrary::detect();
+            println!(
+                "{:<12} made for {} (os-release ID); this system is {} ({})",
+                "Systems:".bold(),
+                declared.systems.join(", "),
+                host.os_id.as_deref().unwrap_or("unknown"),
+                host.os_found
+            );
+        }
     }
     // Where `--execution auto` runs it, from its source alone.
     if let Ok(eligibility) = levitate_recipe::execution::eligibility(recipe_path, search_path) {
@@ -1571,10 +1685,22 @@ fn show_info(recipe_path: &Path, search_path: Option<&Path>) -> Result<()> {
             None => "on the host (it starts no program)".to_owned(),
             Some(blocker) => format!("in Ginux (it {blocker})"),
         };
-        println!("{:<12} {runs}", "Runs:".bold());
+        row("Runs:", &runs);
     }
 
     Ok(())
+}
+
+fn parse_defines(values: &[String]) -> Result<Vec<(String, String)>> {
+    values
+        .iter()
+        .map(|define| {
+            let (key, value) = define.split_once('=').with_context(|| {
+                format!("Invalid --define format: '{define}' (expected KEY=VALUE)")
+            })?;
+            Ok((key.to_owned(), value.to_owned()))
+        })
+        .collect()
 }
 
 fn parse_inputs(values: &[String]) -> Result<Vec<(String, PathBuf)>> {

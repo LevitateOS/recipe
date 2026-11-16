@@ -55,7 +55,7 @@ pub fn inspect(
     }
     let contract = contract::inspect(launcher.path(), &execution)?;
     Ok(
-        serde_json::json!({"recipe":main.recipe,"api":main.api,"needs":main.needs,
+        serde_json::json!({"recipe":main.recipe,"api":crate::declarations::API,"needs":main.needs,
         "effective":limits(&execution),
         "contract":contract,"dependencies":dependency_contracts,"dependency_bindings":main.dependencies,"source_digests":main.source_digests,
         "network_usage":{"status":"unobserved","reason":"declaration inspection does not launch","declared":main.needs.network,"warnings":[]}}),

@@ -1,9 +1,10 @@
-//! Recipe executor - install, remove, cleanup operations
+//! Recipe executor: compiling a recipe (with its `//! extends:` base) and the
+//! install, remove and cleanup operations.
 //!
-//! Executes recipes using the ctx pattern where:
-//! - `is_acquired(ctx)`, `is_built(ctx)`, `is_installed(ctx)` return ready(ctx) or needs_work(ctx, reason)
-//! - `acquire(ctx)`, `build(ctx)`, `install(ctx)` return updated ctx
-//! - checkpoints send runtime state to the coordinator without source mutation
+//! C2: the operations below `private` still run the API 2 lifecycle (ctx,
+//! `is_*` checks and hooks); C2 replaces them with docs/recipe-format.md
+//! sections 3 and 4 (build(src, out), configure, verify, cleanup(reason) and
+//! the engine's constants). Compiling and the declarations are API 1.
 
 use anyhow::{Context, Result, anyhow};
 use rhai::{AST, Engine};
@@ -15,9 +16,6 @@ mod private;
 pub(crate) use private::{EngineError, ExecutionContext, Load, check, cleanup, install, remove};
 
 use crate::recipes::parse_extends;
-
-/// Package facts `declared_metadata` reports.
-const METADATA_FIELDS: [&str; 3] = ["name", "version", "description"];
 
 /// Resolve a base recipe: beside the child first, then the search path.
 fn resolve_base_path(
@@ -39,8 +37,12 @@ fn resolve_base_path(
 
 #[derive(Debug)]
 pub(crate) struct CompiledRecipe {
+    /// Base and child merged: what the worker runs.
     pub ast: AST,
+    /// The child's own source.
     pub source_ast: AST,
+    /// The base's own source, for a child that extends one.
+    pub base_ast: Option<AST>,
     pub source_digests: std::collections::BTreeMap<PathBuf, String>,
     /// The "main" recipe file (the one the user invoked).
     pub recipe_path: PathBuf,
@@ -54,7 +56,8 @@ pub(crate) struct CompiledRecipe {
 /// and merged with the child AST. Child functions with the same name+arity replace
 /// base functions. Top-level statements run base-first, then child.
 ///
-/// Returns the merged AST and immutable recipe identities.
+/// Returns the merged AST and immutable recipe identities: the recipe, its
+/// base and its pins file (`NAME.pins`, docs/recipe-format.md section 2.7).
 pub(crate) fn compile_recipe(
     engine: &Engine,
     recipe_path: &Path,
@@ -73,6 +76,10 @@ pub(crate) fn compile_recipe(
         recipe_path.clone(),
         hex::encode(Sha256::digest(source.as_bytes())),
     );
+    let pins = crate::pins::Pins::path_of(&recipe_path);
+    if let Ok(bytes) = fs::read(&pins) {
+        source_digests.insert(pins, hex::encode(Sha256::digest(&bytes)));
+    }
     let extends = parse_extends(&source);
 
     if let Some(base_rel) = extends {
@@ -110,11 +117,13 @@ pub(crate) fn compile_recipe(
 
         // Merge: child overrides base functions, top-level runs base then child
         let source_ast = child_ast.clone();
+        let base_source_ast = base_ast.clone();
         base_ast += child_ast;
 
         Ok(CompiledRecipe {
             ast: base_ast,
             source_ast,
+            base_ast: Some(base_source_ast),
             source_digests,
             recipe_path,
             base_path: Some(base_path),
@@ -125,85 +134,11 @@ pub(crate) fn compile_recipe(
             .map_err(|e| anyhow!("Failed to compile recipe {}: {}", recipe_path.display(), e))?;
         Ok(CompiledRecipe {
             source_ast: ast.clone(),
+            base_ast: None,
             source_digests,
             ast,
             recipe_path,
             base_path: None,
         })
-    }
-}
-
-/// Metadata declared in the same compiled recipe used by the worker.
-/// Values requiring execution are listed explicitly rather than evaluated on host.
-#[derive(Debug, Default)]
-pub struct DeclaredMetadata {
-    pub fields: std::collections::BTreeMap<String, String>,
-    pub dynamic_fields: std::collections::BTreeSet<String>,
-}
-
-/// Read literal metadata from the merged recipe AST without executing setup,
-/// imports, hooks or helper calls. Dynamic fields remain unavailable.
-pub fn declared_metadata(recipe: &Path, search_path: Option<&Path>) -> Result<DeclaredMetadata> {
-    use rhai::{Expr, Stmt};
-    let engine = crate::core::invocation::compile_engine();
-    let compiled = compile_recipe(&engine, recipe, search_path)?;
-    let mut metadata = DeclaredMetadata::default();
-    for statement in compiled.ast.statements() {
-        match statement {
-            Stmt::Var(declaration, _, _) if declaration.0.name == "ctx" => {
-                metadata = DeclaredMetadata::default();
-                match &declaration.1 {
-                    Expr::Map(values, _) => {
-                        for (name, value) in &values.0 {
-                            metadata.set(name.name.as_str(), value)?;
-                        }
-                    }
-                    _ => {
-                        metadata
-                            .dynamic_fields
-                            .extend(METADATA_FIELDS.map(str::to_owned));
-                    }
-                }
-            }
-            Stmt::Assignment(assignment) => {
-                let binary = &assignment.1;
-                if let Expr::Dot(property, _, _) = &binary.lhs
-                    && let (Expr::Variable(variable, _, _), Expr::Property(field, _)) =
-                        (&property.lhs, &property.rhs)
-                    && variable.1 == "ctx"
-                {
-                    if assignment.0.is_op_assignment() {
-                        metadata.fields.remove(field.2.as_str());
-                        metadata.dynamic_fields.insert(field.2.to_string());
-                    } else {
-                        metadata.set(field.2.as_str(), &binary.rhs)?;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(metadata)
-}
-
-impl DeclaredMetadata {
-    fn set(&mut self, name: &str, value: &rhai::Expr) -> Result<()> {
-        if !METADATA_FIELDS.contains(&name) {
-            return Ok(());
-        }
-        self.fields.remove(name);
-        self.dynamic_fields.remove(name);
-        match value {
-            rhai::Expr::StringConstant(text, _) => {
-                self.fields.insert(name.to_owned(), text.to_string());
-            }
-            _ if value.get_literal_value().is_some() => {
-                anyhow::bail!("declared metadata {name} must be a string")
-            }
-            _ => {
-                self.dynamic_fields.insert(name.to_owned());
-            }
-        }
-        Ok(())
     }
 }

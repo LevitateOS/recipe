@@ -1,13 +1,12 @@
 //! Managed Rhai package recipes executed through the configured Ginux launcher.
 //!
-//! Every executable recipe declares `const RECIPE_API = 2;` (or `3`). Setup reads
-//! immutable `RUNTIME`; hooks receive `ctx.runtime`, resumable `ctx.state` and
-//! named `ctx.outputs`. Package facts are initialized from current recipe bytes.
+//! Every recipe starts with `const RECIPE_API = 1;` and states its facts in
+//! literal declarations (`NEEDS`, `PACKAGE`, `SOURCES`, `FILES`, `PACKAGES`,
+//! ...), read without running it ([`declarations`], [`needs`]); the format is
+//! docs/recipe-format.md.
 //!
-//! Checks return `ready(ctx)` or `needs_work(ctx, reason)`. Check errors fail
-//! execution. Acquire/build/install/remove hooks return the updated context.
-//! Custom readiness is rechecked after successful work; persisted booleans do
-//! not replace filesystem or product validation.
+//! C2: the paragraphs below describe the API 2 run (ctx, hooks), which C2
+//! replaces.
 //!
 //! Explicit `RecipeEngine::add_input` selections are imported read-only under
 //! `/inputs`. Owned build work uses `/work/build`, dependency tools `/work/tools`,
@@ -32,6 +31,8 @@ mod cancellation;
 pub mod catalog;
 pub mod clibrary;
 mod core;
+/// The literal declarations of a recipe, read without running it.
+pub mod declarations;
 mod diagnostics;
 mod domain;
 /// Where a recipe runs: in a Ginux domain or on the host (`--execution`).
@@ -54,6 +55,8 @@ pub mod needs;
 pub mod offline_cache;
 mod options;
 pub mod packages;
+/// The pins file `NAME.pins` beside a recipe with `PACKAGES`.
+pub mod pins;
 mod process;
 mod progress_file;
 mod publication;
@@ -71,7 +74,6 @@ pub mod updates;
 mod worker;
 
 pub use backend::GinuxLauncher;
-pub use core::executor::{DeclaredMetadata, declared_metadata};
 pub use execution::ExecutionMode;
 pub use options::ExecutionOptions;
 

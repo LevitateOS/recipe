@@ -1,13 +1,13 @@
 //! What a front end may show about a recipe before anything runs.
 //!
-//! An entry is read from the compiled recipe alone: the declared name, version
-//! and description, the optional `ABOUT` block, NEEDS, the dependency names and
-//! the lifecycle hooks the file defines. No setup, hook or helper is evaluated
-//! and no Ginux launcher is needed, so a whole collection can be listed by an
-//! ordinary user.
+//! An entry is read from the compiled recipe alone: `PACKAGE` (name, version,
+//! description; a group's version from its pins file), the optional `ABOUT`
+//! block, NEEDS, the dependency names, the steps it has, the functions it
+//! defines and where its newest version is found (docs/recipe-format.md,
+//! section 8.1). No recipe code is evaluated and no Ginux launcher is needed,
+//! so a whole collection can be listed by an ordinary user.
 
 use anyhow::{Context, Result, bail, ensure};
-use rhai::{ASTFlags, Expr, Stmt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -15,36 +15,22 @@ use std::path::Path;
 /// The version of the JSON printed by `recipe list --json`.
 pub const SCHEMA_VERSION: u32 = 1;
 
-const HOOKS: [&str; 5] = ["acquire", "build", "install", "remove", "cleanup"];
-
 /// One recipe as a catalog entry.
 ///
 /// `ABOUT` is the recipe author's own description (kind, category, longer
 /// text, home page, licence, what it adds, notes on steps). It must be a
 /// `const` literal map like NEEDS; its fields are passed through as written.
-/// NEEDS is enforced by Ginux; `ABOUT` is a claim.
+/// NEEDS is enforced by Ginux; `ABOUT` is a claim. What depends on this
+/// system (`state`, `installed_version`, `keep`, `runs_here`) is added by
+/// `recipe list`, not here: an index lists the same entry for every system.
 pub fn entry(recipe: &Path, search_path: Option<&Path>) -> Result<serde_json::Value> {
     let declaration = crate::needs::declaration(recipe, search_path)?;
-    let metadata = crate::core::executor::declared_metadata(&declaration.recipe, search_path)?;
-    let engine = crate::core::invocation::compile_engine();
-    let compiled =
-        crate::core::executor::compile_recipe(&engine, &declaration.recipe, search_path)?;
+    Ok(entry_of(&declaration))
+}
 
-    let about = about_of(&compiled.source_ast)?;
-
-    let field = |name: &str| {
-        (!metadata.dynamic_fields.contains(name))
-            .then(|| metadata.fields.get(name).cloned())
-            .flatten()
-    };
-    let name = field("name").unwrap_or_else(|| {
-        declaration
-            .recipe
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or_default()
-            .to_owned()
-    });
+/// The entry of a declaration already read.
+pub fn entry_of(declaration: &crate::needs::Declaration) -> serde_json::Value {
+    let declared = &declaration.declared;
     let names = |build_only: bool| -> Vec<&str> {
         declaration
             .dependencies
@@ -53,52 +39,19 @@ pub fn entry(recipe: &Path, search_path: Option<&Path>) -> Result<serde_json::Va
             .map(|dependency| dependency.name.as_str())
             .collect()
     };
-    let hooks: Vec<&str> = HOOKS
-        .into_iter()
-        .filter(|hook| {
-            compiled
-                .ast
-                .iter_functions()
-                .any(|function| function.name == *hook)
-        })
-        .collect();
-
-    Ok(serde_json::json!({
-        "name": name,
-        "version": field("version"),
-        "description": field("description"),
+    serde_json::json!({
+        "name": declared.package.name,
+        "version": declared.package.version,
+        "description": declared.package.description,
         "path": declaration.recipe,
-        "about": about,
+        "about": declared.about,
         "needs": declaration.needs,
         "deps": names(false),
         "build_deps": names(true),
-        "hooks": hooks,
-    }))
-}
-
-/// The literal `ABOUT` map of a compiled recipe, checked: `libc` and
-/// `libc_carried`, when present, are well formed.
-fn about_of(ast: &rhai::AST) -> Result<Option<serde_json::Value>> {
-    let mut about = None;
-    for statement in ast.statements() {
-        if let Stmt::Var(binding, flags, _) = statement
-            && binding.0.name == "ABOUT"
-        {
-            ensure!(about.is_none(), "recipe must declare ABOUT at most once");
-            ensure!(
-                flags.contains(ASTFlags::CONSTANT) && matches!(&binding.1, Expr::Map(..)),
-                "ABOUT must be a const literal map"
-            );
-            about = Some(
-                crate::needs::literal(&binding.1)
-                    .context("ABOUT must be literal data, without helper calls or variables")?,
-            );
-        }
-    }
-    if let Some(about) = &about {
-        crate::clibrary::declared(about)?;
-    }
-    Ok(about)
+        "steps": declared.steps(),
+        "functions": declared.functions,
+        "upstream": declared.upstream_json(),
+    })
 }
 
 /// What `recipe` declares about its C library (`ABOUT.libc`,
@@ -108,13 +61,25 @@ pub fn declared_libc(
     search_path: Option<&Path>,
 ) -> Result<Option<crate::clibrary::Declared>> {
     let declaration = crate::needs::declaration(recipe, search_path)?;
-    let engine = crate::core::invocation::compile_engine();
-    let compiled =
-        crate::core::executor::compile_recipe(&engine, &declaration.recipe, search_path)?;
-    match about_of(&compiled.source_ast)? {
-        Some(about) => crate::clibrary::declared(&about),
+    match &declaration.declared.about {
+        Some(about) => crate::clibrary::declared(about),
         None => Ok(None),
     }
+}
+
+/// Whether a file of a recipe folder is a module (imported by recipes, never
+/// listed): it declares neither `RECIPE_API` nor `NEEDS`.
+pub fn is_module(path: &Path) -> bool {
+    let Ok(source) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(ast) = crate::core::invocation::compile_engine().compile(&source) else {
+        return false;
+    };
+    !ast.statements().iter().any(|statement| {
+        matches!(statement, rhai::Stmt::Var(binding, _, _)
+            if matches!(binding.0.name.as_str(), "RECIPE_API" | "NEEDS"))
+    })
 }
 
 /// The file a source of recipes describes itself in, beside its recipes.
@@ -270,13 +235,25 @@ pub fn index(folder: &Path) -> Result<Index> {
     let mut listed = vec![SOURCE_FILE.to_owned()];
     for stem in &stems {
         let recipe = format!("{stem}.rhai");
-        let mut value = match entry(&folder.join(&recipe), Some(folder)) {
-            Ok(value) => value,
+        if is_module(&folder.join(&recipe)) {
+            continue; // listed with the recipes that import it
+        }
+        let compiled = match crate::needs::declaration(&folder.join(&recipe), Some(folder)) {
+            Ok(declaration) => declaration,
             Err(error) => {
                 problems.push(format!("{recipe}: {error:#}"));
                 continue;
             }
         };
+        // A published recipe is a catalog recipe: ABOUT and PACKAGE are
+        // what a front end shows (docs/recipe-format.md, section 1).
+        if compiled.declared.about.is_none() {
+            problems.push(format!(
+                "{recipe}: a catalog recipe declares ABOUT, what a front end shows about it"
+            ));
+            continue;
+        }
+        let mut value = entry_of(&compiled);
         if value["name"] != *stem {
             problems.push(format!(
                 "{recipe}: declares the name {}; a recipe is looked up by its file name, so they must agree",
@@ -285,10 +262,16 @@ pub fn index(folder: &Path) -> Result<Index> {
             continue;
         }
         let mut files = vec![file(&recipe)?];
-        // What the recipe is compiled from besides itself (a base it extends)
-        // is fetched with it, so it must be a file of this folder too.
-        let compiled = crate::needs::declaration(&folder.join(&recipe), Some(folder))?;
-        for source in compiled.source_digests.keys() {
+        // What the recipe is compiled from besides itself (a base it extends,
+        // its pins file, the modules it imports) is fetched with it, so it
+        // must be a file of this folder too.
+        let pins = crate::pins::Pins::path_of(&compiled.recipe);
+        for source in compiled
+            .source_digests
+            .keys()
+            .filter(|source| **source != pins)
+            .chain(&compiled.declared.modules)
+        {
             let name = source
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -303,8 +286,10 @@ pub fn index(folder: &Path) -> Result<Index> {
                 ));
                 continue;
             }
-            files.push(file(name)?);
-            listed.push(name.to_owned());
+            if !files.iter().any(|listed| listed["path"] == name) {
+                files.push(file(name)?);
+                listed.push(name.to_owned());
+            }
         }
         listed.push(recipe);
         for name in names.iter().filter(|name| owner(name) == Some(*stem)) {

@@ -351,6 +351,16 @@ impl<'a> Collector<'a> {
         depth: usize,
     ) -> Result<()> {
         self.collect_related(canonical, domain_name, source, depth)?;
+        // The pins file beside a recipe is part of it (docs/recipe-format.md,
+        // section 2.7): staged beside it, so a change is a different build.
+        let pins = crate::pins::Pins::path_of(canonical);
+        if pins.is_file() {
+            let name = Path::new(domain_name).with_extension("pins");
+            let name = name
+                .to_str()
+                .context("input preparation failure: non-Unicode pins path")?;
+            self.stage_kind(name, &pins, InputKind::File)?;
+        }
         let declaration = crate::needs::declaration(canonical, self.search_path)?;
         for dependency in declaration.dependencies {
             let file =

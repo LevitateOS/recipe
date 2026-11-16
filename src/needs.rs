@@ -40,6 +40,8 @@ pub struct InputNeed {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Needs {
     pub inputs: BTreeMap<String, InputNeed>,
+    /// Each define the recipe reads, to its default; `None` means required.
+    pub defines: BTreeMap<String, Option<String>>,
     pub outputs: BTreeMap<String, PathKind>,
     pub network: Vec<String>,
     pub memory_mib: u64,
@@ -53,6 +55,7 @@ pub struct Needs {
 #[serde(default, deny_unknown_fields)]
 struct LiteralNeeds {
     inputs: BTreeMap<String, String>,
+    defines: BTreeMap<String, serde_json::Value>,
     outputs: BTreeMap<String, PathKind>,
     network: Vec<String>,
     memory_mib: Option<u64>,
@@ -101,6 +104,30 @@ impl Needs {
             );
             inputs.insert(name, InputNeed { kind, optional });
         }
+        let mut defines = BTreeMap::new();
+        for (name, default) in raw.defines {
+            ensure!(
+                name.bytes()
+                    .next()
+                    .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+                    && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                    && name.len() <= 64,
+                "NEEDS.defines.{name}: a define's name is letters, digits and _ (read as DEFINES.{name})"
+            );
+            ensure!(
+                !name.starts_with("RECIPE_"),
+                "NEEDS.defines.{name}: names starting with RECIPE_ are the engine's own"
+            );
+            let default = match default {
+                serde_json::Value::Null => None,
+                serde_json::Value::String(text) => Some(text),
+                _ => bail!(
+                    "NEEDS.defines.{name} is its default as a string, or () when the caller must give it"
+                ),
+            };
+            defines.insert(name, default);
+        }
+        ensure!(defines.len() <= 64, "NEEDS.defines exceeds 64 names");
         for name in raw.outputs.keys() {
             validate_name(name, "outputs")?;
         }
@@ -120,6 +147,7 @@ impl Needs {
         }
         let needs = Self {
             inputs,
+            defines,
             outputs: raw.outputs,
             network: network.into_iter().collect(),
             memory_mib: raw.memory_mib.unwrap_or(defaults.memory_mib),
@@ -272,6 +300,9 @@ impl Needs {
         }
         Ok(())
     }
+    // C2: outputs come from `ctx.outputs` here and in
+    // `validate_worker_outputs`; in API 1 the engine maps them itself
+    // (docs/recipe-format.md, sections 3.1 and 3.2).
     pub(crate) fn validate_output_names(
         &self,
         context: &serde_json::Value,
@@ -391,14 +422,26 @@ pub struct Dependency {
 #[derive(Clone, Debug, Serialize)]
 pub struct Declaration {
     pub recipe: PathBuf,
-    pub api: u8,
+    /// The recipe, its base and its pins file, each by SHA-256.
     pub source_digests: BTreeMap<PathBuf, String>,
     pub needs: Needs,
     pub dependencies: Vec<Dependency>,
+    /// Everything else it declares (docs/recipe-format.md, section 2).
+    pub declared: crate::declarations::Declared,
+}
+
+impl Declaration {
+    pub fn name(&self) -> &str {
+        &self.declared.package.name
+    }
+    pub fn version(&self) -> Option<&str> {
+        self.declared.package.version.as_deref()
+    }
 }
 
 /// Inspect source declarations only, including the same base/child code the
-/// worker compiles. Every executable child owns its explicit NEEDS declaration.
+/// worker compiles. Every executable child owns its explicit NEEDS declaration;
+/// the other declarations combine whole between base and child.
 pub fn declaration(recipe: &Path, search_path: Option<&Path>) -> Result<Declaration> {
     ensure!(
         !std::fs::symlink_metadata(recipe)?.file_type().is_symlink(),
@@ -413,7 +456,6 @@ pub fn declaration(recipe: &Path, search_path: Option<&Path>) -> Result<Declarat
     );
     let engine = crate::core::invocation::compile_engine();
     let compiled = crate::core::executor::compile_recipe(&engine, &recipe, search_path)?;
-    crate::core::invocation::validate_api(&compiled.ast)?;
     let ast = &compiled.source_ast;
     let mut needs = None;
     for statement in ast.statements() {
@@ -433,6 +475,7 @@ pub fn declaration(recipe: &Path, search_path: Option<&Path>) -> Result<Declarat
         }
     }
     let needs = needs.context("recipe must declare literal const NEEDS = #{...}")?;
+    let declared = crate::declarations::read(&compiled, &needs, search_path)?;
     let mut dependencies = BTreeMap::<String, Vec<String>>::new();
     for statement in compiled.ast.statements() {
         if let Stmt::Var(binding, _, _) = statement
@@ -475,10 +518,10 @@ pub fn declaration(recipe: &Path, search_path: Option<&Path>) -> Result<Declarat
     }
     Ok(Declaration {
         recipe,
-        api: 2,
         source_digests: compiled.source_digests,
         needs,
         dependencies: resolved,
+        declared,
     })
 }
 
@@ -488,6 +531,7 @@ pub(crate) fn literal(expression: &Expr) -> Result<serde_json::Value> {
         Expr::StringConstant(value, _) => Value::String(value.to_string()),
         Expr::IntegerConstant(value, _) => Value::from(*value),
         Expr::BoolConstant(value, _) => Value::Bool(*value),
+        Expr::Unit(_) => Value::Null,
         Expr::Array(values, _) => Value::Array(values.iter().map(literal).collect::<Result<_>>()?),
         Expr::Map(values, _) => {
             let mut map = serde_json::Map::new();
@@ -501,7 +545,7 @@ pub(crate) fn literal(expression: &Expr) -> Result<serde_json::Value> {
             Value::Object(map)
         }
         _ => bail!(
-            "NEEDS and dependency declarations must be literal; computed expressions are not authority"
+            "declarations must be literal data; computed expressions, variables and helper calls are not read"
         ),
     })
 }
@@ -565,4 +609,32 @@ pub fn declarations(recipe: &Path, search_path: Option<&Path>) -> Result<Vec<Dec
         }
     }
     Ok(result)
+}
+
+/// The defines a caller gives (`--define NAME=VALUE`) against a graph: each
+/// reaches every recipe that declares it in `NEEDS.defines`; one no recipe
+/// declares is refused, and a required define (default `()`) of any recipe
+/// must be given (decision 1).
+pub fn check_defines(graph: &[Declaration], given: &[(String, String)]) -> Result<()> {
+    for (name, _) in given {
+        if name.starts_with("RECIPE_") {
+            continue; // the engine's own (RECIPE_SYSTEM_CONTEXT, RECIPE_SYSTEM_PRESENT)
+        }
+        ensure!(
+            graph
+                .iter()
+                .any(|node| node.needs.defines.contains_key(name)),
+            "--define {name}: no recipe of this run declares it in NEEDS.defines"
+        );
+    }
+    for node in graph {
+        for (name, default) in &node.needs.defines {
+            ensure!(
+                default.is_some() || given.iter().any(|(given, _)| given == name),
+                "{} needs --define {name}=VALUE (NEEDS.defines.{name} has no default)",
+                node.name()
+            );
+        }
+    }
+    Ok(())
 }

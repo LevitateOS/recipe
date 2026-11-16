@@ -73,6 +73,8 @@ pub(crate) fn with_recipe<'e, T>(
         if let Some(state) = exec.saved_state(&compiled.recipe_path) {
             runtime.restore_state(state)?;
         }
+        // C2: the name is `declaration.name()` (PACKAGE, the file name);
+        // there is no ctx to read it from in API 1.
         let name = runtime
             .ctx()
             .get("name")

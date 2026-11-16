@@ -147,6 +147,13 @@ pub(crate) struct Runtime<'a> {
 }
 
 impl<'a> Runtime<'a> {
+    // C2: this is still the API 2 setup: it injects defines as bare
+    // constants, declares RUNTIME and requires a top-level `ctx` map, which
+    // `crate::declarations::read` now refuses in every recipe. C2 replaces it
+    // with the engine's constants of docs/recipe-format.md section 4
+    // (PREFIX, JOBS, HOST_LIBC, PACKAGE_FORMAT, INPUTS, DEFINES from
+    // `Needs::defines` with `crate::needs::check_defines`, DEPS, WORK) and
+    // calls build(src, out), configure, verify and cleanup(reason).
     pub(crate) fn new(engine: &'a Engine, ast: AST, inputs: RuntimeInputs<'_>) -> Result<Self> {
         validate_api(&ast)?;
         // Cleanup is optional, but a present hook must take ctx and reason, so
@@ -454,20 +461,12 @@ pub(crate) enum Readiness {
     NeedsWork(Map, String),
 }
 
-/// The recipe API versions this engine runs. API 3 adds, over API 2: system
-/// outputs written into a root (`target_finalize(root, #{ owners: "apply",
-/// accounts, seed: "var" })` with `m` account lines), `target_extract_apk`,
-/// `ABOUT.systems`, and `RUNTIME.host.libc` describing the target root.
-pub const SUPPORTED_APIS: [i64; 2] = [2, 3];
-
-/// Inspect declarations without executing any recipe code. A base/child pair
-/// cannot declare an unsupported version. The selected API governs the merged
-/// AST. An engine that knows only API 2 refuses `RECIPE_API = 3` here, before
-/// setup runs, so a recipe that needs API 3 declares it.
-pub(crate) fn validate_api(ast: &AST) -> Result<i64> {
-    const MUST: &str =
-        "Recipe must declare const RECIPE_API = 2 or 3 (this engine runs API 2 and 3)";
-    let mut declared = None;
+/// Refuse any recipe that does not declare `const RECIPE_API = 1;`, before
+/// setup runs. The full check (first statement, old forms) is
+/// `crate::declarations::read`; this one guards the worker's merged AST.
+pub(crate) fn validate_api(ast: &AST) -> Result<()> {
+    const MUST: &str = "Recipe must declare const RECIPE_API = 1 (this engine reads API 1)";
+    let mut declared = false;
     for statement in ast.statements() {
         if let Stmt::Var(declaration, flags, _) = statement {
             let (name, value, _) = declaration.as_ref();
@@ -475,55 +474,19 @@ pub(crate) fn validate_api(ast: &AST) -> Result<i64> {
                 continue;
             }
             match value {
-                Expr::IntegerConstant(version, _)
-                    if flags.contains(ASTFlags::CONSTANT) && SUPPORTED_APIS.contains(version) =>
+                Expr::IntegerConstant(crate::declarations::API, _)
+                    if flags.contains(ASTFlags::CONSTANT) =>
                 {
-                    declared = Some(*version);
+                    declared = true;
                 }
                 _ => bail!("{MUST}"),
             }
         }
     }
-    let version = declared.ok_or_else(|| anyhow!("{MUST}"))?;
-    if version < 3
-        && let Some(feature) = api3_feature(ast)
-    {
-        bail!(
-            "the recipe uses {feature}, which RECIPE_API 3 adds; declare const RECIPE_API = 3 \
-             (an engine that knows only API 2 then refuses the recipe before doing anything)"
-        );
+    if !declared {
+        bail!("{MUST}");
     }
-    Ok(version)
-}
-
-/// The first API 3 feature an AST uses, in words.
-fn api3_feature(ast: &AST) -> Option<String> {
-    use rhai::ASTNode;
-    let mut found = None;
-    for statement in ast.statements() {
-        if let Stmt::Var(declaration, _, _) = statement
-            && declaration.0.name == "ABOUT"
-            && let Ok(about) = crate::needs::literal(&declaration.1)
-            && about.get("systems").is_some()
-        {
-            return Some("ABOUT.systems".into());
-        }
-    }
-    ast.walk(&mut |nodes| {
-        if let Some(ASTNode::Stmt(Stmt::FnCall(call, _)))
-        | Some(ASTNode::Expr(Expr::FnCall(call, _)))
-        | Some(ASTNode::Expr(Expr::MethodCall(call, _))) = nodes.last()
-        {
-            let name = call.name.as_str();
-            if name == "target_extract_apk" {
-                found = Some("target_extract_apk".to_owned());
-            } else if name == "target_finalize" && call.args.len() == 2 {
-                found = Some("target_finalize(root, options)".to_owned());
-            }
-        }
-        found.is_none()
-    });
-    found
+    Ok(())
 }
 
 fn has_fn(ast: &AST, name: &str) -> bool {
