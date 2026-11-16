@@ -124,9 +124,10 @@ impl Runner<'_> {
             let mut execution = invocation.options.execution.clone();
             if node.recipe != *main_recipe {
                 execution = execution.for_dependency();
-                execution.narrowing = node
-                    .needs
-                    .dependency_narrowing(&invocation.options.execution.narrowing)?;
+                execution.narrowing = node.needs.dependency_narrowing(
+                    &invocation.options.execution.narrowing,
+                    &invocation.options.execution.host_libc,
+                )?;
             }
             let effective = node.needs.resolve(&execution.narrowing, &execution)?;
             if !placements.last().unwrap().host {

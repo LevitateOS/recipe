@@ -27,12 +27,15 @@ pub(crate) fn of(declaration: &crate::needs::Declaration, load: &Load<'_>) -> Re
         _ => Dynamic::UNIT,
     };
 
-    let package_format = declaration
+    let format = declaration
         .declared
         .pins
         .as_ref()
         .and_then(|pins| pins.section(&options.host_libc))
-        .map_or(Dynamic::UNIT, |section| section.format.as_str().into());
+        .map(|section| section.format.as_str());
+    // `enable_service` chooses systemd or OpenRC by it.
+    crate::helpers::tree::set_package_format(format);
+    let package_format = format.map_or(Dynamic::UNIT, |format| format.into());
 
     let mut inputs = Map::new();
     for (name, need) in &needs.inputs {

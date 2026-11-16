@@ -46,7 +46,9 @@ pub fn inspect(
     let mut dependency_contracts = Vec::new();
     for node in nodes.iter().take(nodes.len() - 1) {
         let effective = node.needs.resolve(
-            &node.needs.dependency_narrowing(narrowing)?,
+            &node
+                .needs
+                .dependency_narrowing(narrowing, &crate::ExecutionOptions::default().host_libc)?,
             &crate::ExecutionOptions::default(),
         )?;
         let receipt = contract::inspect(launcher.path(), &effective)?;

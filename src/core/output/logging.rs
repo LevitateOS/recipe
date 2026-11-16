@@ -130,6 +130,14 @@ pub fn set_event_recipe(name: &str) {
     }
 }
 
+/// The recipe [`set_event_recipe`] named; empty before it is set.
+pub fn event_recipe() -> String {
+    EVENT_RECIPE
+        .lock()
+        .map(|recipe| recipe.clone())
+        .unwrap_or_default()
+}
+
 /// How far a download is: `{"event":"fetch","recipe":..,"source":..,"bytes":..,"total":..}`,
 /// `total` null when the server did not say.
 pub fn fetch_event(source: &str, bytes: u64, total: Option<u64>) {

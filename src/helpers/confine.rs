@@ -7,7 +7,8 @@
 //! are the boundary:
 //!
 //! - Paths are absolute, as everywhere in Recipe, and may not use `..`: a
-//!   recipe builds its paths from `RUNTIME.paths`. `.` and repeated slashes
+//!   recipe builds its paths from the engine's constants (`WORK`, `INPUTS`,
+//!   `DEPS`) and its arguments (`src`, `out`). `.` and repeated slashes
 //!   are ignored.
 //! - [`resolve`] examines each component with `lstat`. A symbolic link among
 //!   the parents is expanded (a `..` in its target is applied to the real
@@ -113,8 +114,8 @@ fn refuse(path: &str, why: &str) -> Box<EvalAltResult> {
         .iter()
         .any(|domain| path == *domain || path.starts_with(&format!("{domain}/")));
     let hint = if domain_spelling {
-        " (this run is on the host: spell domain paths with RUNTIME.paths, \
-         e.g. RUNTIME.paths.build, RUNTIME.paths.output, RUNTIME.paths.inputs)"
+        " (this run is on the host: build paths from WORK, INPUTS, DEPS, src and out \
+         instead of spelling domain paths)"
     } else {
         ""
     };
@@ -125,7 +126,7 @@ const OUTSIDE: &str = "is outside this run's directories (its inputs, work and o
                        a recipe running on the host reaches only those";
 
 const PARENT: &str = "uses `..`; paths may not use `..` in a host run; \
-                      build the path from RUNTIME.paths";
+                      build the path from WORK, INPUTS, DEPS, src or out";
 
 /// Refuse a host-run path that is not absolute or that uses `..`.
 fn check_spelling(path: &str) -> Result<(), Box<EvalAltResult>> {

@@ -73,6 +73,18 @@ pub(crate) fn current() -> SavedState {
     })
 }
 
+/// Whether this run was restored from a checkpoint. A checkpoint is taken
+/// only inside `build` or `configure`, after Recipe unpacked the sources and
+/// the packages and placed `FILES`; the restored work folders and output
+/// already hold all of that, so Recipe does not do it again.
+pub(crate) fn resumed() -> bool {
+    SESSION.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .is_some_and(|session| !session.restored.is_empty())
+    })
+}
+
 /// Run `f` (a call of `build` or `configure`) with `checkpoint` open.
 pub(crate) fn with_checkpoints<T>(f: impl FnOnce() -> T) -> T {
     let set = |open: bool| {

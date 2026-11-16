@@ -65,6 +65,14 @@ pub const TOOLS: &str = "/work/tools";
 pub const TOOL_BIN_DIRS: [&str; 4] = ["usr/bin", "usr/sbin", "bin", "sbin"];
 /// Temporary directory (`TMPDIR`).
 pub const TMP: &str = "/work/tmp";
+/// The run's download store (docs/recipe-format.md, section 2.4): each
+/// `SOURCES` download and pinned package at `DOWNLOADS/<sha256>/<file>`, each
+/// `git` checkout at `DOWNLOADS/<commit>`. The worker creates it below
+/// [`WORK`] when a recipe downloads.
+pub const DOWNLOADS: &str = "/work/downloads";
+/// Where the worker unpacks each archive source, `SOURCES/<name>`: `src.NAME`
+/// of an archive. Created below [`WORK`] like [`DOWNLOADS`].
+pub const SOURCES: &str = "/work/sources";
 /// The output tree: each declared output is placed below it by the engine
 /// ([`output_path`]); publication takes them from there.
 pub const OUT: &str = "/out";

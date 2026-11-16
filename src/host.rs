@@ -254,7 +254,7 @@ fn run_inner(
                 .context("the host run directory is not UTF-8")?
                 .to_owned(),
             network: prepared.network.host_grants(),
-            network_max_bytes: options.execution.network_max_bytes,
+            network_max_bytes: prepared.execution.network_max_bytes,
             cache: offline_cache_text().map_err(startup)?,
         }),
     };

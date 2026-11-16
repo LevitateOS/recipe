@@ -60,21 +60,22 @@ pub(crate) fn install(recipe: &Path, load: &Load<'_>) -> Result<Built, EngineErr
         let _deps_environment = super::dependencies::select(&deps)?;
 
         output::action(&format!("Installing {name}"));
-        let src = if steps.contains(&"download") {
+        let host_libc = &load.options.host_libc;
+        let fetched = if steps.contains(&"download") {
             start_step(&name, Phase::Download);
-            match builtin::download(declared, &load.options.host_libc) {
-                Ok(src) => {
+            match builtin::download(declared, host_libc) {
+                Ok(fetched) => {
                     report_phase_success(&name, Phase::Download.name());
-                    src
+                    fetched
                 }
                 Err(error) => return Err(fail(recipe, Phase::Download, error)),
             }
         } else {
-            Map::new()
+            builtin::Fetched::default()
         };
 
         start_step(&name, work);
-        let built = match build_outputs(recipe, &build_deps, src) {
+        let built = match build_outputs(recipe, &build_deps, &fetched, host_libc) {
             Ok(built) => built,
             Err(error) => return Err(fail(recipe, work, error)),
         };
@@ -104,13 +105,15 @@ fn start_step(name: &str, phase: Phase) {
     output::hook_event(name, phase.name(), HookStatus::Running, "step started");
 }
 
-/// Place the outputs, unpack and place what the recipe declares, call
-/// `build` or `configure`, finish a `system` tree, check every output and
-/// call `verify(out)`. Returns each output's domain path.
+/// Place the outputs, unpack the sources and the packages, place `FILES`,
+/// call `build` or `configure`, finish a `system` tree, check every output
+/// and call `verify(out)` (section 6.1, the build step). Returns each
+/// output's domain path.
 fn build_outputs(
     recipe: &mut Loaded<'_>,
     build_deps: &[String],
-    src: Map,
+    fetched: &builtin::Fetched,
+    host_libc: &str,
 ) -> anyhow::Result<Built> {
     // `build_deps` are needed only while building.
     let _build_environment = super::dependencies::select(build_deps)?;
@@ -118,8 +121,13 @@ fn build_outputs(
     let outputs = place_outputs(&recipe.declaration.needs)?;
     let out = out_argument(&outputs)?;
 
-    builtin::unpack_packages(&declared, &outputs)?;
-    builtin::place_files(&declared, &src, &outputs)?;
+    // A run restored from a checkpoint has all of this in its restored work
+    // folders and output already.
+    let resumed = crate::core::saved::resumed();
+    let unpacked = builtin::unpack_sources(fetched, resumed)?;
+    builtin::unpack_packages(&declared, fetched, &outputs, resumed)?;
+    builtin::place_files(&declared, &unpacked, &outputs, resumed)?;
+    let src = builtin::src_map(&declared, fetched, &unpacked)?;
     if recipe.runtime.has_fn("build", 2) {
         crate::core::saved::with_checkpoints(|| {
             recipe
@@ -137,7 +145,7 @@ fn build_outputs(
             .map_err(|error| anyhow!("configure failed: {error}"))
             .map(drop)?;
     }
-    builtin::finish_system(&declared, &outputs)?;
+    builtin::finish_system(&declared, &outputs, host_libc)?;
     check_outputs(&outputs)?;
     if recipe.runtime.has_fn("verify", 1) {
         recipe

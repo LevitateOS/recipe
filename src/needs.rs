@@ -48,7 +48,15 @@ pub struct Needs {
     pub storage_max_objects: u64,
     pub storage_max_bytes: Option<u64>,
     pub timeout_secs: u64,
+    /// The bytes the recipe declares for its own downloads. For a recipe
+    /// with `PACKAGES` it is what `NEEDS.network_max_bytes` says, or 0 when
+    /// left out; the pins in use are added by [`Needs::network_budget`].
     pub network_max_bytes: u64,
+    /// For a recipe with `PACKAGES`: each pins section's C library (`glibc`,
+    /// `musl`, `any`) to the bytes of its packages (docs/recipe-format.md,
+    /// section 2.7, decision 9). Read from the pins file, never declared.
+    #[serde(skip)]
+    pub pins_bytes: BTreeMap<String, u64>,
 }
 
 #[derive(Default, Deserialize)]
@@ -157,9 +165,26 @@ impl Needs {
             storage_max_bytes: raw.storage_max_bytes,
             timeout_secs: raw.timeout_secs.unwrap_or(defaults.timeout_secs),
             network_max_bytes: raw.network_max_bytes.unwrap_or(defaults.network_max_bytes),
+            pins_bytes: BTreeMap::new(),
         };
         needs.resolve(&Narrowing::default(), &defaults)?;
         Ok(needs)
+    }
+
+    /// The received-byte budget of a run on a system whose C library is
+    /// `host_libc`: the declared bytes plus the pins in use (the section of
+    /// that C library, else the `any` section), as `crate::pins::Pins::section`
+    /// chooses it. A group without pins for this system downloads nothing and
+    /// its download step refuses the run; its budget stays one byte so the
+    /// network policy is still valid until then.
+    pub fn network_budget(&self, host_libc: &str) -> u64 {
+        let pins = self
+            .pins_bytes
+            .get(host_libc)
+            .or_else(|| self.pins_bytes.get("any"))
+            .copied()
+            .unwrap_or(0);
+        self.network_max_bytes.saturating_add(pins).max(1)
     }
 
     /// Resolve caller restrictions once; the same values govern config, worker,
@@ -188,7 +213,7 @@ impl Needs {
         resolved.network_max_bytes = lower(
             "network_max_bytes",
             narrowing.network_max_bytes,
-            self.network_max_bytes,
+            self.network_budget(&execution.host_libc),
         )?;
         let memory_bytes = self
             .memory_mib
@@ -230,7 +255,11 @@ impl Needs {
     /// Apply a caller ceiling to this dependency's own declaration. A ceiling
     /// above a dependency's limit keeps that stricter limit; endpoint sets
     /// intersect, so a caller never lends another recipe an endpoint.
-    pub(crate) fn dependency_narrowing(&self, caller: &Narrowing) -> Result<Narrowing> {
+    pub(crate) fn dependency_narrowing(
+        &self,
+        caller: &Narrowing,
+        host_libc: &str,
+    ) -> Result<Narrowing> {
         let cap = |requested: Option<u64>, declared: u64| requested.map(|n| n.min(declared));
         let memory_mib = cap(caller.memory_mib, self.memory_mib);
         let memory_bytes = memory_mib
@@ -265,7 +294,7 @@ impl Needs {
                 .storage_max_bytes
                 .map(|n| n.min(declared_bytes).min(memory_bytes)),
             timeout_secs: cap(caller.timeout_secs, self.timeout_secs),
-            network_max_bytes: cap(caller.network_max_bytes, self.network_max_bytes),
+            network_max_bytes: cap(caller.network_max_bytes, self.network_budget(host_libc)),
         })
     }
 
@@ -418,6 +447,7 @@ pub fn declaration(recipe: &Path, search_path: Option<&Path>) -> Result<Declarat
     let compiled = crate::core::executor::compile_recipe(&engine, &recipe, search_path)?;
     let ast = &compiled.source_ast;
     let mut needs = None;
+    let mut budget_declared = false;
     for statement in ast.statements() {
         if let Stmt::Var(binding, flags, _) = statement
             && binding.0.name == "NEEDS"
@@ -431,11 +461,25 @@ pub fn declaration(recipe: &Path, search_path: Option<&Path>) -> Result<Declarat
                 matches!(&binding.1, Expr::Map(..)),
                 "NEEDS must be a literal map"
             );
-            needs = Some(Needs::parse(literal(&binding.1)?)?);
+            let value = literal(&binding.1)?;
+            budget_declared = value.get("network_max_bytes").is_some();
+            needs = Some(Needs::parse(value)?);
         }
     }
-    let needs = needs.context("recipe must declare literal const NEEDS = #{...}")?;
+    let mut needs = needs.context("recipe must declare literal const NEEDS = #{...}")?;
     let declared = crate::declarations::read(&compiled, &needs, search_path)?;
+    // A group declares only the budget of its other sources (0 when it has
+    // none); Recipe adds the bytes of the pins in use (decision 9).
+    if let Some(pins) = &declared.pins {
+        if !budget_declared {
+            needs.network_max_bytes = 0;
+        }
+        needs.pins_bytes = pins
+            .sections
+            .iter()
+            .map(|section| (section.libc.as_str().to_owned(), section.bytes()))
+            .collect();
+    }
     let mut dependencies = BTreeMap::<String, Vec<String>>::new();
     for statement in compiled.ast.statements() {
         if let Stmt::Var(binding, _, _) = statement

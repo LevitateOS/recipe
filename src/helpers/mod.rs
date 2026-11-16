@@ -45,7 +45,8 @@ pub mod build;
 pub(crate) mod confine;
 pub mod install;
 mod rpm_package;
-mod target;
+pub(crate) mod target;
+pub(crate) mod tree;
 pub mod util;
 
 use confine::{entry, look, read, write};
@@ -366,6 +367,28 @@ pub fn register_all(engine: &mut Engine, programs: bool) {
     helper!(engine, "target_extract_apk", |archive: &str, root: &str| {
         target::extract_apk(&read(archive)?, &write(root)?)
     });
+
+    // Writing into a system tree (docs/recipe-format.md, section 5): the
+    // tree first, then a path inside it. Paths are confined in `tree`.
+    helper!(engine, "put", |tree: &str,
+                            path: &str,
+                            text: &str,
+                            mode: i64| {
+        tree::put(tree, path, text, mode)
+    });
+    helper!(
+        engine,
+        "put_link",
+        |tree: &str, path: &str, target: &str| tree::put_link(tree, path, target)
+    );
+    helper!(engine, "tree_text", |tree: &str, path: &str| {
+        tree::tree_text(tree, path)
+    });
+    helper!(
+        engine,
+        "enable_service",
+        |tree: &str, unit: &str, service: &str| tree::enable_service(tree, unit, service)
+    );
 
     // Build helpers (build/extract)
     // extract(archive, dest) -> ()

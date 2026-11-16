@@ -10,7 +10,8 @@
 //! - A recipe that can reach one of the program-starting or image-reading
 //!   helpers ([`crate::helpers::PROGRAM_HELPERS`]) runs in Ginux, as do recipes
 //!   whose calls cannot be resolved statically: `eval`, `Fn(...)` with a
-//!   computed name, a dynamic `import`.
+//!   computed name, a dynamic `import`. So does a recipe that declares a
+//!   `git` source: Recipe checks it out with the git program.
 //! - Everything else runs on the host, confined by Recipe's own helpers
 //!   (`crate::helpers::confine`, `crate::helpers::acquire::net`), and the
 //!   host worker does not register the program helpers at all.
@@ -138,6 +139,23 @@ pub fn eligibility(recipe: &Path, search_path: Option<&Path>) -> Result<Eligibil
     let recipe = recipe
         .canonicalize()
         .with_context(|| format!("cannot resolve recipe {}", recipe.display()))?;
+    // Recipe checks a `git` source out with the git program
+    // (docs/recipe-format.md, section 2.4), which a host worker cannot start.
+    let declaration = crate::needs::declaration(&recipe, search_path)?;
+    if let Some((name, _)) = declaration
+        .declared
+        .sources
+        .iter()
+        .find(|(_, source)| matches!(source.origin, crate::declarations::Origin::Git { .. }))
+    {
+        return Ok(Eligibility {
+            blocker: Some(Blocker {
+                what: format!("declares the git source SOURCES.{name}, checked out with git"),
+                file: recipe,
+                line: None,
+            }),
+        });
+    }
     let source = std::fs::read_to_string(&recipe)
         .with_context(|| format!("cannot read recipe {}", recipe.display()))?;
     let child = engine
