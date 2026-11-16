@@ -99,8 +99,14 @@ Requirements:
    kept build material, unfinished runs, the compiler image cache, logs. Each
    kind has a way to remove it.
 6. **Removing a program frees its space.**
-7. **Earlier versions kept for "go back" have a small default limit.**
-   The number is the owner's decision and is still open.
+7. **"Go back" is removed entirely** (the owner, 2026-11-16: "I never asked
+   for that feature"). No earlier versions of a program are kept. Gone with
+   it: the command `recipe go-back`, the kept generations of the package
+   store, `recipe storage --clear-earlier`, the "Go back" button and the
+   "earlier versions" numbers in the app. A program is installed or it is not;
+   updating replaces it. The feature was added on 2026-11-10 for the app and
+   has never run on an installed system. "Keep at this version" (`hold`) is a
+   separate feature, keeps no copies, and is not decided here.
 
 The cost, accepted by the owner's model: updating or reinstalling a program
 downloads and builds it again.
@@ -115,6 +121,44 @@ Where this lands in the steps below:
 - Step 3c (the Recipe app) gains the Storage page of requirement 5 and the
   "keep build material" option of requirement 2.
 - Step 8a's review checks, by reading, that no step copies where it can move.
+
+## 0c. Every step by itself (the owner, 2026-11-16)
+
+The user decides how far a recipe goes. Each step can be done alone, and the
+app shows it.
+
+| The user wants to | Today | Required |
+|---|---|---|
+| only download | no command; only `install` does it, as its first step | a command and a button |
+| only build (from what is downloaded) | no command | a command and a button |
+| only install (what is built) | `install` does all missing steps | stays; it does only what is still missing |
+| only uninstall | `recipe remove` | stays, and frees the space |
+| only remove what was downloaded | not possible (`recipe cleanup` does nothing for catalog recipes) | a command and a button |
+| only remove what was built | not possible | a command and a button |
+
+Surveyed on 2026-11-16: Recipe has `install`, `update`, `remove`, `cleanup`
+and the three checks `isacquired`, `isbuilt`, `isinstalled`. It has no command
+that only downloads or only builds, and none that removes downloads or build
+material. The app offers Install, Update, Remove, Open, Keep at this version
+and Go back; "Fetching" and "Building" appear only as labels of a running
+install.
+
+What follows from it:
+
+- A program has a visible state: nothing here, downloaded, built, installed.
+  The app's page for a program shows that state and the next possible
+  actions.
+- This fits the disk rule of section 0b. Downloads and build material exist
+  only between steps: after "only download" the download stays until the user
+  builds, installs or removes it. After a successful install they are
+  deleted, unless the user chose to keep them.
+- The Storage page lists what is downloaded and what is built but not
+  installed, each with its size and a way to remove it.
+- One click still installs: "Install" does every step that is missing.
+
+Where this lands: step 1 names the commands and the states; step 2d builds
+them into the engine (it owns what is done and what is kept); step 3c builds
+the buttons, the state and the Storage rows into the app.
 
 ## 1. Finish the format: the specification
 
@@ -141,10 +185,11 @@ The draft starts from these proposed answers (numbers as in section 0):
 | 10 | The single output keeps its name in `NEEDS.outputs`; the recipe body never uses the name. |
 | 11 | Unchanged: the caller's tree comes in as the `target` input, as today. |
 | 12 | `cleanup(reason)` stays, without `ctx`. |
-| 13 | `isinstalled` stays (answered from records). `isbuilt`, `isacquired` and `--force-acquire` go; `--force-build` stays. |
+| 13 | To be settled with section 0c: the checks `isinstalled`, `isbuilt`, `isacquired` report a program's state; the `--force-*` options are replaced by the single-step commands. |
 | 14 | One shared module `look.rhai`; one generated `os-facts.rhai` module instead of seven copied blocks. |
 | 15 | `NAME.pins`: one line per package, written only by the generator, staged with the recipe so it counts toward its identity. |
-| 16 | Disk space (section 0b): the option that keeps build material, the default limit of earlier versions, and the kinds `recipe storage --json` reports. |
+| 16 | Disk space (section 0b): the option that keeps build material, and the kinds `recipe storage --json` reports. No earlier versions: `go-back` is removed. |
+| 17 | Every step by itself (section 0c): the commands for download only, build only, remove the download, remove the build; the states a program can be in and how `recipe list`/`installed` report them. |
 
 The owner sees the spec with the decisions that are theirs marked, before
 step 2 starts.
@@ -160,7 +205,7 @@ and with the reference recipes of its part passing `recipe info`.
 | 2a | Read the declarations (`PACKAGE`, `SOURCES`, `FILES`, `PACKAGES`, `ACCOUNTS`, `RERUN`); one API number; `list`, `info`, `index`, `validate` report the new shape | `needs.rs`, `catalog.rs`, `core/executor.rs` (`declared_metadata`), `core/invocation.rs` (`validate_api`), `sources.rs`, `execution.rs` | medium |
 | 2b | The core: no `ctx`. Constants in place of `RUNTIME`; call `build(src, out)`, `configure`, `verify`, `cleanup(reason)`; outputs mapped by the engine; `save`/`saved`/`checkpoint` | `core/invocation.rs`, `core/executor/private/{flow,actions,loaded,context}.rs`, `worker/run.rs`, `worker/protocol.rs`, `launch.rs`, `host.rs`, `publication.rs`, `backend.rs`, `lifecycle.rs` | **highest** |
 | 2c | Built-in steps: fetch and unpack `SOURCES`; copy `FILES`; package groups (pins file, native RPM/APK unpack, accounts, finish the tree) | new step in `flow.rs`; reuses `helpers/acquire`, `helpers/build/extract.rs`, `helpers/target.rs`, `accounts.rs`, `offline_cache.rs`, `inputs/discover.rs` | medium |
-| 2d | "Done" from Recipe's own records; delete build material and saved state after a successful install, move instead of copy, a limit on earlier versions, `recipe storage` reporting everything (section 0b); `remove` hook and `Operation::Remove` gone; autofix and narration renamed | `retained.rs`, `host/snapshot.rs`, `packages.rs`, `system.rs`, `core/autofix/*`, `core/output/narration.rs`, `bin/recipe/commands.rs` | high |
+| 2d | "Done" from Recipe's own records; delete build material and saved state after a successful install, move instead of copy, `go-back` and kept generations removed, `recipe storage` reporting everything (section 0b); each step as its own command and the states of a program (section 0c); `remove` hook and `Operation::Remove` gone; autofix and narration renamed | `retained.rs`, `host/snapshot.rs`, `packages.rs`, `system.rs`, `core/autofix/*`, `core/output/narration.rs`, `bin/recipe/commands.rs` | high |
 
 With 2a–2c the agents also convert the **reference recipes**, one per shape:
 `ripgrep` (a), `cmake` (b), `network` (c), `pi` (d), `desktop-runtime` (e),
@@ -181,7 +226,7 @@ Can start when the spec is approved; needs 2a only for the JSON shape.
 |---|---|---|
 | 3a | `xtask/src/tasks/groups.rs` (about 270 lines in 8 functions), `base.rs` `group_seeds`, `kernels/publish.rs`: read `PACKAGES`, write `NAME.pins` and `os-facts.rhai`, no longer rewrite recipe text. Also `recipes/generators/desktop-runtime-pins.py` | sonnet |
 | 3b | Builder Rust: `recipe/outputs.rs` and `stamp.rs` (read the new result), `default_set.rs` (`deps_of`, `pins_of`, copy pins files to the medium), `update_release.rs` (pins files into the base and `recipes.tar.zst`), `pipeline/kernel.rs` (the `isinstalled` call) | sonnet |
-| 3c | Recipe app: steps from the declarations instead of `hooks`; the Storage page shows everything Recipe holds, by kind, with a way to remove each; the option to keep build material; the stand-in `fixtures/recipe` and `catalog.json`; README | sonnet |
+| 3c | Recipe app: steps from the declarations instead of `hooks`; the Storage page shows everything Recipe holds, by kind, with a way to remove each; the option to keep build material; "Go back" removed; a program's state and a button for each single step (section 0c); the stand-in `fixtures/recipe` and `catalog.json`; README | sonnet |
 
 ## 4. The catalog recipes (72)
 
