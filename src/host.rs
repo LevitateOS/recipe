@@ -79,6 +79,7 @@ fn run_inner(
         destination,
         state_dir,
         dependencies,
+        key,
         ..
     } = *invocation;
     let invocation_id = prepared.invocation_id.clone();
@@ -145,6 +146,7 @@ fn run_inner(
                 state_dir,
                 destination,
                 recipe,
+                key,
                 prepared,
                 &worker_digest,
                 None,
@@ -160,12 +162,27 @@ fn run_inner(
         .context(Category::Startup.error("cannot create the host run's scratch directory"))?;
     let restore_path = run_dir.path().join("restore.tar");
     let export_path = run_dir.path().join("export.tar");
-    let mut restore = retained
-        .as_ref()
-        .map(|state| state.restore_input(&restore_path))
-        .transpose()
-        .map_err(|error| Category::Storage.wrap(error, "cannot restore saved files"))?
-        .unwrap_or(false);
+    // What is done already, from Recipe's records: nothing to run, or a run
+    // that starts from an unfinished generation, or from nothing.
+    let mut restore =
+        match crate::launch::start(retained.as_ref(), operation, prepared, &restore_path)? {
+            crate::launch::Start::Done { publish } => {
+                return crate::launch::done_report(
+                    &retained,
+                    &restore_path,
+                    publish,
+                    prepared,
+                    &invocation_id,
+                    operation,
+                    options,
+                    state_dir,
+                );
+            }
+            crate::launch::Start::Run { restore } => restore,
+        };
+    // The saved values go with the files of the generation restored, and
+    // with nothing else.
+    let restored_generation = restore;
     if !restore {
         restore = crate::inputs::seed_target(prepared, &root, &restore_path).map_err(|error| {
             Category::Startup.wrap(error, "cannot seed the requested target view")
@@ -246,6 +263,7 @@ fn run_inner(
         dependencies: dependencies.clone(),
         restored_states: retained
             .as_ref()
+            .filter(|_| restored_generation)
             .map(|state| state.states().clone())
             .unwrap_or_default(),
         host: Some(crate::worker::protocol::HostRun {

@@ -1,4 +1,13 @@
 //! Coordinator-owned state records paired with immutable filesystem snapshots.
+//!
+//! These records are how Recipe knows what is done (docs/recipe-format.md,
+//! section 6.2), never from recipe code. Per recipe and destination (a
+//! scope) and per build identity, each generation is one archive of the
+//! run's `work` and `out` with its record: the archive's SHA-256 and length,
+//! the saved values, how far the run got ([`Reached`]: an unfinished
+//! checkpoint, the downloads, or a finished result with its outputs) and
+//! the state key ([`crate::state::key`]). A generation counts only while its
+//! archive still has the recorded SHA-256 and length.
 use crate::inputs::PreparedInvocation;
 use crate::worker::protocol::InvocationOptions;
 use anyhow::{Context, Result, bail};
@@ -74,6 +83,19 @@ pub(crate) fn lock_destination(destination: &Path, timeout: Duration) -> Result<
     }
 }
 
+/// How far the run that made a generation got.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Reached {
+    /// A `checkpoint(name)` inside `build` or `configure`: an unfinished
+    /// run, after its download step.
+    Checkpoint,
+    /// `recipe download`: the download step finished.
+    Downloaded,
+    /// The build step finished: the kept result, with its outputs.
+    Built,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Record {
@@ -84,12 +106,18 @@ struct Record {
     sha256: String,
     bytes: u64,
     states: BTreeMap<String, Value>,
+    reached: Reached,
+    /// A finished result's outputs: each declared output to its domain
+    /// path. Empty for the other generations.
+    outputs: BTreeMap<String, String>,
+    /// The state key of the run that made it ([`crate::state::key`]).
+    key: String,
 }
 
 impl Record {
     /// The one record format rule, for loading and for pruning.
     fn validate(&self, identity: &str) -> Result<()> {
-        if self.version != 1
+        if self.version != RECORD_VERSION
             || self.identity != identity
             || self.generation == 0
             || self.sha256.len() != 64
@@ -110,6 +138,17 @@ impl Record {
         if !valid_folder {
             bail!("invalid saved archive name");
         }
+        let outputs_valid = (self.reached == Reached::Built) != self.outputs.is_empty()
+            && self.outputs.len() <= crate::worker::protocol::MAX_OUTPUTS
+            && self.outputs.iter().all(|(name, path)| {
+                crate::domain::valid_name(name) && *path == crate::domain::output_path(name)
+            });
+        if !outputs_valid
+            || self.key.len() != 64
+            || !self.key.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            bail!("saved state outputs or key mismatch");
+        }
         Ok(())
     }
 
@@ -121,6 +160,9 @@ impl Record {
     }
 }
 
+/// The record format; another number is not read.
+const RECORD_VERSION: u32 = 2;
+
 // Saved-state layout under an identity directory.
 const CURRENT: &str = "current.json";
 const GENERATION_PREFIX: &str = "g-";
@@ -129,6 +171,8 @@ const RECORD: &str = "record.json";
 
 pub(crate) struct Retained {
     directory: PathBuf,
+    /// The state key the next generation records.
+    key: String,
     current: Record,
     allowed: HashSet<String>,
     state_budget: usize,
@@ -152,6 +196,7 @@ impl Retained {
         root: Option<&Path>,
         destination: &Path,
         recipe: &Path,
+        key: &str,
         prepared: &PreparedInvocation,
         worker_digest: &str,
         launcher: Option<&Path>,
@@ -161,16 +206,12 @@ impl Retained {
         let root = state_root(root)?;
         durable_directory(&root)?;
         let root = root.canonicalize()?;
-        let mut scope = Sha256::new();
-        for path in [recipe.canonicalize()?, destination.canonicalize()?] {
-            let bytes = path.as_os_str().as_bytes();
-            scope.update((bytes.len() as u64).to_le_bytes());
-            scope.update(bytes);
-        }
-        let scope = root.join(hex::encode(scope.finalize()));
+        let (recipe, destination) = (recipe.canonicalize()?, destination.canonicalize()?);
+        let scope = root.join(scope_name(&recipe, &destination));
         // A new scope or identity directory becomes durable with the first
         // commit inside it (see `commit`); until then it holds nothing durable.
         crate::fsx::private_dir(&scope, false)?;
+        write_scope_about(&scope, &recipe, &destination)?;
         let mut defines = options.defines.clone();
         defines.sort();
         // Saved state must fit the next invocation's request frame.
@@ -212,14 +253,11 @@ impl Retained {
             storage_max_bytes,
             network_hosts,
             network_max_bytes,
-            // Presentation, deadlines and main-recipe force flags do not change
-            // what the saved files mean.
+            // Presentation and deadlines do not change what the saved files
+            // mean.
             machine_events: _,
             progress_file: _,
             timeout_secs: _,
-            force_acquire: _,
-            force_build: _,
-            force_install: _,
             exact_identity,
             // Shown to recipes as HOST_LIBC; the saved files of one
             // store belong to one system.
@@ -340,19 +378,23 @@ impl Retained {
                     .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
             {
                 Record {
-                    version: 1,
+                    version: RECORD_VERSION,
                     identity,
                     generation: 0,
                     archive: String::new(),
                     sha256: String::new(),
                     bytes: 0,
                     states: BTreeMap::new(),
+                    reached: Reached::Checkpoint,
+                    outputs: BTreeMap::new(),
+                    key: key.to_owned(),
                 }
             }
             Err(error) => return Err(error),
         };
         let retained = Self {
             directory,
+            key: key.to_owned(),
             current,
             allowed,
             state_budget,
@@ -366,25 +408,83 @@ impl Retained {
         &self.current.states
     }
 
-    /// Hash the same bytes copied to the private restore input, never verify one
-    /// pathname read and then let the launcher consume a second mutable read.
+    /// How far the current generation got; None when there is none.
+    pub fn reached(&self) -> Option<Reached> {
+        (self.current.generation != 0).then_some(self.current.reached)
+    }
+
+    /// The current generation's outputs (a finished result's).
+    pub fn outputs(&self) -> &BTreeMap<String, String> {
+        &self.current.outputs
+    }
+
+    /// Whether the current generation's archive still has the SHA-256 and
+    /// length its record names. A changed archive is reported and counts as
+    /// nothing: the run starts from nothing and its next generation replaces
+    /// the record.
+    pub fn verify_current(&self) -> Result<bool> {
+        if self.current.generation == 0 {
+            return Ok(false);
+        }
+        let mut source = match crate::fsx::open_regular(&self.directory.join(&self.current.archive))
+        {
+            Ok(source) => source,
+            Err(error) => return Ok(self.changed(&error)),
+        };
+        match crate::fsx::copy_hashed(&mut source, &mut std::io::sink(), self.archive_bound) {
+            Ok((bytes, digest)) if bytes == self.current.bytes && digest == self.current.sha256 => {
+                Ok(true)
+            }
+            Ok(_) => Ok(self.changed(&anyhow::anyhow!("its SHA-256 or length differs"))),
+            Err(error) => Ok(self.changed(&error)),
+        }
+    }
+
+    fn changed(&self, why: &anyhow::Error) -> bool {
+        crate::diagnostics::diag!(
+            "recipe: warning: the kept files of generation {} changed since Recipe recorded them \
+             ({why:#}); they are not used, and the run starts from nothing",
+            self.current.generation
+        );
+        false
+    }
+
+    /// Copy the current generation's archive to the private restore input
+    /// `path` and check the copied bytes against the record (never verify one
+    /// pathname read and then let the launcher consume a second mutable
+    /// read). True when `path` holds it; false when there is no generation or
+    /// its archive changed ([`Self::verify_current`]), and `path` is left
+    /// absent.
     pub fn restore_input(&self, path: &Path) -> Result<bool> {
         if self.current.generation == 0 {
             return Ok(false);
         }
-        let mut source = crate::fsx::open_regular(&self.directory.join(&self.current.archive))?;
+        let mut source = match crate::fsx::open_regular(&self.directory.join(&self.current.archive))
+        {
+            Ok(source) => source,
+            Err(error) => return Ok(self.changed(&error)),
+        };
         let mut output = OpenOptions::new()
             .read(true)
             .write(true)
             .create_new(true)
             .mode(0o600)
             .open(path)?;
-        let (bytes, digest) =
-            crate::fsx::snapshot_hashed(&mut source, &mut output, self.archive_bound)?;
-        if bytes != self.current.bytes || digest != self.current.sha256 {
-            bail!("saved filesystem snapshot digest mismatch");
+        let copied = crate::fsx::snapshot_hashed(&mut source, &mut output, self.archive_bound);
+        drop(output);
+        match copied {
+            Ok((bytes, digest)) if bytes == self.current.bytes && digest == self.current.sha256 => {
+                Ok(true)
+            }
+            other => {
+                fs::remove_file(path)?;
+                let why = match other {
+                    Err(error) => error,
+                    Ok(_) => anyhow::anyhow!("its SHA-256 or length differs"),
+                };
+                Ok(self.changed(&why))
+            }
         }
-        Ok(true)
     }
 
     pub fn begin(&self) -> Result<Pending> {
@@ -404,7 +504,19 @@ impl Retained {
         })
     }
 
+    /// Keep a checkpoint: an unfinished run's files with its saved state.
     pub fn commit(&mut self, pending: Pending, recipe: &str, state: Value) -> Result<u64> {
+        self.commit_as(pending, recipe, state, Reached::Checkpoint, BTreeMap::new())
+    }
+
+    fn commit_as(
+        &mut self,
+        pending: Pending,
+        recipe: &str,
+        state: Value,
+        reached: Reached,
+        outputs: BTreeMap<String, String>,
+    ) -> Result<u64> {
         if !self.allowed.contains(recipe) || !state.is_object() {
             bail!("checkpoint names an unknown recipe or an invalid saved state");
         }
@@ -422,14 +534,18 @@ impl Retained {
             .to_str()
             .context("state path is not UTF-8")?;
         let record = Record {
-            version: 1,
+            version: RECORD_VERSION,
             identity: self.current.identity.clone(),
             generation: pending.generation,
             archive: format!("{folder}/{FILES}"),
             bytes,
             sha256,
             states,
+            reached,
+            outputs,
+            key: self.key.clone(),
         };
+        record.validate(&self.current.identity)?;
         let data = serde_json::to_vec(&record)?;
         if data.len() > self.state_budget {
             bail!("runtime state exceeds byte bound");
@@ -468,7 +584,16 @@ impl Retained {
         Ok(self.current.generation)
     }
 
-    pub fn finish(&mut self, export: &Path, state: Value) -> Result<u64> {
+    /// Keep the end of a run: the downloads of `recipe download`
+    /// ([`Reached::Downloaded`], no outputs) or a finished result
+    /// ([`Reached::Built`] with its outputs).
+    pub fn finish(
+        &mut self,
+        export: &Path,
+        state: Value,
+        reached: Reached,
+        outputs: BTreeMap<String, String>,
+    ) -> Result<u64> {
         let pending = self.begin()?;
         let mut input = crate::fsx::open_regular(export)?;
         let mut output = OpenOptions::new()
@@ -482,7 +607,7 @@ impl Retained {
             crate::fsx::copy_hashed(&mut input, &mut output, self.archive_bound)?;
         }
         drop(output);
-        self.commit(pending, crate::domain::MAIN_RECIPE, state)
+        self.commit_as(pending, crate::domain::MAIN_RECIPE, state, reached, outputs)
     }
 }
 
@@ -510,6 +635,8 @@ fn durable_directory(path: &Path) -> Result<()> {
     crate::fsx::private_dir(&path, true)
 }
 
+// C4b: saved state only while a run is unfinished and one copy at most
+// (docs/recipe-format.md, section 7 and 6.5) replaces these counts.
 // Per destination/recipe scope: retain the current and three recent input
 // identities, each with its current and previous complete filesystem generation.
 // The caller holds the existing destination lock throughout this operation.
@@ -653,4 +780,278 @@ impl Retained {
         // prune, and the pointer they depend on was made durable by `commit`.
         Ok(())
     }
+}
+
+/// The scope directory name of `recipe` and `destination` (both canonical).
+fn scope_name(recipe: &Path, destination: &Path) -> String {
+    let mut scope = Sha256::new();
+    for path in [recipe, destination] {
+        let bytes = path.as_os_str().as_bytes();
+        scope.update((bytes.len() as u64).to_le_bytes());
+        scope.update(bytes);
+    }
+    hex::encode(scope.finalize())
+}
+
+/// What a scope is for: its recipe and destination, so that a clean-up over
+/// every scope finds the destination lock and a report names the program.
+const SCOPE_ABOUT: &str = "scope.json";
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScopeAbout {
+    recipe: PathBuf,
+    destination: PathBuf,
+}
+
+fn write_scope_about(scope: &Path, recipe: &Path, destination: &Path) -> Result<()> {
+    let path = scope.join(SCOPE_ABOUT);
+    if crate::fsx::open_regular(&path).is_ok() {
+        return Ok(());
+    }
+    let mut file = tempfile::NamedTempFile::new_in(scope)?;
+    file.write_all(&serde_json::to_vec(&ScopeAbout {
+        recipe: recipe.to_owned(),
+        destination: destination.to_owned(),
+    })?)?;
+    file.persist(path)?;
+    Ok(())
+}
+
+/// One scope: what Recipe keeps for one recipe at one destination.
+pub(crate) struct Scope {
+    pub directory: PathBuf,
+    pub recipe: PathBuf,
+    pub destination: PathBuf,
+}
+
+impl Scope {
+    /// The scope of `recipe` at `destination`, when Recipe keeps anything
+    /// for it (the state root, the destination and the scope exist).
+    pub fn of(state_dir: Option<&Path>, recipe: &Path, destination: &Path) -> Result<Option<Self>> {
+        let Ok(root) = state_root(state_dir)?.canonicalize() else {
+            return Ok(None);
+        };
+        let (Ok(recipe), Ok(destination)) = (recipe.canonicalize(), destination.canonicalize())
+        else {
+            return Ok(None);
+        };
+        let directory = root.join(scope_name(&recipe, &destination));
+        Ok(fs::symlink_metadata(&directory)
+            .is_ok_and(|metadata| metadata.is_dir())
+            .then_some(Self {
+                directory,
+                recipe,
+                destination,
+            }))
+    }
+
+    /// Every scope under the state root that names its recipe and
+    /// destination.
+    pub fn all(state_dir: Option<&Path>) -> Result<Vec<Self>> {
+        let Ok(root) = state_root(state_dir)?.canonicalize() else {
+            return Ok(Vec::new());
+        };
+        let mut scopes = Vec::new();
+        for entry in fs::read_dir(&root)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if name.len() != 64
+                || !name.bytes().all(|b| b.is_ascii_hexdigit())
+                || !entry.file_type()?.is_dir()
+            {
+                continue;
+            }
+            let Ok(mut file) = crate::fsx::open_regular(&entry.path().join(SCOPE_ABOUT)) else {
+                continue;
+            };
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            let Ok(about) = serde_json::from_slice::<ScopeAbout>(&bytes) else {
+                continue;
+            };
+            scopes.push(Self {
+                directory: entry.path(),
+                recipe: about.recipe,
+                destination: about.destination,
+            });
+        }
+        Ok(scopes)
+    }
+
+    /// Every generation the scope holds, of every identity.
+    pub fn generations(&self) -> Result<Vec<Generation>> {
+        let mut found = Vec::new();
+        for entry in fs::read_dir(&self.directory)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(identity) = name.to_str() else {
+                continue;
+            };
+            if identity.len() != 64
+                || !identity.bytes().all(|b| b.is_ascii_hexdigit())
+                || !entry.file_type()?.is_dir()
+            {
+                continue;
+            }
+            let current = owned_record(&entry.path().join(CURRENT), identity)
+                .map(|record| record.folder().to_owned());
+            for generation in fs::read_dir(entry.path())? {
+                let generation = generation?;
+                let folder = generation.file_name().to_string_lossy().into_owned();
+                if !folder.starts_with(GENERATION_PREFIX) || !generation.file_type()?.is_dir() {
+                    continue;
+                }
+                let Some(record) = owned_record(&generation.path().join(RECORD), identity) else {
+                    continue;
+                };
+                if record.folder() != folder || generation_files(&generation.path()).is_none() {
+                    continue;
+                }
+                found.push(Generation {
+                    current: current.as_deref() == Some(folder.as_str()),
+                    identity: entry.path(),
+                    archive: entry.path().join(&record.archive),
+                    record,
+                });
+            }
+        }
+        Ok(found)
+    }
+
+    /// How far the current generation of an identity whose state key is
+    /// `key` got, counting only one whose archive still has the recorded
+    /// SHA-256 and length (each archive is read once to check it).
+    pub fn reached(&self, key: &str) -> Result<Option<Reached>> {
+        let mut best = None;
+        for generation in self.generations()? {
+            if !generation.current
+                || generation.record.key != key
+                || best.is_some_and(|best| best >= generation.record.reached)
+            {
+                continue;
+            }
+            if generation.intact() {
+                best = Some(generation.record.reached);
+            }
+        }
+        Ok(best)
+    }
+
+    /// Delete the generations of the kinds in `kinds`, holding the
+    /// destination's lock (a run of this recipe holds it while it runs).
+    /// Where an identity's current generation goes, its newest remaining one
+    /// becomes current; an identity left with none is removed. Returns the
+    /// bytes freed.
+    pub fn remove(&self, kinds: &[Reached]) -> Result<u64> {
+        let _lock =
+            lock_destination(&self.destination, Duration::from_secs(10)).with_context(|| {
+                format!(
+                    "{} is in use by a run of {}; try again when it ends",
+                    self.destination.display(),
+                    self.recipe.display()
+                )
+            })?;
+        let mut freed = 0;
+        let mut identities = HashSet::new();
+        for generation in self.generations()? {
+            identities.insert(generation.identity.clone());
+            if !kinds.contains(&generation.record.reached) {
+                continue;
+            }
+            let folder = generation.identity.join(generation.record.folder());
+            let size = generation_files(&folder)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|file| fs::symlink_metadata(file).ok())
+                .map(|metadata| metadata.len())
+                .sum::<u64>();
+            if remove_generation(&folder)? {
+                freed += size;
+            }
+        }
+        for identity in identities {
+            let name = identity
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_owned();
+            let pointer = identity.join(CURRENT);
+            let current_gone = owned_record(&pointer, &name)
+                .is_none_or(|record| !identity.join(record.folder()).is_dir());
+            if !current_gone {
+                continue;
+            }
+            let newest = fs::read_dir(&identity)?
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(GENERATION_PREFIX)
+                })
+                .filter_map(|entry| owned_record(&entry.path().join(RECORD), &name))
+                .max_by_key(|record| record.generation);
+            match newest {
+                Some(record) => {
+                    let mut file = tempfile::NamedTempFile::new_in(&identity)?;
+                    file.write_all(&serde_json::to_vec(&record)?)?;
+                    crate::fsx::sync_files(&[(file.path(), None)])?;
+                    file.persist(&pointer)?;
+                    crate::fsx::sync_directories(&[identity.as_path()])?;
+                }
+                None => {
+                    match fs::remove_file(&pointer) {
+                        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                            return Err(error.into());
+                        }
+                        _ => {}
+                    }
+                    // Only an empty identity directory goes; anything else in
+                    // it is not Recipe's to remove.
+                    let _ = fs::remove_dir(&identity);
+                }
+            }
+        }
+        Ok(freed)
+    }
+}
+
+/// One kept generation of a scope.
+pub(crate) struct Generation {
+    /// It is the current generation of its identity.
+    pub current: bool,
+    identity: PathBuf,
+    archive: PathBuf,
+    record: Record,
+}
+
+impl Generation {
+    pub fn reached(&self) -> Reached {
+        self.record.reached
+    }
+
+    /// The bytes it holds on disk (its archive).
+    pub fn bytes(&self) -> u64 {
+        self.record.bytes
+    }
+
+    /// Its archive still has the SHA-256 and length its record names.
+    fn intact(&self) -> bool {
+        let Ok(mut file) = crate::fsx::open_regular(&self.archive) else {
+            return false;
+        };
+        crate::fsx::copy_hashed(&mut file, &mut std::io::sink(), u64::MAX)
+            .is_ok_and(|(bytes, digest)| bytes == self.record.bytes && digest == self.record.sha256)
+    }
+}
+
+/// Where a dependency of the recipe run at `destination` keeps its lock and
+/// saved state: a destination of its own below the consumer's.
+pub(crate) fn dependency_destination(destination: &Path, recipe: &Path) -> PathBuf {
+    let digest = hex::encode(Sha256::digest(recipe.as_os_str().as_encoded_bytes()));
+    destination.join(".deps").join(&digest[..32])
 }

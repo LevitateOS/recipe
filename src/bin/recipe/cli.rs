@@ -36,7 +36,7 @@ pub(crate) struct Cli {
     #[arg(long, global=true, conflicts_with_all=["no_activate","package_root"], help_heading="Installed software")]
     pub(crate) system: bool,
 
-    /// With --system: write the system change into DIR, a root that is not running (an installer's /mnt, an image tree), and read installed/isinstalled from it. No recab call, no A/B record. Given before the command: `recipe --system --root /mnt install NAME`.
+    /// With --system: write the system change into DIR, a root that is not running (an installer's /mnt, an image tree), and read installed/state from it. No recab call, no A/B record. Given before the command: `recipe --system --root /mnt install NAME`.
     #[arg(
         long,
         value_name = "DIR",
@@ -75,18 +75,6 @@ pub(crate) struct Cli {
     #[arg(long, global = true, default_value_t = defaults().execution, value_parser = clap::value_parser!(levitate_recipe::ExecutionMode))]
     #[arg(help_heading = "Build and state")]
     pub(crate) execution: levitate_recipe::ExecutionMode,
-    /// Rerun acquisition, build and installation for the main recipe.
-    #[arg(long, global = true)]
-    #[arg(help_heading = "Rerun phases")]
-    pub(crate) force_acquire: bool,
-    /// Rerun build and installation for the main recipe.
-    #[arg(long, global = true)]
-    #[arg(help_heading = "Rerun phases")]
-    pub(crate) force_build: bool,
-    /// Rerun installation for the main recipe.
-    #[arg(long, global = true)]
-    #[arg(help_heading = "Rerun phases")]
-    pub(crate) force_install: bool,
     /// Install or update a package whose build is linked against a C library other than this system's.
     #[arg(long, global = true)]
     #[arg(help_heading = "Target")]
@@ -185,9 +173,9 @@ pub(crate) enum Commands {
         after_help = "Example:\n  recipe diff ./old/kitty.rhai ./new/kitty.rhai\n\nCompares declared inputs, outputs, network endpoints, dependencies and limits.\nNo recipe code is executed. Requires a compatible Ginux launcher."
     )]
     Diff { old: PathBuf, new: PathBuf },
-    /// Run a recipe and activate its package output, if declared
+    /// Do every step still missing (download, build, install) and activate the package output, if declared
     #[command(
-        after_help = "Examples:\n  recipe install ripgrep\n  recipe install ./hello.rhai\n  recipe install ./producer.rhai --no-activate\n\nRecipes use the same Ginux engine. A directory output named package is activated\natomically in the selected package root's profile; other outputs remain products.\nOS builders use --no-activate. Acquisition or activation failure preserves the old profile."
+        after_help = "Examples:\n  recipe install ripgrep\n  recipe install ./hello.rhai\n  recipe install ./producer.rhai --no-activate\n\nRecipe decides what is done from its own records: downloads kept by SHA-256, a\nkept result with the current identity whose files still match, the receipt. A\nprogram installed from the same recipe file is not installed again. A directory\noutput named package is activated atomically in the selected package root's\nprofile; other outputs are published. OS builders use --no-activate. A failure\npreserves the old profile."
     )]
     Install {
         /// Recipe path or recipe name. If the file is not found directly, recipe will also look in --recipes-path and try appending `.rhai`.
@@ -200,17 +188,46 @@ pub(crate) enum Commands {
         /// Run only if the recipe file has this SHA-256: what was looked at is what runs.
         #[arg(long, value_name = "HASH")]
         sha256: Option<String>,
+
+        #[command(flatten)]
+        keep: KeepFlags,
     },
 
     /// Update an installed package to the version pinned by its current recipe
     #[command(
         after_help = "Example:\n  recipe update ripgrep\n\nUses the current catalog recipe, or the installed source path if no catalog entry\nexists. It does not edit version pins or fetch an unverified latest release.\nThe previous package remains active until the replacement is active; then it is\ndeleted."
     )]
-    Update { recipe: PathBuf },
+    Update {
+        recipe: PathBuf,
+
+        #[command(flatten)]
+        keep: KeepFlags,
+    },
+
+    /// Download a recipe's sources and pins only (the download step)
+    #[command(
+        after_help = "Example:\n  recipe download gh\n\nThe downloads are kept until the program is built, installed or cleaned up\n('recipe cleanup NAME --downloads'). Nothing is done when Recipe keeps them already."
+    )]
+    Download {
+        /// Recipe path or recipe name. Name lookup follows the same rules as `recipe install`.
+        recipe: PathBuf,
+    },
+
+    /// Download what is missing, then build; the result is kept, not installed
+    #[command(
+        after_help = "Example:\n  recipe build kitty\n\nA kept result with the current identity whose files still match is not built\nagain. 'recipe install' installs the kept result; 'recipe cleanup NAME --build'\nremoves it."
+    )]
+    Build {
+        /// Recipe path or recipe name. Name lookup follows the same rules as `recipe install`.
+        recipe: PathBuf,
+
+        #[command(flatten)]
+        keep: KeepFlags,
+    },
 
     /// List package receipts; with --system on an A/B system, the running root's software and the other root's
     #[command(
-        after_help = "With --json each package also names what its recipe was allowed to use when it\nwas installed (needs), when (installed_on) and the length of its files\n(size_bytes)."
+        after_help = "With --json each package also names what its recipe was allowed to use when it\nwas installed (needs), when (installed_on), the length of its files\n(size_bytes), what it holds beside them (on_disk) and whether the recipe as last\nfetched names another version (update)."
     )]
     Installed,
 
@@ -232,50 +249,38 @@ pub(crate) enum Commands {
     )]
     Storage,
 
-    /// Remove an active package, or run an output-only recipe's remove hook
+    /// Remove an installed program by its receipt, and its downloads and build material
     #[command(
-        after_help = "Examples:\n  recipe remove ripgrep\n  recipe remove ./producer.rhai --no-activate\n\nActive package removal uses its installed receipt and needs neither the recipe\nnor Ginux, and frees the package's space. Build caches are retained.\n--no-activate runs only the recipe's removal hook in its owned output tree."
+        after_help = "Examples:\n  recipe remove ripgrep\n  recipe remove ripgrep --keep\n  recipe remove ./producer.rhai --no-activate\n\nThe installed files are removed by the receipt; no recipe code runs and no\nGinux is needed. Then whatever is left of the program's downloads and build\nmaterial is deleted, unless --keep. A program that is not installed loses only\nits material."
     )]
     Remove {
         /// Recipe path or recipe name. Name lookup follows the same rules as `recipe install`.
         recipe: PathBuf,
+        /// Remove only the installed program; keep its downloads and build material.
+        #[arg(long)]
+        keep: bool,
     },
 
-    /// Clean up build artifacts
+    /// Delete downloads and build material; installed programs stay
     #[command(
-        after_help = "Examples:\n  recipe cleanup kitty\n  recipe cleanup ./recipes/kitty.rhai --build-dir /tmp/recipe-build\n\nRuns the recipe's own cleanup(\"manual\") when it defines one."
+        after_help = "Examples:\n  recipe cleanup kitty\n  recipe cleanup kitty --downloads\n  recipe cleanup kitty --build\n  recipe cleanup\n\nWith a name: that program's downloads, kept results and unfinished runs (and\nthose of the dependency runs made for it); then the recipe's own\ncleanup(\"manual\") runs when it defines one. Without a name: the same for every\nprogram. The installed programs stay."
     )]
     Cleanup {
-        /// Recipe path or recipe name. Name lookup follows the same rules as `recipe install`.
-        recipe: PathBuf,
+        /// Recipe path or recipe name; without it, every program. Name lookup follows the same rules as `recipe install`.
+        recipe: Option<PathBuf>,
+        /// Only the downloads.
+        #[arg(long, conflicts_with = "build")]
+        downloads: bool,
+        /// Only the build material: kept results and unfinished runs.
+        #[arg(long)]
+        build: bool,
     },
 
-    /// Check active package files, or an output-only recipe's installed state
-    #[command(name = "isinstalled")]
+    /// Print a program's state: none, downloaded, built or installed
     #[command(
-        after_help = "Examples:\n  recipe isinstalled ripgrep\n  recipe isinstalled ./recipes/ripgrep.rhai --no-activate\n\nActive packages are checked without Ginux. Use --no-activate to run the producer's is_installed hook instead."
+        after_help = "Examples:\n  recipe state gh\n  recipe state gh --json\n\nDecided from Recipe's own records, never from recipe code: downloads kept by\nSHA-256, a kept result with the current identity whose files still match, the\nreceipt. With --json it also names the steps the recipe has and what it holds on\ndisk (on_disk). It exits 0 whatever the state."
     )]
-    IsInstalled {
-        /// Recipe path or recipe name. Name lookup follows the same rules as `recipe install`.
-        recipe: PathBuf,
-    },
-
-    /// Evaluate the recipe's `is_built(ctx)` hook manually
-    #[command(name = "isbuilt")]
-    #[command(
-        after_help = "Examples:\n  recipe isbuilt kitty\n  recipe isbuilt ./recipes/kitty.rhai --build-dir /tmp/recipe-build\n\nUseful when debugging whether build outputs are being detected correctly."
-    )]
-    IsBuilt {
-        /// Recipe path or recipe name. Name lookup follows the same rules as `recipe install`.
-        recipe: PathBuf,
-    },
-
-    /// Evaluate the recipe's `is_acquired(ctx)` hook manually
-    #[command(name = "isacquired")]
-    #[command(
-        after_help = "Examples:\n  recipe isacquired kitty\n  recipe isacquired ./recipes/kitty.rhai --build-dir /tmp/recipe-build\n\nUseful when debugging source/download state detection."
-    )]
-    IsAcquired {
+    State {
         /// Recipe path or recipe name. Name lookup follows the same rules as `recipe install`.
         recipe: PathBuf,
     },
@@ -419,4 +424,28 @@ pub(crate) enum RuntimeCommands {
         #[arg(long)]
         apparmor: bool,
     },
+}
+
+/// The keep option of install, update and build (docs/recipe-format.md,
+/// section 6.4).
+#[derive(clap::Args, Clone, Copy, Debug, Default)]
+pub(crate) struct KeepFlags {
+    /// Keep the downloads and build material after a successful install; remembered for this program.
+    #[arg(long, conflicts_with = "no_keep")]
+    pub(crate) keep: bool,
+    /// Turn the keep option off, and delete kept material of an installed program.
+    #[arg(long)]
+    pub(crate) no_keep: bool,
+}
+
+impl KeepFlags {
+    /// `Some(true)` for --keep, `Some(false)` for --no-keep, None to leave
+    /// the remembered setting.
+    pub(crate) fn choice(self) -> Option<bool> {
+        match (self.keep, self.no_keep) {
+            (true, _) => Some(true),
+            (_, true) => Some(false),
+            _ => None,
+        }
+    }
 }

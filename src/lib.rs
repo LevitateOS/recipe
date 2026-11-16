@@ -69,6 +69,8 @@ mod retained;
 /// Installed runtime defaults shared with OS packaging.
 pub mod runtime;
 pub mod sources;
+/// The state of a program and the material Recipe keeps for it.
+pub mod state;
 pub mod system;
 /// Target filesystem metadata carried independently of build-host privileges.
 pub mod target;
@@ -107,14 +109,14 @@ pub mod bin_support {
         match result {
             Ok(()) => serde_json::json!({"event": "done", "recipe": recipe}),
             Err(error) => {
-                let hook = error
+                let step = error
                     .downcast_ref::<crate::backend::WorkloadFailure>()
                     .and_then(|failure| failure.0.phase)
                     .map(crate::lifecycle::Phase::name);
                 let mut event = serde_json::json!({
                     "event": "failed",
                     "recipe": recipe,
-                    "hook": hook,
+                    "step": step,
                     "reason": format!("{error:#}"),
                 });
                 // A connection Ginux refused during the run, if its log holds one.
@@ -204,7 +206,7 @@ impl RecipeEngine {
         self
     }
 
-    /// Select target, job count and main-recipe force policy.
+    /// Select target, job count and the other execution options.
     pub fn with_execution_options(mut self, options: ExecutionOptions) -> Self {
         self.execution = options;
         self
@@ -228,22 +230,41 @@ impl RecipeEngine {
         self.inputs.push(inputs::ExtraInput { name, path });
     }
 
-    /// Build a recipe: run its dependencies, then its download step and the
-    /// step that builds its outputs, and publish the outputs.
+    /// Install a recipe (docs/recipe-format.md, section 6.3): run its
+    /// dependencies, then every step still missing by Recipe's records, and
+    /// publish the outputs. A kept result with the current identity is
+    /// published without running anything.
     ///
-    /// Returns the run's result: `name`, `version`, `outputs` (each output's
-    /// published path), `prefix`, `contract`, `network_usage`.
-    // C4: every step runs on every call; C4 decides what is done already
-    // from Recipe's own records.
-    pub fn execute(&self, recipe_path: &Path) -> Result<serde_json::Value> {
+    /// Returns the run's result: `operation`, `name`, `version`, `steps`,
+    /// `outputs` (each output's published path), `prefix`, `dependencies`,
+    /// `contract`, `network_usage`.
+    pub fn install(&self, recipe_path: &Path) -> Result<serde_json::Value> {
         self.invoke(worker::protocol::Operation::Install, recipe_path)
     }
 
-    /// Run the recipe's own `cleanup("manual")`.
-    // C4: what `recipe cleanup` deletes itself (downloads, build material,
-    // saved state) is C4's.
+    /// Build a recipe: its dependencies, the download step where it is
+    /// missing and the build step, unless a kept result with the current
+    /// identity exists. The result is kept, not published (`outputs` is
+    /// empty).
+    pub fn build(&self, recipe_path: &Path) -> Result<serde_json::Value> {
+        self.invoke(worker::protocol::Operation::Build, recipe_path)
+    }
+
+    /// The download step only, unless Recipe keeps the downloads already.
+    pub fn download(&self, recipe_path: &Path) -> Result<serde_json::Value> {
+        self.invoke(worker::protocol::Operation::Download, recipe_path)
+    }
+
+    /// Run the recipe's own `cleanup("manual")` on fresh work folders. The
+    /// material `recipe cleanup` deletes is deleted by the caller first
+    /// ([`state::cleanup`]).
     pub fn cleanup(&self, recipe_path: &Path) -> Result<serde_json::Value> {
         self.invoke(worker::protocol::Operation::Cleanup, recipe_path)
+    }
+
+    /// The destination: where this engine keeps its lock and saved-state scope.
+    pub fn destination(&self) -> &Path {
+        &self.build_dir
     }
 
     /// Call the recipe's `latest()` on the host and return the version it
@@ -282,6 +303,7 @@ impl RecipeEngine {
                 state_dir: self.state_dir.as_deref(),
                 // Each run of the graph names its own (`backend`).
                 dependencies: &no_dependencies,
+                key: "",
             },
         )
     }

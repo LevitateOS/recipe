@@ -6,6 +6,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use levitate_recipe::sources::{self, Sources};
+use levitate_recipe::state::State;
 
 use super::{
     cli::{Cli, Commands, SourceCommands},
@@ -49,8 +50,14 @@ pub(super) fn require_sha256(recipe: &Path, expected: Option<&str>) -> Result<()
 fn changed_package(command: &Commands) -> Option<String> {
     let recipe = match command {
         Commands::Install { recipe, .. }
-        | Commands::Update { recipe }
-        | Commands::Remove { recipe } => recipe.file_stem()?.to_str()?.to_owned(),
+        | Commands::Update { recipe, .. }
+        | Commands::Download { recipe }
+        | Commands::Build { recipe, .. }
+        | Commands::Remove { recipe, .. }
+        | Commands::Cleanup {
+            recipe: Some(recipe),
+            ..
+        } => recipe.file_stem()?.to_str()?.to_owned(),
         _ => return None,
     };
     Some(match recipe.split_once(':') {
@@ -93,13 +100,14 @@ pub(crate) fn execute(mut cli: Cli) -> Result<()> {
 
 fn run(cli: Cli) -> Result<()> {
     anyhow::ensure!(
-        !(cli.force_acquire || cli.force_build || cli.force_install)
-            || matches!(
+        !cli.no_persist_state
+            || !matches!(
                 &cli.command,
-                Commands::Install { .. } | Commands::Update { .. }
+                Commands::Download { .. } | Commands::Build { .. }
             ),
-        "force options apply only to install operations"
+        "download and build keep their result in Recipe's saved state, and --no-persist-state keeps nothing; drop --no-persist-state, or install"
     );
+    let machine_events = cli.machine_events;
     let io_start = levitate_recipe::system::process_io();
     let mut execution = levitate_recipe::ExecutionOptions::default();
     execution.target_os = cli.target_os;
@@ -107,9 +115,6 @@ fn run(cli: Cli) -> Result<()> {
     execution.jobs = cli.jobs;
     execution.machine_events = cli.machine_events;
     execution.progress_file = cli.progress_file.clone();
-    execution.force_acquire = cli.force_acquire;
-    execution.force_build = cli.force_build;
-    execution.force_install = cli.force_install;
     execution.exact_identity = cli.exact_identity || levitate_recipe::identity::exact_from_env()?;
     execution.execution = cli.execution;
     execution.narrowing = levitate_recipe::needs::Narrowing {
@@ -152,7 +157,10 @@ fn run(cli: Cli) -> Result<()> {
         sources: (!explicit_collection).then_some(&all_sources),
         purpose: if matches!(
             cli.command,
-            Commands::Install { .. } | Commands::Update { .. }
+            Commands::Install { .. }
+                | Commands::Update { .. }
+                | Commands::Download { .. }
+                | Commands::Build { .. }
         ) {
             sources::Purpose::Install
         } else {
@@ -262,7 +270,12 @@ fn run(cli: Cli) -> Result<()> {
                 "Recipe permission changes",
             )?;
         }
-        Commands::Install { recipe, sha256, .. } => {
+        Commands::Install {
+            recipe,
+            sha256,
+            keep,
+            ..
+        } => {
             let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
             require_sha256(&recipe_path, sha256.as_deref())?;
             check_libc(
@@ -273,8 +286,18 @@ fn run(cli: Cli) -> Result<()> {
                 (any_libc, any_system),
                 (json_output.as_deref(), json),
             )?;
+            // C4b: the keep option (remembered per program; --no-keep deletes
+            // kept material of an installed program at once).
+            let _keep = keep.choice();
+            if !no_activate
+                && let Some(result) =
+                    installed_already(&package_store, &recipe_path, recipes_path, machine_events)?
+            {
+                emit_result(&result, json_output.as_deref(), json, "Already installed")?;
+                return Ok(());
+            }
             let engine = create_engine(&recipe_path, &engine_options)?;
-            let mut result = engine.execute(&recipe_path)?;
+            let mut result = engine.install(&recipe_path)?;
             if !no_activate {
                 activate_package(
                     &package_store,
@@ -285,6 +308,13 @@ fn run(cli: Cli) -> Result<()> {
                 )?;
             }
             result["producer_io"] = levitate_recipe::system::io_delta(&io_start);
+            // C4b: after a successful install (outputs published, package
+            // activated) delete the downloads, unpacked sources, build
+            // material and saved state unless kept (state::cleanup with
+            // Material::All at engine.destination()), and report the cleanup
+            // step done and the bytes freed.
+            let state = state_after(&recipe_path, recipes_path, &result, State::Built)?;
+            finish_run(&mut result, state, 0);
             emit_result(
                 &result,
                 json_output.as_deref(),
@@ -293,7 +323,9 @@ fn run(cli: Cli) -> Result<()> {
             )?;
         }
 
-        Commands::Update { recipe } => {
+        Commands::Update { recipe, keep } => {
+            // C4b: the keep option, as for install.
+            let _keep = keep.choice();
             anyhow::ensure!(
                 !no_activate,
                 "update manages active packages; use install --no-activate for producers"
@@ -318,8 +350,10 @@ fn run(cli: Cli) -> Result<()> {
                 }
             })?;
             if installed.source.is_some() && recipe_path == installed.recipe {
-                let result = serde_json::json!({"name": installed.name, "version": installed.version,
-                    "operation": "update", "current": true, "profile": package_store.profile_path()});
+                let mut result = serde_json::json!({"name": installed.name, "version": installed.version,
+                    "operation": "update", "current": true, "profile": package_store.profile_path(),
+                    "steps": [], "outputs": {}, "dependencies": []});
+                finish_run(&mut result, State::Installed, 0);
                 emit_result(&result, json_output.as_deref(), json, "Package is current")?;
                 return Ok(());
             }
@@ -332,7 +366,8 @@ fn run(cli: Cli) -> Result<()> {
                 (json_output.as_deref(), json),
             )?;
             let engine = create_engine(&recipe_path, &engine_options)?;
-            let mut result = engine.execute(&recipe_path)?;
+            let mut result = engine.install(&recipe_path)?;
+            result["operation"] = "update".into();
             activate_package(
                 &package_store,
                 &recipe_path,
@@ -343,13 +378,49 @@ fn run(cli: Cli) -> Result<()> {
             if let Some(source) = &installed.source {
                 all_sources.forget(source, &installed.name, Some(&recipe_path));
             }
+            finish_run(&mut result, State::Installed, 0);
             emit_result(&result, json_output.as_deref(), json, "Package updated")?;
         }
 
+        Commands::Download { recipe } => {
+            let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
+            let engine = create_engine(&recipe_path, &engine_options)?;
+            let mut result = engine.download(&recipe_path)?;
+            let receipt = (!no_activate)
+                .then(|| installed_package(&package_store, &recipe))
+                .transpose()?
+                .flatten();
+            let state = if receipt.is_some() {
+                State::Installed
+            } else {
+                let recorded = recorded_state(&recipe_path, &engine, &engine_options)?;
+                recorded.state
+            };
+            finish_run(&mut result, state, 0);
+            emit_result(&result, json_output.as_deref(), json, "Downloaded")?;
+        }
+
+        Commands::Build { recipe, keep } => {
+            // C4b: the keep option, as for install.
+            let _keep = keep.choice();
+            let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
+            let engine = create_engine(&recipe_path, &engine_options)?;
+            let mut result = engine.build(&recipe_path)?;
+            let receipt = (!no_activate)
+                .then(|| installed_package(&package_store, &recipe))
+                .transpose()?
+                .flatten();
+            let state = if receipt.is_some() {
+                State::Installed
+            } else {
+                state_after(&recipe_path, recipes_path, &result, State::Built)?
+            };
+            finish_run(&mut result, state, 0);
+            emit_result(&result, json_output.as_deref(), json, "Built")?;
+        }
+
         Commands::Installed => {
-            let packages = package_store.list()?;
-            let result =
-                serde_json::json!({"packages": packages, "profile": package_store.profile_path()});
+            let result = installed_json(&package_store, &lookup, &engine_options)?;
             emit_result(&result, json_output.as_deref(), json, "Installed packages")?;
         }
 
@@ -387,61 +458,193 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
 
-        Commands::Remove { recipe } => {
-            if !no_activate && let Some(installed) = installed_package(&package_store, &recipe)? {
-                let removed = package_store.remove(&installed.name)?;
-                if let Some(source) = &removed.source {
-                    all_sources.forget(source, &removed.name, None);
+        Commands::Remove { recipe, keep } => {
+            // The installed files go by the receipt; no recipe code runs.
+            let removed = match (!no_activate)
+                .then(|| installed_package(&package_store, &recipe))
+                .transpose()?
+                .flatten()
+            {
+                Some(installed) => {
+                    let removed = package_store.remove(&installed.name)?;
+                    if let Some(source) = &removed.source {
+                        all_sources.forget(source, &removed.name, None);
+                    }
+                    Some(removed)
                 }
-                let result = serde_json::json!({"name": removed.name, "version": removed.version,
-                        "operation": "remove", "profile": package_store.profile_path()});
-                emit_result(&result, json_output.as_deref(), json, "Package removed")?;
-                return Ok(());
+                None => None,
+            };
+            // The recipe the program was installed from names its material;
+            // a program that is not installed is looked up by name.
+            let recipe_path = match &removed {
+                Some(removed) if removed.recipe.is_file() => Some(removed.recipe.clone()),
+                Some(_) => resolve_recipe_path(&recipe, &lookup).ok(),
+                None => Some(resolve_recipe_path(&recipe, &lookup)?),
+            };
+            let mut freed = removed
+                .as_ref()
+                .and_then(|removed| removed.size_bytes)
+                .unwrap_or(0);
+            let mut held = false;
+            if let Some(recipe_path) = &recipe_path {
+                let engine = create_engine(recipe_path, &engine_options)?;
+                let graph = levitate_recipe::needs::declarations(recipe_path, Some(recipes_path))?;
+                if keep {
+                    let on_disk = levitate_recipe::state::on_disk(
+                        engine_options.state_dir,
+                        engine.destination(),
+                        &graph,
+                    )?;
+                    held = on_disk.downloads + on_disk.build + on_disk.unfinished > 0;
+                } else {
+                    let material = levitate_recipe::state::cleanup(
+                        engine_options.state_dir,
+                        engine.destination(),
+                        &graph,
+                        levitate_recipe::state::Material::All,
+                    )?;
+                    held = material > 0;
+                    freed += material;
+                }
+                // C4b: `recipe remove NAME` forgets the keep option.
             }
-            let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
-            require_output_only_if_inactive(&recipe_path, recipes_path, no_activate)?;
-            // C4: removing what a producer run left (its downloads and build
-            // material, by Recipe's own records) replaces the remove hook.
-            anyhow::bail!(
-                "{} is not installed in this profile; removing a producer's material is not built yet in C2",
-                recipe_path.display()
+            anyhow::ensure!(
+                removed.is_some() || held,
+                "{} is not installed in this profile, and Recipe keeps no downloads or build material of it",
+                recipe.display()
             );
+            let declared = recipe_path.as_ref().and_then(|path| {
+                levitate_recipe::needs::declaration(path, Some(recipes_path)).ok()
+            });
+            let name = removed
+                .as_ref()
+                .map(|removed| removed.name.clone())
+                .or_else(|| declared.as_ref().map(|d| d.name().to_owned()));
+            let version = removed
+                .as_ref()
+                .map(|removed| removed.version.clone())
+                .or_else(|| {
+                    declared
+                        .as_ref()
+                        .and_then(|d| d.version().map(str::to_owned))
+                });
+            let state = match (&recipe_path, keep) {
+                (Some(recipe_path), true) => {
+                    let engine = create_engine(recipe_path, &engine_options)?;
+                    recorded_state(recipe_path, &engine, &engine_options)?.state
+                }
+                _ => State::None,
+            };
+            let mut result = serde_json::json!({"operation": "remove", "name": name,
+                "version": version, "steps": [], "outputs": {}, "dependencies": [],
+                "profile": package_store.profile_path()});
+            finish_run(&mut result, state, freed);
+            result["kept"] = keep.into();
+            emit_result(&result, json_output.as_deref(), json, "Removed")?;
         }
 
-        Commands::Cleanup { recipe } => {
-            let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
-            let engine = create_engine(&recipe_path, &engine_options)?;
-            let result = engine.cleanup(&recipe_path)?;
+        Commands::Cleanup {
+            recipe,
+            downloads,
+            build,
+        } => {
+            use levitate_recipe::state::Material;
+            let what = match (downloads, build) {
+                (true, _) => Material::Downloads,
+                (_, true) => Material::Build,
+                _ => Material::All,
+            };
+            let steps = serde_json::json!([{"step": "cleanup", "status": "done"}]);
+            let mut result = match recipe {
+                None => {
+                    let freed =
+                        levitate_recipe::state::cleanup_all(engine_options.state_dir, what)?;
+                    let mut result = serde_json::json!({"operation": "cleanup", "name": null,
+                        "version": null, "steps": steps, "outputs": {}, "dependencies": []});
+                    finish_run(&mut result, State::None, freed);
+                    result["state"] = serde_json::Value::Null;
+                    result
+                }
+                Some(recipe) => {
+                    let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
+                    let engine = create_engine(&recipe_path, &engine_options)?;
+                    let graph =
+                        levitate_recipe::needs::declarations(&recipe_path, Some(recipes_path))?;
+                    let main = graph.last().context("empty recipe graph")?;
+                    let freed = levitate_recipe::state::cleanup(
+                        engine_options.state_dir,
+                        engine.destination(),
+                        &graph,
+                        what,
+                    )?;
+                    // Then the recipe's own cleanup("manual"), after Recipe's
+                    // own deletions (docs/recipe-format.md, section 3.7).
+                    let mut result = if main.declared.cleanup {
+                        engine.cleanup(&recipe_path)?
+                    } else {
+                        serde_json::json!({"name": main.name(), "version": main.version()})
+                    };
+                    result["operation"] = "cleanup".into();
+                    result["steps"] = steps;
+                    // The builder reads `outputs` from every result.
+                    result["outputs"] = serde_json::json!({});
+                    result["dependencies"] = serde_json::json!([]);
+                    let receipt = (!no_activate)
+                        .then(|| installed_package(&package_store, &recipe))
+                        .transpose()?
+                        .flatten();
+                    let state = if receipt.is_some() {
+                        State::Installed
+                    } else {
+                        recorded_state(&recipe_path, &engine, &engine_options)?.state
+                    };
+                    finish_run(&mut result, state, freed);
+                    result
+                }
+            };
+            result["kept"] = false.into();
             emit_result(&result, json_output.as_deref(), json, "Cleanup completed")?;
         }
 
-        Commands::IsInstalled { recipe } => {
-            if !no_activate && let Some(installed) = installed_package(&package_store, &recipe)? {
-                let installed = package_store.verify(&installed.name)?;
-                let result = serde_json::json!({"name": installed.name, "version": installed.version,
-                        "profile": package_store.profile_path()});
-                emit_result(&result, json_output.as_deref(), json, "Package is active")?;
-                return Ok(());
+        Commands::State { recipe } => {
+            let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
+            let graph = levitate_recipe::needs::declarations(&recipe_path, Some(recipes_path))?;
+            let main = graph.last().context("empty recipe graph")?;
+            let receipt = (!no_activate)
+                .then(|| installed_package(&package_store, &recipe))
+                .transpose()?
+                .flatten();
+            let engine = create_engine(&recipe_path, &engine_options)?;
+            let recorded = recorded_state(&recipe_path, &engine, &engine_options)?;
+            let state = if receipt.is_some() {
+                State::Installed
+            } else {
+                recorded.state
+            };
+            let result = serde_json::json!({
+                "schema_version": levitate_recipe::catalog::SCHEMA_VERSION,
+                "name": main.name(),
+                "version": main.version(),
+                "state": state.as_str(),
+                "installed_version": receipt.as_ref().map(|receipt| receipt.version.clone()),
+                // C4b: the keep option, remembered per program.
+                "keep": false,
+                "steps": main.declared.steps(),
+                "on_disk": recorded.on_disk,
+            });
+            if json_output.is_some() || json {
+                emit_result(&result, json_output.as_deref(), json, "State")?;
+            } else {
+                println!(
+                    "{} {}: {}",
+                    main.name(),
+                    main.version().unwrap_or("?"),
+                    state.as_str()
+                );
             }
-            // C4: `recipe state NAME` replaces the three checks; a state
-            // comes from Recipe's own records, never from recipe code.
-            let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
-            anyhow::bail!(
-                "{} is not installed in this profile; a producer's state (recipe state) is not built yet in C2",
-                recipe_path.display()
-            );
         }
 
-        Commands::IsBuilt { recipe } | Commands::IsAcquired { recipe } => {
-            // C4: replaced by `recipe state NAME`.
-            let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
-            anyhow::bail!(
-                "{}: isbuilt and isacquired ran recipe checks, which API 1 has not; recipe state is not built yet in C2",
-                recipe_path.display()
-            );
-        }
-
-        Commands::List => list_recipes(&lookup, &package_store, list_json)?,
+        Commands::List => list_recipes(&lookup, &package_store, &engine_options, list_json)?,
 
         Commands::Source { command } => {
             anyhow::ensure!(
@@ -552,16 +755,198 @@ fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-/// An inactive package must not look installed merely because build outputs remain.
-fn require_output_only_if_inactive(recipe: &Path, search: &Path, no_activate: bool) -> Result<()> {
-    if !no_activate {
-        let declaration = levitate_recipe::needs::declaration(recipe, Some(search))?;
-        anyhow::ensure!(
-            !declaration.needs.outputs.contains_key("package"),
-            "package is not active; use install first, or --no-activate to inspect/remove producer outputs"
-        );
+/// Complete a finished run's result (docs/recipe-format.md, section 8.6):
+/// `schema_version`, the program's `state` after the run, `activation`
+/// (null when nothing was activated), `kept` and `freed_bytes`.
+fn finish_run(result: &mut serde_json::Value, state: State, freed: u64) {
+    result["schema_version"] = levitate_recipe::catalog::SCHEMA_VERSION.into();
+    result["state"] = state.as_str().into();
+    if result.get("activation").is_none() {
+        result["activation"] = serde_json::Value::Null;
     }
-    Ok(())
+    // C4b: nothing deletes the material after a successful install yet, so
+    // it is kept; C4b sets this from the keep option.
+    result["kept"] = true.into();
+    result["freed_bytes"] = freed.into();
+}
+
+/// The state after a build or install: installed when a package was
+/// activated, else built (the result is kept), or none for a `RERUN`
+/// recipe, whose result is never kept.
+fn state_after(
+    recipe: &Path,
+    search: &Path,
+    result: &serde_json::Value,
+    built: State,
+) -> Result<State> {
+    if result["activation"].is_object() {
+        return Ok(State::Installed);
+    }
+    let declaration = levitate_recipe::needs::declaration(recipe, Some(search))?;
+    Ok(if declaration.declared.rerun {
+        State::None
+    } else {
+        built
+    })
+}
+
+/// What Recipe's records say of `recipe` at the engine's destination, with
+/// the same defines and `PREFIX` a run with these options has.
+fn recorded_state(
+    recipe: &Path,
+    engine: &RecipeEngine,
+    options: &EngineOptions<'_>,
+) -> Result<levitate_recipe::state::Recorded> {
+    let graph = levitate_recipe::needs::declarations(recipe, options.recipes_path)?;
+    let defines = parse_defines(options.defines)?;
+    let prefix = package_prefix(options.activate_into, recipe, options.recipes_path)?;
+    levitate_recipe::state::recorded(
+        options.state_dir,
+        engine.destination(),
+        &graph,
+        &defines,
+        prefix.as_deref(),
+    )
+}
+
+/// `recipe install` of a program already installed from this very recipe
+/// file at this version, with its files intact: every step is `already`,
+/// nothing runs. None when something is missing (another recipe file or
+/// version, a damaged package), and the install goes ahead.
+fn installed_already(
+    store: &PackageStore,
+    recipe: &Path,
+    search: &Path,
+    machine_events: bool,
+) -> Result<Option<serde_json::Value>> {
+    use sha2::{Digest, Sha256};
+    let declaration = levitate_recipe::needs::declaration(recipe, Some(search))?;
+    if !declaration.needs.outputs.contains_key("package") {
+        return Ok(None);
+    }
+    let Some(receipt) = store
+        .list()?
+        .into_iter()
+        .find(|package| package.name == declaration.name())
+    else {
+        return Ok(None);
+    };
+    let digest = hex::encode(Sha256::digest(
+        std::fs::read(recipe).with_context(|| format!("cannot read {}", recipe.display()))?,
+    ));
+    if receipt.sha256.as_deref() != Some(digest.as_str())
+        || Some(receipt.version.as_str()) != declaration.version()
+        || store.verify(&receipt.name).is_err()
+    {
+        return Ok(None);
+    }
+    let has = declaration.declared.steps();
+    let steps: Vec<serde_json::Value> = ["download", "build", "install", "cleanup"]
+        .into_iter()
+        .map(|step| {
+            let status = match step {
+                _ if !has.contains(&step) => "none",
+                // C4b: the cleanup step after a successful install.
+                "cleanup" => "skipped",
+                _ => "already",
+            };
+            serde_json::json!({"step": step, "status": status})
+        })
+        .collect();
+    if machine_events {
+        eprintln!(
+            "{}",
+            serde_json::json!({"event": "plan", "recipe": receipt.name, "steps": []})
+        );
+        for step in &steps {
+            eprintln!(
+                "{}",
+                serde_json::json!({"event": "step", "recipe": receipt.name, "step": step["step"],
+                    "status": step["status"], "msg": "installed from this recipe already"})
+            );
+        }
+    }
+    let profile = store.profile_path();
+    let mut result = serde_json::json!({
+        "operation": "install",
+        "name": receipt.name,
+        "version": receipt.version,
+        "steps": steps,
+        "outputs": {},
+        "activation": {"name": receipt.name, "version": receipt.version,
+            "profile": profile, "bin": profile.join("bin")},
+        "dependencies": [],
+    });
+    finish_run(&mut result, State::Installed, 0);
+    Ok(Some(result))
+}
+
+/// `recipe installed --json` (docs/recipe-format.md, section 8.2): each
+/// receipt with its state, the keep option, what it holds beside its files
+/// (`on_disk`, from Recipe's records at its recipe's destination) and the
+/// offline "Update" mark (decision 25).
+fn installed_json(
+    store: &PackageStore,
+    lookup: &Lookup,
+    options: &EngineOptions<'_>,
+) -> Result<serde_json::Value> {
+    let marks: std::collections::BTreeMap<String, serde_json::Value> =
+        updates(store, lookup)?["updates"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|update| {
+                Some((
+                    update["name"].as_str()?.to_owned(),
+                    serde_json::json!({"to": update["to"], "reason": update["reason"],
+                    "source": update["source"]}),
+                ))
+            })
+            .collect();
+    let mut packages = Vec::new();
+    for package in store.list()? {
+        let on_disk = held_beside(&package.recipe, options).unwrap_or_default();
+        let mut entry = serde_json::to_value(&package)?;
+        entry["state"] = State::Installed.as_str().into();
+        // C4b: the keep option, remembered per program.
+        entry["keep"] = false.into();
+        entry["on_disk"] = serde_json::to_value(on_disk)?;
+        entry["update"] = marks
+            .get(&package.name)
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        packages.push(entry);
+    }
+    Ok(serde_json::json!({
+        "schema_version": levitate_recipe::catalog::SCHEMA_VERSION,
+        "packages": packages,
+        "profile": store.profile_path(),
+    }))
+}
+
+/// The destination a run of `recipe` with these options uses.
+fn destination_of(recipe: &Path, options: &EngineOptions<'_>) -> Result<PathBuf> {
+    match options.build_dir {
+        Some(dir) => Ok(dir.to_owned()),
+        None => levitate_recipe::default_destination(options.state_dir, recipe),
+    }
+}
+
+/// What the recipe file `recipe` holds in Recipe's records beside an
+/// installed program; None when the recipe cannot be read any more.
+fn held_beside(
+    recipe: &Path,
+    options: &EngineOptions<'_>,
+) -> Option<levitate_recipe::state::OnDisk> {
+    if !recipe.is_file() {
+        return None;
+    }
+    let destination = destination_of(recipe, options).ok()?;
+    if !levitate_recipe::state::keeps_anything(options.state_dir, recipe, &destination) {
+        return Some(Default::default());
+    }
+    let graph = levitate_recipe::needs::declarations(recipe, options.recipes_path).ok()?;
+    levitate_recipe::state::on_disk(options.state_dir, &destination, &graph).ok()
 }
 
 /// Active package identity is recorded independently of mutable recipe sources.
@@ -1270,7 +1655,12 @@ fn problem_json(problem: &sources::Problem) -> serde_json::Value {
     serde_json::json!({ "path": problem.path, "problem": problem.problem })
 }
 
-fn list_recipes(lookup: &Lookup, store: &PackageStore, json: bool) -> Result<()> {
+fn list_recipes(
+    lookup: &Lookup,
+    store: &PackageStore,
+    options: &EngineOptions<'_>,
+    json: bool,
+) -> Result<()> {
     use owo_colors::OwoColorize;
 
     // The recipe folder first, as before sources existed.
@@ -1340,21 +1730,22 @@ fn list_recipes(lookup: &Lookup, store: &PackageStore, json: bool) -> Result<()>
         }
     }
 
-    // C4: the state comes from the receipt alone until Recipe keeps its own
-    // records of downloads and kept results (docs/recipe-format.md, section
-    // 6.2); then `downloaded` and `built` and the keep option are reported too.
+    // The state on this system (docs/recipe-format.md, section 6.2): the
+    // receipt, else Recipe's records at the recipe's default destination. A
+    // recipe of a source that is not fetched yet has no records.
     let installed = store.list().unwrap_or_default();
     for recipe in &mut recipes {
         let receipt = installed
             .iter()
             .find(|package| recipe["name"].as_str() == Some(package.name.as_str()));
-        recipe["state"] = if receipt.is_some() {
-            "installed"
-        } else {
-            "none"
-        }
-        .into();
+        let state = match (receipt, recipe["path"].as_str()) {
+            (Some(_), _) => State::Installed,
+            (None, Some(path)) => recorded_in_list(Path::new(path), store, options),
+            (None, None) => State::None,
+        };
+        recipe["state"] = state.as_str().into();
         recipe["installed_version"] = receipt.map(|package| package.version.clone()).into();
+        // C4b: the keep option, remembered per program.
         recipe["keep"] = false.into();
     }
     if json {
@@ -1408,6 +1799,30 @@ fn list_recipes(lookup: &Lookup, store: &PackageStore, json: bool) -> Result<()>
     }
 
     Ok(())
+}
+
+/// A listed recipe's state from Recipe's records, without a run's defines:
+/// none when nothing is kept for it or it cannot be read.
+fn recorded_in_list(recipe: &Path, store: &PackageStore, options: &EngineOptions<'_>) -> State {
+    let Ok(destination) = levitate_recipe::default_destination(options.state_dir, recipe) else {
+        return State::None;
+    };
+    if !levitate_recipe::state::keeps_anything(options.state_dir, recipe, &destination) {
+        return State::None;
+    }
+    let recorded = (|| -> Result<State> {
+        let graph = levitate_recipe::needs::declarations(recipe, recipe.parent())?;
+        let prefix = package_prefix(Some(store), recipe, recipe.parent())?;
+        Ok(levitate_recipe::state::recorded(
+            options.state_dir,
+            &destination,
+            &graph,
+            &[],
+            prefix.as_deref(),
+        )?
+        .state)
+    })();
+    recorded.unwrap_or(State::None)
 }
 
 fn source_command(all: &Sources, command: SourceCommands, json: bool) -> Result<()> {

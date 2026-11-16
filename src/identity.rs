@@ -42,7 +42,9 @@ use serde::Serialize;
 /// named separately (`PROTOCOL_VERSION`).
 // 2: API 1 (docs/recipe-format.md): the engine's constants, engine-placed
 // outputs at /out/NAME, the target input seeding that output, saved values.
-pub const ENGINE_BEHAVIOUR: u32 = 2;
+// 3: what is done comes from Recipe's records (a finished generation is the
+// built result, kept with its outputs; records carry how far a run got).
+pub const ENGINE_BEHAVIOUR: u32 = 3;
 
 /// What of Ginux a workload can observe, as Recipe, the consumer, judges it.
 ///

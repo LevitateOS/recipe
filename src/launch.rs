@@ -92,6 +92,9 @@ pub(crate) struct Invocation<'a> {
     /// Each dependency's declared output names, for the worker's `DEPS`
     /// (`crate::worker::protocol::RequestPayload::dependencies`).
     pub dependencies: &'a std::collections::BTreeMap<String, Vec<String>>,
+    /// The recipe's state key (`crate::state::key`), recorded with each
+    /// generation.
+    pub key: &'a str,
 }
 
 /// Outcome of one supervised domain run.
@@ -221,6 +224,7 @@ fn run_domain_inner(
         destination,
         state_dir,
         dependencies,
+        key: invocation_key,
         ..
     } = *invocation;
     let invocation = prepared.invocation_id.clone();
@@ -236,23 +240,24 @@ fn run_domain_inner(
     let export_path = run_dir.path().join("export.tar");
     let config_path = prepared.config_path();
 
-    let domain_root = crate::inputs::prepare_root(prepared, image).map_err(|error| {
-        anyhow::Error::new(crate::failure::Category::Startup.error(format!(
-            "cannot prepare Ginux root for invocation {invocation}: {error:#}"
-        )))
-    })?;
-
+    // Recipe and Ginux enter the identity by their declared behaviour
+    // versions; with exact identity also by the worker's and the launcher's
+    // bytes (`crate::identity`). The worker copied into the root must be the
+    // file hashed here (checked once it is copied).
+    let worker_digest = if persist_state && options.execution.exact_identity {
+        crate::retained::file_digest(&crate::inputs::worker_binary()?)?
+    } else {
+        String::new()
+    };
     let mut retained = if persist_state {
-        // Recipe and Ginux enter the identity by their declared behaviour
-        // versions; with exact identity also by the worker's and the
-        // launcher's bytes (`crate::identity`).
         Some(
             crate::retained::Retained::open(
                 state_dir,
                 destination,
                 recipe,
+                invocation_key,
                 prepared,
-                &domain_root.worker_digest,
+                &worker_digest,
                 Some(launcher),
                 options,
                 None,
@@ -264,15 +269,38 @@ fn run_domain_inner(
     } else {
         None
     };
+    // What is done already, from Recipe's records: nothing to run, or a run
+    // that starts from an unfinished generation, or from nothing.
     let restore_path = run_dir.path().join("restore.tar");
-    let mut restore = retained
-        .as_ref()
-        .map(|state| state.restore_input(&restore_path))
-        .transpose()
-        .map_err(|error| {
-            crate::failure::Category::Storage.wrap(error, "cannot restore saved files")
-        })?
-        .unwrap_or(false);
+    let mut restore = match start(retained.as_ref(), operation, prepared, &restore_path)? {
+        Start::Done { publish } => {
+            return done_report(
+                &retained,
+                &restore_path,
+                publish,
+                prepared,
+                &invocation,
+                operation,
+                options,
+                state_dir,
+            );
+        }
+        Start::Run { restore } => restore,
+    };
+    // The saved values go with the files of the generation restored, and
+    // with nothing else.
+    let restored_generation = restore;
+
+    let domain_root = crate::inputs::prepare_root(prepared, image).map_err(|error| {
+        anyhow::Error::new(crate::failure::Category::Startup.error(format!(
+            "cannot prepare Ginux root for invocation {invocation}: {error:#}"
+        )))
+    })?;
+    if !worker_digest.is_empty() && domain_root.worker_digest != worker_digest {
+        bail!(crate::failure::Category::Startup.error(format!(
+            "the worker changed while invocation {invocation} started; run it again"
+        )));
+    }
     if !restore {
         restore = crate::inputs::seed_target(prepared, domain_root.path(), &restore_path).map_err(
             |error| {
@@ -372,6 +400,7 @@ fn run_domain_inner(
         dependencies: dependencies.clone(),
         restored_states: retained
             .as_ref()
+            .filter(|_| restored_generation)
             .map(|state| state.states().clone())
             .unwrap_or_default(),
         host: None,
@@ -493,14 +522,268 @@ fn run_domain_inner(
     })
 }
 
+/// What Recipe's records leave to do for one run (docs/recipe-format.md,
+/// section 6.2): decided before any worker starts, never from recipe code.
+pub(crate) enum Start {
+    /// Nothing is missing: a download already kept for `download`, a kept
+    /// result for `build`, or for `install` a kept result published from the
+    /// restore input (`publish`). No worker runs.
+    Done { publish: bool },
+    /// A worker runs; `restore` when the restore input holds an unfinished
+    /// generation (downloads, a checkpoint) it starts from.
+    Run { restore: bool },
+}
+
+/// Decide [`Start`] from the current generation of the run's identity. A
+/// generation counts only while its archive has the SHA-256 and length
+/// Recipe recorded (`crate::retained::Retained::verify_current`); a finished
+/// result is never built on again, and a `RERUN` recipe's never reused.
+pub(crate) fn start(
+    retained: Option<&crate::retained::Retained>,
+    operation: crate::worker::protocol::Operation,
+    prepared: &PreparedInvocation,
+    restore_path: &Path,
+) -> Result<Start> {
+    use crate::retained::Reached;
+    use crate::worker::protocol::Operation;
+    let storage = |error| crate::failure::Category::Storage.wrap(error, "cannot read saved state");
+    let Some(retained) = retained else {
+        return Ok(Start::Run { restore: false });
+    };
+    let rerun = prepared.declaration.declared.rerun;
+    let start = match (operation, retained.reached()) {
+        (Operation::Cleanup | Operation::Latest, _) | (_, None) => Start::Run { restore: false },
+        (Operation::Download, Some(_)) => match retained.verify_current().map_err(storage)? {
+            true => Start::Done { publish: false },
+            false => Start::Run { restore: false },
+        },
+        (Operation::Build, Some(Reached::Built)) if !rerun => {
+            match retained.verify_current().map_err(storage)? {
+                true => Start::Done { publish: false },
+                false => Start::Run { restore: false },
+            }
+        }
+        (Operation::Install, Some(Reached::Built)) if !rerun => {
+            match retained.restore_input(restore_path).map_err(storage)? {
+                true => Start::Done { publish: true },
+                false => Start::Run { restore: false },
+            }
+        }
+        (_, Some(Reached::Built)) => Start::Run { restore: false },
+        (_, Some(Reached::Downloaded | Reached::Checkpoint)) => Start::Run {
+            restore: retained.restore_input(restore_path).map_err(storage)?,
+        },
+    };
+    plan_event(prepared, operation, &start);
+    Ok(start)
+}
+
+/// The recipe's own `plan` event for a front end, once Recipe knows what is
+/// done: the steps that will run (the others are not needed this time).
+fn plan_event(
+    prepared: &PreparedInvocation,
+    operation: crate::worker::protocol::Operation,
+    start: &Start,
+) {
+    use crate::worker::protocol::Operation;
+    let declared = &prepared.declaration.declared;
+    let steps: Vec<&str> = match start {
+        Start::Done { publish: true } => vec!["install"],
+        Start::Done { publish: false } => Vec::new(),
+        Start::Run { .. } => declared
+            .steps()
+            .into_iter()
+            .filter(|step| match *step {
+                "download" => matches!(
+                    operation,
+                    Operation::Download | Operation::Build | Operation::Install
+                ),
+                "build" => operation.builds(),
+                "install" => operation == Operation::Install,
+                // C4b: the cleanup step after a successful install.
+                _ => false,
+            })
+            .collect(),
+    };
+    if matches!(operation, Operation::Cleanup | Operation::Latest) {
+        return;
+    }
+    crate::core::output::machine_event(serde_json::json!({
+        "event": "plan", "recipe": declared.package.name, "steps": steps,
+    }));
+}
+
+/// Every step of the recipe with its status in this run (section 8.6):
+/// what the worker reported, `none` for a step the recipe does not have,
+/// `done` for an install that published, `already` for a step within the
+/// operation's reach that nothing had to do, `skipped` for the rest. The
+/// steps the worker did not report are told as `step` events here.
+fn finish_steps(
+    prepared: &PreparedInvocation,
+    worker: &[crate::core::events::StepReport],
+    operation: crate::worker::protocol::Operation,
+    published: bool,
+) -> Vec<crate::core::events::StepReport> {
+    use crate::core::events::{StepReport, StepStatus};
+    use crate::worker::protocol::Operation;
+    let declared = &prepared.declaration.declared;
+    let has = declared.steps();
+    let name = &declared.package.name;
+    ["download", "build", "install", "cleanup"]
+        .into_iter()
+        .map(|step| {
+            if let Some(reported) = worker.iter().find(|reported| reported.step == step) {
+                return reported.clone();
+            }
+            let status = if !has.contains(&step) {
+                StepStatus::None
+            } else {
+                match step {
+                    "install" if published => StepStatus::Done,
+                    "download" if operation != Operation::Cleanup => StepStatus::Already,
+                    "build" if operation.builds() => StepStatus::Already,
+                    // C4b: cleanup after a successful install (done, or
+                    // skipped when the keep option is on).
+                    _ => StepStatus::Skipped,
+                }
+            };
+            if operation != Operation::Cleanup {
+                crate::core::output::step_event(name, step, status, "");
+            }
+            StepReport::new(step, status)
+        })
+        .collect()
+}
+
+/// Validate a finished run's outputs in `export_path` (or `tree`) against
+/// the declared outputs and bounds; the publication to make of them.
+fn validate(
+    outputs: &std::collections::BTreeMap<String, String>,
+    export_path: &Path,
+    tree: Option<&Path>,
+    prepared: &PreparedInvocation,
+    options: &crate::worker::protocol::InvocationOptions,
+    state_dir: Option<&Path>,
+) -> Result<Option<crate::publication::Publication>> {
+    let needs = &prepared.declaration.needs;
+    let moved = match tree {
+        Some(run_root) => crate::publication::prepare_tree(
+            run_root,
+            outputs,
+            &options.execution,
+            state_dir,
+            needs,
+            true,
+        )?,
+        None => None,
+    };
+    match moved {
+        Some(publication) => Ok(Some(publication)),
+        None => crate::publication::prepare(
+            export_path,
+            outputs,
+            &options.execution,
+            state_dir,
+            needs,
+            true,
+        ),
+    }
+    .context(crate::failure::Category::Storage.error("cannot validate completed outputs"))
+}
+
+/// Publish what [`validate`] prepared; each output's published host path.
+fn publish(
+    publication: Option<crate::publication::Publication>,
+    invocation: &str,
+) -> Result<serde_json::Value> {
+    Ok(match publication {
+        Some(publication) => serde_json::to_value(publication.publish(invocation).context(
+            crate::failure::Category::Storage.error("cannot publish completed outputs"),
+        )?)?,
+        None => serde_json::json!({}),
+    })
+}
+
+/// The run's result for the caller: the recipe's `name` and `version` (from
+/// its declarations), `steps`, `outputs` (each output's published host
+/// path), `prefix` (`PREFIX`, or null), the compiled `contract` and the
+/// bounded `network_usage`.
+fn summary(
+    prepared: &PreparedInvocation,
+    steps: Vec<crate::core::events::StepReport>,
+    outputs: serde_json::Value,
+    usage: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let declaration = &prepared.declaration;
+    let mut summary = serde_json::json!({
+        "name": declaration.name(),
+        "version": declaration.version(),
+        "steps": steps,
+        "outputs": outputs,
+        "prefix": prepared.execution.package_prefix.as_ref()
+            .filter(|_| declaration.needs.outputs.contains_key("package")),
+        "network_usage": usage,
+    });
+    if let Some(contract) = &prepared.contract {
+        summary["contract"] = serde_json::to_value(contract)?;
+    }
+    Ok(summary)
+}
+
+/// A run with nothing missing ([`Start::Done`]): no worker ran. An install
+/// publishes the kept result from the restore input, which holds the
+/// verified copy of its archive.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn done_report(
+    retained: &Option<crate::retained::Retained>,
+    restore_path: &Path,
+    publish: bool,
+    prepared: &PreparedInvocation,
+    invocation: &str,
+    operation: crate::worker::protocol::Operation,
+    options: &crate::worker::protocol::InvocationOptions,
+    state_dir: Option<&Path>,
+) -> Result<LaunchReport> {
+    let kept = retained
+        .as_ref()
+        .map(|state| state.outputs().clone())
+        .unwrap_or_default();
+    let outputs = if publish {
+        let publication = validate(&kept, restore_path, None, prepared, options, state_dir)?;
+        self::publish(publication, invocation)?
+    } else {
+        serde_json::json!({})
+    };
+    let steps = finish_steps(prepared, &[], operation, publish);
+    let usage = serde_json::json!({"status": "unused",
+        "reason": "nothing ran: Recipe's records hold what was asked for", "warnings": []});
+    let result = ResultPayload {
+        ok: true,
+        failure: None,
+        outputs: if publish { kept } else { Default::default() },
+        steps: steps.clone(),
+        saved: crate::worker::protocol::SavedState::default().to_value(),
+        latest: None,
+        network_usage: None,
+    };
+    Ok(LaunchReport {
+        result,
+        summary: Some(summary(prepared, steps, outputs, usage)?),
+        checkpoints_acked: 0,
+        generations: Vec::new(),
+        launcher_code: Some(0),
+        result_outcome: crate::ginux::Outcome::Exited,
+        result_code: Some(0),
+        log_total_bytes: 0,
+        log_discarded_bytes: 0,
+    })
+}
+
 /// After a successful worker result: validate the export archive against the
-/// declared outputs and bounds, keep it as the final saved generation with
-/// the saved state, publish the outputs the engine placed, and return the
-/// run's result for the caller: the recipe's `name` and `version` (from its
-/// declarations), `outputs` (each output's published host path), `prefix`
-/// (`PREFIX`, or null), `latest` (for latest), the compiled `contract` and
-/// the bounded `network_usage`. The same for a Ginux export and a host run's
-/// archive.
+/// declared outputs and bounds, keep it (the downloads of `download`, the
+/// finished result of `build` and `install`, never a `RERUN` recipe's), and
+/// publish the outputs of an install. The same for a Ginux export and a
+/// host run's archive.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn finish_outputs(
     result: &ResultPayload,
@@ -514,6 +797,8 @@ pub(crate) fn finish_outputs(
     state_dir: Option<&Path>,
     usage: serde_json::Value,
 ) -> Result<serde_json::Value> {
+    use crate::retained::Reached;
+    use crate::worker::protocol::Operation;
     if let Some(warnings) = usage["warnings"].as_array() {
         for warning in warnings {
             if let Some(warning) = warning.as_str() {
@@ -521,58 +806,46 @@ pub(crate) fn finish_outputs(
             }
         }
     }
-    // A successful install names every declared output; nothing else names any.
-    let complete = operation == crate::worker::protocol::Operation::Install;
-    let needs = &prepared.declaration.needs;
-    let moved = match tree {
-        Some(run_root) => crate::publication::prepare_tree(
-            run_root,
+    let install = operation == Operation::Install;
+    // A build or install names every declared output; nothing else names any.
+    let publication = if operation.builds() {
+        validate(
             &result.outputs,
-            &options.execution,
-            state_dir,
-            needs,
-            complete,
-        )?,
-        None => None,
-    };
-    let publication = match moved {
-        Some(publication) => Ok(Some(publication)),
-        None => crate::publication::prepare(
             export_path,
-            &result.outputs,
-            &options.execution,
+            tree,
+            prepared,
+            options,
             state_dir,
-            needs,
-            complete,
-        ),
-    }
-    .context(crate::failure::Category::Storage.error("cannot validate completed outputs"))?;
-    if let Some(state) = retained.as_mut() {
+        )?
+    } else {
+        None
+    };
+    let keep = match operation {
+        // A recipe without a download step has no downloads to keep.
+        Operation::Download if prepared.declaration.declared.steps().contains(&"download") => {
+            Some((Reached::Downloaded, Default::default()))
+        }
+        Operation::Build | Operation::Install if !prepared.declaration.declared.rerun => {
+            Some((Reached::Built, result.outputs.clone()))
+        }
+        _ => None,
+    };
+    if let (Some(state), Some((reached, outputs))) = (retained.as_mut(), keep) {
         state
-            .finish(export_path, result.saved.clone())
+            .finish(export_path, result.saved.clone(), reached, outputs)
             .map_err(|error| {
                 crate::failure::Category::Storage
                     .wrap(error, "cannot persist final state/files pair")
             })?;
     }
-    let outputs = match publication {
-        Some(publication) => publication
-            .publish(invocation)
-            .context(crate::failure::Category::Storage.error("cannot publish completed outputs"))?,
-        None => Default::default(),
+    // A build keeps its result and publishes nothing.
+    let outputs = if install {
+        publish(publication, invocation)?
+    } else {
+        serde_json::json!({})
     };
-    let declaration = &prepared.declaration;
-    let mut summary = serde_json::json!({
-        "name": declaration.name(),
-        "version": declaration.version(),
-        "outputs": outputs,
-        "prefix": prepared.execution.package_prefix.as_ref()
-            .filter(|_| needs.outputs.contains_key("package")),
-        "network_usage": usage,
-    });
-    if let Some(contract) = &prepared.contract {
-        summary["contract"] = serde_json::to_value(contract)?;
-    }
+    let steps = finish_steps(prepared, &result.steps, operation, install);
+    let mut summary = summary(prepared, steps, outputs, usage)?;
     if let Some(latest) = &result.latest {
         summary["latest"] = latest.as_str().into();
     }

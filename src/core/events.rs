@@ -1,54 +1,81 @@
-//! Hook events: the machine-readable lifecycle record behind `--machine-events`.
+//! Step events: the machine-readable record of a run's steps behind
+//! `--machine-events` (docs/recipe-format.md, section 8.7), and the status
+//! of each step in a finished run's `steps` (section 8.6).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-/// Lifecycle status a hook event reports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HookStatus {
+/// The status of one step. This is the whole set a `step` event or a
+/// finished run's `steps` carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepStatus {
+    /// The step has started.
     Running,
-    Success,
-    Failed,
+    /// The step ran in this run and finished.
+    Done,
+    /// The step was done before, by Recipe's own records; nothing ran.
+    Already,
+    /// The recipe has no such step.
+    None,
+    /// The recipe has the step, but this command does not do it.
     Skipped,
+    /// The step failed.
+    Failed,
 }
 
-impl HookStatus {
+impl StepStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
-            Self::Success => "success",
-            Self::Failed => "failed",
+            Self::Done => "done",
+            Self::Already => "already",
+            Self::None => "none",
             Self::Skipped => "skipped",
+            Self::Failed => "failed",
         }
     }
 }
 
-/// Event envelope used by machine-readable hook logging.
-pub const RECIPE_HOOK_EVENT: &str = "recipe-hook";
+/// One step of a finished run: `{"step": "download", "status": "done"}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StepReport {
+    pub step: String,
+    pub status: StepStatus,
+}
 
-/// Canonical machine event payload for recipe lifecycle hooks.
+impl StepReport {
+    pub fn new(step: &str, status: StepStatus) -> Self {
+        Self {
+            step: step.to_owned(),
+            status,
+        }
+    }
+}
+
+/// The `step` event: `{"event":"step","recipe":..,"step":..,"status":..,"msg":..}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct RecipeHookEvent {
+pub struct StepEvent {
     pub event: &'static str,
     pub recipe: String,
-    pub hook: String,
-    pub status: String,
+    pub step: String,
+    pub status: &'static str,
     pub msg: String,
 }
 
-impl RecipeHookEvent {
-    /// Construct a standard recipe hook event.
-    pub fn new(recipe: &str, hook: &str, status: HookStatus, msg: &str) -> Self {
+impl StepEvent {
+    pub fn new(recipe: &str, step: &str, status: StepStatus, msg: &str) -> Self {
         Self {
-            event: RECIPE_HOOK_EVENT,
+            event: "step",
             recipe: recipe.to_string(),
-            hook: hook.to_string(),
-            status: status.as_str().to_string(),
+            step: step.to_string(),
+            status: status.as_str(),
             msg: msg.to_string(),
         }
     }
 
     /// Serialize as one JSON line for machine streams.
     pub fn as_json(&self) -> String {
-        serde_json::to_string(self).expect("hook event fields always serialize")
+        serde_json::to_string(self).expect("step event fields always serialize")
     }
 }

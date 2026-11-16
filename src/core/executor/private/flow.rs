@@ -1,12 +1,16 @@
-//! Install, the worker's part (docs/recipe-format.md, sections 3 and 6.1):
-//! the download step, then the step that builds the outputs, then
-//! `cleanup(reason)`. Activating or publishing the outputs (the rest of
-//! install) is the coordinator's, after the worker has returned them.
+//! Download, build and install, the worker's part (docs/recipe-format.md,
+//! sections 3 and 6.1): the download step, then the step that builds the
+//! outputs, then `cleanup(reason)`. What is done already is decided by the
+//! coordinator from Recipe's own records before the worker starts: a kept
+//! result is published without a worker, and a worker starts only from an
+//! unfinished generation (downloads, a checkpoint) or from nothing. Keeping
+//! the result and activating or publishing the outputs (the rest of install)
+//! is the coordinator's, after the worker has returned them.
 
 use super::builtin::{self, Outputs};
 use super::loaded::{EngineError, Load, Loaded, with_recipe};
 use super::reporting::{report_phase_failure, report_phase_success};
-use crate::core::events::HookStatus;
+use crate::core::events::{StepReport, StepStatus};
 use crate::core::output;
 use crate::lifecycle::{CleanupReason, Phase};
 use crate::needs::PathKind;
@@ -15,16 +19,74 @@ use rhai::{Dynamic, Map};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// What a successful install hands the coordinator: each declared output
-/// to the domain path the engine placed it at.
-pub(crate) type Built = BTreeMap<String, String>;
+/// What a successful build hands the coordinator: each declared output to
+/// the domain path the engine placed it at, and the steps the worker worked
+/// on.
+#[derive(Default)]
+pub(crate) struct Built {
+    pub outputs: BTreeMap<String, String>,
+    pub steps: Vec<StepReport>,
+}
 
-// C4: every install runs every step. Deciding what is done already (a
-// download by its SHA-256 in the store, a result by its identity and the
-// checksums Recipe recorded, an installed program by its receipt) and the
-// single steps are C4's. Until then nothing is ever taken as done: a run
-// restored from a finished generation builds again on top of it.
-pub(crate) fn install(recipe: &Path, load: &Load<'_>) -> Result<Built, EngineError> {
+/// `recipe download NAME`, the worker's part: the download step only.
+pub(crate) fn download(recipe: &Path, load: &Load<'_>) -> Result<Vec<StepReport>, EngineError> {
+    with_recipe(recipe, load, |recipe| {
+        let name = recipe.name.clone();
+        output::set_event_recipe(&name);
+        output::action(&format!("Downloading {name}"));
+        let declared = recipe.declaration.declared.clone();
+        let (step, _) = download_step(recipe, &declared, &load.options.host_libc)?;
+        run_cleanup(recipe, CleanupReason::Succeeded(Phase::Download))?;
+        Ok(vec![step])
+    })
+}
+
+/// The download step where the recipe has one: `done` when something was
+/// fetched, `already` when every file was in the store (a restored
+/// generation holds them), `none` without `SOURCES` and `PACKAGES`.
+fn download_step(
+    recipe: &mut Loaded<'_>,
+    declared: &crate::declarations::Declared,
+    host_libc: &str,
+) -> Result<(StepReport, builtin::Fetched), EngineError> {
+    let name = recipe.name.clone();
+    let step = Phase::Download.name();
+    if !declared.steps().contains(&step) {
+        return Ok((
+            StepReport::new(step, StepStatus::None),
+            builtin::Fetched::default(),
+        ));
+    }
+    start_step(&name, Phase::Download);
+    match builtin::download(declared, host_libc) {
+        Ok(fetched) => {
+            let status = if fetched.fetched == 0 {
+                output::step_event(
+                    &name,
+                    step,
+                    StepStatus::Already,
+                    "every download is in the store already",
+                );
+                StepStatus::Already
+            } else {
+                report_phase_success(&name, step);
+                StepStatus::Done
+            };
+            Ok((StepReport::new(step, status), fetched))
+        }
+        Err(error) => Err(fail(recipe, Phase::Download, error)),
+    }
+}
+
+/// Build and install, the worker's part: the download step where it is
+/// missing, then the step that builds the outputs. `installing` says the
+/// coordinator publishes the outputs afterwards, so the work of a recipe
+/// without `build` belongs to its install step.
+pub(crate) fn install(
+    recipe: &Path,
+    load: &Load<'_>,
+    installing: bool,
+) -> Result<Built, EngineError> {
     with_recipe(recipe, load, |recipe| {
         let name = recipe.name.clone();
         output::set_event_recipe(&name);
@@ -33,15 +95,9 @@ pub(crate) fn install(recipe: &Path, load: &Load<'_>) -> Result<Built, EngineErr
         if let Some(base_path) = &recipe.base_path {
             output::detail(&format!("Extends base recipe: {}", base_path.display()));
         }
-        let declared = &recipe.declaration.declared;
-        let work = work_step(declared);
-        let steps = declared.steps();
-        output::machine_event(serde_json::json!({
-            "event": "plan",
-            "recipe": name,
-            "steps": steps,
-        }));
-        output::detail(&format!("Recipe flow: {}", steps.join(" → ")));
+        let declared = recipe.declaration.declared.clone();
+        let work = work_step(&declared);
+        output::detail(&format!("Recipe flow: {}", declared.steps().join(" → ")));
 
         let (deps, build_deps): (Vec<_>, Vec<_>) = recipe
             .declaration
@@ -59,32 +115,32 @@ pub(crate) fn install(recipe: &Path, load: &Load<'_>) -> Result<Built, EngineErr
         // `deps` are needed by every step; their environment lasts until the end.
         let _deps_environment = super::dependencies::select(&deps)?;
 
-        output::action(&format!("Installing {name}"));
+        output::action(&format!("Building {name}"));
         let host_libc = &load.options.host_libc;
-        let fetched = if steps.contains(&"download") {
-            start_step(&name, Phase::Download);
-            match builtin::download(declared, host_libc) {
-                Ok(fetched) => {
-                    report_phase_success(&name, Phase::Download.name());
-                    fetched
-                }
-                Err(error) => return Err(fail(recipe, Phase::Download, error)),
-            }
-        } else {
-            builtin::Fetched::default()
-        };
+        let (download, fetched) = download_step(recipe, &declared, host_libc)?;
+        let mut steps = vec![download];
 
-        start_step(&name, work);
-        let built = match build_outputs(recipe, &build_deps, &fetched, host_libc) {
-            Ok(built) => built,
+        // The work of a recipe without `build` is part of install: it is
+        // reported as the install step when this run installs.
+        let report = work == Phase::Build || installing;
+        if report {
+            start_step(&name, work);
+        }
+        let outputs = match build_outputs(recipe, &build_deps, &fetched, host_libc) {
+            Ok(outputs) => outputs,
             Err(error) => return Err(fail(recipe, work, error)),
         };
-        report_phase_success(&name, work.name());
+        if work == Phase::Build {
+            report_phase_success(&name, work.name());
+            steps.push(StepReport::new(work.name(), StepStatus::Done));
+        } else {
+            steps.push(StepReport::new(Phase::Build.name(), StepStatus::None));
+        }
 
         // A failure of cleanup after a success fails the command.
         run_cleanup(recipe, CleanupReason::Succeeded(work))?;
         output::success(&format!("{name} built"));
-        Ok(built)
+        Ok(Built { outputs, steps })
     })
 }
 
@@ -102,7 +158,7 @@ fn work_step(declared: &crate::declarations::Declared) -> Phase {
 
 fn start_step(name: &str, phase: Phase) {
     output::sub_action(phase.name());
-    output::hook_event(name, phase.name(), HookStatus::Running, "step started");
+    output::step_event(name, phase.name(), StepStatus::Running, "step started");
 }
 
 /// Place the outputs, unpack the sources and the packages, place `FILES`,
@@ -114,7 +170,7 @@ fn build_outputs(
     build_deps: &[String],
     fetched: &builtin::Fetched,
     host_libc: &str,
-) -> anyhow::Result<Built> {
+) -> anyhow::Result<BTreeMap<String, String>> {
     // `build_deps` are needed only while building.
     let _build_environment = super::dependencies::select(build_deps)?;
     let declared = recipe.declaration.declared.clone();
@@ -243,12 +299,7 @@ pub(super) fn run_cleanup(recipe: &mut Loaded<'_>, reason: CleanupReason) -> any
         return Ok(());
     }
     let reason = reason.as_str();
-    output::hook_event(
-        &recipe.name,
-        "cleanup",
-        HookStatus::Running,
-        &format!("cleanup({reason})"),
-    );
+    output::detail(&format!("{}: cleanup({reason})", recipe.name));
     recipe
         .runtime
         .call("cleanup", vec![reason.into()])

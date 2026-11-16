@@ -4,27 +4,21 @@
 
 use super::loaded::{EngineError, Load, with_recipe};
 use super::reporting::{report_phase_failure, report_phase_success};
-use crate::core::events::HookStatus;
 use crate::core::output;
 use crate::lifecycle::CleanupReason;
 use anyhow::anyhow;
 use std::path::Path;
 
-// C4: what `recipe cleanup` deletes itself (downloads, build material,
-// saved state, section 6.5) is C4's; it runs before this function. Here
-// only the recipe's own `cleanup("manual")` runs. Its dependencies are not
-// run for it, so their entries in `DEPS` are `()`.
+/// The recipe's own `cleanup("manual")`. Recipe has deleted the material
+/// `recipe cleanup` names before this runs (section 3.7: it "runs after the
+/// engine's own clean-up decisions"), and the worker starts on fresh work
+/// folders. Its dependencies are not run for it, so their entries in `DEPS`
+/// are `()`.
 pub(crate) fn cleanup(recipe: &Path, load: &Load<'_>) -> Result<(), EngineError> {
     with_recipe(recipe, load, |recipe| {
         let name = recipe.name.clone();
         output::set_event_recipe(&name);
         if !recipe.runtime.has_fn("cleanup", 1) {
-            output::hook_event(
-                &name,
-                "cleanup",
-                HookStatus::Skipped,
-                "the recipe defines no cleanup(reason)",
-            );
             output::skip(&format!(
                 "{name} defines no cleanup(reason); nothing to run"
             ));

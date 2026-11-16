@@ -2,7 +2,7 @@
 
 use owo_colors::OwoColorize;
 
-use crate::core::events::HookStatus;
+use crate::core::events::StepStatus;
 
 /// Print an action header (bold)
 pub fn action(message: &str) {
@@ -47,13 +47,9 @@ pub fn skip(message: &str) {
     crate::diagnostics::diag!("{}", message.dimmed());
 }
 
-pub(crate) fn sentence_for_event(hook: &str, status: HookStatus, details: &str) -> String {
+pub(crate) fn sentence_for_event(step: &str, status: StepStatus, details: &str) -> String {
     let (verb, base) = match status {
-        HookStatus::Running => match hook {
-            "prepare" => (
-                "prepare",
-                "Before anything else moves forward, we prepare the environment now.".to_string(),
-            ),
+        StepStatus::Running => match step {
             "download" => (
                 "download",
                 "Next, we download the sources needed for this build.".to_string(),
@@ -68,24 +64,32 @@ pub(crate) fn sentence_for_event(hook: &str, status: HookStatus, details: &str) 
             ),
             "cleanup" => (
                 "cleanup",
-                "To leave things clean, we cleanup temporary files now.".to_string(),
+                "To leave things clean, we cleanup what is no longer needed now.".to_string(),
             ),
             _ => (
                 "run",
                 "Everything is ready, so this step will run with current inputs.".to_string(),
             ),
         },
-        HookStatus::Success => (
-            "complete",
-            "This part is now complete, and everything here looks good.".to_string(),
+        StepStatus::Done => (
+            "done",
+            format!("The {step} step is done, and everything here looks good."),
         ),
-        HookStatus::Failed => (
-            "fail",
-            "A required operation reported an error, so this step must fail now.".to_string(),
+        StepStatus::Already => (
+            "already",
+            format!("The {step} step was done already, so nothing runs for it."),
         ),
-        HookStatus::Skipped => (
-            "skip",
-            "There is nothing to do here, so this step will skip now.".to_string(),
+        StepStatus::None => (
+            "none",
+            format!("This recipe has no {step} step: none to do."),
+        ),
+        StepStatus::Skipped => (
+            "skipped",
+            format!("The {step} step is not part of this command, so it is skipped."),
+        ),
+        StepStatus::Failed => (
+            "failed",
+            format!("A required operation reported an error, so the {step} step failed."),
         ),
     };
 
@@ -102,7 +106,7 @@ fn passthrough_detail(details: &str) -> Option<&str> {
     if d.is_empty() { None } else { Some(d) }
 }
 
-fn colorize_event_sentence(status: HookStatus, sentence: &str, verb: &str) -> String {
+fn colorize_event_sentence(status: StepStatus, sentence: &str, verb: &str) -> String {
     if let Some((start, end)) = find_word_span(sentence, verb) {
         let head = &sentence[..start];
         let token = &sentence[start..end];
@@ -117,12 +121,12 @@ fn colorize_event_sentence(status: HookStatus, sentence: &str, verb: &str) -> St
     }
 }
 
-fn colorize_by_status(status: HookStatus, token: &str) -> String {
+fn colorize_by_status(status: StepStatus, token: &str) -> String {
     match status {
-        HookStatus::Running => format!("{}", token.cyan()),
-        HookStatus::Success => format!("{}", token.green()),
-        HookStatus::Failed => format!("{}", token.red()),
-        HookStatus::Skipped => format!("{}", token.yellow()),
+        StepStatus::Running => format!("{}", token.cyan()),
+        StepStatus::Done | StepStatus::Already => format!("{}", token.green()),
+        StepStatus::Failed => format!("{}", token.red()),
+        StepStatus::None | StepStatus::Skipped => format!("{}", token.yellow()),
     }
 }
 

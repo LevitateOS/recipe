@@ -1,7 +1,8 @@
 //! Recipe executor: compiling a recipe (with its `//! extends:` base) and the
-//! worker's operations: install (the download step and the step that builds
-//! the outputs), cleanup (`cleanup("manual")`) and latest (`latest()`), per
-//! docs/recipe-format.md sections 3, 4 and 7.
+//! worker's operations: download (the download step), build and install (the
+//! download step and the step that builds the outputs), cleanup
+//! (`cleanup("manual")`) and latest (`latest()`), per docs/recipe-format.md
+//! sections 3, 4, 6 and 7.
 
 use anyhow::{Context, Result, anyhow};
 use rhai::{AST, Engine};
@@ -10,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 mod private;
 
-pub(crate) use private::{EngineError, Load, cleanup, install, latest};
+pub(crate) use private::{EngineError, Load, cleanup, download, install, latest};
 
 use crate::recipes::parse_extends;
 

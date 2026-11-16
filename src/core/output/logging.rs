@@ -1,12 +1,12 @@
-//! Machine-oriented logging and hook event plumbing.
+//! Machine-oriented logging and step event plumbing.
 
-use crate::core::events::RecipeHookEvent;
+use crate::core::events::{StepEvent, StepStatus};
 use crate::core::output::narration;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static MACHINE_EVENTS_ENABLED: AtomicBool = AtomicBool::new(false);
 
-/// Enable or disable machine-friendly hook events.
+/// Enable or disable machine events (`--machine-events`).
 pub fn set_machine_events(enabled: bool) {
     MACHINE_EVENTS_ENABLED.store(enabled, Ordering::Relaxed);
 }
@@ -16,7 +16,7 @@ fn machine_events() -> bool {
 }
 
 /// Emit one event that only a front end reads: a JSON object with an `event`
-/// field, on the diagnostic stream like the hook events. Nothing is written
+/// field, on the diagnostic stream like the step events. Nothing is written
 /// without `--machine-events`, and no human line goes with it.
 pub fn machine_event(event: serde_json::Value) {
     if machine_events() {
@@ -108,7 +108,7 @@ pub fn flush_progress() {
 
 /// A step starts: flush what the last one held, then tell the coordinator the
 /// new phase with an empty count.
-fn progress_phase(recipe: &str, hook: &str) {
+fn progress_phase(recipe: &str, step: &str) {
     let Ok(mut state) = PROGRESS.lock() else {
         return;
     };
@@ -116,7 +116,7 @@ fn progress_phase(recipe: &str, hook: &str) {
         send_progress(&mut state, done, total, what);
     }
     state.recipe = recipe.to_owned();
-    state.phase = hook.to_owned();
+    state.phase = step.to_owned();
     send_progress(&mut state, 0, 0, String::new());
 }
 
@@ -153,26 +153,21 @@ pub fn fetch_event(source: &str, bytes: u64, total: Option<u64>) {
     }));
 }
 
-/// Emit one machine event payload (when enabled) and one human-readable line.
+/// Emit one `step` event (when enabled) and one human-readable line.
 ///
 /// Machine payload example:
-///   {"event":"recipe-hook","recipe":"name","hook":"install","status":"running","msg":"..."}
-/// Human line example:
-///   [install] Working on install
-pub fn hook_event(recipe: &str, hook: &str, status: crate::core::events::HookStatus, msg: &str) {
+///   {"event":"step","recipe":"name","step":"build","status":"running","msg":"..."}
+pub fn step_event(recipe: &str, step: &str, status: StepStatus, msg: &str) {
     match status {
-        crate::core::events::HookStatus::Running => progress_phase(recipe, hook),
-        crate::core::events::HookStatus::Success | crate::core::events::HookStatus::Failed => {
-            flush_progress();
-        }
+        StepStatus::Running => progress_phase(recipe, step),
+        StepStatus::Done | StepStatus::Failed => flush_progress(),
         _ => {}
     }
-    let event = RecipeHookEvent::new(recipe, hook, status, msg);
-    let human = narration::sentence_for_event(hook, status, msg.trim());
-
     if machine_events() {
-        crate::diagnostics::diag!("{}", event.as_json());
+        crate::diagnostics::diag!("{}", StepEvent::new(recipe, step, status, msg).as_json());
     }
-
-    crate::diagnostics::diag!("{}", human);
+    crate::diagnostics::diag!(
+        "{}",
+        narration::sentence_for_event(step, status, msg.trim())
+    );
 }

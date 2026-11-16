@@ -705,9 +705,6 @@ pub(super) fn producer_args(cli: &Cli) -> Result<Vec<String>> {
     }
     for (flag, on) in [
         ("--no-network", cli.no_network),
-        ("--force-acquire", cli.force_acquire),
-        ("--force-build", cli.force_build),
-        ("--force-install", cli.force_install),
         ("--any-libc", cli.any_libc),
         ("--any-system", cli.any_system),
         ("--no-persist-state", cli.no_persist_state),
@@ -853,7 +850,7 @@ pub(crate) fn route(cli: &mut Cli) -> Result<bool> {
                     );
                 }
             }
-            Commands::Update { recipe } => {
+            Commands::Update { recipe, .. } => {
                 anyhow::ensure!(stem(recipe) != BASE_PACKAGE, "{}", base_refusal("updated"));
             }
             _ => {}
@@ -861,9 +858,11 @@ pub(crate) fn route(cli: &mut Cli) -> Result<bool> {
     }
     let command = match &cli.command {
         Commands::Install { recipe, .. } => Some(Some(recipe.clone())),
-        Commands::Update { recipe } | Commands::Remove { recipe } => Some(Some(recipe.clone())),
+        Commands::Update { recipe, .. } | Commands::Remove { recipe, .. } => {
+            Some(Some(recipe.clone()))
+        }
         Commands::Installed => Some(None),
-        Commands::IsInstalled { recipe } => Some(Some(recipe.clone())),
+        Commands::State { recipe } => Some(Some(recipe.clone())),
         _ => None,
     };
     let ab = immutable();
@@ -877,7 +876,7 @@ pub(crate) fn route(cli: &mut Cli) -> Result<bool> {
         return Ok(false);
     }
     let recipe =
-        command.context("--system supports install, update, remove, installed and isinstalled")?;
+        command.context("--system supports install, update, remove, installed and state")?;
     if let Some(dir) = cli.root.clone() {
         // A root that is not running (an installer's target, an image tree).
         root_route(cli, &dir, "target", recipe)?;
@@ -896,9 +895,7 @@ pub(crate) fn route(cli: &mut Cli) -> Result<bool> {
     let booted = system::read_receipt(&roots.booted)?;
     match &cli.command {
         Commands::Installed => report(cli, &roots, &booted, &failed)?,
-        Commands::IsInstalled { .. } => {
-            is_installed(cli, &roots, &booted, &recipe.unwrap(), &failed)?
-        }
+        Commands::State { .. } => program_state(cli, &roots, &booted, &recipe.unwrap(), &failed)?,
         _ => {
             if let Some((package, why)) = failed.first() {
                 anyhow::bail!(
@@ -914,7 +911,7 @@ pub(crate) fn route(cli: &mut Cli) -> Result<bool> {
 /// A removal does not first re-apply the package it removes.
 fn skipped(command: &Commands) -> Option<String> {
     match command {
-        Commands::Remove { recipe } => Some(stem(recipe)),
+        Commands::Remove { recipe, .. } => Some(stem(recipe)),
         _ => None,
     }
 }
@@ -1162,7 +1159,7 @@ fn root_route(cli: &Cli, dir: &Path, kind: &str, recipe: Option<PathBuf>) -> Res
                 text,
             );
         }
-        Commands::IsInstalled { .. } => {
+        Commands::State { .. } => {
             let recipe = recipe.unwrap();
             let found = receipt
                 .find(&recipe)
@@ -1174,13 +1171,9 @@ fn root_route(cli: &Cli, dir: &Path, kind: &str, recipe: Option<PathBuf>) -> Res
                 Some(v) => format!("{name} {v} is installed in {place}."),
                 None => format!("{name} is not installed in {place}."),
             };
-            finish(
-                cli,
-                serde_json::json!({"package": name, "root": root, "installed": found.is_some(), "version": found}),
-                text.clone(),
-            )?;
-            anyhow::ensure!(found.is_some(), "{text}");
-            return Ok(());
+            let mut value = state_json(cli, &recipe, found.as_deref(), &receipt, &place, &root);
+            value["root"] = serde_json::json!(root);
+            return finish(cli, value, text);
         }
         Commands::Install { .. } => "install",
         Commands::Update { .. } => "update",
@@ -1388,7 +1381,12 @@ fn report(cli: &Cli, roots: &Roots, booted: &Receipt, failed: &[(String, String)
     )
 }
 
-fn is_installed(
+/// `recipe --system state NAME` (docs/recipe-format.md, section 8.5): the
+/// state the roots' receipts give, installed or none. The downloads and
+/// build material of system changes are not kept (their producer runs are
+/// discarded with the change), so `on_disk` is empty. Exits 0 whatever the
+/// state.
+fn program_state(
     cli: &Cli,
     roots: &Roots,
     booted: &Receipt,
@@ -1424,14 +1422,48 @@ fn is_installed(
         ),
         (None, None) => format!("{name} is not in the running root or the other root."),
     };
-    finish(
+    let installed = in_other.as_deref().or(in_booted.as_deref());
+    let mut value = state_json(
         cli,
-        serde_json::json!({"package": name,
-            "booted": {"root": roots.booted_name, "installed": in_booted.is_some(), "version": in_booted},
-            "other": {"root": roots.other_name, "installed": in_other.is_some(), "version": in_other},
-            "not_done": not_done}),
-        text.clone(),
-    )?;
-    anyhow::ensure!(in_booted.is_some() || in_other.is_some(), "{text}");
-    Ok(())
+        recipe,
+        installed,
+        &other,
+        "the other root",
+        &roots.other,
+    );
+    value["booted"] = serde_json::json!({"root": roots.booted_name, "installed": in_booted.is_some(), "version": in_booted});
+    value["other"] = serde_json::json!({"root": roots.other_name, "installed": in_other.is_some(), "version": in_other});
+    value["not_done"] = not_done.into();
+    finish(cli, value, text)
+}
+
+/// The 8.5 fields of a system program's state: installed when a receipt
+/// lists it, else none; the recipe's own version and steps when its recipe
+/// is found.
+fn state_json(
+    cli: &Cli,
+    recipe: &Path,
+    installed: Option<&str>,
+    receipt: &Receipt,
+    place: &str,
+    root: &Path,
+) -> serde_json::Value {
+    let declaration = resolve_for(cli, recipe, "install", receipt, place, root)
+        .ok()
+        .and_then(|path| levitate_recipe::needs::declaration(&path, path.parent()).ok());
+    let state = if installed.is_some() {
+        levitate_recipe::state::State::Installed
+    } else {
+        levitate_recipe::state::State::None
+    };
+    serde_json::json!({
+        "schema_version": levitate_recipe::catalog::SCHEMA_VERSION,
+        "name": stem(recipe),
+        "version": declaration.as_ref().and_then(|d| d.version()),
+        "state": state.as_str(),
+        "installed_version": installed,
+        "keep": false,
+        "steps": declaration.as_ref().map(|d| d.declared.steps()).unwrap_or_default(),
+        "on_disk": levitate_recipe::state::OnDisk::default(),
+    })
 }

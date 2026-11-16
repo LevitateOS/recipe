@@ -1,14 +1,14 @@
 //! Recipe CLI - Local-first package manager
 //!
 //! Usage:
-//!   recipe install <path>           Install a recipe
+//!   recipe install <path>           Do every missing step and activate the package
+//!   recipe download <path>          The download step only
+//!   recipe build <path>             Download what is missing, then build; keep the result
 //!   recipe update <name>            Update an active package from its catalog recipe
-//!   recipe remove <name>            Deactivate an installed package
+//!   recipe remove <name>            Remove an installed package and its material
 //!   recipe installed                List active packages
-//!   recipe cleanup <path>           Clean up build artifacts
-//!   recipe isinstalled <path>       Execute is_installed(ctx)
-//!   recipe isbuilt <path>           Execute is_built(ctx)
-//!   recipe isacquired <path>        Execute is_acquired(ctx)
+//!   recipe cleanup [<path>]         Delete downloads and build material
+//!   recipe state <path>             Print the state: none, downloaded, built, installed
 //!   recipe list                     List recipes in directory
 //!   recipe info <path>              Show recipe info
 

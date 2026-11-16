@@ -44,6 +44,9 @@ pub(crate) struct Fetched {
     pub packages: Vec<FetchedPin>,
     /// The section's package format (`PACKAGE_FORMAT`).
     pub format: Option<Format>,
+    /// How many downloads this run fetched; 0 when every one was in the
+    /// store already (the step was done before).
+    pub fetched: usize,
 }
 
 /// The download step (section 2.4, section 2.6 step 1).
@@ -106,13 +109,16 @@ pub(crate) fn download(declared: &Declared, host_libc: &str) -> Result<Fetched> 
                     .file
                     .as_deref()
                     .context("a url source has a file name")?;
-                fetch_file(&store, url, sha256, file)
-                    .with_context(|| format!("downloading SOURCES.{source_name} from {url}"))?
+                let (path, new) = fetch_file(&store, url, sha256, file)
+                    .with_context(|| format!("downloading SOURCES.{source_name} from {url}"))?;
+                fetched.fetched += usize::from(new);
+                path
             }
             Origin::Git { git, commit, .. } => {
                 // The checkout is the download; git_checkout reuses a clean
                 // checkout of the same origin at the same commit.
                 let dest = store.join(commit);
+                fetched.fetched += usize::from(confine::lstat(&dest).is_err());
                 acquire::git_checkout(git, text(&dest)?, commit)
                     .map_err(helper)
                     .with_context(|| {
@@ -133,8 +139,9 @@ pub(crate) fn download(declared: &Declared, host_libc: &str) -> Result<Fetched> 
         .map(|section| section.packages.as_slice())
         .unwrap_or_default()
     {
-        let path = fetch_file(&store, &pin.url, &pin.sha256, pin.file())
+        let (path, new) = fetch_file(&store, &pin.url, &pin.sha256, pin.file())
             .with_context(|| format!("downloading the pinned package {}", pin.name))?;
+        fetched.fetched += usize::from(new);
         fetched.packages.push(FetchedPin {
             pin: pin.clone(),
             path,
@@ -146,8 +153,8 @@ pub(crate) fn download(declared: &Declared, host_libc: &str) -> Result<Fetched> 
 }
 
 /// `url` into the store as `<sha256>/<file>`, unless a file with that
-/// SHA-256 is there already.
-fn fetch_file(store: &Path, url: &str, sha256: &str, file: &str) -> Result<PathBuf> {
+/// SHA-256 is there already. True when it was fetched now.
+fn fetch_file(store: &Path, url: &str, sha256: &str, file: &str) -> Result<(PathBuf, bool)> {
     ensure!(
         !file.is_empty()
             && file != "."
@@ -161,12 +168,12 @@ fn fetch_file(store: &Path, url: &str, sha256: &str, file: &str) -> Result<PathB
         && acquire::verify_sha256(text(&dest)?, sha256).is_ok()
     {
         output::detail(&format!("{file} is downloaded already"));
-        return Ok(dest);
+        return Ok((dest, false));
     }
     let folder = store.join(sha256);
     confine::mkdir_all(&folder).with_context(|| format!("cannot create {}", folder.display()))?;
     acquire::download(url, text(&dest)?, sha256, false).map_err(helper)?;
-    Ok(dest)
+    Ok((dest, true))
 }
 
 /// How `src.NAME` holds its source, which decides how `FILES` takes from it.

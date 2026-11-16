@@ -26,16 +26,6 @@ pub struct ExecutionOptions {
     pub(crate) network_hosts: Vec<String>,
     /// Cumulative transmitted and received network bytes per invocation.
     pub(crate) network_max_bytes: u64,
-    // C4: the three force options are gone in API 1 (docs/recipe-format.md
-    // 6.3: "to redo a step, clean it up and run it again"). Until C4 decides
-    // what is done from Recipe's own records, every run redoes every step,
-    // so they change nothing; C4 removes them with the CLI flags.
-    /// Rerun the main recipe's acquisition, build and installation phases.
-    pub force_acquire: bool,
-    /// Rerun the main recipe's build and installation phases.
-    pub force_build: bool,
-    /// Rerun the main recipe's installation phase.
-    pub force_install: bool,
     /// Name the worker's and the Ginux launcher's bytes in the saved-state
     /// identity, on top of the declared behaviour versions
     /// (`crate::identity`), so only byte-identical tools reuse a state.
@@ -80,9 +70,6 @@ impl Default for ExecutionOptions {
             storage_max_bytes: None,
             network_hosts: Vec::new(),
             network_max_bytes: 8 * 1024 * 1024 * 1024,
-            force_acquire: false,
-            force_build: false,
-            force_install: false,
             exact_identity: false,
             package_prefix: None,
             host_libc: crate::clibrary::detect().libc.into(),
@@ -152,14 +139,8 @@ impl ExecutionOptions {
         self.storage_max_bytes
             .unwrap_or(self.memory_mib * 1024 * 1024)
     }
-    pub(crate) fn forced(&self) -> bool {
-        self.force_acquire || self.force_build || self.force_install
-    }
     pub(crate) fn for_dependency(&self) -> Self {
         Self {
-            force_acquire: false,
-            force_build: false,
-            force_install: false,
             package_prefix: None,
             ..self.clone()
         }

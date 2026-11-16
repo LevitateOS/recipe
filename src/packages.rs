@@ -35,8 +35,9 @@ pub struct InstalledPackage {
     pub version: String,
     pub recipe: PathBuf,
     pub files: Vec<String>,
-    /// For a recipe fetched from a remote source: the source's name, the
-    /// commit the recipe file was fetched at and the file's SHA-256.
+    /// For a recipe fetched from a remote source: the source's name and the
+    /// commit the recipe file was fetched at. `sha256` is the recipe file's
+    /// SHA-256, for every recipe.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -203,6 +204,7 @@ impl PackageStore {
         for file in &files {
             size_bytes += fs::symlink_metadata(destination.join(file))?.len();
         }
+        let installed_recipe = recipe.clone();
         let installed = InstalledPackage {
             name: name.to_owned(),
             version: version.to_owned(),
@@ -210,7 +212,12 @@ impl PackageStore {
             files,
             source: origin.as_ref().map(|origin| origin.source.clone()),
             commit: origin.as_ref().map(|origin| origin.commit.clone()),
-            sha256: origin.map(|origin| origin.sha256),
+            // Which recipe file installed it (docs/recipe-format.md, 8.2):
+            // `recipe install` of the same file finds nothing missing.
+            sha256: Some(match origin {
+                Some(origin) => origin.sha256,
+                None => crate::retained::file_digest(&installed_recipe)?,
+            }),
             needs: needs.cloned(),
             installed_on: Some(now_seconds()),
             size_bytes: Some(size_bytes),

@@ -41,8 +41,10 @@ use crate::worker::protocol::{
 /// What a finished operation reports in its result frame.
 #[derive(Default)]
 struct Outcome {
-    /// Install: each declared output to its engine-placed domain path.
+    /// Build and install: each declared output to its engine-placed domain path.
     outputs: std::collections::BTreeMap<String, String>,
+    /// The steps the worker worked on, with their status.
+    steps: Vec<crate::core::events::StepReport>,
     /// The saved state at the end.
     saved: SavedState,
     /// Latest: the version `latest()` returned.
@@ -455,8 +457,14 @@ fn run_operation(
     use crate::core::executor as engine_ops;
     let mut outcome = Outcome::default();
     match req.operation {
-        Operation::Install => {
-            outcome.outputs = engine_ops::install(&recipe, &load).map_err(engine_failure)?;
+        Operation::Download => {
+            outcome.steps = engine_ops::download(&recipe, &load).map_err(engine_failure)?;
+        }
+        Operation::Build | Operation::Install => {
+            let built = engine_ops::install(&recipe, &load, req.operation == Operation::Install)
+                .map_err(engine_failure)?;
+            outcome.outputs = built.outputs;
+            outcome.steps = built.steps;
         }
         Operation::Cleanup => engine_ops::cleanup(&recipe, &load).map_err(engine_failure)?,
         Operation::Latest => {
@@ -659,6 +667,7 @@ fn send_result(
             ok: true,
             failure: None,
             outputs: outcome.outputs,
+            steps: outcome.steps,
             saved: outcome.saved.to_value(),
             latest: outcome.latest,
             network_usage: crate::helpers::acquire::net::usage(),
@@ -667,6 +676,7 @@ fn send_result(
             ok: false,
             failure: Some(failure),
             outputs: Default::default(),
+            steps: Vec::new(),
             saved: SavedState::default().to_value(),
             latest: None,
             network_usage: crate::helpers::acquire::net::usage(),

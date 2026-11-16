@@ -55,10 +55,11 @@ use std::io::{Read, Write};
 use serde::{Deserialize, Serialize};
 
 /// Protocol version carried in every frame header.
-// API 1 (docs/recipe-format.md): the operations, the engine-placed outputs,
-// the saved state and the dependencies' outputs of transport 10 require a
-// matching coordinator and worker.
-pub const PROTOCOL_VERSION: u32 = 10;
+// API 1 (docs/recipe-format.md): the operations (download, build, install,
+// cleanup, latest), the engine-placed outputs, the saved state, the
+// dependencies' outputs and the result's step statuses of transport 11
+// require a matching coordinator and worker.
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// Maximum total frame size in bytes (4 MiB), header included.
 pub const MAX_FRAME_LEN: usize = 4 * 1024 * 1024;
@@ -139,14 +140,23 @@ pub enum Direction {
 // Payloads (plain serializable types, §4 field-for-field)
 // ---------------------------------------------------------------------------
 
-/// The engine operation one invocation runs; its wire form is the name.
+/// The operation one invocation runs; its wire form is the name.
+///
+/// The worker runs the same steps for `build` and `install` (the download
+/// step, then the step that builds the outputs); the coordinator keeps the
+/// result for both and publishes it only for `install` (docs/recipe-format.md,
+/// sections 6.1 and 6.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Operation {
-    /// The download and build steps: the worker builds every declared output
-    /// and returns where it placed them (docs/recipe-format.md, section 6.1).
+    /// The download step only.
+    Download,
+    /// The download step where it is missing, then the build step; the
+    /// result is kept, not published.
+    Build,
+    /// Every missing step; the outputs are published.
     Install,
-    /// `cleanup("manual")` (section 3.7).
+    /// `cleanup("manual")` (section 3.7), after Recipe deleted the material.
     Cleanup,
     /// `latest()` (sections 2.9 and 3.5): the newest upstream version.
     Latest,
@@ -155,15 +165,18 @@ pub enum Operation {
 impl Operation {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Download => "download",
+            Self::Build => "build",
             Self::Install => "install",
             Self::Cleanup => "cleanup",
             Self::Latest => "latest",
         }
     }
 
-    /// Only install runs steps, so only install accepts force options.
-    pub fn accepts_force(self) -> bool {
-        self == Self::Install
+    /// Build and install make the outputs, run the dependencies first, and
+    /// leave a result Recipe keeps.
+    pub fn builds(self) -> bool {
+        matches!(self, Self::Build | Self::Install)
     }
 }
 
@@ -283,17 +296,6 @@ pub struct InvocationOptions {
 }
 
 impl InvocationOptions {
-    /// [`Self::validate`], plus the rules that depend on the operation.
-    pub fn validate_for(&self, operation: Operation) -> Result<(), ProtocolError> {
-        self.validate()?;
-        if !operation.accepts_force() && self.execution.forced() {
-            return Err(ProtocolError::PayloadInvalid(
-                "force options apply only to install operations".into(),
-            ));
-        }
-        Ok(())
-    }
-
     pub fn validate(&self) -> Result<(), ProtocolError> {
         self.execution
             .validate()
@@ -424,9 +426,14 @@ pub struct ResultPayload {
     pub ok: bool,
     /// Present exactly when `ok` is false.
     pub failure: Option<FailureInfo>,
-    /// A successful install: every declared output to the domain path the
-    /// engine placed it at ([`crate::domain::output_path`]). Empty otherwise.
+    /// A successful build or install: every declared output to the domain
+    /// path the engine placed it at ([`crate::domain::output_path`]). Empty
+    /// otherwise.
     pub outputs: std::collections::BTreeMap<String, String>,
+    /// The steps the worker worked on, with their status (`download`, and
+    /// `build` or `install` for the step that builds the outputs). The
+    /// coordinator adds the steps it does itself.
+    pub steps: Vec<crate::core::events::StepReport>,
     /// The recipe's [`SavedState`] at the end, which the coordinator keeps
     /// with the final files.
     pub saved: serde_json::Value,
@@ -751,6 +758,15 @@ fn check_result(p: &ResultPayload) -> Result<(), ProtocolError> {
             "a result names each output at its engine-placed path".into(),
         ));
     }
+    if p.steps.len() > 4
+        || p.steps
+            .iter()
+            .any(|step| !["download", "build", "install", "cleanup"].contains(&step.step.as_str()))
+    {
+        return Err(ProtocolError::PayloadInvalid(
+            "a result names only the steps download, build, install and cleanup".into(),
+        ));
+    }
     SavedState::from_value(&p.saved)?;
     if p.latest.as_ref().is_some_and(|version| {
         version.is_empty() || version.len() > 256 || version.chars().any(char::is_control)
@@ -770,7 +786,7 @@ fn check_result(p: &ResultPayload) -> Result<(), ProtocolError> {
 }
 
 fn check_request(p: &RequestPayload) -> Result<(), ProtocolError> {
-    p.options.validate_for(p.operation)?;
+    p.options.validate()?;
     if p.dependencies.len() > MAX_DEPENDENCIES
         || p.dependencies.iter().any(|(name, outputs)| {
             crate::recipes::dependency_file(name).is_err()
