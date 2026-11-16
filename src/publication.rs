@@ -103,6 +103,7 @@ pub(crate) fn prepare_tree(
     let base = state.join("exports");
     crate::fsx::private_dir(&base, false)?;
     let base = base.canonicalize()?;
+    hold(&base)?;
     let device = fs::metadata(&base)?.dev();
     let max_bytes = options.storage_byte_bound();
     let max_entries = options.storage_max_objects as usize;
@@ -224,6 +225,7 @@ pub(crate) fn prepare(
     let base = state.join("exports");
     crate::fsx::private_dir(&base, false)?;
     let base = base.canonicalize()?;
+    hold(&base)?;
     let staging = Staging(
         tempfile::Builder::new()
             .prefix(".pending-")
@@ -576,11 +578,37 @@ pub(crate) fn tree_bytes(path: &Path) -> u64 {
         .sum()
 }
 
-/// The publications still in the state root `root` (`exports/<invocation>`),
-/// each with the name of the recipe that made it (from the invocation's
-/// diagnostics while they are kept, else the invocation's id) and its bytes.
-/// A staging directory (`.pending-…`) that a crash left behind is listed by
-/// its own name: it is not hidden, though nothing removes it by itself.
+/// The lock that tells publications in use from orphans: every process that
+/// publishes (or consumes publications, `crate::state::hold_publications`)
+/// holds `exports/.lock` shared until it exits; [`remove_orphans`] takes it
+/// exclusively, so it never deletes what a running invocation made or still
+/// reads.
+const HOLD: &str = ".lock";
+
+static HELD: std::sync::Mutex<Vec<(PathBuf, File)>> = std::sync::Mutex::new(Vec::new());
+
+/// Hold the publications under `base` (an `exports` directory) for the rest
+/// of this process.
+pub(crate) fn hold(base: &Path) -> Result<()> {
+    let mut held = HELD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if held.iter().any(|(path, _)| path == base) {
+        return Ok(());
+    }
+    let lock = crate::fsx::open_lease(&base.join(HOLD), true)?;
+    lock.lock_shared()
+        .context("cannot hold the published outputs")?;
+    held.push((base.to_path_buf(), lock));
+    Ok(())
+}
+
+/// The publications left in the state root `root` (`exports/<invocation>`,
+/// and `.pending-…` staging a crash left behind), each with the name of the
+/// recipe that made it (from the invocation's diagnostics while they are
+/// kept, else the directory's name) and its bytes. Nothing removes them by
+/// itself: an install moves or deletes what it publishes, a system change
+/// deletes what it wrote, and a producer's caller takes its outputs; what is
+/// left is an orphan of an interrupted or finished run, which `recipe
+/// cleanup` deletes ([`remove_orphans`]).
 pub(crate) fn published(root: &Path) -> Vec<(String, u64)> {
     let Ok(entries) = fs::read_dir(root.join("exports")) else {
         return Vec::new();
@@ -595,6 +623,51 @@ pub(crate) fn published(root: &Path) -> Vec<(String, u64)> {
         found.push((recipe, tree_bytes(&entry.path())));
     }
     found
+}
+
+/// `recipe cleanup`: delete every publication of the state root `root` no
+/// running invocation holds. When any process holds them (a run in
+/// progress), nothing is deleted and that is reported. Returns the bytes
+/// freed.
+pub(crate) fn remove_orphans(root: &Path) -> u64 {
+    use fs2::FileExt;
+    let base = root.join("exports");
+    if !base.is_dir() {
+        return 0;
+    }
+    let lock = match crate::fsx::open_lease(&base.join(HOLD), true) {
+        Ok(lock) => lock,
+        Err(error) => {
+            crate::diagnostics::diag!(
+                "recipe: warning: cannot check the published outputs: {error:#}"
+            );
+            return 0;
+        }
+    };
+    if lock.try_lock_exclusive().is_err() {
+        crate::diagnostics::diag!(
+            "recipe: published outputs in {} are in use by a run; left for later",
+            base.display()
+        );
+        return 0;
+    }
+    let mut freed = 0;
+    for entry in fs::read_dir(&base).into_iter().flatten().flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let path = entry.path();
+        let bytes = tree_bytes(&path);
+        crate::fsx::make_removable(&path);
+        match fs::remove_dir_all(&path) {
+            Ok(()) => freed += bytes,
+            Err(error) => crate::diagnostics::diag!(
+                "recipe: warning: cannot delete the publication {}: {error}",
+                path.display()
+            ),
+        }
+    }
+    freed
 }
 
 /// Delete the publications that hold `outputs` (output name to published

@@ -446,9 +446,8 @@ fn check_api(path: &Path, ast: &AST) -> Result<()> {
         match &binding.1 {
             Expr::IntegerConstant(API, _) if flags.contains(ASTFlags::CONSTANT) => {}
             Expr::IntegerConstant(version, _) => bail!(
-                "{file}: {}RECIPE_API = {version} is an older recipe form; this Recipe reads API 1 only. \
-                 Rewrite the recipe as {FORMAT_DOC} describes (declarations and build(src, out) instead of ctx and hooks) \
-                 and declare `const RECIPE_API = 1;`",
+                "{file}: {}RECIPE_API = {version}: Recipe accepts only RECIPE_API = 1. \
+                 Write the recipe as {FORMAT_DOC} describes and declare `const RECIPE_API = 1;`",
                 line_of(*position)
             ),
             _ => bail!("{must}"),

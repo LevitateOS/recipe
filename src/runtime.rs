@@ -182,6 +182,38 @@ pub fn ensure_rootfs(reference: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// The runtime image for `reference` opened for reading, downloaded first
+/// when missing. A downloaded image is opened under its download lock, the
+/// lock `recipe runtime remove` also takes, so it is never deleted between
+/// being found and being opened (once open, deleting it only unlinks it).
+pub fn open_rootfs(reference: &str) -> Result<(PathBuf, std::fs::File)> {
+    use fs2::FileExt;
+    for _ in 0..3 {
+        let path = ensure_rootfs(reference)?;
+        let downloaded = std::env::var_os("GINUX_ROOTFS").is_none()
+            && path.parent().is_some_and(|directory| {
+                images_directory().is_ok_and(|images| images == directory)
+            });
+        if !downloaded {
+            let file = crate::fsx::open_regular(&path)?;
+            return Ok((path, file));
+        }
+        let digest = root_digest(reference)?;
+        let lock = path.with_file_name(format!(".fetch-{digest}.lock"));
+        let lock =
+            crate::fsx::open_lease(&lock, true).context("cannot open the image download lock")?;
+        lock.lock_exclusive()
+            .context("cannot lock the image download")?;
+        match crate::fsx::open_regular(&path) {
+            Ok(file) => return Ok((path, file)),
+            // Removed after it was found: download it again.
+            Err(_) if !path.exists() => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    bail!("the runtime image for {reference} was removed repeatedly while a run opened it")
+}
+
 /// Removes the partial download unless it was published.
 struct Partial<'a> {
     path: &'a Path,

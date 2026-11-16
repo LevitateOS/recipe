@@ -278,6 +278,10 @@ fn produce_with(
 ) -> Result<serde_json::Value> {
     let (base, state, build) = producer_dirs(cli)?;
     std::fs::create_dir_all(&base)?;
+    // The producer's outputs are this process's to write and delete: a
+    // `recipe cleanup` of the producer's state leaves them meanwhile.
+    std::fs::create_dir_all(&state)?;
+    levitate_recipe::state::hold_publications(Some(&std::path::absolute(&state)?))?;
     let result = base.join("result.json");
     let _ = std::fs::remove_file(&result);
     // What the root holds, so the producer skips a recipe (or dependency) it
@@ -529,6 +533,25 @@ pub(super) fn write_into(
     context: &str,
 ) -> Result<Written> {
     let produced = timed("produce", || produce(cli, root, recipe, args, context))?;
+    let written = write_produced(cli, root, state_root, &produced, context);
+    if written.is_err() {
+        // Nothing takes the producer's outputs any more: they go, and the
+        // next attempt produces them again.
+        if let Err(error) = discard_outputs(cli, &produced) {
+            eprintln!("recipe: warning: {error:#}");
+        }
+    }
+    written
+}
+
+/// Write what `produced` (a producer run's result) holds into the root.
+fn write_produced(
+    cli: &Cli,
+    root: &Path,
+    state_root: &Path,
+    produced: &serde_json::Value,
+    context: &str,
+) -> Result<Written> {
     let producer_freed = produced["freed_bytes"].as_u64().unwrap_or(0);
     let present: Vec<String> = produced["system_present"]
         .as_array()
@@ -556,7 +579,7 @@ pub(super) fn write_into(
             freed: producer_freed,
         });
     }
-    let mut payloads = system::payloads(&produced, context)?;
+    let mut payloads = system::payloads(produced, context)?;
     for p in &payloads {
         anyhow::ensure!(
             p.package.architecture == std::env::consts::ARCH,
@@ -588,9 +611,7 @@ pub(super) fn write_into(
         })
         .collect::<Vec<_>>();
     tell(&plan, &created);
-    let discarded = timed("discard producer output", || {
-        discard_outputs(cli, &produced)
-    })?;
+    let discarded = timed("discard producer output", || discard_outputs(cli, produced))?;
     let name = produced["name"]
         .as_str()
         .or_else(|| payloads.last().map(|p| p.package.name.as_str()))
@@ -1367,22 +1388,26 @@ pub(super) fn effects(cli: &Cli, root: &Path) -> Effects {
         args.push("--input".into());
         args.push(format!("root={}", root.display()));
         let produced = produce_with(cli, root, &recipe, &args, "effects", false)?;
-        let mut payloads = system::payloads(&produced, "effects")?;
-        anyhow::ensure!(
-            payloads.len() == 1,
-            "the effects recipe has runtime dependencies; it must produce one system output"
-        );
-        payloads[0].package.name = EFFECTS_PACKAGE.into();
-        payloads[0].package.dependencies.clear();
-        let old = system::read_receipt(root)?;
-        let plan = system::plan(root, &old, &mut payloads, None)?;
-        system::apply(root, &payloads, &plan)?;
+        let applied = (|| -> Result<usize> {
+            let mut payloads = system::payloads(&produced, "effects")?;
+            anyhow::ensure!(
+                payloads.len() == 1,
+                "the effects recipe has runtime dependencies; it must produce one system output"
+            );
+            payloads[0].package.name = EFFECTS_PACKAGE.into();
+            payloads[0].package.dependencies.clear();
+            let old = system::read_receipt(root)?;
+            let plan = system::plan(root, &old, &mut payloads, None)?;
+            system::apply(root, &payloads, &plan)?;
+            Ok(plan
+                .receipt
+                .packages
+                .get(EFFECTS_PACKAGE)
+                .map_or(0, |p| p.files.len()))
+        })();
+        // Written or not, nothing takes the producer's outputs any more.
         discard_outputs(cli, &produced)?;
-        Ok(plan
-            .receipt
-            .packages
-            .get(EFFECTS_PACKAGE)
-            .map_or(0, |p| p.files.len()))
+        applied
     };
     match run() {
         Ok(files) => Effects::Done(files),

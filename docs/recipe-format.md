@@ -1192,7 +1192,7 @@ returned `ctx`.
 | `kept` | whether the material was kept |
 | `freed_bytes` | bytes deleted by cleanup or remove in this run |
 | `dependencies` | per dependency that ran: `name`, `state`, `steps` |
-| `contract`, `network_usage` | what `runtime.contract` and `runtime.network_usage` held: the compiled contract digest and the bounded network summary |
+| `contract`, `network_usage` | the Ginux contract the run was checked against, as Recipe prints it: `catalog`, `digest` and the `contract` itself (`catalog`, `allow`, `deny`: a few short rule names); absent for a run on the host. And the bounded network summary |
 
 A failed run exits nonzero and prints `{"failure": {...}}` as today
 (`libc_mismatch`, `system_mismatch`, a denied connection's `refused`). A
@@ -1206,7 +1206,8 @@ system change (`--system`) keeps today's result fields (`action`, `package`,
  "outputs": {"package": "/home/u/.local/share/recipe/store/ripgrep"},
  "activation": {"profile": "/home/u/.local/share/recipe/profile", "bin": "/home/u/.local/share/recipe/profile/bin"},
  "kept": false, "freed_bytes": 8925511, "dependencies": [],
- "contract": {"digest": "sha256:5d1c..."}, "network_usage": {"complete": true, "bytes": 2179134}}
+ "contract": {"catalog": 1, "digest": "sha256:5d1c...", "contract": {"catalog": 1, "allow": ["syscall.*", "filesystem.path.read", "..."], "deny": ["..."]}},
+ "network_usage": {"complete": true, "bytes": 2179134}}
 ```
 
 The builder reads `ctx.kernel_version` from the kernel recipe's result
@@ -1677,3 +1678,29 @@ of the format.
   system) is skipped together with its source.
 - `src.packages[i].var` is `keep_var` (`var` is a reserved word in Rhai); the
   pins file column keeps its name.
+- Each program keeps its own downloads; there is no download store shared
+  between programs. `recipe download` keeps them in the program's download slot,
+  named by its state key (not by the full identity of a build, which also names
+  the dependencies' outputs), so a build or install of the same key starts from
+  them. They are kept beside a build's unfinished run or result: `recipe cleanup
+  NAME --downloads` removes only the downloads, `--build` only the unfinished run
+  and the result; the cleanup after an install and `recipe remove` remove both.
+- The state key and the identity of a build name `HOST_LIBC`. A receipt records
+  the state key it was built with; `recipe install` of an installed program finds
+  nothing missing only when the recipe file, the version and the state key are
+  the same.
+- A `FILES` file or folder entry beside a folder entry of the same source
+  renames it: it is not also at its old place inside the folder. Only a path two
+  entries name exactly is copied for the later one.
+- A `RERUN` recipe's successful run leaves no checkpoint to be resumed.
+- `latest()` runs without inputs; an input or a define without a default that it
+  is not given is `()` there.
+- A producer's (`--no-activate`) run result says `installed`: its outputs are
+  published (decision 23). `recipe state` reflects only receipts and kept
+  material, so it says `none` for that producer afterwards.
+- Published outputs no command took (an interrupted run's, or a producer's that
+  its caller left in the state root) count under `unfinished` in `recipe
+  storage`; plain `recipe cleanup` deletes them unless a running invocation holds
+  them.
+- A recipe whose `RECIPE_API` is any number but 1 is refused: "Recipe accepts
+  only RECIPE_API = 1".

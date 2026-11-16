@@ -54,6 +54,12 @@ pub struct InstalledPackage {
     /// The length of its files together.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_bytes: Option<u64>,
+    /// The state key it was built with (`crate::state::key`: the recipe,
+    /// its base, pins, modules, defines, `PREFIX`, `HOST_LIBC`, the engine's
+    /// behaviour and the same of its dependencies). `recipe install` finds
+    /// nothing missing only when the key is the same.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_key: Option<String>,
 }
 
 /// What the store holds on disk.
@@ -172,12 +178,14 @@ impl PackageStore {
     /// activate the complete new profile. The publication's files are
     /// therefore gone from `package_output` afterwards. `update_only`
     /// refuses an absent package instead of implicitly installing it.
+    #[allow(clippy::too_many_arguments)]
     pub fn install(
         &self,
         name: &str,
         version: &str,
         source_recipe: &Path,
         needs: Option<&crate::needs::Needs>,
+        state_key: Option<&str>,
         package_output: &Path,
         update_only: bool,
     ) -> Result<InstalledPackage> {
@@ -224,6 +232,7 @@ impl PackageStore {
             needs: needs.cloned(),
             installed_on: Some(now_seconds()),
             size_bytes: Some(size_bytes),
+            state_key: state_key.map(str::to_owned),
         };
         let before = active
             .packages

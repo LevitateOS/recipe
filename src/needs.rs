@@ -622,6 +622,23 @@ pub fn declarations(recipe: &Path, search_path: Option<&Path>) -> Result<Vec<Dec
 /// declares is refused, and a required define (default `()`) of any recipe
 /// must be given (decision 1).
 pub fn check_defines(graph: &[Declaration], given: &[(String, String)]) -> Result<()> {
+    check_declared_defines(graph, given)?;
+    for node in graph {
+        for (name, default) in &node.needs.defines {
+            ensure!(
+                default.is_some() || given.iter().any(|(given, _)| given == name),
+                "{} needs --define {name}=VALUE (NEEDS.defines.{name} has no default)",
+                node.name()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The first half of [`check_defines`]: every `--define` is declared by a
+/// recipe of the run. `latest()` needs no more: a required define it is not
+/// given is `()` there.
+pub fn check_declared_defines(graph: &[Declaration], given: &[(String, String)]) -> Result<()> {
     for (name, _) in given {
         if name.starts_with("RECIPE_") {
             continue; // the engine's own (RECIPE_SYSTEM_CONTEXT, RECIPE_SYSTEM_PRESENT)
@@ -632,15 +649,6 @@ pub fn check_defines(graph: &[Declaration], given: &[(String, String)]) -> Resul
                 .any(|node| node.needs.defines.contains_key(name)),
             "--define {name}: no recipe of this run declares it in NEEDS.defines"
         );
-    }
-    for node in graph {
-        for (name, default) in &node.needs.defines {
-            ensure!(
-                default.is_some() || given.iter().any(|(given, _)| given == name),
-                "{} needs --define {name}=VALUE (NEEDS.defines.{name} has no default)",
-                node.name()
-            );
-        }
     }
     Ok(())
 }

@@ -229,7 +229,7 @@ fn test_cli_recipe_directly_in_temp_root_does_not_confuse_domain_tmp_with_host_p
 }
 
 #[test]
-fn test_cli_older_api_numbers_are_refused_with_the_line_before_any_setup() {
+fn test_cli_other_api_numbers_are_refused_with_the_line_before_any_setup() {
     let (_dir, recipes) = create_test_env();
     for number in [2, 3, 99] {
         let name = format!("api{number}");
@@ -243,7 +243,10 @@ fn test_cli_older_api_numbers_are_refused_with_the_line_before_any_setup() {
         let output = run_recipe(&["install", &name], &recipes);
         assert!(!output.status.success(), "{name}");
         let error = String::from_utf8_lossy(&output.stderr);
-        assert!(error.contains("RECIPE_API"), "{name}: {error}");
+        assert!(
+            error.contains("Recipe accepts only RECIPE_API = 1"),
+            "{name}: {error}"
+        );
         assert!(error.contains("line 1:"), "{name}: {error}");
         assert!(!error.contains("UNEXPECTED_OLD_SETUP"), "{name}: {error}");
     }

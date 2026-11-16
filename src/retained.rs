@@ -10,7 +10,7 @@
 //! archive still has the recorded SHA-256 and length.
 use crate::inputs::PreparedInvocation;
 use crate::worker::protocol::InvocationOptions;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -174,6 +174,12 @@ pub(crate) struct Retained {
     /// The state key the next generation records.
     key: String,
     current: Record,
+    /// This is the scope's download slot (`recipe download`): its directory
+    /// is named by the state key, not by the full identity.
+    downloads: bool,
+    /// For a build or install: the download slot of the same state key
+    /// (its directory and its current Downloaded record), if one is kept.
+    download: Option<(PathBuf, Record)>,
     allowed: HashSet<String>,
     state_budget: usize,
     archive_bound: u64,
@@ -202,6 +208,7 @@ impl Retained {
         launcher: Option<&Path>,
         options: &InvocationOptions,
         host_root: Option<&Path>,
+        downloads: bool,
     ) -> Result<Self> {
         let root = state_root(root)?;
         durable_directory(&root)?;
@@ -259,9 +266,9 @@ impl Retained {
             progress_file: _,
             timeout_secs: _,
             exact_identity,
-            // Shown to recipes as HOST_LIBC; the saved files of one
-            // store belong to one system.
-            host_libc: _,
+            // Shown to recipes as HOST_LIBC: what a build fetches and
+            // places depends on it.
+            host_libc,
             package_prefix,
             // The mode that ran enters below: a host run has an identity of
             // its own, and a Ginux run's identity is the one it always was.
@@ -296,6 +303,7 @@ impl Retained {
                 network_max_bytes,
                 &inputs_value,
                 &defines,
+                host_libc,
                 target_os,
                 target_arch,
                 jobs,
@@ -319,7 +327,7 @@ impl Retained {
                 contract.catalog,
                 &contract.digest,
                 inputs,
-                defines,
+                (defines, host_libc),
                 target_os,
                 target_arch,
                 jobs,
@@ -341,6 +349,19 @@ impl Retained {
                 prefix,
             ))?),
         });
+        // `recipe download` runs the main recipe alone, without its
+        // dependencies' outputs, so its full identity is never a build's.
+        // Its downloads are kept in the scope's download slot, named by the
+        // state key (which names the sources and pins), where a build or
+        // install of the same key finds them.
+        if downloads {
+            ensure!(
+                key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit()),
+                "a download's state key is missing"
+            );
+        }
+        let download_slot = scope.join(key);
+        let identity = if downloads { key.to_owned() } else { identity };
         let directory = scope.join(&identity);
         crate::fsx::private_dir(&directory, false)?;
         let allowed = prepared
@@ -392,10 +413,23 @@ impl Retained {
             }
             Err(error) => return Err(error),
         };
+        let download = (!downloads && download_slot != directory)
+            .then(|| {
+                let record = owned_record(&download_slot.join(CURRENT), key)?;
+                (record.reached == Reached::Downloaded
+                    && record.bytes <= options.execution.archive_bound()
+                    && validate_states(&record.states, &allowed).is_ok()
+                    && fs::symlink_metadata(download_slot.join(record.folder()))
+                        .is_ok_and(|metadata| metadata.is_dir()))
+                .then_some((download_slot, record))
+            })
+            .flatten();
         let retained = Self {
             directory,
             key: key.to_owned(),
             current,
+            downloads,
+            download,
             allowed,
             state_budget,
             archive_bound: options.execution.archive_bound(),
@@ -432,24 +466,18 @@ impl Retained {
         let mut source = match crate::fsx::open_regular(&self.directory.join(&self.current.archive))
         {
             Ok(source) => source,
-            Err(error) => return Ok(self.changed(&error)),
+            Err(error) => return Ok(changed(&self.current, &error)),
         };
         match crate::fsx::copy_hashed(&mut source, &mut std::io::sink(), self.archive_bound) {
             Ok((bytes, digest)) if bytes == self.current.bytes && digest == self.current.sha256 => {
                 Ok(true)
             }
-            Ok(_) => Ok(self.changed(&anyhow::anyhow!("its SHA-256 or length differs"))),
-            Err(error) => Ok(self.changed(&error)),
+            Ok(_) => Ok(changed(
+                &self.current,
+                &anyhow::anyhow!("its SHA-256 or length differs"),
+            )),
+            Err(error) => Ok(changed(&self.current, &error)),
         }
-    }
-
-    fn changed(&self, why: &anyhow::Error) -> bool {
-        crate::diagnostics::diag!(
-            "recipe: warning: the kept files of generation {} changed since Recipe recorded them \
-             ({why:#}); they are not used, and the run starts from nothing",
-            self.current.generation
-        );
-        false
     }
 
     /// Copy the current generation's archive to the private restore input
@@ -462,32 +490,62 @@ impl Retained {
         if self.current.generation == 0 {
             return Ok(false);
         }
-        let mut source = match crate::fsx::open_regular(&self.directory.join(&self.current.archive))
-        {
-            Ok(source) => source,
-            Err(error) => return Ok(self.changed(&error)),
-        };
-        let mut output = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(path)?;
-        let copied = crate::fsx::snapshot_hashed(&mut source, &mut output, self.archive_bound);
-        drop(output);
-        match copied {
-            Ok((bytes, digest)) if bytes == self.current.bytes && digest == self.current.sha256 => {
-                Ok(true)
+        restore_record(&self.directory, &self.current, path, self.archive_bound)
+    }
+
+    /// Whether a build or install of this state key finds kept downloads
+    /// (`recipe download`) in the scope's download slot.
+    pub fn has_download(&self) -> bool {
+        self.download.is_some()
+    }
+
+    /// The saved values of the kept downloads.
+    pub fn download_states(&self) -> BTreeMap<String, Value> {
+        self.download
+            .as_ref()
+            .map(|(_, record)| record.states.clone())
+            .unwrap_or_default()
+    }
+
+    /// [`Self::restore_input`] from the download slot of this state key. The
+    /// slot stays: the downloads are kept beside a build's generations until
+    /// they are cleaned up (`recipe cleanup --downloads`, or after install).
+    pub fn restore_download(&self, path: &Path) -> Result<bool> {
+        match &self.download {
+            Some((directory, record)) => {
+                restore_record(directory, record, path, self.archive_bound)
             }
-            other => {
-                fs::remove_file(path)?;
-                let why = match other {
-                    Err(error) => error,
-                    Ok(_) => anyhow::anyhow!("its SHA-256 or length differs"),
-                };
-                Ok(self.changed(&why))
+            None => Ok(false),
+        }
+    }
+
+    /// A `RERUN` recipe's successful run: its result is never kept, and an
+    /// unfinished run it checkpointed is finished, so nothing of this
+    /// identity stays to be resumed. The caller holds the destination lock.
+    pub fn discard(&mut self) -> Result<()> {
+        if self.current.generation == 0 {
+            return Ok(());
+        }
+        for entry in fs::read_dir(&self.directory)?.flatten() {
+            if entry.file_type().is_ok_and(|kind| kind.is_dir())
+                && entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(GENERATION_PREFIX)
+            {
+                remove_generation(&entry.path())?;
             }
         }
+        match fs::remove_file(self.directory.join(CURRENT)) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(error.into());
+            }
+            _ => {}
+        }
+        self.current.generation = 0;
+        self.current.states.clear();
+        self.current.outputs.clear();
+        Ok(())
     }
 
     pub fn begin(&self) -> Result<Pending> {
@@ -629,6 +687,43 @@ impl Retained {
     }
 }
 
+fn changed(record: &Record, why: &anyhow::Error) -> bool {
+    crate::diagnostics::diag!(
+        "recipe: warning: the kept files of generation {} changed since Recipe recorded them \
+         ({why:#}); they are not used, and the run starts from nothing",
+        record.generation
+    );
+    false
+}
+
+/// Copy the archive of `record` (in `directory`) to the restore input `path`
+/// and check the copy against the record; see [`Retained::restore_input`].
+fn restore_record(directory: &Path, record: &Record, path: &Path, bound: u64) -> Result<bool> {
+    let mut source = match crate::fsx::open_regular(&directory.join(&record.archive)) {
+        Ok(source) => source,
+        Err(error) => return Ok(changed(record, &error)),
+    };
+    let mut output = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    let copied = crate::fsx::snapshot_hashed(&mut source, &mut output, bound);
+    drop(output);
+    match copied {
+        Ok((bytes, digest)) if bytes == record.bytes && digest == record.sha256 => Ok(true),
+        other => {
+            fs::remove_file(path)?;
+            let why = match other {
+                Err(error) => error,
+                Ok(_) => anyhow::anyhow!("its SHA-256 or length differs"),
+            };
+            Ok(changed(record, &why))
+        }
+    }
+}
+
 fn validate_states(states: &BTreeMap<String, Value>, allowed: &HashSet<String>) -> Result<()> {
     if states.len() > crate::worker::protocol::MAX_RESTORED_STATES
         || states
@@ -655,8 +750,9 @@ fn durable_directory(path: &Path) -> Result<()> {
 
 // Saved state is one copy at most (docs/recipe-format.md, sections 6.5 and
 // 7): per scope (recipe and destination) only the current generation of the
-// identity that ran last is kept. The caller holds the destination lock
-// throughout pruning.
+// identity that ran last is kept, and beside it the downloads of the state
+// key last downloaded (the download slot). The caller holds the destination
+// lock throughout pruning.
 
 fn owned_record(path: &Path, identity: &str) -> Option<Record> {
     let mut file = crate::fsx::open_regular(path).ok()?;
@@ -708,7 +804,8 @@ impl Retained {
 
     /// Delete every generation of this identity but the current one, a
     /// crashed never-committed snapshot, and with `others` every other
-    /// identity of the scope: one copy at most.
+    /// identity of the scope of the same kind (build material, or a download
+    /// slot): one copy of each at most.
     fn prune(&self, others: bool) -> Result<()> {
         let mut generations = Vec::new();
         let current = self.current.archive.split('/').next().unwrap_or("");
@@ -759,6 +856,19 @@ impl Retained {
             }
             let path = entry.path();
             let entries = fs::read_dir(&path)?.collect::<std::io::Result<Vec<_>>>()?;
+            // Downloads and build material are kept apart: a download slot
+            // (only Downloaded generations) replaces only another download
+            // slot, and a build's generation never removes a download slot.
+            let kinds: Vec<Reached> = entries
+                .iter()
+                .filter_map(|entry| owned_record(&entry.path().join(RECORD), identity))
+                .map(|record| record.reached)
+                .collect();
+            let download_slot =
+                !kinds.is_empty() && kinds.iter().all(|kind| *kind == Reached::Downloaded);
+            if !kinds.is_empty() && download_slot != self.downloads {
+                continue;
+            }
             // Foreign or manually added data is never recursively removed:
             // only the pointer, committed generations and crashed snapshots.
             let owned = entries.iter().all(|entry| {

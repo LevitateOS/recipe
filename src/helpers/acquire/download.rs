@@ -6,10 +6,8 @@
 //! ## Example
 //!
 //! ```rhai
-//! fn acquire(ctx) {
-//!     let archive = download(ctx.url, ctx.runtime.paths.build + "/foo.tar.gz", ctx.sha256);
-//!     ctx.archive_path = archive;
-//!     ctx
+//! fn build(src, out) {
+//!     let archive = download(URL, join_path(WORK, "foo.tar.gz"), SHA256);
 //! }
 //! ```
 

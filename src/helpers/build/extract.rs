@@ -6,13 +6,11 @@
 //! ## Example
 //!
 //! ```rhai
-//! fn build(ctx) {
-//!     extract(ctx.archive_path, RUNTIME.paths.build);
-//!     let src_dir = RUNTIME.paths.build + "/myapp-1.0";
-//!     shell_in(src_dir, "./configure");
-//!     shell_in(src_dir, "make -j" + RUNTIME.options.jobs);
-//!     ctx.src_dir = src_dir;
-//!     ctx
+//! fn build(src, out) {
+//!     extract(src.release, WORK);
+//!     let dir = join_path(WORK, "myapp-1.0");
+//!     shell_in(dir, "./configure --prefix=" + out);
+//!     shell_in(dir, "make -j" + JOBS);
 //! }
 //! ```
 

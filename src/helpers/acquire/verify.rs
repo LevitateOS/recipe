@@ -11,7 +11,7 @@
 //! ## Example
 //!
 //! ```rhai
-//! verify_sha256(archive, ctx.sha256);
+//! verify_sha256(archive, SHA256);
 //! ```
 
 use crate::core::output;

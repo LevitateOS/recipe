@@ -152,6 +152,7 @@ fn run_inner(
                 None,
                 options,
                 Some(&root),
+                operation == crate::worker::protocol::Operation::Download,
             )
             .map_err(|error| Category::Storage.wrap(error, "cannot open saved state"))?,
         )
@@ -164,6 +165,7 @@ fn run_inner(
     let export_path = run_dir.path().join("export.tar");
     // What is done already, from Recipe's records: nothing to run, or a run
     // that starts from an unfinished generation, or from nothing.
+    let restored_states;
     let mut restore =
         match crate::launch::start(retained.as_ref(), invocation, prepared, &restore_path)? {
             crate::launch::Start::Done { publish } => {
@@ -176,11 +178,11 @@ fn run_inner(
                     invocation,
                 );
             }
-            crate::launch::Start::Run { restore } => restore,
+            crate::launch::Start::Run { restore, states } => {
+                restored_states = states;
+                restore
+            }
         };
-    // The saved values go with the files of the generation restored, and
-    // with nothing else.
-    let restored_generation = restore;
     if !restore {
         restore = crate::inputs::seed_target(prepared, &root, &restore_path).map_err(|error| {
             Category::Startup.wrap(error, "cannot seed the requested target view")
@@ -259,11 +261,9 @@ fn run_inner(
         persist_state,
         options: options.clone(),
         dependencies: dependencies.clone(),
-        restored_states: retained
-            .as_ref()
-            .filter(|_| restored_generation)
-            .map(|state| state.states().clone())
-            .unwrap_or_default(),
+        // The saved values go with the files of the generation restored,
+        // and with nothing else.
+        restored_states,
         host: Some(crate::worker::protocol::HostRun {
             root: root
                 .to_str()

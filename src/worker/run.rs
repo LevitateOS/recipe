@@ -453,6 +453,7 @@ fn run_operation(
         defines: &req.options.defines,
         dependencies: &req.dependencies,
         options: &req.options.execution,
+        lenient: req.operation == Operation::Latest,
     };
     use crate::core::executor as engine_ops;
     let mut outcome = Outcome::default();

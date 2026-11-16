@@ -162,7 +162,7 @@ pub fn parse_version(version_str: &str) -> String {
 ///
 /// # Example
 /// ```rhai
-/// let path = github_download_release("owner/tool", "tool-1.0.tar.gz", ctx.runtime.paths.build, ctx.sha256);
+/// let path = github_download_release("owner/tool", "tool-1.0.tar.gz", WORK, SHA256);
 /// ```
 pub fn github_download_release(
     repo: &str,

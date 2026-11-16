@@ -25,15 +25,12 @@ pub(crate) struct VerifiedImage {
 impl VerifiedImage {
     fn open(root_reference: &str) -> Result<Self> {
         let digest = crate::runtime::root_digest(root_reference)?;
-        let archive_path = crate::runtime::ensure_rootfs(root_reference)?;
         // Snapshot and hash the same bytes into an unlinked file (a
         // copy-on-write clone where the filesystem can). Later nodes read
         // these verified bytes, never a potentially changed source path.
-        let mut archive = crate::fsx::open_regular(&archive_path).with_context(|| {
+        let (_, mut archive) = crate::runtime::open_rootfs(root_reference).with_context(|| {
             format!(
-                "cannot open Ginux rootfs image {}; set GINUX_ROOTFS to the assembled tar matching {}",
-                archive_path.display(),
-                root_reference
+                "cannot open the Ginux rootfs image; set GINUX_ROOTFS to the assembled tar matching {root_reference}"
             )
         })?;
         let mut snapshot = tempfile::tempfile().context("cannot snapshot the rootfs image")?;

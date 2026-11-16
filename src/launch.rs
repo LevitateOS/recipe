@@ -279,6 +279,7 @@ fn run_domain_inner(
                 Some(launcher),
                 options,
                 None,
+                operation == crate::worker::protocol::Operation::Download,
             )
             .map_err(|error| {
                 crate::failure::Category::Storage.wrap(error, "cannot open saved state")
@@ -290,6 +291,7 @@ fn run_domain_inner(
     // What is done already, from Recipe's records: nothing to run, or a run
     // that starts from an unfinished generation, or from nothing.
     let restore_path = run_dir.path().join("restore.tar");
+    let restored_states;
     let mut restore = match start(retained.as_ref(), run, prepared, &restore_path)? {
         Start::Done { publish } => {
             return done_report(
@@ -301,11 +303,11 @@ fn run_domain_inner(
                 run,
             );
         }
-        Start::Run { restore } => restore,
+        Start::Run { restore, states } => {
+            restored_states = states;
+            restore
+        }
     };
-    // The saved values go with the files of the generation restored, and
-    // with nothing else.
-    let restored_generation = restore;
 
     let domain_root = crate::inputs::prepare_root(prepared, image).map_err(|error| {
         anyhow::Error::new(crate::failure::Category::Startup.error(format!(
@@ -414,11 +416,9 @@ fn run_domain_inner(
         persist_state,
         options: options.clone(),
         dependencies: dependencies.clone(),
-        restored_states: retained
-            .as_ref()
-            .filter(|_| restored_generation)
-            .map(|state| state.states().clone())
-            .unwrap_or_default(),
+        // The saved values go with the files of the generation restored,
+        // and with nothing else.
+        restored_states,
         host: None,
     };
     let mut progress = options.execution.progress_file.as_deref().map(|path| {
@@ -544,8 +544,21 @@ pub(crate) enum Start {
     /// restore input (`publish`). No worker runs.
     Done { publish: bool },
     /// A worker runs; `restore` when the restore input holds an unfinished
-    /// generation (downloads, a checkpoint) it starts from.
-    Run { restore: bool },
+    /// generation (a checkpoint, or the kept downloads of this state key) it
+    /// starts from, with the saved values `states` of that generation.
+    Run {
+        restore: bool,
+        states: std::collections::BTreeMap<String, serde_json::Value>,
+    },
+}
+
+impl Start {
+    fn fresh() -> Self {
+        Self::Run {
+            restore: false,
+            states: Default::default(),
+        }
+    }
 }
 
 /// Decide [`Start`] from the current generation of the run's identity. A
@@ -564,33 +577,56 @@ pub(crate) fn start(
     let cleans = cleans(run);
     let storage = |error| crate::failure::Category::Storage.wrap(error, "cannot read saved state");
     let Some(retained) = retained else {
-        let start = Start::Run { restore: false };
+        let start = Start::fresh();
         plan_event(prepared, operation, &start, cleans);
         return Ok(start);
     };
     let rerun = prepared.declaration.declared.rerun;
+    // A build or install that has nothing of its own to start from starts
+    // from the downloads `recipe download` kept for this state key.
+    let from_downloads = || -> Result<Start> {
+        if !operation.builds() || !retained.has_download() {
+            return Ok(Start::fresh());
+        }
+        Ok(
+            match retained.restore_download(restore_path).map_err(storage)? {
+                true => Start::Run {
+                    restore: true,
+                    states: retained.download_states(),
+                },
+                false => Start::fresh(),
+            },
+        )
+    };
     let start = match (operation, retained.reached()) {
-        (Operation::Cleanup | Operation::Latest, _) | (_, None) => Start::Run { restore: false },
+        (Operation::Cleanup | Operation::Latest, _) => Start::fresh(),
+        (_, None) => from_downloads()?,
         (Operation::Download, Some(_)) => match retained.verify_current().map_err(storage)? {
             true => Start::Done { publish: false },
-            false => Start::Run { restore: false },
+            false => Start::fresh(),
         },
         (Operation::Build, Some(Reached::Built)) if !rerun => {
             match retained.verify_current().map_err(storage)? {
                 true => Start::Done { publish: false },
-                false => Start::Run { restore: false },
+                false => from_downloads()?,
             }
         }
         (Operation::Install, Some(Reached::Built)) if !rerun => {
             match retained.restore_input(restore_path).map_err(storage)? {
                 true => Start::Done { publish: true },
-                false => Start::Run { restore: false },
+                false => from_downloads()?,
             }
         }
-        (_, Some(Reached::Built)) => Start::Run { restore: false },
-        (_, Some(Reached::Downloaded | Reached::Checkpoint)) => Start::Run {
-            restore: retained.restore_input(restore_path).map_err(storage)?,
-        },
+        (_, Some(Reached::Built)) => from_downloads()?,
+        (_, Some(Reached::Downloaded | Reached::Checkpoint)) => {
+            match retained.restore_input(restore_path).map_err(storage)? {
+                true => Start::Run {
+                    restore: true,
+                    states: retained.states().clone(),
+                },
+                false => from_downloads()?,
+            }
+        }
     };
     plan_event(prepared, operation, &start, cleans);
     Ok(start)
@@ -876,6 +912,16 @@ pub(crate) fn finish_outputs(
     // stays kept until the install is complete and activated, so a crash
     // before that installs it without building again). The publication was
     // unpacked from it above and no longer reads it.
+    // A RERUN recipe keeps no result, and its finished run leaves no
+    // checkpoint to be resumed next time.
+    if operation.builds()
+        && prepared.declaration.declared.rerun
+        && let Some(state) = retained.as_mut()
+    {
+        state.discard().map_err(|error| {
+            crate::failure::Category::Storage.wrap(error, "cannot discard a finished checkpoint")
+        })?;
+    }
     if let (Some(state), Some((reached, outputs))) = (retained.as_mut(), keep) {
         state
             .finish(export_path, result.saved.clone(), reached, outputs)

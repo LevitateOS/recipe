@@ -555,7 +555,7 @@ fn register_programs(engine: &mut Engine) {
             install::carry::carry_libraries(package, prefix, search)
         }
     );
-    // RUNTIME.paths.prefix is unit when the package will not be activated.
+    // PREFIX is unit when the package will not be activated.
     helper!(
         engine,
         "carry_libraries",

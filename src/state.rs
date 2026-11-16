@@ -96,14 +96,16 @@ impl Material {
 /// The state key of the last recipe of `graph` (the main recipe; its
 /// dependencies come before it, as [`crate::needs::declarations`] orders
 /// them). `prefix` is the main recipe's `PREFIX`; dependencies have none.
+/// `host_libc` is `HOST_LIBC`, the C library of the system installed on.
 pub fn key(
     graph: &[Declaration],
     defines: &[(String, String)],
     prefix: Option<&str>,
+    host_libc: &str,
 ) -> Result<String> {
     let main = graph.last().context("empty recipe graph")?;
     let mut keys = BTreeMap::new();
-    node_key(graph, &main.recipe, defines, prefix, &mut keys)
+    node_key(graph, &main.recipe, defines, prefix, host_libc, &mut keys)
 }
 
 /// The state key of every recipe of `graph`, by recipe path.
@@ -111,10 +113,11 @@ pub(crate) fn keys(
     graph: &[Declaration],
     defines: &[(String, String)],
     prefix: Option<&str>,
+    host_libc: &str,
 ) -> Result<BTreeMap<PathBuf, String>> {
     let main = graph.last().context("empty recipe graph")?;
     let mut keys = BTreeMap::new();
-    let main_key = node_key(graph, &main.recipe, defines, prefix, &mut keys)?;
+    let main_key = node_key(graph, &main.recipe, defines, prefix, host_libc, &mut keys)?;
     keys.insert(main.recipe.clone(), main_key);
     Ok(keys)
 }
@@ -124,6 +127,7 @@ fn node_key(
     recipe: &Path,
     defines: &[(String, String)],
     prefix: Option<&str>,
+    host_libc: &str,
     keys: &mut BTreeMap<PathBuf, String>,
 ) -> Result<String> {
     let node = graph
@@ -135,7 +139,7 @@ fn node_key(
         let key = match keys.get(&dependency.recipe) {
             Some(key) => key.clone(),
             None => {
-                let key = node_key(graph, &dependency.recipe, defines, None, keys)?;
+                let key = node_key(graph, &dependency.recipe, defines, None, host_libc, keys)?;
                 keys.insert(dependency.recipe.clone(), key.clone());
                 key
             }
@@ -157,6 +161,7 @@ fn node_key(
         modules,
         defines,
         prefix,
+        host_libc,
         dependencies,
     ))?)))
 }
@@ -216,13 +221,14 @@ pub fn recorded(
     graph: &[Declaration],
     defines: &[(String, String)],
     prefix: Option<&str>,
+    host_libc: &str,
 ) -> Result<Recorded> {
     let on_disk = on_disk(state_dir, destination, graph)?;
     let main = graph.last().context("empty recipe graph")?;
     let own = Scope::of(state_dir, &main.recipe, destination)?;
     let state = match &own {
         None => State::None,
-        Some(scope) => match scope.reached(&key(graph, defines, prefix)?)? {
+        Some(scope) => match scope.reached(&key(graph, defines, prefix, host_libc)?)? {
             None => State::None,
             Some(Reached::Built) => State::Built,
             // A checkpoint is taken inside build, after the download step.
@@ -251,11 +257,20 @@ pub fn cleanup(
     Ok(freed)
 }
 
-/// `recipe cleanup` without a name: delete `what` of every program.
+/// `recipe cleanup` without a name: delete `what` of every program. A
+/// program a run holds is reported and left for later; the others are
+/// cleaned. With [`Material::All`] (or [`Material::Build`]) also the
+/// publications no run holds any more ([`crate::publication::orphans`]).
 pub fn cleanup_all(state_dir: Option<&Path>, what: Material) -> Result<u64> {
     let mut freed = 0;
     for scope in Scope::all(state_dir)? {
-        freed += scope.remove(what.kinds(), CLEANUP_WAIT)?;
+        match scope.remove(what.kinds(), CLEANUP_WAIT) {
+            Ok(bytes) => freed += bytes,
+            Err(error) => crate::diagnostics::diag!("recipe: warning: {error:#}; left for later"),
+        }
+    }
+    if what != Material::Downloads {
+        freed += crate::publication::remove_orphans(&crate::retained::state_root(state_dir)?);
     }
     Ok(freed)
 }
@@ -429,9 +444,7 @@ pub fn storage(state_dir: Option<&Path>, store: &crate::packages::PackageStore) 
         .map(|package| package.name.clone())
         .collect();
     let keeping = read_keep(&root)?.programs;
-    // Installed: the package store, and the published outputs of producer
-    // runs (`--no-activate`: "installed" means "outputs published",
-    // decision 23) still in the state root.
+    // Installed: the package store.
     let mut installed: BTreeMap<String, u64> = receipts
         .iter()
         .map(|package| (package.name.clone(), package.size_bytes.unwrap_or(0)))
@@ -442,13 +455,16 @@ pub fn storage(state_dir: Option<&Path>, store: &crate::packages::PackageStore) 
     if store_bytes > files {
         *installed.entry(String::new()).or_default() += store_bytes - files;
     }
-    for (name, bytes) in crate::publication::published(&root) {
-        *installed.entry(name).or_default() += bytes;
-    }
     let mut downloaded = BTreeMap::new();
     let mut built = BTreeMap::new();
     let mut kept = BTreeMap::new();
     let mut unfinished = BTreeMap::new();
+    // Publications no command took: left by an interrupted run (or outputs
+    // of a producer run its caller did not take); `recipe cleanup` deletes
+    // them.
+    for (name, bytes) in crate::publication::published(&root) {
+        *unfinished.entry(name).or_insert(0u64) += bytes;
+    }
     let scopes = Scope::all(state_dir)?;
     for scope in &scopes {
         let name = owner(scope, &scopes);
@@ -511,6 +527,15 @@ pub fn storage(state_dir: Option<&Path>, store: &crate::packages::PackageStore) 
         total_bytes: kinds.iter().map(|kind| kind.bytes).sum(),
         kinds,
     })
+}
+
+/// Hold the published outputs of the state root of `state_dir` for the rest
+/// of this process, while it reads them (a system change writes a producer's
+/// outputs into a root): `recipe cleanup` does not delete them meanwhile.
+pub fn hold_publications(state_dir: Option<&Path>) -> Result<()> {
+    let base = crate::retained::state_root(state_dir)?.join("exports");
+    std::fs::create_dir_all(&base)?;
+    crate::publication::hold(&base.canonicalize()?)
 }
 
 /// `recipe cleanup --logs`: delete the diagnostic logs of every finished

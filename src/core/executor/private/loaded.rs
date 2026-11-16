@@ -43,6 +43,9 @@ pub(crate) struct Load<'x> {
     /// Each dependency's declared output names (the request's).
     pub dependencies: &'x BTreeMap<String, Vec<String>>,
     pub options: &'x crate::ExecutionOptions,
+    /// `latest()`: it runs with no inputs and may lack a required define;
+    /// what is missing is `()` instead of an error.
+    pub lenient: bool,
 }
 
 /// Read `recipe`'s declarations, build this run's constants, compile it with

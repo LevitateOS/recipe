@@ -42,7 +42,7 @@ pub(crate) fn of(declaration: &crate::needs::Declaration, load: &Load<'_>) -> Re
         let path = staged(name);
         let value = if std::fs::symlink_metadata(&path).is_ok() {
             text(&path)?
-        } else if need.optional {
+        } else if need.optional || load.lenient {
             Dynamic::UNIT
         } else {
             bail!("the required input {name} was not staged");
@@ -58,10 +58,14 @@ pub(crate) fn of(declaration: &crate::needs::Declaration, load: &Load<'_>) -> Re
             .rev()
             .find(|(given, _)| given == name)
             .map(|(_, value)| value);
-        let value = given.or(default.as_ref()).with_context(|| {
-            format!("--define {name}=VALUE is required (NEEDS.defines.{name} has no default)")
-        })?;
-        defines.insert(name.into(), value.as_str().into());
+        let value = match given.or(default.as_ref()) {
+            Some(value) => value.as_str().into(),
+            None if load.lenient => Dynamic::UNIT,
+            None => {
+                bail!("--define {name}=VALUE is required (NEEDS.defines.{name} has no default)")
+            }
+        };
+        defines.insert(name.into(), value);
     }
 
     let declared: std::collections::BTreeSet<&str> = declaration

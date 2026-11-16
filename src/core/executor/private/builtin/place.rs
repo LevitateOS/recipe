@@ -7,9 +7,12 @@
 //! see what `FILES` left there. A file `FILES` names again later is taken
 //! from where the earlier entry put it, and copied (section 2.5: "a source
 //! file named by two entries is copied for the later one"); a later entry
-//! that names the place it already is at only sets its mode. A plain-file
-//! source and a `git` checkout are the downloads themselves and are copied
-//! (see [`super::fetch::Held`]).
+//! that names the place it already is at only sets its mode. A file (or
+//! folder) entry beside a folder entry of the same source renames it: it is
+//! moved out of where the folder entry put it, and a folder entry placed
+//! after it leaves out what it took, so it is not also at its old place. A
+//! plain-file source and a `git` checkout are the downloads themselves and
+//! are copied (see [`super::fetch::Held`]).
 
 use super::fetch::{Held, Unpacked};
 use super::{Outputs, helper, remove_any, text};
@@ -48,14 +51,16 @@ pub(crate) fn place_files(
         let Some((origin, held)) = unpacked.sources.get(&entry.source) else {
             continue;
         };
-        let (current, again) = match locate(&placed, &from) {
-            Some(at) => (at, true),
-            None if entry.path.is_empty() => (origin.clone(), false),
-            None => (origin.join(&entry.path), false),
+        // Named again by an exact earlier entry: copied. Inside a folder an
+        // earlier entry placed: renamed out of the output (it is ours). Else
+        // from the source.
+        let (current, copy) = match locate(&placed, &from) {
+            Some((at, exact)) => (at, exact),
+            None if entry.path.is_empty() => (origin.clone(), *held == Held::Stored),
+            None => (origin.join(&entry.path), *held == Held::Stored),
         };
         let metadata = confine::lstat(&current)
             .with_context(|| format!("{what}: the source has no {}", display(entry)))?;
-        let copy = again || *held == Held::Stored;
         if entry.folder {
             ensure!(
                 metadata.is_dir(),
@@ -72,10 +77,14 @@ pub(crate) fn place_files(
             } else {
                 move_into(&current, &dest)?;
             }
-            // What an earlier entry took out of this folder belongs in it too.
+            // What an earlier entry took out of this folder was renamed: it
+            // is not also at its old place (a copied source still has it).
             let inner = format!("{from}/");
             for (earlier, at) in placed.iter().filter(|(key, _)| key.starts_with(&inner)) {
-                copy_any(at, &dest.join(&earlier[inner.len()..]))?;
+                let old = dest.join(&earlier[inner.len()..]);
+                if old != *at && confine::lstat(&old).is_ok() {
+                    remove_any(&old)?;
+                }
             }
             placed.push((from, dest));
             continue;
@@ -136,15 +145,16 @@ fn display(entry: &FileEntry) -> String {
     }
 }
 
-/// Where an earlier entry put `from` (or the folder it is in), if one did.
-fn locate(placed: &[(String, PathBuf)], from: &str) -> Option<PathBuf> {
+/// Where an earlier entry put `from` (or the folder it is in), if one did,
+/// and whether that entry named `from` itself (rather than its folder).
+fn locate(placed: &[(String, PathBuf)], from: &str) -> Option<(PathBuf, bool)> {
     placed.iter().rev().find_map(|(key, at)| {
         if key == from {
-            Some(at.clone())
+            Some((at.clone(), true))
         } else {
             from.strip_prefix(key.as_str())
                 .and_then(|rest| rest.strip_prefix('/'))
-                .map(|rest| at.join(rest))
+                .map(|rest| (at.join(rest), false))
         }
     })
 }

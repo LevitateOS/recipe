@@ -602,7 +602,7 @@ fn files_under(folder: &Path) -> Vec<PathBuf> {
 /// programs in `package/bin/`, and the programs and plug-ins the recipe put
 /// under `package/lib/`, load, looking in `search` and then in the build
 /// image; tells every such file the paths it will have under `prefix` (the
-/// folder the package will live in, `RUNTIME.paths.prefix`); checks that
+/// folder the package will live in, `PREFIX`); checks that
 /// everything each file loads is then inside the package; and returns what
 /// was carried as `#{ name, from }` maps.
 ///
@@ -621,7 +621,7 @@ pub fn carry_libraries(
         || prefix.chars().any(char::is_control)
     {
         return Err(format!(
-            "the package's folder must be an absolute path without ':' or a final '/', got {prefix:?}\nNext: pass RUNTIME.paths.prefix, which is set when the package will be activated (not with --no-activate)"
+            "the package's folder must be an absolute path without ':' or a final '/', got {prefix:?}\nNext: pass PREFIX, which is set when the package will be activated (not with --no-activate)"
         )
         .into());
     }
@@ -745,9 +745,9 @@ pub fn carry_libraries(
         .collect())
 }
 
-/// `carry_libraries` given no package folder: RUNTIME.paths.prefix is unit.
+/// `carry_libraries` given no package folder: PREFIX is unit.
 pub fn carry_without_prefix() -> Result<rhai::Array, Box<EvalAltResult>> {
-    Err("carry_libraries needs the package's folder, and RUNTIME.paths.prefix is unset: the package will not be activated (--no-activate, a dependency, or a recipe whose name is not a literal)".into())
+    Err("carry_libraries needs the package's folder, and PREFIX is unset: the package will not be activated (--no-activate, a dependency, or a recipe whose name is not a literal)".into())
 }
 
 /// The closure check: every program and every file under `lib/` finds each

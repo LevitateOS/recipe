@@ -307,8 +307,16 @@ fn run(cli: Cli) -> Result<()> {
             let engine = create_engine(&recipe_path, &engine_options)?.with_keep(keep);
             // Activation runs inside the install, after the outputs are
             // published and before the material is deleted.
+            let key = state_key(&recipe_path, &engine_options)?;
             let activate = |result: &mut serde_json::Value| {
-                activate_package(&package_store, &recipe_path, recipes_path, result, None)
+                activate_package(
+                    &package_store,
+                    &recipe_path,
+                    recipes_path,
+                    &key,
+                    result,
+                    None,
+                )
             };
             let mut result = engine.install_activating(
                 &recipe_path,
@@ -357,7 +365,7 @@ fn run(cli: Cli) -> Result<()> {
                 let freed = if keep {
                     0
                 } else {
-                    delete_material(&recipe_path, recipes_path, &engine_options)?
+                    clean_installed(&recipe_path, recipes_path, &engine_options).0
                 };
                 let mut result = serde_json::json!({"name": installed.name, "version": installed.version,
                     "operation": "update", "current": true, "profile": package_store.profile_path(),
@@ -375,11 +383,13 @@ fn run(cli: Cli) -> Result<()> {
                 (json_output.as_deref(), json),
             )?;
             let engine = create_engine(&recipe_path, &engine_options)?.with_keep(keep);
+            let key = state_key(&recipe_path, &engine_options)?;
             let activate = |result: &mut serde_json::Value| {
                 activate_package(
                     &package_store,
                     &recipe_path,
                     recipes_path,
+                    &key,
                     result,
                     Some(&installed.name),
                 )
@@ -841,6 +851,38 @@ fn remember_keep(state_dir: Option<&Path>, name: &str, choice: Option<bool>) -> 
     }
 }
 
+/// The cleanup step of an install that found the program installed: delete
+/// its material, and report a run that holds it instead of failing (the
+/// program is installed; `recipe cleanup` deletes the rest later). Returns
+/// the bytes freed and the step's status.
+fn clean_installed(
+    recipe: &Path,
+    search: &Path,
+    options: &EngineOptions<'_>,
+) -> (u64, &'static str) {
+    match delete_material(recipe, search, options) {
+        Ok(freed) => (freed, "done"),
+        Err(error) => {
+            eprintln!("recipe: warning: its material is kept for now: {error:#}");
+            (0, "failed")
+        }
+    }
+}
+
+/// The state key a run of `recipe` with these options records
+/// (`levitate_recipe::state::key`), kept in the receipt of what it installs.
+fn state_key(recipe: &Path, options: &EngineOptions<'_>) -> Result<String> {
+    let graph = levitate_recipe::needs::declarations(recipe, options.recipes_path)?;
+    let defines = parse_defines(options.defines)?;
+    let prefix = package_prefix(options.activate_into, recipe, options.recipes_path)?;
+    levitate_recipe::state::key(
+        &graph,
+        &defines,
+        prefix.as_deref(),
+        &options.execution.host_libc,
+    )
+}
+
 /// Delete the downloads and build material of `recipe` (and of the
 /// dependency runs made for it) at the destination its runs use. Returns the
 /// bytes freed.
@@ -921,6 +963,7 @@ fn recorded_state(
         &graph,
         &defines,
         prefix.as_deref(),
+        &options.execution.host_libc,
     )
 }
 
@@ -954,16 +997,20 @@ fn installed_already(
     let digest = hex::encode(Sha256::digest(
         std::fs::read(recipe).with_context(|| format!("cannot read {}", recipe.display()))?,
     ));
+    // The same recipe file and version, built with the same state key (its
+    // base, pins, modules, defines, PREFIX, HOST_LIBC, dependencies).
+    let key = state_key(recipe, options)?;
     if receipt.sha256.as_deref() != Some(digest.as_str())
         || Some(receipt.version.as_str()) != declaration.version()
+        || receipt.state_key.as_deref() != Some(key.as_str())
         || store.verify(&receipt.name).is_err()
     {
         return Ok(None);
     }
-    let freed = if keep {
-        0
+    let (freed, cleanup) = if keep {
+        (0, "skipped")
     } else {
-        delete_material(recipe, search, options)?
+        clean_installed(recipe, search, options)
     };
     let has = declaration.declared.steps();
     let steps: Vec<serde_json::Value> = ["download", "build", "install", "cleanup"]
@@ -971,8 +1018,7 @@ fn installed_already(
         .map(|step| {
             let status = match step {
                 _ if !has.contains(&step) => "none",
-                "cleanup" if keep => "skipped",
-                "cleanup" => "done",
+                "cleanup" => cleanup,
                 _ => "already",
             };
             serde_json::json!({"step": step, "status": status})
@@ -1143,10 +1189,43 @@ fn check_libc(
 /// before the command in the line a refusal suggests (`--system --root /mnt`).
 pub(crate) const SYSTEM_PREFIX_ENV: &str = "RECIPE_SYSTEM_COMMAND_PREFIX";
 
+/// Activate the published package of `result` in `store`, recording the
+/// state key `key` in its receipt. Whatever happens, the publication does
+/// not stay: on success its files are in the store, and on failure the kept
+/// result publishes it again on the next install.
 fn activate_package(
     store: &PackageStore,
     recipe: &Path,
     search: &Path,
+    key: &str,
+    result: &mut serde_json::Value,
+    updating: Option<&str>,
+) -> Result<()> {
+    let activated = activate_published(store, recipe, search, key, result, updating);
+    if activated.is_err()
+        && let Some(output) = result["outputs"]["package"].as_str()
+        && let Some(publication) = Path::new(output).parent()
+        && publication
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == "exports")
+    {
+        levitate_recipe::fsx::make_removable(publication);
+        if let Err(error) = std::fs::remove_dir_all(publication) {
+            eprintln!(
+                "recipe: warning: cannot delete the publication {}: {error}",
+                publication.display()
+            );
+        }
+    }
+    activated
+}
+
+fn activate_published(
+    store: &PackageStore,
+    recipe: &Path,
+    search: &Path,
+    key: &str,
     result: &mut serde_json::Value,
     updating: Option<&str>,
 ) -> Result<()> {
@@ -1193,6 +1272,7 @@ fn activate_package(
         version,
         recipe,
         needs.as_ref(),
+        Some(key),
         Path::new(&output),
         updating.is_some(),
     )?;
@@ -2096,6 +2176,7 @@ fn recorded_in_list(recipe: &Path, store: &PackageStore, options: &EngineOptions
             &graph,
             &[],
             prefix.as_deref(),
+            &options.execution.host_libc,
         )?
         .state)
     })();

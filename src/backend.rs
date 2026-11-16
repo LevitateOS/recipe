@@ -74,8 +74,12 @@ impl Runner<'_> {
         crate::runtime::set_fetch_events(invocation.options.execution.machine_events);
         crate::core::output::set_machine_events(invocation.options.execution.machine_events);
         let all = crate::needs::declarations(invocation.recipe, invocation.search_path)?;
-        crate::needs::check_defines(&all, &invocation.options.defines)?;
         let operation = invocation.operation;
+        if operation == crate::worker::protocol::Operation::Latest {
+            crate::needs::check_declared_defines(&all, &invocation.options.defines)?;
+        } else {
+            crate::needs::check_defines(&all, &invocation.options.defines)?;
+        }
         let install = operation == crate::worker::protocol::Operation::Install;
         let builds = operation.builds();
         if invocation.options.execution.machine_events
@@ -117,6 +121,7 @@ impl Runner<'_> {
             &all,
             &invocation.options.defines,
             invocation.options.execution.package_prefix.as_deref(),
+            &invocation.options.execution.host_libc,
         )?;
         let mut executions = Vec::with_capacity(graph.len());
         let mut placements = Vec::with_capacity(graph.len());
@@ -153,6 +158,12 @@ impl Runner<'_> {
             executions.push(execution);
         }
         let mut results = std::collections::BTreeMap::<PathBuf, serde_json::Value>::new();
+        // A dependency's published outputs are staged for its consumer and
+        // then go, also when a later run of the graph fails.
+        let mut staged = Staged {
+            state_dir: invocation.state_dir,
+            outputs: Vec::new(),
+        };
         let mut image = None;
         let system = invocation
             .options
@@ -318,6 +329,11 @@ impl Runner<'_> {
             let result = self
                 .run_single(&child, &internal, node, placement.host, &mut image)
                 .with_context(|| format!("running recipe {}", node.recipe.display()))?;
+            if !main {
+                staged
+                    .outputs
+                    .push((node.recipe.clone(), result["outputs"].clone()));
+            }
             results.insert(node.recipe.clone(), result);
         }
         let mut result = results.remove(main_recipe).unwrap();
@@ -400,23 +416,19 @@ impl Runner<'_> {
             result["system_present"] = serde_json::json!(skipped);
         }
         // A dependency's published outputs were staged for its consumer,
-        // whose run is over: they go, except those a system change writes
-        // into its root (`system_producers`; the system route deletes them
-        // once written). The main recipe's stay: they are the result.
+        // whose run is over: they go (when `staged` drops), except those a
+        // system change writes into its root (`system_producers`; the system
+        // route deletes them once written). The main recipe's stay: they are
+        // the result.
         let consumed: std::collections::BTreeSet<String> = result["system_producers"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(|producer| producer["producer"]["recipe"].as_str().map(str::to_owned))
             .collect();
-        for node in graph.iter().filter(|node| node.recipe != *main_recipe) {
-            if !consumed.contains(node.recipe.to_string_lossy().as_ref()) {
-                crate::publication::discard(
-                    invocation.state_dir,
-                    &results[&node.recipe]["outputs"],
-                );
-            }
-        }
+        staged
+            .outputs
+            .retain(|(recipe, _)| !consumed.contains(recipe.to_string_lossy().as_ref()));
         Ok(result)
     }
 
@@ -516,6 +528,22 @@ impl Runner<'_> {
                 prepared.invocation_id,
             )))
         })
+    }
+}
+
+/// The published outputs of the dependencies that ran, deleted when the run
+/// of the graph ends, by success or by failure
+/// ([`crate::publication::discard`]).
+struct Staged<'a> {
+    state_dir: Option<&'a Path>,
+    outputs: Vec<(PathBuf, serde_json::Value)>,
+}
+
+impl Drop for Staged<'_> {
+    fn drop(&mut self) {
+        for (_, outputs) in &self.outputs {
+            crate::publication::discard(self.state_dir, outputs);
+        }
     }
 }
 
