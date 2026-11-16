@@ -1,16 +1,15 @@
 //! The one way this crate runs a child process (other than the Ginux launcher,
 //! whose fd inheritance belongs to `launch`).
 //!
-//! A [`Run`] states its policy explicitly: what stdin it gets, where live
-//! output goes ([`Route`]), how much output is kept ([`Keep`]), whether the
-//! child gets its own process group, and an optional deadline. The executing
+//! A [`Run`] states its policy explicitly: where live output goes
+//! ([`Route`]), how much output is kept ([`Keep`]), and an optional deadline. The executing
 //! thread's environment overlay ([`push_environment`]) applies to every child.
 
 use crate::diagnostics::{self, Stream};
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{OsStr, OsString};
-use std::io::{Read, Write};
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::io::Read;
+use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -85,8 +84,6 @@ pub(crate) fn find_program(program: &str) -> Option<std::path::PathBuf> {
 pub(crate) enum Route {
     /// Into the diagnostic stream as child stdout/stderr.
     Diagnostics,
-    /// To this process's own stderr, outside the diagnostic stream.
-    OutOfBand,
     /// Nowhere.
     Silent,
 }
@@ -155,31 +152,21 @@ impl std::error::Error for Error {}
 /// One child process run.
 pub(crate) struct Run {
     command: Command,
-    stdin: Option<Vec<u8>>,
     route_stdout: Route,
     route_stderr: Route,
     keep: Keep,
     deadline: Option<Duration>,
-    own_group: bool,
 }
 
 impl Run {
     pub(crate) fn new(command: Command) -> Self {
         Self {
             command,
-            stdin: None,
             route_stdout: Route::Silent,
             route_stderr: Route::Silent,
             keep: Keep::All,
             deadline: None,
-            own_group: false,
         }
-    }
-
-    /// Feed `bytes` to the child's stdin, then close it (default: `/dev/null`).
-    pub(crate) fn stdin(mut self, bytes: Vec<u8>) -> Self {
-        self.stdin = Some(bytes);
-        self
     }
 
     pub(crate) fn route(mut self, stdout: Route, stderr: Route) -> Self {
@@ -193,18 +180,11 @@ impl Run {
         self
     }
 
-    /// Kill the child (and its group, if any) when it outlives `deadline`.
+    /// Kill the child when it outlives `deadline`.
     /// Deadline runs poll and also stop on cancellation; they are for the
     /// coordinator, because the Ginux domain does not emulate sleeping.
     pub(crate) fn deadline(mut self, deadline: Duration) -> Self {
         self.deadline = Some(deadline);
-        self
-    }
-
-    /// Run the child in its own process group, killed with it on exit, and
-    /// tied to this process's lifetime.
-    pub(crate) fn own_group(mut self) -> Self {
-        self.own_group = true;
         self
     }
 
@@ -226,35 +206,14 @@ impl Run {
         let label = self.label();
         apply_environment(&mut self.command);
         self.command
-            .stdin(if self.stdin.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if self.own_group {
-            self.command.process_group(0);
-            let parent = unsafe { libc::getpid() };
-            // Only async-signal-safe calls run between fork and exec.
-            unsafe {
-                self.command.pre_exec(move || {
-                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) < 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    if libc::getppid() != parent {
-                        libc::_exit(125);
-                    }
-                    Ok(())
-                });
-            }
-        }
         let mut child = self
             .command
             .spawn()
             .map_err(|error| Error::Spawn(format!("command failed to start: {label}: {error}")))?;
         let started = Instant::now();
-        let group = self.own_group.then(|| Group(child.id() as i32));
 
         let tail_bytes = match self.keep {
             Keep::Tail(bytes) => bytes,
@@ -287,14 +246,6 @@ impl Run {
             Stream::Stderr,
             self.route_stderr,
         );
-        let writer = match (self.stdin.take(), child.stdin.take()) {
-            (Some(bytes), Some(mut pipe)) => Some(std::thread::spawn(move || {
-                // Dropping the pipe after the write closes the child's stdin.
-                pipe.write_all(&bytes)
-            })),
-            _ => None,
-        };
-
         let mut problem = None;
         // Without a deadline, block in wait(): the Ginux domain does not
         // emulate sleeping, so only deadline-bound (coordinator) runs poll.
@@ -337,8 +288,6 @@ impl Run {
             let _ = child.kill();
             let _ = child.wait();
         }
-        // An exited leader cannot leave pipe-holding descendants in its group.
-        drop(group);
 
         let mut collect = |thread: Option<
             std::io::Result<std::thread::JoinHandle<std::io::Result<Vec<u8>>>>,
@@ -367,19 +316,6 @@ impl Run {
         };
         let stdout = collect(stdout);
         let stderr = collect(stderr);
-        if let Some(writer) = writer {
-            match writer.join() {
-                Ok(Ok(())) => {}
-                // A child that exits without reading all input is judged by its exit.
-                Ok(Err(error)) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
-                Ok(Err(error)) => {
-                    problem.get_or_insert(format!("command input write failed: {label}: {error}"));
-                }
-                Err(_) => {
-                    problem.get_or_insert(format!("command input writer panicked: {label}"));
-                }
-            }
-        }
         if problem.is_none() && over_limit.load(std::sync::atomic::Ordering::Relaxed) {
             problem = Some(format!("command output exceeded its byte limit: {label}"));
         }
@@ -402,17 +338,6 @@ impl Run {
             stderr,
             tail,
         })
-    }
-}
-
-/// Kills a child's process group when dropped.
-struct Group(i32);
-
-impl Drop for Group {
-    fn drop(&mut self) {
-        unsafe {
-            libc::kill(-self.0, libc::SIGKILL);
-        }
     }
 }
 
@@ -456,7 +381,6 @@ fn drain(
             Route::Diagnostics => {
                 let _ = diagnostics::write(stream, bytes);
             }
-            Route::OutOfBand => diagnostics::out_of_band(bytes),
             Route::Silent => {}
         }
         match keep {

@@ -50,7 +50,6 @@ mod inputs;
 mod invocation_log;
 mod launch;
 mod lifecycle;
-mod llm;
 pub mod needs;
 pub mod offline_cache;
 mod options;
@@ -132,36 +131,6 @@ pub mod bin_support {
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-/// Configure Recipe's automatic LLM-based repair loop for failed installs.
-///
-/// When enabled, Recipe will (on selected failures) ask the configured LLM provider to return a
-/// unified diff, apply it, and retry the install.
-#[derive(Debug, Clone)]
-pub struct AutoFixConfig {
-    /// Maximum number of patch attempts per failing `recipe install`.
-    pub attempts: u8,
-    /// Working directory used for patch application and LLM invocation. If unset: the git
-    /// repository containing the current directory, else the one containing the recipe, else the
-    /// recipe's directory.
-    pub cwd: Option<PathBuf>,
-    /// Optional extra instructions appended to the built-in autofix prompt.
-    pub prompt_file: Option<PathBuf>,
-    /// Allowed roots for patched file paths. If empty, defaults to the detected repo root (or
-    /// `cwd`/recipe dir fallback).
-    pub allow_paths: Vec<PathBuf>,
-}
-
-impl Default for AutoFixConfig {
-    fn default() -> Self {
-        Self {
-            attempts: 2,
-            cwd: None,
-            prompt_file: None,
-            allow_paths: Vec::new(),
-        }
-    }
-}
-
 /// Recipe execution engine
 pub struct RecipeEngine {
     build_dir: PathBuf,
@@ -172,8 +141,6 @@ pub struct RecipeEngine {
     persist_state: bool,
     execution: ExecutionOptions,
     state_dir: Option<PathBuf>,
-    llm_profile: Option<String>,
-    autofix: Option<AutoFixConfig>,
     /// Explicit launcher selection; None resolves Ginux from the environment
     /// when a recipe of the operation runs in Ginux (`crate::execution`).
     launcher: Option<GinuxLauncher>,
@@ -192,8 +159,6 @@ impl RecipeEngine {
             persist_state: true,
             execution: ExecutionOptions::default(),
             state_dir: None,
-            llm_profile: None,
-            autofix: None,
             launcher: None,
             _temporary: None,
         }
@@ -228,12 +193,6 @@ impl RecipeEngine {
         self
     }
 
-    /// Select an LLM profile (from XDG `recipe/llm.toml`) for this engine execution.
-    pub fn with_llm_profile(mut self, profile: Option<String>) -> Self {
-        self.llm_profile = profile;
-        self
-    }
-
     /// Configure whether runtime state and matching files are retained.
     ///
     /// Default is `true`.
@@ -251,12 +210,6 @@ impl RecipeEngine {
     /// Select coordinator-owned runtime state storage.
     pub fn with_state_dir(mut self, path: Option<PathBuf>) -> Self {
         self.state_dir = path;
-        self
-    }
-
-    /// Enable Recipe's automatic LLM-based repair loop for this engine execution.
-    pub fn with_autofix(mut self, cfg: Option<AutoFixConfig>) -> Self {
-        self.autofix = cfg;
         self
     }
 
@@ -283,75 +236,7 @@ impl RecipeEngine {
     ///
     /// Returns the final ctx map containing all recipe state.
     pub fn execute(&self, recipe_path: &Path) -> Result<serde_json::Value> {
-        let install = || self.invoke(worker::protocol::Operation::Install, None, recipe_path);
-        let Some(cfg) = &self.autofix else {
-            return install();
-        };
-        if !(1..=8).contains(&cfg.attempts) {
-            anyhow::bail!("autofix attempts must be between 1 and 8");
-        }
-        let mut repairs = 0;
-        loop {
-            let error = match install() {
-                Ok(ctx) => return Ok(ctx),
-                Err(error) => error,
-            };
-            // Autofix repairs failed build or install phases; acquisition
-            // failures come from inputs a patch cannot fix.
-            let failure = error
-                .downcast_ref::<backend::WorkloadFailure>()
-                .map(|failure| &failure.0)
-                .filter(|failure| {
-                    matches!(
-                        failure.phase,
-                        Some(lifecycle::Phase::Build | lifecycle::Phase::Install)
-                    )
-                });
-            let Some(failure) = failure.filter(|_| repairs < cfg.attempts) else {
-                return Err(error);
-            };
-            repairs += 1;
-            core::output::warning(&format!(
-                "autofix: repairing {} failure (attempt {repairs}/{})",
-                failure.phase.map_or("-", lifecycle::Phase::name),
-                cfg.attempts
-            ));
-            let phase = failure.phase.map_or("-", lifecycle::Phase::name);
-            let changed = core::autofix::run_and_apply(
-                cfg,
-                recipe_path,
-                self.recipes_path.as_deref(),
-                &self.defines,
-                failure.reason(),
-                &failure.message,
-                self.llm_profile.as_deref(),
-            )
-            .context("coordinator autofix failed")?;
-            if self.execution.machine_events {
-                // For a front end: the agent changed the recipe during this
-                // run, and the run starts again with the changed files.
-                let files: Vec<_> = changed
-                    .iter()
-                    .map(|path| path.display().to_string())
-                    .collect();
-                eprintln!(
-                    "{}",
-                    serde_json::json!({
-                        "event": "agent",
-                        "recipe": recipe_path.file_stem().and_then(|stem| stem.to_str()),
-                        "hook": phase,
-                        "attempt": repairs,
-                        "files": files,
-                        "summary": format!(
-                            "after the {phase} step failed, the agent changed {}; the run starts again",
-                            files.join(", ")
-                        ),
-                    })
-                );
-            }
-            // The next launch rediscovers and hashes all patched inputs;
-            // saved state from the failed identity is never translated.
-        }
+        self.invoke(worker::protocol::Operation::Install, None, recipe_path)
     }
 
     /// Remove an installed package

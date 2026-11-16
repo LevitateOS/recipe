@@ -1,6 +1,6 @@
 //! The recipe lifecycle vocabulary: phases, their hook and check names, and the
 //! cleanup reasons recipes receive. These names are recipe API (README,
-//! `recipe-recipe.5`); the engine, the wire protocol, narration and autofix all
+//! `recipe-recipe.5`); the engine, the wire protocol and narration all
 //! read them from here.
 
 use serde::{Deserialize, Serialize};
@@ -36,13 +36,6 @@ impl Phase {
         }
     }
 }
-
-/// Every readiness check name, outermost (`is_installed`) first.
-pub const CHECKS: [&str; 3] = [
-    Phase::Install.check(),
-    Phase::Build.check(),
-    Phase::Acquire.check(),
-];
 
 /// The `reason` argument of `cleanup(ctx, reason)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

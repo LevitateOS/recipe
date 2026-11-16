@@ -504,7 +504,7 @@ fn is_executable(meta: &std::fs::Metadata) -> bool {
     meta.permissions().mode() & 0o111 != 0
 }
 
-/// The worker's account of a failed workload, kept typed for the autofix loop.
+/// The worker's account of a failed workload, kept typed.
 #[derive(Debug)]
 pub(crate) struct WorkloadFailure(
     pub crate::worker::protocol::FailureInfo,

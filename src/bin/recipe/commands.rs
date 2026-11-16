@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use levitate_recipe::packages::{InstalledPackage, PackageStore};
-use levitate_recipe::{AutoFixConfig, RecipeEngine, bin_support};
+use levitate_recipe::{RecipeEngine, bin_support};
 use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::path::PathBuf;
@@ -192,7 +192,6 @@ fn run(cli: Cli) -> Result<()> {
         defines: &cli.defines,
         inputs: &cli.inputs,
         no_persist_state: cli.no_persist_state,
-        llm_profile: cli.llm_profile,
         activate_into: (!no_activate).then_some(&package_store),
     };
 
@@ -266,28 +265,9 @@ fn run(cli: Cli) -> Result<()> {
                 "Recipe permission changes",
             )?;
         }
-        Commands::Install {
-            recipe,
-            sha256,
-            autofix,
-            autofix_attempts,
-            autofix_cwd,
-            autofix_prompt_file,
-            autofix_allow_path,
-            ..
-        } => {
+        Commands::Install { recipe, sha256, .. } => {
             let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
             require_sha256(&recipe_path, sha256.as_deref())?;
-            let autofix_cfg = if autofix {
-                Some(AutoFixConfig {
-                    attempts: autofix_attempts,
-                    cwd: autofix_cwd,
-                    prompt_file: autofix_prompt_file,
-                    allow_paths: autofix_allow_path,
-                })
-            } else {
-                None
-            };
             check_libc(
                 &recipe_path,
                 recipes_path,
@@ -296,7 +276,7 @@ fn run(cli: Cli) -> Result<()> {
                 (any_libc, any_system),
                 (json_output.as_deref(), json),
             )?;
-            let engine = create_engine(&recipe_path, &engine_options, autofix_cfg)?;
+            let engine = create_engine(&recipe_path, &engine_options)?;
             let mut ctx = engine.execute(&recipe_path)?;
             if !no_activate {
                 activate_package(&package_store, &recipe_path, recipes_path, &mut ctx, None)?;
@@ -348,7 +328,7 @@ fn run(cli: Cli) -> Result<()> {
                 (any_libc, any_system),
                 (json_output.as_deref(), json),
             )?;
-            let engine = create_engine(&recipe_path, &engine_options, None)?;
+            let engine = create_engine(&recipe_path, &engine_options)?;
             let mut ctx = engine.execute(&recipe_path)?;
             activate_package(
                 &package_store,
@@ -478,14 +458,14 @@ fn run(cli: Cli) -> Result<()> {
             }
             let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
             require_output_only_if_inactive(&recipe_path, recipes_path, no_activate)?;
-            let engine = create_engine(&recipe_path, &engine_options, None)?;
+            let engine = create_engine(&recipe_path, &engine_options)?;
             let ctx = engine.remove(&recipe_path)?;
             emit_result(&ctx, json_output.as_deref(), json, "Removal completed")?;
         }
 
         Commands::Cleanup { recipe, reason } => {
             let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
-            let engine = create_engine(&recipe_path, &engine_options, None)?;
+            let engine = create_engine(&recipe_path, &engine_options)?;
             let cleanup_reason = reason
                 .as_deref()
                 .map(str::trim)
@@ -505,7 +485,7 @@ fn run(cli: Cli) -> Result<()> {
             }
             let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
             require_output_only_if_inactive(&recipe_path, recipes_path, no_activate)?;
-            let engine = create_engine(&recipe_path, &engine_options, None)?;
+            let engine = create_engine(&recipe_path, &engine_options)?;
             let ctx = engine.is_installed(&recipe_path)?;
             emit_result(
                 &ctx,
@@ -517,14 +497,14 @@ fn run(cli: Cli) -> Result<()> {
 
         Commands::IsBuilt { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
-            let engine = create_engine(&recipe_path, &engine_options, None)?;
+            let engine = create_engine(&recipe_path, &engine_options)?;
             let ctx = engine.is_built(&recipe_path)?;
             emit_result(&ctx, json_output.as_deref(), json, "Build check passed")?;
         }
 
         Commands::IsAcquired { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
-            let engine = create_engine(&recipe_path, &engine_options, None)?;
+            let engine = create_engine(&recipe_path, &engine_options)?;
             let ctx = engine.is_acquired(&recipe_path)?;
             emit_result(
                 &ctx,
@@ -947,17 +927,12 @@ struct EngineOptions<'a> {
     defines: &'a [String],
     inputs: &'a [String],
     no_persist_state: bool,
-    llm_profile: Option<String>,
     /// The store a package output will be activated in; None with
     /// --no-activate. It decides RUNTIME.paths.prefix.
     activate_into: Option<&'a PackageStore>,
 }
 
-fn create_engine(
-    recipe: &Path,
-    options: &EngineOptions<'_>,
-    autofix: Option<AutoFixConfig>,
-) -> Result<RecipeEngine> {
+fn create_engine(recipe: &Path, options: &EngineOptions<'_>) -> Result<RecipeEngine> {
     let EngineOptions {
         build_dir,
         state_dir,
@@ -966,7 +941,6 @@ fn create_engine(
         defines,
         inputs,
         no_persist_state,
-        llm_profile,
         activate_into,
     } = options;
     let mut execution = execution.clone();
@@ -986,9 +960,7 @@ fn create_engine(
     let mut engine = engine
         .with_state_persistence(!*no_persist_state)
         .with_state_dir(state_dir.map(Path::to_owned))
-        .with_execution_options(execution)
-        .with_llm_profile(llm_profile.clone())
-        .with_autofix(autofix);
+        .with_execution_options(execution);
 
     if let Some(rp) = recipes_path {
         engine = engine.with_recipes_path(rp.to_path_buf());

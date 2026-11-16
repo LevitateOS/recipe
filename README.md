@@ -783,37 +783,6 @@ a complete bounded endpoint summary produces warnings for unused grants, while
 an absent summary never labels unobserved connections unused. Diagnostics do
 not become success/protocol evidence or grant additional authority.
 
-## Optional coordinator repair
-
-Normal execution needs no AI provider. `recipe install --autofix` explicitly
-opts into bounded coordinator-side patch/retry after an eligible build/install
-failure. Provider configuration comes from XDG `recipe/llm.toml`; select a profile
-with `--llm-profile`. The provider process is outside the worker domain. A minimal explicit provider
-configuration is:
-
-```toml
-version = 1
-default_provider = "codex"
-
-[providers.codex]
-bin = "codex"
-```
-
-Only the `default_provider`'s block is required.
-
-This describes configuration syntax, not verified external-provider support.
-Release acceptance includes controlled patch/retry mechanics only; actual Codex,
-Claude or other provider interoperability is outside the agreed release scope.
-
-Use the chosen provider's installed CLI/configuration; there is no implicit
-provider fallback. A named profile can override provider settings.
-
-Use `--autofix-attempts` (1–8, default 2), `--autofix-cwd`, `--autofix-prompt-file` and repeated
-`--autofix-allow-path` to bound repair. Patches cannot alter NEEDS/API/dependency authority or readiness checks,
-change disallowed paths or hide command failures. Changed recipe bytes create a
-new invocation identity; old state is not restored across a patch. Recipes have
-no LLM helpers; the provider never runs inside the worker.
-
 ## Validation and limits
 
 [Managed integration CI](docs/ci.md) describes launcher/image pins, runtime

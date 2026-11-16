@@ -36,8 +36,7 @@ registration or a tool's `--help`/`--version` does not establish that the full
 consumer works. Whole-coordinator bootstrap privileges remain required; see
 [Linux setup](setup-linux.md). Recipe activates user-package publications in an
 owned profile; recab owns OS image and A/B activation. Package helpers do not add a general package solver or
-global ownership database. Controlled autofix checks establish retry mechanics,
-not external AI-provider interoperability.
+global ownership database.
 The installer UI's PTYs run on the libvirt guest's Linux kernel. Their acceptance
 does not establish general PTY support inside configured Ginux recipe workloads.
 

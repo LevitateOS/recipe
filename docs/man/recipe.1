@@ -481,22 +481,12 @@ hook, status, msg). plan with "recipes": every recipe of an install in the order
 they run, each with the steps it defines; plan with "recipe" and "steps": the
 steps that recipe needs this time, once its checks have run. fetch: how far a
 download is (recipe, source, bytes, total; total is null when the server did not
-say). agent: an --autofix repair changed files and the run starts again (recipe,
-hook, attempt, files, summary). The last event of install, update, remove and
+say). The last event of install, update, remove and
 go-back, hold and unhold is done (recipe), or failed (recipe, hook where a step
 failed, reason). A failed install whose Ginux log records a denied connection
 also has refused: endpoint, the numeric address the audit line names, and
 declared, the recipe's NEEDS.network. Build progress inside a step is not
 reported.
-.SH OPTIONAL REPAIR
-install --autofix explicitly enables bounded coordinator patch/retry for eligible
-build/install failures. Normal execution needs no AI provider. Configuration is
-XDG recipe/llm.toml; --llm-profile selects a named profile.
-.PP
---autofix-attempts selects 1 through 8 attempts. --autofix-cwd,
---autofix-prompt-file and repeated --autofix-allow-path bound repair inputs.
-Patches cannot rewrite readiness checks or hide failures. Changed recipe bytes
-get a new invocation identity. Providers never execute inside the worker.
 .SH RECOVERY AND DIAGNOSTICS
 Checkpoints require durable matching filesystem/state records before ack.
 Interrupted unacknowledged work is discarded; previous publications remain.
@@ -565,7 +555,5 @@ real eligible IDs, not virtual topology. Memory limits bound per-process address
 space rather than aggregate process-tree RAM. Bounded poll/ppoll does not promise
 general signal interruption/restart semantics. Archive timestamps have whole-second
 precision. See docs/runtime-limits.md for supported variants and errors.
-External AI-provider interoperability is outside the release acceptance;
-controlled autofix verification establishes retry mechanics only.
 .SH SEE ALSO
 recipe-recipe(5), recipe-helpers(7), README.md, WRITING_RECIPES.md

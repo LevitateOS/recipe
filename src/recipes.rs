@@ -1,6 +1,6 @@
 //! How recipes name each other: `//! extends:` headers, base/module targets
 //! and `deps`/`build_deps` names. Input discovery (coordinator), the engine
-//! (worker) and autofix all resolve through these rules, so what discovery
+//! (worker) all resolve through these rules, so what discovery
 //! stages is what the engine looks for.
 
 use std::path::{Component, Path, PathBuf};

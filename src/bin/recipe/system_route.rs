@@ -731,43 +731,11 @@ pub(super) fn producer_args(cli: &Cli) -> Result<Vec<String>> {
             Some(format!("{name}={}", std::path::absolute(path)?.display())),
         );
     }
-    if let Some(profile) = &cli.llm_profile {
-        push("--llm-profile", Some(profile.clone()));
-    }
     if let Some(path) = &cli.progress_file {
         push(
             "--progress-file",
             Some(std::path::absolute(path)?.to_string_lossy().into_owned()),
         );
-    }
-    if let Commands::Install {
-        autofix: true,
-        autofix_attempts,
-        autofix_cwd,
-        autofix_prompt_file,
-        autofix_allow_path,
-        ..
-    } = &cli.command
-    {
-        push("--autofix", None);
-        push("--autofix-attempts", Some(autofix_attempts.to_string()));
-        for (flag, path) in [
-            ("--autofix-cwd", autofix_cwd),
-            ("--autofix-prompt-file", autofix_prompt_file),
-        ] {
-            if let Some(path) = path {
-                push(
-                    flag,
-                    Some(std::path::absolute(path)?.to_string_lossy().into_owned()),
-                );
-            }
-        }
-        for path in autofix_allow_path {
-            push(
-                "--autofix-allow-path",
-                Some(std::path::absolute(path)?.to_string_lossy().into_owned()),
-            );
-        }
     }
     Ok(args)
 }

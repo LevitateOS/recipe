@@ -152,11 +152,6 @@ pub(crate) struct Cli {
     #[arg(help_heading = "Output")]
     pub(crate) progress_file: Option<PathBuf>,
 
-    /// Select an LLM profile from XDG `recipe/llm.toml` (under `[profiles.<name>]`) for autofix/LLM features.
-    #[arg(long, global = true)]
-    #[arg(help_heading = "AI-assisted repair")]
-    pub(crate) llm_profile: Option<String>,
-
     /// Disable state/file recovery. Filesystem effects still occur.
     #[arg(long = "no-persist-state", global = true, default_value_t = false)]
     #[arg(help_heading = "Build and state")]
@@ -205,26 +200,6 @@ pub(crate) enum Commands {
         /// Run only if the recipe file has this SHA-256: what was looked at is what runs.
         #[arg(long, value_name = "HASH")]
         sha256: Option<String>,
-
-        /// Automatically attempt to patch build/install failures using the configured LLM provider.
-        #[arg(long)]
-        autofix: bool,
-
-        /// Maximum number of patch attempts per failing install step.
-        #[arg(long, default_value_t = levitate_recipe::AutoFixConfig::default().attempts)]
-        autofix_attempts: u8,
-
-        /// Working directory used for LLM invocation and patch application. Defaults to the git repository of the current directory, else the recipe's.
-        #[arg(long)]
-        autofix_cwd: Option<PathBuf>,
-
-        /// Extra instructions appended to the built-in autofix prompt.
-        #[arg(long)]
-        autofix_prompt_file: Option<PathBuf>,
-
-        /// Allowed roots for patched file paths (repeatable). If omitted, defaults to the repo root.
-        #[arg(long = "autofix-allow-path")]
-        autofix_allow_path: Vec<PathBuf>,
     },
 
     /// Update an installed package to the version pinned by its current recipe

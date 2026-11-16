@@ -31,8 +31,8 @@ Read these instead of copies here; each fact has one home:
   many times). No feature may call a language model or start an agent, in the
   engine, in a recipe helper, or in anything that runs Recipe: no autofix, no
   "ask an agent", no automatic repair or rewriting of recipes. A failure is
-  reported; what the user does with it is theirs. The existing `--autofix` and
-  `src/llm` are to be removed, not extended
+  reported; what the user does with it is theirs. `--autofix`, `src/llm` and
+  `src/core/autofix` were removed on 2026-11-16; nothing replaces them
   (`docs/next-recipe-format-plan.md`, section 2, requirement 9; phase A1).
 
 - Lifecycle: `is_installed` → `is_built` → `is_acquired` checks decide which of
@@ -62,7 +62,6 @@ src/
 ├── worker/                        protocol + in-domain worker
 ├── core/                          engine: invocation, lifecycle, deps, events, output
 ├── helpers/                       Rhai-facing helpers
-├── llm/, core/autofix/            LLM providers and coordinator autofix
 └── domain.rs, failure.rs, diagnostics.rs, process.rs, fsx.rs, image.rs   shared leaves
 ```
 

@@ -1,5 +1,7 @@
 # Untangle log
 
+Note (2026-11-16): `llm/`, `core/autofix/` and `--autofix` were removed; entries below that mention them describe code that no longer exists.
+
 ## Scope
 
 - Target: the `levitate-recipe` crate in `tools/recipe` only (`src/`, `tests/`, bin targets, and the crate's own docs/examples/scripts). Callers in the LevitateOS superproject (xtask, distro-builder, distro-builder/recipes) are out of scope; links to them are recorded only as cross-boundary notes.

@@ -45,6 +45,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that `recab copy` wiped; `installed` and `isinstalled` say which software is
   in the booted root and which in the other root.
 
+### Removed
+
+- `recipe install --autofix` and its options, `--llm-profile`, `recipe/llm.toml` and the
+  LLM providers were removed; Recipe never asks an AI.
+
 ### Fixed
 
 - Tar hardlink members extract relative to the destination.
