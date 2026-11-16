@@ -257,6 +257,7 @@ fn run_inner(
 
     let request = crate::worker::protocol::RequestPayload {
         invocation_id: invocation_id.clone(),
+        recipe_name: prepared.declaration.name().to_owned(),
         operation,
         persist_state,
         options: options.clone(),

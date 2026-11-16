@@ -28,7 +28,8 @@ pub(crate) struct Loaded<'e> {
     /// Canonical identity (checkpoints and saved state are keyed by it).
     pub path: PathBuf,
     pub base_path: Option<PathBuf>,
-    /// `PACKAGE.name`, else the file name (docs/recipe-format.md, decision 3).
+    /// The recipe's name, its file name without `.rhai` (equal to
+    /// `PACKAGE.name`, docs/recipe-format.md, decision 3).
     pub name: String,
     pub runtime: Runtime<'e>,
     pub declaration: crate::needs::Declaration,
@@ -36,6 +37,9 @@ pub(crate) struct Loaded<'e> {
 
 /// What [`with_recipe`] needs besides the recipe itself.
 pub(crate) struct Load<'x> {
+    /// The recipe's name as the coordinator read it from the real file (the
+    /// request's `recipe_name`); the staged file is `main.rhai`.
+    pub name: &'x str,
     pub search_path: Option<&'x Path>,
     /// A fresh worker engine with its helpers and module resolver.
     pub make_engine: &'x dyn Fn() -> Engine,
@@ -55,7 +59,7 @@ pub(crate) fn with_recipe<T>(
     load: &Load<'_>,
     f: impl FnOnce(&mut Loaded<'_>) -> Result<T, EngineError>,
 ) -> Result<T, EngineError> {
-    let declaration = crate::needs::declaration(recipe, load.search_path)?;
+    let declaration = crate::needs::declaration_named(recipe, load.name, load.search_path)?;
     // Literal constants come from the source as written: the optimizer of
     // the worker's engine would fold a computed constant into a literal.
     let plain = compile_recipe(&compile_engine(), recipe, load.search_path)?;

@@ -433,7 +433,27 @@ impl Declaration {
 /// Inspect source declarations only, including the same base/child code the
 /// worker compiles. Every executable child owns its explicit NEEDS declaration;
 /// the other declarations combine whole between base and child.
+///
+/// The recipe's name is its file name without `.rhai`. This is the one place
+/// a recipe's name is taken from its path; the worker, whose recipe is staged
+/// under another name, calls [`declaration_named`] with the name the
+/// coordinator read here.
 pub fn declaration(recipe: &Path, search_path: Option<&Path>) -> Result<Declaration> {
+    let name = recipe
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .context("the recipe's file name is not UTF-8")?
+        .to_owned();
+    declaration_named(recipe, &name, search_path)
+}
+
+/// [`declaration`] of the recipe file `recipe` whose name is `name`.
+pub(crate) fn declaration_named(
+    recipe: &Path,
+    name: &str,
+    search_path: Option<&Path>,
+) -> Result<Declaration> {
     ensure!(
         !std::fs::symlink_metadata(recipe)?.file_type().is_symlink(),
         "recipe must not be a symlink"
@@ -470,7 +490,7 @@ pub fn declaration(recipe: &Path, search_path: Option<&Path>) -> Result<Declarat
         }
     }
     let mut needs = needs.context("recipe must declare literal const NEEDS = #{...}")?;
-    let declared = crate::declarations::read(&compiled, &needs, search_path)?;
+    let declared = crate::declarations::read(&compiled, name, &needs, search_path)?;
     // A group declares only the budget of its other sources (0 when it has
     // none); Recipe adds the bytes of the pins in use (decision 9).
     if let Some(pins) = &declared.pins {

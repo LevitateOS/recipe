@@ -59,7 +59,8 @@ use serde::{Deserialize, Serialize};
 // cleanup, latest), the engine-placed outputs, the saved state, the
 // dependencies' outputs and the result's step statuses of transport 11
 // require a matching coordinator and worker.
-pub const PROTOCOL_VERSION: u32 = 11;
+// 12: the request carries the recipe's name (`recipe_name`).
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// Maximum total frame size in bytes (4 MiB), header included.
 pub const MAX_FRAME_LEN: usize = 4 * 1024 * 1024;
@@ -194,6 +195,7 @@ pub fn restored_state_budget(options: &InvocationOptions) -> Result<usize, Proto
     let name = |i: usize| format!("{i:0>width$}", width = crate::domain::MAX_NAME);
     let request = RequestPayload {
         invocation_id: "x".repeat(crate::domain::MAX_NAME),
+        recipe_name: "x".repeat(crate::domain::MAX_INPUT_NAME),
         operation: Operation::Install,
         persist_state: true,
         options: options.clone(),
@@ -220,6 +222,11 @@ pub const MAX_RESTORED_STATES: usize = 1024;
 pub struct RequestPayload {
     /// `[A-Za-z0-9_-]{1,64}`, e.g. `<recipe-name>-<unix-millis>-<pid>`.
     pub invocation_id: String,
+    /// The recipe's name, its file name without `.rhai`, as the coordinator
+    /// read it from the real file (`crate::needs::Declaration::name`). The
+    /// recipe is staged as [`crate::domain::MAIN_RECIPE`]; the worker reads
+    /// its declarations under this name, never under the staged file name.
+    pub recipe_name: String,
     /// Engine operation.
     pub operation: Operation,
     /// Caller persist flag (`--no-persist-state` negated).
@@ -817,6 +824,17 @@ fn check_request(p: &RequestPayload) -> Result<(), ProtocolError> {
     }
     if let Some(host) = &p.host {
         check_host(host)?;
+    }
+    if p.recipe_name.is_empty()
+        || p.recipe_name.len() > crate::domain::MAX_INPUT_NAME
+        || p.recipe_name.contains('/')
+        || p.recipe_name.chars().any(char::is_control)
+    {
+        return Err(ProtocolError::PayloadInvalid(format!(
+            "request recipe_name {:?} must be a file name of 1..={} B without `/` or control characters",
+            p.recipe_name,
+            crate::domain::MAX_INPUT_NAME
+        )));
     }
     if !crate::domain::valid_name(&p.invocation_id) {
         return Err(ProtocolError::PayloadInvalid(format!(

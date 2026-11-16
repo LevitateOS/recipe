@@ -62,6 +62,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A recipe that states `PACKAGE.name` no longer fails in the worker with
+  "the file is main.rhai": the coordinator sends the worker the recipe's name
+  (request `recipe_name`, transport 12), and the worker no longer takes it from
+  the staged `main.rhai`. Events and messages of a recipe without
+  `PACKAGE.name` name the recipe instead of `main`.
 - Tar hardlink members extract relative to the destination.
 - Zip symlink members extract as links; archive modes drop setuid/setgid/sticky.
 - `git apply` during autofix no longer writes to the CLI's JSON stdout.

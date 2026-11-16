@@ -275,9 +275,12 @@ pub(crate) fn check_form(compiled: &crate::core::executor::CompiledRecipe) -> Re
 }
 
 /// Read the declarations of a compiled recipe whose form [`check_form`]
-/// accepted. `needs` is its parsed `NEEDS`.
+/// accepted. `name` is the recipe's name, its file name without `.rhai`
+/// (given, not taken from `compiled.recipe_path`: in the worker the recipe
+/// is staged under another name); `needs` is its parsed `NEEDS`.
 pub(crate) fn read(
     compiled: &crate::core::executor::CompiledRecipe,
+    name: &str,
     needs: &Needs,
     search_path: Option<&Path>,
 ) -> Result<Declared> {
@@ -336,12 +339,6 @@ pub(crate) fn read(
         .collect();
     let has_build = defined.contains_key("build");
 
-    let stem = recipe
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .context("the recipe's file name is not UTF-8")?
-        .to_owned();
-
     let about = at("ABOUT")?;
     if let Some(about) = &about {
         check_about(about)?;
@@ -370,7 +367,7 @@ pub(crate) fn read(
         }
     };
 
-    let package = parse_package(at("PACKAGE")?, &stem, pins.as_ref(), needs)?;
+    let package = parse_package(at("PACKAGE")?, name, pins.as_ref(), needs)?;
 
     let sources = match at("SOURCES")? {
         Some(value) => parse_sources(value, needs)?,

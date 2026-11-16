@@ -27,7 +27,8 @@ macro_rules! input_modes_name {
 
 /// Read-only root holding every staged input.
 pub const INPUTS: &str = inputs_root!();
-/// Staged name of the invoked recipe.
+/// Staged name of the invoked recipe. It is not the recipe's name: the worker
+/// gets that from the request (`crate::worker::protocol::RequestPayload::recipe_name`).
 pub const MAIN_RECIPE_NAME: &str = main_recipe_name!();
 /// Domain path of the invoked recipe; also the identity of its saved state.
 pub const MAIN_RECIPE: &str = concat!(inputs_root!(), "/", main_recipe_name!());

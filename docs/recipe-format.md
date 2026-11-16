@@ -1638,7 +1638,10 @@ of the format.
   a `file` output takes exactly one `[from, ""]` entry; a pins file beside a
   recipe without `PACKAGES` is refused.
 - The pins file is staged at the recipe's domain name with `.pins` (`main.pins`
-  for the main recipe). A group whose `PACKAGES` lists are empty but whose pins
+  for the main recipe). The main recipe itself is staged as `main.rhai`; the
+  worker reads it under the name the coordinator sends (the request's
+  `recipe_name`, the real file name), so `PACKAGE.name` is checked against the
+  real file name and events name the recipe, not `main`. A group whose `PACKAGES` lists are empty but whose pins
   file has a section for that C library is a shared group filled by the
   generator (`desktop-libs`). A C library with no seeds has its key left out of
   `PACKAGES`.

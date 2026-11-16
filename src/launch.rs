@@ -412,6 +412,7 @@ fn run_domain_inner(
     let mut worker_started = false;
     let request = RequestPayload {
         invocation_id: invocation.clone(),
+        recipe_name: prepared.declaration.name().to_owned(),
         operation,
         persist_state,
         options: options.clone(),

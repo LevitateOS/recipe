@@ -170,10 +170,11 @@ pub fn run_worker() -> Result<()> {
         return send_result(&mut tx, &mut output, Err(failure));
     }
     crate::diagnostics::trace(&format!(
-        "worker: invocation={} operation={} persist_state={} recipe={}",
+        "worker: invocation={} operation={} persist_state={} recipe={} ({})",
         request.invocation_id,
         request.operation,
         request.persist_state,
+        request.recipe_name,
         crate::domain::MAIN_RECIPE
     ));
 
@@ -448,6 +449,7 @@ fn run_operation(
     let programs = req.host.is_none();
     let make_engine = || build_engine(&search_path, programs);
     let load = Load {
+        name: &req.recipe_name,
         search_path: Some(&search_path),
         make_engine: &make_engine,
         defines: &req.options.defines,
