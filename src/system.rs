@@ -1384,6 +1384,91 @@ pub fn write_receipt(root: &Path, receipt: &Receipt) -> Result<()> {
     Ok(())
 }
 
+/// The glibc dynamic loader whose presence makes a root a glibc root (the same
+/// test as the root effects recipe's `libc_of`).
+const GLIBC_LOADER: &str = "usr/lib64/ld-linux-x86-64.so.2";
+/// The musl loader: a root with it is never given glibc's ldconfig run.
+const MUSL_LOADER: &str = "lib/ld-musl-x86_64.so.1";
+/// Where a glibc root's own ldconfig is, in order.
+const LDCONFIG: [&str; 2] = ["usr/sbin/ldconfig", "usr/bin/ldconfig"];
+
+/// Rebuild the glibc library cache (`etc/ld.so.cache`) of the root at `root`
+/// after a system change, with that root's own `ldconfig`. The cache must be
+/// written inside the root, which the effects recipe sees only read-only, and
+/// a locked A/B root never runs `ldconfig.service`; without a cache the loader
+/// ignores `etc/ld.so.conf.d/`. Returns false, having run nothing, for a root
+/// that is not a glibc root (a musl root's `ldconfig` is another program and
+/// is never run), has no `etc/ld.so.conf`, or has no `ldconfig`.
+///
+/// Running a program of the target root as root is safe enough here: the root
+/// is the system itself, the program is this one fixed name found inside it
+/// (never a path from a recipe or the environment), and ldconfig only reads
+/// the root's library folders and writes its cache. `-r ROOT` prefixes every
+/// path with ROOT; `-X` writes the cache without creating or changing any
+/// soname link in folders packages own (such a link would be an unowned file
+/// a later package collides with); `-i` makes it not read the auxiliary
+/// cache under `var/cache/ldconfig`, so stale shared state there cannot
+/// decide what the new cache says (ldconfig may still write that file, as it
+/// does on any system).
+pub fn rebuild_library_cache(root: &Path) -> Result<bool> {
+    let has = |relative: &str| {
+        confined(root, relative, false).is_ok_and(|path| fs::symlink_metadata(path).is_ok())
+    };
+    if !has(GLIBC_LOADER) || has(MUSL_LOADER) || !has("etc/ld.so.conf") {
+        return Ok(false);
+    }
+    let root = fs::canonicalize(root).with_context(|| format!("reading {}", root.display()))?;
+    let mut program = None;
+    for relative in LDCONFIG {
+        let fd = match crate::fsx::open_in_root(&root, relative, libc::O_PATH) {
+            Ok(fd) => fd,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("opening /{relative} in {}", root.display()));
+            }
+        };
+        let metadata = fs::File::from(fd.try_clone()?).metadata()?;
+        if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+            continue;
+        }
+        // Where the descriptor's file is, which resolving in the root keeps
+        // inside the root.
+        use std::os::fd::AsRawFd;
+        let path = fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd()))?;
+        ensure!(
+            path.starts_with(&root),
+            "/{relative} of {} resolves to {}, outside it",
+            root.display(),
+            path.display()
+        );
+        program = Some(path);
+        break;
+    }
+    let Some(program) = program else {
+        return Ok(false);
+    };
+    let mut command = std::process::Command::new(&program);
+    command
+        .env_clear()
+        .current_dir("/")
+        .args(["-X", "-i", "-r"])
+        .arg(&root);
+    let finished = crate::process::Run::new(command)
+        .keep(crate::process::Keep::Tail(4096))
+        .deadline(std::time::Duration::from_secs(120))
+        .run()?;
+    ensure!(
+        finished.exit.success(),
+        "{} -X -i -r {} ended with {}: {}",
+        program.display(),
+        root.display(),
+        finished.exit,
+        String::from_utf8_lossy(&finished.tail).trim()
+    );
+    Ok(true)
+}
+
 /// Create the payloads' state seeds in `state_root` (whose `var/` is the
 /// system's `/var`: the root itself, or on an A/B system the running root,
 /// where the shared `/var` is mounted). A seed is made only where nothing

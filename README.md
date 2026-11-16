@@ -122,6 +122,17 @@ which package scripts would have rebuilt; the OS provides it. Its contract:
   last change without it). JSON `effects.status` is `done`, `none` (no effects
   recipe), `skipped`, `unchanged` (nothing was written) or `failed`.
 
+**Library cache.** After the effects, Recipe rebuilds the root's glibc library cache
+`/etc/ld.so.cache` itself, with or without `--no-effects`, because the cache must be
+written inside the root: it runs the root's own `ldconfig` (`usr/sbin` or `usr/bin`,
+found inside the root) as `ldconfig -X -i -r ROOT`, which writes the cache and
+changes no library links. It runs only for a glibc root (one with
+`/usr/lib64/ld-linux-x86-64.so.2`) that has `/etc/ld.so.conf`; a musl root (AcornOS)
+is left alone. The cache is the machine's file: no package or base owns it. A failure
+is reported like a failed effects run (JSON `effects.library_cache.status` `failed`,
+exit status nonzero) and does not undo the change; the next change rebuilds it. The
+other values are `done`, `none` (not such a root, or no `ldconfig`) and `unchanged`.
+
 **System releases.** `recipe --system [--root DIR] apply-release FOLDER` applies a
 fetched release (`docs/release-engineering.md` in LevitateOS; FOLDER holds
 `release.json`, `base.tar.zst`, `recipes.tar.zst`, as `recupdate fetch` leaves them)
@@ -136,7 +147,7 @@ checks both archives' size and SHA-256 against the manifest before anything chan
    edited under `etc/` kept with the release's version beside it as `NAME.recipe-new`
    (and not even that when the release did not change the file). The machine's own
    files (`etc/fstab`, `crypttab`, `hostname`, `machine-id`, `localtime`, `adjtime`,
-   `mtab`, `resolv.conf`, `subuid`, `subgid` and the account files) are never the
+   `mtab`, `resolv.conf`, `subuid`, `subgid`, `ld.so.cache` and the account files) are never the
    base's. The release's accounts the root lacks are created with the release's ids
    where free (the users made at installation stay); file owners are resolved by
    name. A file no package owns where the release now has one (made by the
@@ -152,7 +163,7 @@ checks both archives' size and SHA-256 against the manifest before anything chan
    the receipt records, and the release source of every later command. Only a base
    without that folder has `recipes.tar.zst` unpacked under
    `/var/lib/recipe/release/SERIAL/` for the apply, removed at its end.
-3. The effects run once.
+3. The effects run once, and the library cache is rebuilt.
 
 `base` is shown by `installed --json` with `version` and `serial`, not in the human
 list; it cannot be installed, updated or removed. A root without `base` was installed

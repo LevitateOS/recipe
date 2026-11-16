@@ -54,8 +54,10 @@ pub const RECIPES_ARCHIVE: &str = "recipes.tar.zst";
 /// Files the installation makes for this one machine (or keeps up to date
 /// for it). They are never part of `base`: an update does not record, write
 /// or compare them, whatever the archive carries. The account files are
-/// added to instead ([`account_lines`]).
-pub const MACHINE_FILES: [&str; 14] = [
+/// added to instead ([`account_lines`]). `etc/ld.so.cache` is the root's
+/// library cache, which Recipe rebuilds after every system change
+/// ([`system::rebuild_library_cache`]): no package or base owns it.
+pub const MACHINE_FILES: [&str; 15] = [
     "etc/fstab",
     "etc/crypttab",
     "etc/passwd",
@@ -70,6 +72,7 @@ pub const MACHINE_FILES: [&str; 14] = [
     "etc/adjtime",
     "etc/mtab",
     "etc/resolv.conf",
+    "etc/ld.so.cache",
 ];
 
 /// Top-level paths that are not the base's: mount points, shared state and

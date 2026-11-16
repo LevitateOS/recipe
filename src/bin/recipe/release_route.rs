@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 
 use super::cli::Cli;
 use super::system_route::{
-    Effects, Roots, effects, finish, immutable, load_record, now, pending_json, producer_args,
+    Roots, effects, finish, immutable, load_record, now, pending_json, producer_args,
     roots, save_record, settle, tell, timed, write_into,
 };
 
@@ -455,7 +455,7 @@ fn apply(cli: &mut Cli, folder: &Path) -> Result<()> {
     }
     let merged = super::system_route::Written::merge(written);
     let updated: Vec<String> = merged.expects.keys().cloned().collect();
-    let done = failed.is_empty() && !matches!(effects, Effects::Failed(_));
+    let done = failed.is_empty() && !effects.failed();
     if running && done {
         let _ = std::fs::remove_file(&progress);
     }

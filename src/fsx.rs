@@ -223,6 +223,36 @@ pub(crate) fn list_at(dir: BorrowedFd<'_>) -> std::io::Result<Vec<CString>> {
     result.map(|()| names)
 }
 
+/// Open `relative` inside the directory `root` as if `root` were `/`:
+/// `openat2(RESOLVE_IN_ROOT | RESOLVE_NO_MAGICLINKS)`, so every link on the
+/// way, absolute or with `..`, is resolved against `root` and never leads out
+/// of it. For a root that is a whole system (a system change's target), whose
+/// own links say where its files are.
+pub(crate) fn open_in_root(
+    root: &Path,
+    relative: &str,
+    flags: libc::c_int,
+) -> std::io::Result<OwnedFd> {
+    let dir = open_dir(root)?;
+    let name = cstring(relative.as_bytes())?;
+    let mut how: libc::open_how = unsafe { std::mem::zeroed() };
+    how.flags = (flags | libc::O_CLOEXEC) as u64;
+    how.resolve = libc::RESOLVE_IN_ROOT | libc::RESOLVE_NO_MAGICLINKS;
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            &how as *const libc::open_how,
+            std::mem::size_of::<libc::open_how>(),
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { OwnedFd::from_raw_fd(fd as libc::c_int) })
+}
+
 /// The target of the link an `O_PATH | O_NOFOLLOW` descriptor names.
 pub(crate) fn read_link_fd(link: BorrowedFd<'_>) -> std::io::Result<PathBuf> {
     let mut buffer = vec![0u8; libc::PATH_MAX as usize];

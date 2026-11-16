@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- After every system change to a root (`--system install`, `update`, `remove`,
+  `apply-release`, and a part written again after `recab copy`), Recipe rebuilds
+  the root's glibc library cache `/etc/ld.so.cache` with the root's own
+  `ldconfig -X -i -r ROOT`, with or without `--no-effects`; a musl root is left
+  alone. JSON `effects.library_cache`; a failure is reported and keeps the change.
+  `etc/ld.so.cache` is a machine file, never part of `base`.
 - `ABOUT.libc` (a list from `"glibc"` and `"musl"`) names the C libraries a
   recipe's build works with, and `RUNTIME.host.libc` gives the C library of the
   system the package is installed on, decided from its dynamic loaders (`"unknown"`

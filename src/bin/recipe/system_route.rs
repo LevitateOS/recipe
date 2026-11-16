@@ -210,6 +210,7 @@ pub(super) fn settle(
     let booted = system::read_receipt(&roots.booted)?;
     let mut failed = Vec::new();
     let mut kept = Vec::new();
+    let mut rewrote = false;
     for change in std::mem::take(&mut record.changes) {
         let other = system::read_receipt(&roots.other)?;
         if Some(change.package.as_str()) == skip {
@@ -233,7 +234,10 @@ pub(super) fn settle(
                         .map(|(done, _)| done)
                 };
                 match again {
-                    Ok(done) => kept.push(done),
+                    Ok(done) => {
+                        rewrote = true;
+                        kept.push(done);
+                    }
                     Err(e) => {
                         failed.push((change.package.clone(), format!("{e:#}")));
                         kept.push(change);
@@ -244,6 +248,13 @@ pub(super) fn settle(
     }
     record.changes = kept;
     save_record(&record)?;
+    // The copy brought the running root's library cache, or none: the root
+    // the parts were written into again gets its own.
+    if rewrote && let Cache::Failed(error) = Cache::of(&roots.other) {
+        eprintln!(
+            "recipe: warning: the system parts are written again, but rebuilding the other root's library cache (/{LIBRARY_CACHE}) with its own ldconfig failed: {error}\nThe next system change runs it again."
+        );
+    }
     Ok(failed)
 }
 
@@ -1009,7 +1020,7 @@ fn change(cli: &Cli, roots: &Roots, booted: &Receipt, recipe: &Path) -> Result<(
             serde_json::json!({"action": "update", "package": name, "changed": false,
                 "not_in_release": true, "reason": why, "other_root": roots.other_name,
                 "other_mount": roots.other, "running_root": roots.booted_name,
-                "effects": Effects::Unchanged.json(), "present": [], "kept_config": [],
+                "effects": Effects::unchanged().json(), "present": [], "kept_config": [],
                 "new_config_beside": [], "accounts_created": [], "var_seeded": []}),
             why,
         );
@@ -1061,7 +1072,7 @@ fn change(cli: &Cli, roots: &Roots, booted: &Receipt, recipe: &Path) -> Result<(
     let effects = if action == "remove" || !all_names.is_empty() {
         effects(cli, &roots.other)
     } else {
-        Effects::Unchanged
+        Effects::unchanged()
     };
     let after = system::read_receipt(&roots.other)?;
     let mut value = serde_json::json!({"action": action, "package": done.package, "packages": all_names,
@@ -1247,7 +1258,7 @@ fn root_route(cli: &Cli, dir: &Path, kind: &str, recipe: Option<PathBuf>) -> Res
             cli,
             serde_json::json!({"action": "update", "package": name, "changed": false,
                 "not_in_release": true, "reason": why, "packages": [], "root": root,
-                "receipt": root.join(system::RECEIPT), "effects": Effects::Unchanged.json(), "present": [], "kept_config": [],
+                "receipt": root.join(system::RECEIPT), "effects": Effects::unchanged().json(), "present": [], "kept_config": [],
                 "new_config_beside": [], "accounts_created": [], "var_seeded": []}),
             why,
         );
@@ -1271,7 +1282,7 @@ fn root_route(cli: &Cli, dir: &Path, kind: &str, recipe: Option<PathBuf>) -> Res
     let effects = if changed {
         effects(cli, &root)
     } else {
-        Effects::Unchanged
+        Effects::unchanged()
     };
     let first = all[0].name.clone();
     let after = system::read_receipt(&root)?;
@@ -1331,8 +1342,15 @@ fn base_refusal(verb: &str) -> String {
     )
 }
 
+/// What ran after a system change to a root: its effects recipe, then its
+/// library cache.
+pub(super) struct Effects {
+    recipe: Run,
+    cache: Cache,
+}
+
 /// What running the root's effects recipe did.
-pub(super) enum Effects {
+enum Run {
     /// Nothing changed, so nothing ran.
     Unchanged,
     /// `--no-effects`.
@@ -1345,42 +1363,117 @@ pub(super) enum Effects {
     Failed(String),
 }
 
+/// What rebuilding the root's glibc library cache (`etc/ld.so.cache`) did.
+enum Cache {
+    /// Nothing changed, so nothing ran.
+    Unchanged,
+    /// Not a glibc root with `etc/ld.so.conf` and its own `ldconfig`.
+    None,
+    Done,
+    /// It failed; the change itself stays written.
+    Failed(String),
+}
+
 impl Effects {
-    pub(super) fn json(&self) -> serde_json::Value {
-        match self {
-            Effects::Unchanged => serde_json::json!({"status": "unchanged"}),
-            Effects::Skipped => serde_json::json!({"status": "skipped"}),
-            Effects::None => serde_json::json!({"status": "none", "recipe": EFFECTS_RECIPE}),
-            Effects::Done(files) => serde_json::json!({"status": "done", "recipe": EFFECTS_RECIPE,
-                "package": EFFECTS_PACKAGE, "files": files}),
-            Effects::Failed(error) => {
-                serde_json::json!({"status": "failed", "recipe": EFFECTS_RECIPE,
-                "error": error})
-            }
+    /// Nothing was written, so nothing ran.
+    pub(super) fn unchanged() -> Self {
+        Effects {
+            recipe: Run::Unchanged,
+            cache: Cache::Unchanged,
         }
     }
 
+    pub(super) fn failed(&self) -> bool {
+        matches!(self.recipe, Run::Failed(_)) || matches!(self.cache, Cache::Failed(_))
+    }
+
+    pub(super) fn json(&self) -> serde_json::Value {
+        let mut value = match &self.recipe {
+            Run::Unchanged => serde_json::json!({"status": "unchanged"}),
+            Run::Skipped => serde_json::json!({"status": "skipped"}),
+            Run::None => serde_json::json!({"status": "none", "recipe": EFFECTS_RECIPE}),
+            Run::Done(files) => serde_json::json!({"status": "done", "recipe": EFFECTS_RECIPE,
+                "package": EFFECTS_PACKAGE, "files": files}),
+            Run::Failed(error) => {
+                serde_json::json!({"status": "failed", "recipe": EFFECTS_RECIPE,
+                "error": error})
+            }
+        };
+        value["library_cache"] = self.cache.json();
+        value
+    }
+
     pub(super) fn result(self) -> Result<()> {
+        let mut failures = Vec::new();
+        if let Run::Failed(error) = &self.recipe {
+            failures.push(format!(
+                "rebuilding the root's caches with /{EFFECTS_RECIPE} failed: {error}"
+            ));
+        }
+        if let Cache::Failed(error) = &self.cache {
+            failures.push(format!(
+                "rebuilding the root's library cache (/{LIBRARY_CACHE}) with its own ldconfig failed: {error}"
+            ));
+        }
+        anyhow::ensure!(
+            failures.is_empty(),
+            "the system change is written, but {}\nThe next system change runs it again.",
+            failures.join("; and ")
+        );
+        Ok(())
+    }
+}
+
+/// The root's library cache, which Recipe rebuilds itself after every system
+/// change ([`system::rebuild_library_cache`]).
+const LIBRARY_CACHE: &str = "etc/ld.so.cache";
+
+impl Cache {
+    fn of(root: &Path) -> Cache {
+        match system::rebuild_library_cache(root) {
+            Ok(true) => Cache::Done,
+            Ok(false) => Cache::None,
+            Err(error) => Cache::Failed(format!("{error:#}")),
+        }
+    }
+
+    fn json(&self) -> serde_json::Value {
         match self {
-            Effects::Failed(error) => anyhow::bail!(
-                "the system change is written, but rebuilding the root's caches with /{EFFECTS_RECIPE} failed: {error}\nThe next system change runs it again."
-            ),
-            _ => Ok(()),
+            Cache::Unchanged => serde_json::json!({"status": "unchanged"}),
+            Cache::None => serde_json::json!({"status": "none"}),
+            Cache::Done => serde_json::json!({"status": "done", "path": LIBRARY_CACHE}),
+            Cache::Failed(error) => {
+                serde_json::json!({"status": "failed", "path": LIBRARY_CACHE, "error": error})
+            }
         }
     }
 }
 
-/// After a system change to `root`: run the root's effects recipe
-/// (`usr/lib/recipe/effects.rhai`), if it has one, with the root as its
-/// read-only input `root`, and write its `system` output into the root as the
-/// reserved package `system-effects`, replacing that package's previous files.
+/// After a system change to `root`: run the root's effects recipe (unless
+/// `--no-effects`), then rebuild the root's glibc library cache. The cache is
+/// rebuilt with or without `--no-effects`: that option defers the effects
+/// recipe to a caller's last change, and the cache is not part of that
+/// recipe; it takes a moment, and every change leaves the root's libraries
+/// findable.
 pub(super) fn effects(cli: &Cli, root: &Path) -> Effects {
+    let recipe = effects_recipe(cli, root);
+    Effects {
+        recipe,
+        cache: Cache::of(root),
+    }
+}
+
+/// Run the root's effects recipe (`usr/lib/recipe/effects.rhai`), if it has
+/// one, with the root as its read-only input `root`, and write its `system`
+/// output into the root as the reserved package `system-effects`, replacing
+/// that package's previous files.
+fn effects_recipe(cli: &Cli, root: &Path) -> Run {
     if cli.no_effects {
-        return Effects::Skipped;
+        return Run::Skipped;
     }
     let recipe = root.join(EFFECTS_RECIPE);
     if !std::fs::symlink_metadata(&recipe).is_ok_and(|m| m.is_file()) {
-        return Effects::None;
+        return Run::None;
     }
     eprintln!("Rebuilding the root's caches with /{EFFECTS_RECIPE}...");
     let run = || -> Result<usize> {
@@ -1410,8 +1503,8 @@ pub(super) fn effects(cli: &Cli, root: &Path) -> Effects {
         applied
     };
     match run() {
-        Ok(files) => Effects::Done(files),
-        Err(error) => Effects::Failed(format!("{error:#}")),
+        Ok(files) => Run::Done(files),
+        Err(error) => Run::Failed(format!("{error:#}")),
     }
 }
 
