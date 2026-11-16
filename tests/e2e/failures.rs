@@ -115,11 +115,17 @@ fn build(src, out) { write_file(out, "event payload"); }
     assert_success(&output);
     let error = String::from_utf8_lossy(&output.stderr);
     let events = events_of(&error);
+    // The run's plan names every recipe in order; each recipe's own plan
+    // repeats its steps when it starts.
+    let run_plan = events
+        .iter()
+        .find(|event| event["event"] == "plan" && event["recipes"].is_array())
+        .unwrap_or_else(|| panic!("no plan event for the run: {error}"));
+    assert_eq!(run_plan["recipes"][0]["name"], "events", "{error}");
     let plan = events
         .iter()
-        .find(|event| event["event"] == "plan")
-        .unwrap_or_else(|| panic!("no plan event: {error}"));
-    assert_eq!(plan["recipe"], "events");
+        .find(|event| event["event"] == "plan" && event["recipe"] == "events")
+        .unwrap_or_else(|| panic!("no plan event for the recipe: {error}"));
     assert_eq!(
         plan["steps"],
         serde_json::json!(["build", "install", "cleanup"])

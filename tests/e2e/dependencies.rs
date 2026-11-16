@@ -168,7 +168,7 @@ fn build(src, out) {}
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Recipe must declare const RECIPE_API = 1"),
+        stderr.contains("a recipe starts with `const RECIPE_API = 1;`"),
         "{stderr}"
     );
     assert!(!stderr.contains("UNEXPECTED_DEPENDENCY_SETUP"), "{stderr}");

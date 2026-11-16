@@ -447,6 +447,7 @@ pub fn declaration(recipe: &Path, search_path: Option<&Path>) -> Result<Declarat
     );
     let engine = crate::core::invocation::compile_engine();
     let compiled = crate::core::executor::compile_recipe(&engine, &recipe, search_path)?;
+    crate::declarations::check_form(&compiled)?;
     let ast = &compiled.source_ast;
     let mut needs = None;
     let mut budget_declared = false;

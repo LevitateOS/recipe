@@ -75,7 +75,9 @@ fn cli_missing_or_mismatched_root_image_fails_before_recipe_setup() {
         .output()
         .unwrap();
     assert!(!missing.status.success());
-    assert!(String::from_utf8_lossy(&missing.stderr).contains("cannot open Ginux rootfs image"));
+    assert!(
+        String::from_utf8_lossy(&missing.stderr).contains("cannot open the Ginux rootfs image")
+    );
     image_tar(
         &archive,
         &[("etc/fact", tar::EntryType::Regular, "image fact")],

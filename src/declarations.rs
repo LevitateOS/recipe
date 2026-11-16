@@ -252,22 +252,40 @@ struct Binding<'a> {
     line: Option<usize>,
 }
 
-/// Read the declarations of a compiled recipe. `needs` is its parsed `NEEDS`.
+/// The recipe file and its base, each with its own AST.
+fn files(compiled: &crate::core::executor::CompiledRecipe) -> Vec<(&Path, &AST)> {
+    let mut files: Vec<(&Path, &AST)> =
+        vec![(compiled.recipe_path.as_path(), &compiled.source_ast)];
+    if let (Some(base), Some(ast)) = (&compiled.base_path, &compiled.base_ast) {
+        files.push((base.as_path(), ast));
+    }
+    files
+}
+
+/// The form every recipe and base must have before anything else is read
+/// from it: `const RECIPE_API = 1;` first, and none of the old forms
+/// (section 1). Checked before `NEEDS`, so a recipe in an old form is
+/// refused with the line to change, not with a missing declaration.
+pub(crate) fn check_form(compiled: &crate::core::executor::CompiledRecipe) -> Result<()> {
+    for (path, ast) in files(compiled) {
+        check_api(path, ast)?;
+        check_old_forms(path, ast)?;
+    }
+    Ok(())
+}
+
+/// Read the declarations of a compiled recipe whose form [`check_form`]
+/// accepted. `needs` is its parsed `NEEDS`.
 pub(crate) fn read(
     compiled: &crate::core::executor::CompiledRecipe,
     needs: &Needs,
     search_path: Option<&Path>,
 ) -> Result<Declared> {
     let recipe = &compiled.recipe_path;
-    let mut files: Vec<(&Path, &AST)> = vec![(recipe.as_path(), &compiled.source_ast)];
-    if let (Some(base), Some(ast)) = (&compiled.base_path, &compiled.base_ast) {
-        files.push((base.as_path(), ast));
-    }
+    let files = files(compiled);
     let mut child = BTreeMap::new();
     let mut base = BTreeMap::new();
     for (index, (path, ast)) in files.iter().enumerate() {
-        check_api(path, ast)?;
-        check_old_forms(path, ast)?;
         let bindings = top_level(path, ast)?;
         if index == 0 {
             child = bindings;

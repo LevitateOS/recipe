@@ -85,7 +85,10 @@ fn test_cli_state_after_build_is_built_and_after_install_is_installed() {
     let source = r#"const RECIPE_API = 1;
 const NEEDS = #{ outputs: #{ "package": "directory" } };
 const PACKAGE = #{ version: "2.0.0" };
-fn build(src, out) { write_file(join_path(out, "marker"), "built"); }
+fn build(src, out) {
+    mkdir(join_path(out, "share"));
+    write_file(join_path(out, "share/marker"), "built");
+}
 "#;
     write_recipe(&recipes, "stateful", source);
     let built = run_recipe(&["build", "stateful"], &recipes);

@@ -9,14 +9,17 @@ fn cli_optional_cleanup_preserves_installed_program() {
         r#"const RECIPE_API = 1;
 const NEEDS = #{ outputs: #{ "package": "directory" } };
 const PACKAGE = #{ version: "1.0.0" };
-fn build(src, out) { write_file(join_path(out, "tool"), "installed"); }
+fn build(src, out) {
+    mkdir(join_path(out, "share"));
+    write_file(join_path(out, "share/tool"), "installed");
+}
 "#,
     );
     let output = run_recipe(&["install", "tool"], &recipes);
     assert_success(&output);
     let installed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let tool =
-        std::path::PathBuf::from(installed["outputs"]["package"].as_str().unwrap()).join("tool");
+    let tool = std::path::PathBuf::from(installed["outputs"]["package"].as_str().unwrap())
+        .join("share/tool");
     for flags in [vec![], vec!["--downloads"], vec!["--build"]] {
         let mut args = vec!["cleanup", "tool"];
         args.extend(flags);

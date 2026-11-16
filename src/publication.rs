@@ -580,10 +580,12 @@ pub(crate) fn tree_bytes(path: &Path) -> u64 {
 
 /// The lock that tells publications in use from orphans: every process that
 /// publishes (or consumes publications, `crate::state::hold_publications`)
-/// holds `exports/.lock` shared until it exits; [`remove_orphans`] takes it
-/// exclusively, so it never deletes what a running invocation made or still
-/// reads.
-const HOLD: &str = ".lock";
+/// holds `exports.lock` (beside `exports`, which holds only publications)
+/// shared until it exits; [`remove_orphans`] takes it exclusively, so it
+/// never deletes what a running invocation made or still reads.
+fn hold_lock(base: &Path) -> PathBuf {
+    base.with_file_name("exports.lock")
+}
 
 static HELD: std::sync::Mutex<Vec<(PathBuf, File)>> = std::sync::Mutex::new(Vec::new());
 
@@ -594,7 +596,7 @@ pub(crate) fn hold(base: &Path) -> Result<()> {
     if held.iter().any(|(path, _)| path == base) {
         return Ok(());
     }
-    let lock = crate::fsx::open_lease(&base.join(HOLD), true)?;
+    let lock = crate::fsx::open_lease(&hold_lock(base), true)?;
     lock.lock_shared()
         .context("cannot hold the published outputs")?;
     held.push((base.to_path_buf(), lock));
@@ -635,7 +637,7 @@ pub(crate) fn remove_orphans(root: &Path) -> u64 {
     if !base.is_dir() {
         return 0;
     }
-    let lock = match crate::fsx::open_lease(&base.join(HOLD), true) {
+    let lock = match crate::fsx::open_lease(&hold_lock(&base), true) {
         Ok(lock) => lock,
         Err(error) => {
             crate::diagnostics::diag!(

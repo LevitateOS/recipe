@@ -547,7 +547,9 @@ fn build(src, out) {{
 "#
         ),
     );
-    let command = |operation: &str, online: bool| {
+    // The same options for every run: the network grant is part of a
+    // result's identity, so a run with other grants would not reuse it.
+    let command = |operation: &str| {
         let mut command = recipe_command(&recipes);
         command
             .args([operation, "cached", "--keep", "--recipes-path"])
@@ -556,19 +558,15 @@ fn build(src, out) {{
             .arg(dir.path().join("destination"))
             .arg("--state-dir")
             .arg(dir.path().join("retained"))
+            .args(["--network-host", endpoint])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if online {
-            command.args(["--network-host", endpoint]);
-        } else {
-            command.arg("--no-network");
-        }
         command
     };
     // Two builds race for the one destination; the second finds the first's
     // kept result, so the server answers a single request.
-    let first = command("build", true).spawn().unwrap();
-    let second = command("build", true).spawn().unwrap();
+    let first = command("build").spawn().unwrap();
+    let second = command("build").spawn().unwrap();
     let first = first.wait_with_output().unwrap();
     let second = second.wait_with_output().unwrap();
     assert_success(&first);
@@ -579,8 +577,9 @@ fn build(src, out) {{
         assert_eq!(result["state"], "built");
         assert_eq!(result["kept"], true);
     }
-    // The kept result is installed without the network.
-    let offline = command("install", false).output().unwrap();
+    // The server has closed: the kept result is installed without fetching
+    // again (a second fetch cannot succeed).
+    let offline = command("install").output().unwrap();
     assert_success(&offline);
     let result: serde_json::Value = serde_json::from_slice(&offline.stdout).unwrap();
     assert_eq!(result["state"], "installed");

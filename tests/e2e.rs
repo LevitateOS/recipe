@@ -66,7 +66,10 @@ fn recipe_command(recipes: &Path) -> Command {
 }
 
 /// The CLI with the default `--execution auto`: a recipe that starts no
-/// program runs on the host.
+/// program runs on the host. The package root is the fixture's own, the one
+/// an unprivileged run takes from `XDG_DATA_HOME`: a root run (the managed CI
+/// job) would otherwise share the computer's `/var/lib/recipe` with every
+/// other case.
 fn host_command(recipes: &Path) -> Command {
     let root = recipes
         .parent()
@@ -77,7 +80,9 @@ fn host_command(recipes: &Path) -> Command {
         .env("XDG_DATA_HOME", root.join("data"))
         .env("XDG_STATE_HOME", root.join("state"))
         .env("XDG_CONFIG_HOME", root.join("config"))
-        .env("XDG_CACHE_HOME", root.join("cache"));
+        .env("XDG_CACHE_HOME", root.join("cache"))
+        .arg("--package-root")
+        .arg(root.join("data/recipe"));
     command
 }
 

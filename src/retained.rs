@@ -138,7 +138,9 @@ impl Record {
         if !valid_folder {
             bail!("invalid saved archive name");
         }
-        let outputs_valid = (self.reached == Reached::Built) != self.outputs.is_empty()
+        // Only a finished result names outputs; a recipe that declares none
+        // keeps a finished result without them.
+        let outputs_valid = (self.reached == Reached::Built || self.outputs.is_empty())
             && self.outputs.len() <= crate::worker::protocol::MAX_OUTPUTS
             && self.outputs.iter().all(|(name, path)| {
                 crate::domain::valid_name(name) && *path == crate::domain::output_path(name)
