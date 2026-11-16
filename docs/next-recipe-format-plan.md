@@ -192,6 +192,19 @@ What follows from it:
   unless the user chose to keep the material, and the user can run it alone
   at any time, for one program or for everything.
 
+The app's page for a program (the owner, 2026-11-16):
+
+- It shows the program's state and two main buttons: "Install" (or "Update")
+  and "Remove".
+- The single steps are hidden behind a link, "One step at a time". Opened, it
+  shows download, build, install and clean up, each with its own button, what
+  it holds on disk, and a way to remove just that part.
+- A recipe that compiles nothing shows no build step.
+- Two different marks, never mixed up: "Update" (the fetched recipe names a
+  newer version; one press installs it) and "Newer upstream" (the recipe does
+  not name it yet; nothing to press, see section 0d).
+- No Updates page: the installed list shows both marks per program.
+
 Where this lands: step 1 names the commands and the states; step 2d builds
 them into the engine (it owns what is done and what is kept); step 3c builds
 the buttons, the state and the Storage rows into the app.
