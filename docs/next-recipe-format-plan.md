@@ -105,8 +105,13 @@ Requirements:
    store, `recipe storage --clear-earlier`, the "Go back" button and the
    "earlier versions" numbers in the app. A program is installed or it is not;
    updating replaces it. The feature was added on 2026-11-10 for the app and
-   has never run on an installed system. "Keep at this version" (`hold`) is a
-   separate feature, keeps no copies, and is not decided here.
+   has never run on an installed system.
+
+Open, raised by the owner on 2026-11-16: "Keep at this version" (`recipe
+hold`/`unhold`). Nothing updates a program by itself, so keeping a version is
+what happens anyway. The feature exists for one reason only: the app's
+"Update all" button, which updates every program at once, and `hold` exempts
+a program from it. Whether `hold` goes depends on whether "Update all" stays.
 
 The cost, accepted by the owner's model: updating or reinstalling a program
 downloads and builds it again.
@@ -135,6 +140,7 @@ app shows it.
 | only uninstall | `recipe remove` | stays, and frees the space |
 | only remove what was downloaded | not possible (`recipe cleanup` does nothing for catalog recipes) | a command and a button |
 | only remove what was built | not possible | a command and a button |
+| only clean up (remove what was downloaded and what was built, in one action) | `recipe cleanup` exists but only calls a recipe's own function, which no catalog recipe has | a step of its own: a command and a button |
 
 Surveyed on 2026-11-16: Recipe has `install`, `update`, `remove`, `cleanup`
 and the three checks `isacquired`, `isbuilt`, `isinstalled`. It has no command
@@ -155,6 +161,10 @@ What follows from it:
 - The Storage page lists what is downloaded and what is built but not
   installed, each with its size and a way to remove it.
 - One click still installs: "Install" does every step that is missing.
+- Clean-up is a step like the others: download, build, install, clean up.
+  It runs by itself after a successful install (section 0b, requirement 1)
+  unless the user chose to keep the material, and the user can run it alone
+  at any time, for one program or for everything.
 
 Where this lands: step 1 names the commands and the states; step 2d builds
 them into the engine (it owns what is done and what is kept); step 3c builds
