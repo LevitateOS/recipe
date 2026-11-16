@@ -1,3 +1,5 @@
+> **Superseded 2026-11-16** by [recipe-format.md](recipe-format.md) (API 1). This note describes the old recipe format (`ctx`, `RUNTIME`, the hooks) as current; it is kept as history and is not the reference.
+
 # Supported execution boundaries
 
 The current configured contract targets Linux/x86-64. macOS and other native

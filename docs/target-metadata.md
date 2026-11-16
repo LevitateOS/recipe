@@ -1,3 +1,5 @@
+> **Superseded 2026-11-16** by [recipe-format.md](recipe-format.md) (API 1). This note describes the old recipe format (`ctx`, `RUNTIME`, the hooks) as current; it is kept as history and is not the reference.
+
 # Target filesystem metadata
 
 A rootfs producer builds readable, writable staging files in Ginux. Staging
