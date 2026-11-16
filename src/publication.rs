@@ -8,7 +8,6 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use serde_json::Value;
 
 /// Set by a system change for the producer it starts: its published outputs
 /// are consumed and deleted at once, so publication does not flush them.
@@ -21,14 +20,11 @@ impl Drop for Staging {
     }
 }
 
-/// The named outputs of `context`, as relative export paths, checked.
-fn selected_outputs(context: &Value) -> Result<Option<BTreeMap<String, String>>> {
-    let Some(outputs) = context.get("outputs") else {
-        return Ok(None);
-    };
-    let outputs = outputs
-        .as_object()
-        .context("named outputs must be an object")?;
+/// The outputs a worker named (each declared name to its engine-placed
+/// domain path), as relative export paths, checked.
+fn selected_outputs(
+    outputs: &BTreeMap<String, String>,
+) -> Result<Option<BTreeMap<String, String>>> {
     if outputs.is_empty() {
         return Ok(None);
     }
@@ -36,11 +32,10 @@ fn selected_outputs(context: &Value) -> Result<Option<BTreeMap<String, String>>>
         bail!("too many named outputs");
     }
     let mut selected = BTreeMap::new();
-    for (name, value) in outputs {
+    for (name, path) in outputs {
         if !crate::domain::valid_name(name) {
             bail!("invalid output name {name:?}");
         }
-        let path = value.as_str().context("output paths must be strings")?;
         let relative = path
             .strip_prefix('/')
             .context("output path must be absolute")?;
@@ -50,11 +45,15 @@ fn selected_outputs(context: &Value) -> Result<Option<BTreeMap<String, String>>>
     Ok(Some(selected))
 }
 
-/// Whether [`prepare_tree`] can publish the outputs of `context` from the run
-/// directory `run_root`: one filesystem with the exports, none inside another.
-pub(crate) fn can_move(run_root: &Path, context: &Value, state_dir: Option<&Path>) -> bool {
+/// Whether [`prepare_tree`] can publish `outputs` from the run directory
+/// `run_root`: one filesystem with the exports, none inside another.
+pub(crate) fn can_move(
+    run_root: &Path,
+    outputs: &BTreeMap<String, String>,
+    state_dir: Option<&Path>,
+) -> bool {
     use std::os::unix::fs::MetadataExt;
-    let Ok(Some(selected)) = selected_outputs(context) else {
+    let Ok(Some(selected)) = selected_outputs(outputs) else {
         return false;
     };
     let Ok(state) = crate::retained::state_root(state_dir) else {
@@ -84,15 +83,15 @@ fn movable(selected: &BTreeMap<String, String>) -> bool {
 /// None when there are no outputs; the caller checks [`can_move`] first.
 pub(crate) fn prepare_tree(
     run_root: &Path,
-    context: &Value,
+    outputs: &BTreeMap<String, String>,
     options: &crate::ExecutionOptions,
     state_dir: Option<&Path>,
     needs: &crate::needs::Needs,
     complete: bool,
 ) -> Result<Option<Publication>> {
     use std::os::unix::fs::MetadataExt;
-    needs.validate_output_names(context, complete)?;
-    let Some(selected) = selected_outputs(context)? else {
+    needs.validate_output_names(outputs, complete)?;
+    let Some(selected) = selected_outputs(outputs)? else {
         return Ok(None);
     };
     anyhow::ensure!(
@@ -203,16 +202,16 @@ pub(crate) fn prepare_tree(
 
 pub(crate) fn prepare(
     archive: &Path,
-    context: &Value,
+    outputs: &BTreeMap<String, String>,
     options: &crate::ExecutionOptions,
     state_dir: Option<&Path>,
     needs: &crate::needs::Needs,
     complete: bool,
 ) -> Result<Option<Publication>> {
-    needs.validate_output_names(context, complete)?;
+    needs.validate_output_names(outputs, complete)?;
     let max_bytes = options.storage_byte_bound();
     let max_entries = options.storage_max_objects as usize;
-    let Some(selected) = selected_outputs(context)? else {
+    let Some(selected) = selected_outputs(outputs)? else {
         return Ok(None);
     };
     let file = crate::fsx::open_regular(archive).context("cannot open completed Ginux export")?;
@@ -522,7 +521,8 @@ pub(crate) struct Publication {
     selected: BTreeMap<String, String>,
 }
 impl Publication {
-    pub(crate) fn publish(self, invocation: &str, context: &mut Value) -> Result<()> {
+    /// Move the staged outputs into place; returns each output's host path.
+    pub(crate) fn publish(self, invocation: &str) -> Result<BTreeMap<String, String>> {
         let Self {
             base,
             staging,
@@ -547,19 +547,17 @@ impl Publication {
         if std::env::var_os(EPHEMERAL_ENV).is_none() {
             File::open(&base)?.sync_all()?;
         }
-        let outputs = context.get_mut("outputs").unwrap().as_object_mut().unwrap();
+        let mut outputs = BTreeMap::new();
         for name in selected.keys() {
             outputs.insert(
                 name.clone(),
-                Value::String(
-                    destination
-                        .join(name)
-                        .to_str()
-                        .context("output destination is not UTF-8")?
-                        .to_owned(),
-                ),
+                destination
+                    .join(name)
+                    .to_str()
+                    .context("output destination is not UTF-8")?
+                    .to_owned(),
             );
         }
-        Ok(())
+        Ok(outputs)
     }
 }

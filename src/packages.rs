@@ -92,7 +92,7 @@ impl PackageStore {
 
     /// The folder package `name` lives in once activated, through the profile
     /// symlink, so it is the same in every generation. A recipe sees it as
-    /// `RUNTIME.paths.prefix`.
+    /// `PREFIX`.
     pub fn package_prefix(&self, name: &str) -> Result<PathBuf> {
         valid_name(name)?;
         Ok(self.profile_path().join(PACKAGES).join(name))

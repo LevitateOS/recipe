@@ -5,7 +5,7 @@
 //!
 //! - `ROOT/{inputs,work/{build,tools,tmp},out}` in the scratch pool. `ROOT`
 //!   is the same path on every run for a destination (`invocation-host-…`),
-//!   so absolute paths a recipe keeps in `ctx.state` stay valid on resume.
+//!   so absolute paths a recipe keeps with `save` stay valid on resume.
 //!   Inputs are staged and digest-checked exactly as for a domain root.
 //! - The worker is the same `recipe` binary, started directly as a child: its
 //!   own process group, killed with the coordinator (PDEATHSIG), its address
@@ -73,12 +73,12 @@ fn run_inner(
 ) -> Result<LaunchReport> {
     let Invocation {
         operation,
-        cleanup_reason,
         recipe,
         persist_state,
         ref options,
         destination,
         state_dir,
+        dependencies,
         ..
     } = *invocation;
     let invocation_id = prepared.invocation_id.clone();
@@ -242,8 +242,8 @@ fn run_inner(
         invocation_id: invocation_id.clone(),
         operation,
         persist_state,
-        cleanup_reason: cleanup_reason.map(str::to_owned),
         options: options.clone(),
+        dependencies: dependencies.clone(),
         restored_states: retained
             .as_ref()
             .map(|state| state.states().clone())
@@ -312,7 +312,7 @@ fn run_inner(
     if let Some(progress) = progress.as_mut() {
         progress.finish(pump.as_ref().is_ok_and(|stream| stream.result.ok));
     }
-    let mut stream = match pump {
+    let stream = match pump {
         Ok(stream) => stream,
         Err(error) => {
             // The worker may be blocked inside a helper and will not stop by
@@ -383,26 +383,24 @@ fn run_inner(
         )));
     }
     timing("worker finished", started);
+    let mut summary = None;
     if stream.result.ok {
         // Publication keeps only the named outputs: when they all lie in
         // `out` and no saved state keeps the export, `work` (downloads,
         // build trees) is not archived at all.
         let in_out = retained.is_none()
-            && stream.result.ctx_summary["outputs"]
-                .as_object()
-                .is_some_and(|outputs| {
-                    outputs.values().all(|path| {
-                        path.as_str()
-                            .is_some_and(|p| p == crate::domain::OUT || p.starts_with("/out/"))
-                    })
-                });
+            && stream
+                .result
+                .outputs
+                .values()
+                .all(|path| path.starts_with(&format!("{}/", crate::domain::OUT)));
         // A system change's producer (`EPHEMERAL_ENV`) with no saved state:
         // its outputs are moved out of the run's directory, which is
         // discarded, instead of archived and unpacked (bounds checked by the
         // same walk as a checkpoint's).
         let tree = (in_out
             && std::env::var_os(crate::publication::EPHEMERAL_ENV).is_some()
-            && crate::publication::can_move(&root, &stream.result.ctx_summary, state_dir))
+            && crate::publication::can_move(&root, &stream.result.outputs, state_dir))
         .then_some(root.as_path());
         if tree.is_some() {
             check_storage(&root, &options.execution).map_err(|error| {
@@ -426,8 +424,8 @@ fn run_inner(
                 "reason":"the host worker reported no network use","warnings":[]}),
         };
         timing("outputs archived", started);
-        crate::launch::finish_outputs(
-            &mut stream.result,
+        summary = Some(crate::launch::finish_outputs(
+            &stream.result,
             &export_path,
             tree,
             &mut retained,
@@ -437,11 +435,12 @@ fn run_inner(
             options,
             state_dir,
             usage,
-        )?;
+        )?);
     }
     timing("outputs published", started);
     Ok(LaunchReport {
         result: stream.result,
+        summary,
         checkpoints_acked: stream.checkpoints,
         generations: stream.generations,
         launcher_code: exit,

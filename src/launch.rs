@@ -81,8 +81,6 @@ const LOG_TAIL_BYTES: usize = 4096;
 /// One executable operation, as the coordinator runs it.
 pub(crate) struct Invocation<'a> {
     pub operation: crate::worker::protocol::Operation,
-    /// Present exactly for cleanup.
-    pub cleanup_reason: Option<&'a str>,
     pub recipe: &'a Path,
     pub search_path: Option<&'a Path>,
     pub persist_state: bool,
@@ -91,6 +89,9 @@ pub(crate) struct Invocation<'a> {
     /// Lock and saved-state scope key.
     pub destination: &'a Path,
     pub state_dir: Option<&'a Path>,
+    /// Each dependency's declared output names, for the worker's `DEPS`
+    /// (`crate::worker::protocol::RequestPayload::dependencies`).
+    pub dependencies: &'a std::collections::BTreeMap<String, Vec<String>>,
 }
 
 /// Outcome of one supervised domain run.
@@ -98,6 +99,9 @@ pub(crate) struct Invocation<'a> {
 pub(crate) struct LaunchReport {
     /// The exactly-once worker result frame.
     pub result: ResultPayload,
+    /// A successful run's result for the caller ([`finish_outputs`]); None
+    /// for a failed one.
+    pub summary: Option<serde_json::Value>,
     /// Checkpoints acked during the run.
     pub checkpoints_acked: u64,
     /// Invocation-local `{checkpoint seq → acked generation}` association
@@ -179,10 +183,9 @@ pub(crate) fn recorded(
     details["contract"] = serde_json::to_value(&prepared.contract)?;
     details["network_usage"] = match &outcome {
         Ok(report) => report
-            .result
-            .ctx_summary
-            .get("runtime")
-            .and_then(|runtime| runtime.get("network_usage"))
+            .summary
+            .as_ref()
+            .and_then(|summary| summary.get("network_usage"))
             .cloned()
             .unwrap_or_else(|| match &report.result.network_usage {
                 Some(usage) => crate::needs::report::host_network_usage(
@@ -212,12 +215,12 @@ fn run_domain_inner(
 ) -> Result<LaunchReport> {
     let Invocation {
         operation,
-        cleanup_reason,
         recipe,
         persist_state,
         ref options,
         destination,
         state_dir,
+        dependencies,
         ..
     } = *invocation;
     let invocation = prepared.invocation_id.clone();
@@ -365,8 +368,8 @@ fn run_domain_inner(
         invocation_id: invocation.clone(),
         operation,
         persist_state,
-        cleanup_reason: cleanup_reason.map(str::to_owned),
         options: options.clone(),
+        dependencies: dependencies.clone(),
         restored_states: retained
             .as_ref()
             .map(|state| state.states().clone())
@@ -422,7 +425,7 @@ fn run_domain_inner(
     if let Some(progress) = progress.as_mut() {
         progress.finish(pump.as_ref().is_ok_and(|stream| stream.result.ok));
     }
-    let mut stream = match pump {
+    let stream = match pump {
         Ok(stream) => stream,
         Err(err) => {
             // The stream error stays the result; teardown problems are reported beside it.
@@ -456,14 +459,15 @@ fn run_domain_inner(
     let record = crate::ginux::ResultRecord::read(&result_path, &invocation)?;
     check_agreement(&invocation, &stream.result, &record)?;
     check_launcher_exit(&invocation, &stream.result, &record, exit)?;
+    let mut summary = None;
     if stream.result.ok {
         let usage = crate::needs::report::network_usage(
             &prepared.network.host_endpoints,
             diagnostics,
             drained.discarded_bytes,
         );
-        finish_outputs(
-            &mut stream.result,
+        summary = Some(finish_outputs(
+            &stream.result,
             &export_path,
             None,
             &mut retained,
@@ -473,11 +477,12 @@ fn run_domain_inner(
             options,
             state_dir,
             usage,
-        )?;
+        )?);
     }
 
     Ok(LaunchReport {
         result: stream.result,
+        summary,
         checkpoints_acked: stream.checkpoints,
         generations: stream.generations,
         launcher_code: exit,
@@ -488,13 +493,17 @@ fn run_domain_inner(
     })
 }
 
-/// After a successful worker result: record the contract and network use in
-/// `ctx.runtime`, validate the export archive against the declared outputs
-/// and bounds, keep it as the final saved generation, and publish the named
-/// outputs. The same for a Ginux export and a host run's archive.
+/// After a successful worker result: validate the export archive against the
+/// declared outputs and bounds, keep it as the final saved generation with
+/// the saved state, publish the outputs the engine placed, and return the
+/// run's result for the caller: the recipe's `name` and `version` (from its
+/// declarations), `outputs` (each output's published host path), `prefix`
+/// (`PREFIX`, or null), `latest` (for latest), the compiled `contract` and
+/// the bounded `network_usage`. The same for a Ginux export and a host run's
+/// archive.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn finish_outputs(
-    result: &mut ResultPayload,
+    result: &ResultPayload,
     export_path: &Path,
     tree: Option<&Path>,
     retained: &mut Option<crate::retained::Retained>,
@@ -504,20 +513,7 @@ pub(crate) fn finish_outputs(
     options: &crate::worker::protocol::InvocationOptions,
     state_dir: Option<&Path>,
     usage: serde_json::Value,
-) -> Result<()> {
-    // Completion metadata belongs to the engine-owned runtime namespace;
-    // ordinary top-level recipe facts must never be overwritten.
-    let runtime = result
-        .ctx_summary
-        .get_mut("runtime")
-        .and_then(serde_json::Value::as_object_mut)
-        .context(
-            crate::failure::Category::Protocol
-                .error("successful API-2 result is missing ctx.runtime"),
-        )?;
-    if let Some(contract) = &prepared.contract {
-        runtime.insert("contract".into(), serde_json::to_value(contract)?);
-    }
+) -> Result<serde_json::Value> {
     if let Some(warnings) = usage["warnings"].as_array() {
         for warning in warnings {
             if let Some(warning) = warning.as_str() {
@@ -525,19 +521,16 @@ pub(crate) fn finish_outputs(
             }
         }
     }
-    runtime.insert("network_usage".into(), usage);
-    let complete = matches!(
-        operation,
-        crate::worker::protocol::Operation::Install
-            | crate::worker::protocol::Operation::IsInstalled
-    );
+    // A successful install names every declared output; nothing else names any.
+    let complete = operation == crate::worker::protocol::Operation::Install;
+    let needs = &prepared.declaration.needs;
     let moved = match tree {
         Some(run_root) => crate::publication::prepare_tree(
             run_root,
-            &result.ctx_summary,
+            &result.outputs,
             &options.execution,
             state_dir,
-            &prepared.declaration.needs,
+            needs,
             complete,
         )?,
         None => None,
@@ -546,34 +539,44 @@ pub(crate) fn finish_outputs(
         Some(publication) => Ok(Some(publication)),
         None => crate::publication::prepare(
             export_path,
-            &result.ctx_summary,
+            &result.outputs,
             &options.execution,
             state_dir,
-            &prepared.declaration.needs,
+            needs,
             complete,
         ),
     }
     .context(crate::failure::Category::Storage.error("cannot validate completed outputs"))?;
     if let Some(state) = retained.as_mut() {
-        let runtime_state = result
-            .ctx_summary
-            .get("state")
-            .filter(|value| value.is_object())
-            .context(
-                crate::failure::Category::Protocol
-                    .error("successful resumable recipe did not return ctx.state"),
-            )?
-            .clone();
-        state.finish(export_path, runtime_state).map_err(|error| {
-            crate::failure::Category::Storage.wrap(error, "cannot persist final state/files pair")
-        })?;
+        state
+            .finish(export_path, result.saved.clone())
+            .map_err(|error| {
+                crate::failure::Category::Storage
+                    .wrap(error, "cannot persist final state/files pair")
+            })?;
     }
-    if let Some(publication) = publication {
-        publication
-            .publish(invocation, &mut result.ctx_summary)
-            .context(crate::failure::Category::Storage.error("cannot publish completed outputs"))?;
+    let outputs = match publication {
+        Some(publication) => publication
+            .publish(invocation)
+            .context(crate::failure::Category::Storage.error("cannot publish completed outputs"))?,
+        None => Default::default(),
+    };
+    let declaration = &prepared.declaration;
+    let mut summary = serde_json::json!({
+        "name": declaration.name(),
+        "version": declaration.version(),
+        "outputs": outputs,
+        "prefix": prepared.execution.package_prefix.as_ref()
+            .filter(|_| needs.outputs.contains_key("package")),
+        "network_usage": usage,
+    });
+    if let Some(contract) = &prepared.contract {
+        summary["contract"] = serde_json::to_value(contract)?;
     }
-    Ok(())
+    if let Some(latest) = &result.latest {
+        summary["latest"] = latest.as_str().into();
+    }
+    Ok(summary)
 }
 
 /// Completed worker stream: exactly one result plus the relayed checkpoints.

@@ -6,14 +6,14 @@
 //! ## Design: explicit data flow
 //!
 //! Helpers take their inputs as arguments and return their results; paths
-//! come from `RUNTIME`, not from a current directory. Commands, package
+//! come from the engine's constants (`WORK`, `INPUTS`, ...) and the function's
+//! arguments (`src`, `out`), not from a current directory. Commands, package
 //! managers and the environment overlay are the side effects they exist for.
 //!
 //! ```rhai
 //! // EXPLICIT: you can see where archive comes from and where it goes
-//! let archive = download(url, RUNTIME.paths.build + "/foo.tar.gz", ctx.sha256);
-//! verify_sha256(archive, "abc123...");
-//! extract(archive, RUNTIME.paths.build);
+//! let archive = download(url, join_path(WORK, "foo.tar.gz"), sha256);
+//! extract(archive, WORK);
 //! ```
 //!
 //! ## Module Organization (by lifecycle phase)
@@ -116,21 +116,11 @@ macro_rules! helper {
 /// arguments go through [`confine`], which in a host run resolves them
 /// beneath the run's directories and in a Ginux run passes them on unchanged.
 pub fn register_all(engine: &mut Engine, programs: bool) {
-    engine.register_fn("ready", |ctx: rhai::Map| -> rhai::Map {
-        [
-            ("status".into(), "ready".into()),
-            ("ctx".into(), ctx.into()),
-        ]
-        .into()
-    });
-    engine.register_fn("needs_work", |ctx: rhai::Map, reason: &str| -> rhai::Map {
-        [
-            ("status".into(), "needs_work".into()),
-            ("ctx".into(), ctx.into()),
-            ("reason".into(), reason.into()),
-        ]
-        .into()
-    });
+    // Saved values and resuming (docs/recipe-format.md, section 7).
+    engine.register_fn("save", crate::core::saved::save);
+    engine.register_fn("saved", crate::core::saved::saved);
+    engine.register_fn("checkpoint", crate::core::saved::checkpoint);
+    engine.register_fn("reached", crate::core::saved::reached);
     // ========================================================================
     // Pure helpers - all functions take explicit inputs, return explicit outputs
     // ========================================================================
@@ -584,8 +574,7 @@ impl Programs<'_> {
     }
 }
 
-// Keep native failures catchable in Rhai, but distinguish them from a recipe's
-// explicit needs_work result from a readiness check.
+// Keep native failures catchable in Rhai, and name the helper that failed.
 fn helper_result<T>(
     name: &str,
     result: Result<T, Box<rhai::EvalAltResult>>,

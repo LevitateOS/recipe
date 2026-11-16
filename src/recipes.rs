@@ -9,18 +9,6 @@ use std::path::{Component, Path, PathBuf};
 /// phase) and `build_deps` (needed only to build).
 pub const DEPENDENCY_FIELDS: [&str; 2] = ["deps", "build_deps"];
 
-/// Recipe bindings the engine owns or reads, which a `--define` must not shadow.
-// C2: defines become `DEFINES.NAME` (declared in NEEDS.defines, checked by
-// `crate::needs::check_defines`), so this list goes with the bare constants.
-pub const RESERVED_NAMES: [&str; 6] = [
-    "RUNTIME",
-    "RECIPE_API",
-    "NEEDS",
-    "ctx",
-    "deps",
-    "build_deps",
-];
-
 /// Most nested recipes (main recipe plus dependency chain) one invocation enters.
 pub const MAX_DEPTH: usize = 64;
 

@@ -49,18 +49,14 @@ pub fn skip(message: &str) {
 
 pub(crate) fn sentence_for_event(hook: &str, status: HookStatus, details: &str) -> String {
     let (verb, base) = match status {
-        HookStatus::Requested => (
-            "queue",
-            "To keep the flow in order, this step will queue now.".to_string(),
-        ),
         HookStatus::Running => match hook {
             "prepare" => (
                 "prepare",
                 "Before anything else moves forward, we prepare the environment now.".to_string(),
             ),
-            "acquire" => (
-                "acquire",
-                "Next, we acquire the source artifacts needed for this build.".to_string(),
+            "download" => (
+                "download",
+                "Next, we download the sources needed for this build.".to_string(),
             ),
             "build" => (
                 "build",
@@ -73,10 +69,6 @@ pub(crate) fn sentence_for_event(hook: &str, status: HookStatus, details: &str) 
             "cleanup" => (
                 "cleanup",
                 "To leave things clean, we cleanup temporary files now.".to_string(),
-            ),
-            "remove" => (
-                "remove",
-                "As part of uninstall, this step will remove installed artifacts.".to_string(),
             ),
             _ => (
                 "run",
@@ -91,21 +83,9 @@ pub(crate) fn sentence_for_event(hook: &str, status: HookStatus, details: &str) 
             "fail",
             "A required operation reported an error, so this step must fail now.".to_string(),
         ),
-        HookStatus::Skipped | HookStatus::Satisfied => (
+        HookStatus::Skipped => (
             "skip",
-            "Since the requirement is already satisfied, this step will skip now.".to_string(),
-        ),
-        HookStatus::Missing => (
-            "require",
-            "Before we continue safely, this workflow does require that dependency.".to_string(),
-        ),
-        HookStatus::Required => (
-            "check",
-            "To confirm what still needs attention, we check this again now.".to_string(),
-        ),
-        HookStatus::Manual => (
-            "process",
-            "In the expected sequence, this operation will process now.".to_string(),
+            "There is nothing to do here, so this step will skip now.".to_string(),
         ),
     };
 
@@ -139,15 +119,10 @@ fn colorize_event_sentence(status: HookStatus, sentence: &str, verb: &str) -> St
 
 fn colorize_by_status(status: HookStatus, token: &str) -> String {
     match status {
-        HookStatus::Requested => format!("{}", token.bright_blue()),
         HookStatus::Running => format!("{}", token.cyan()),
         HookStatus::Success => format!("{}", token.green()),
         HookStatus::Failed => format!("{}", token.red()),
         HookStatus::Skipped => format!("{}", token.yellow()),
-        HookStatus::Satisfied => format!("{}", token.bright_yellow()),
-        HookStatus::Missing => format!("{}", token.magenta()),
-        HookStatus::Required => format!("{}", token.bright_magenta()),
-        HookStatus::Manual => format!("{}", token.dimmed()),
     }
 }
 

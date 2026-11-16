@@ -353,17 +353,32 @@ pub(super) fn unpack_image(snapshot: &mut File, root: &Path) -> Result<()> {
 
 /// Seed the owned target from explicitly selected, already verified input bytes.
 /// Read only the invocation snapshot, never the original host input pathname.
+///
+/// The `target` input (the caller's tree) seeds the recipe's one output, a
+/// directory, before `build` runs (docs/recipe-format.md, section 3.6); the
+/// dependencies' merged tools seed `/work/tools`.
 pub(crate) fn seed_target(
     invocation: &PreparedInvocation,
     root: &Path,
     destination: &Path,
 ) -> Result<bool> {
     use super::InputKind;
+    let outputs = &invocation.declaration.needs.outputs;
+    let target_output = match outputs.iter().collect::<Vec<_>>().as_slice() {
+        [(name, crate::needs::PathKind::Directory)] => Some(
+            crate::domain::output_path(name)
+                .trim_start_matches('/')
+                .to_owned(),
+        ),
+        _ => None,
+    };
+    let target_output = target_output.as_deref();
     let mapping = |name: &str| -> Option<String> {
-        for (source, destination) in [
-            ("target", "out"),
-            (crate::domain::DEPENDENCY_TOOLS, "work/tools"),
-        ] {
+        let seeds = target_output
+            .map(|output| ("target", output))
+            .into_iter()
+            .chain([(crate::domain::DEPENDENCY_TOOLS, "work/tools")]);
+        for (source, destination) in seeds {
             if name == source || name.starts_with(&format!("{source}/")) {
                 return Some(format!(
                     "{destination}{}",
@@ -378,6 +393,17 @@ pub(crate) fn seed_target(
         .iter()
         .filter(|input| mapping(&input.name).is_some())
         .collect();
+    if target_output.is_none() && invocation.inputs.iter().any(|input| input.name == "target") {
+        bail!(
+            "a target input seeds the recipe's one directory output; this recipe declares {} output(s): {}",
+            outputs.len(),
+            outputs
+                .iter()
+                .map(|(name, kind)| format!("{name} ({})", kind.as_str()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     if selected.is_empty() {
         return Ok(false);
     }
@@ -395,6 +421,23 @@ pub(crate) fn seed_target(
         .create_new(true)
         .open(destination)?;
     let mut archive = tar::Builder::new(file);
+    if selected.iter().any(|input| input.name == "target") {
+        // The output's parent, as the restore expects every parent before
+        // its entries.
+        let mut header = tar::Header::new_ustar();
+        header.set_mode(0o755);
+        header.set_uid(crate::domain::UID);
+        header.set_gid(crate::domain::UID);
+        header.set_mtime(0);
+        header.set_entry_type(tar::EntryType::Directory);
+        header.set_size(0);
+        header.set_cksum();
+        archive.append_data(
+            &mut header,
+            crate::domain::OUT.trim_start_matches('/'),
+            std::io::empty(),
+        )?;
+    }
     for input in selected {
         let name = mapping(&input.name).expect("selected seed input");
         let mut header = tar::Header::new_ustar();

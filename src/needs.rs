@@ -300,34 +300,25 @@ impl Needs {
         }
         Ok(())
     }
-    // C2: outputs come from `ctx.outputs` here and in
-    // `validate_worker_outputs`; in API 1 the engine maps them itself
-    // (docs/recipe-format.md, sections 3.1 and 3.2).
+    /// The outputs a worker result names (each to its domain path): only
+    /// declared names, each at its engine-placed path
+    /// (`crate::domain::output_path`), and with `complete` every declared
+    /// one (docs/recipe-format.md, sections 3.1 and 3.2).
     pub(crate) fn validate_output_names(
         &self,
-        context: &serde_json::Value,
+        outputs: &BTreeMap<String, String>,
         complete: bool,
     ) -> Result<()> {
-        let outputs = context
-            .get("outputs")
-            .and_then(serde_json::Value::as_object)
-            .context("ctx.outputs must be an object")?;
         for (name, path) in outputs {
             ensure!(
                 self.outputs.contains_key(name),
-                "undeclared ctx.outputs.{name}; edit NEEDS.outputs"
+                "the worker named an undeclared output {name}"
             );
-            let path = path.as_str().context("ctx.outputs paths must be strings")?;
-            // A host worker names its outputs by host path; they stand for
-            // the same domain paths (`crate::domain::local`).
-            let path =
-                crate::domain::domain_path(std::path::Path::new(path)).with_context(|| {
-                    format!("ctx.outputs.{name} = {path} is outside this run's directories")
-                })?;
-            let relative = path
-                .strip_prefix('/')
-                .context("ctx.outputs must use absolute domain paths")?;
-            crate::domain::validate_export_path(relative)?;
+            ensure!(
+                *path == crate::domain::output_path(name),
+                "the worker placed NEEDS.outputs.{name} at {path}, not where the engine places it"
+            );
+            crate::domain::validate_export_path(path.trim_start_matches('/'))?;
         }
         if complete {
             for name in self.outputs.keys() {
@@ -336,37 +327,6 @@ impl Needs {
                     "missing required NEEDS.outputs.{name}"
                 );
             }
-        }
-        Ok(())
-    }
-
-    pub(crate) fn validate_worker_outputs(
-        &self,
-        context: &rhai::Map,
-        complete: bool,
-    ) -> Result<()> {
-        let outputs: serde_json::Value = rhai::serde::from_dynamic(
-            context
-                .get("outputs")
-                .context("ctx.outputs must be a map")?,
-        )?;
-        let value = serde_json::json!({"outputs": outputs});
-        self.validate_output_names(&value, complete)?;
-        for (name, path) in value["outputs"].as_object().unwrap() {
-            let selected = Path::new(path.as_str().unwrap());
-            for ancestor in selected.ancestors().skip(1) {
-                ensure!(
-                    std::fs::symlink_metadata(ancestor)?.is_dir(),
-                    "NEEDS.outputs.{name} traverses a non-directory ancestor"
-                );
-            }
-            let metadata = std::fs::symlink_metadata(path.as_str().unwrap())
-                .with_context(|| format!("NEEDS.outputs.{name} is absent"))?;
-            ensure!(
-                self.outputs[name].matches(&metadata),
-                "NEEDS.outputs.{name} requires {}",
-                self.outputs[name].as_str()
-            );
         }
         Ok(())
     }

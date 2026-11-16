@@ -5,29 +5,19 @@ use serde::Serialize;
 /// Lifecycle status a hook event reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookStatus {
-    Requested,
     Running,
     Success,
     Failed,
     Skipped,
-    Satisfied,
-    Missing,
-    Required,
-    Manual,
 }
 
 impl HookStatus {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Requested => "requested",
             Self::Running => "running",
             Self::Success => "success",
             Self::Failed => "failed",
             Self::Skipped => "skipped",
-            Self::Satisfied => "satisfied",
-            Self::Missing => "missing",
-            Self::Required => "required",
-            Self::Manual => "manual",
         }
     }
 }

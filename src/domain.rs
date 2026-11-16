@@ -57,7 +57,7 @@ pub const MAX_INPUT_MODES_BYTES: u64 = 32 * 1024 * 1024;
 pub const WORK: &str = "/work";
 /// The user id domain processes run as (and own the files they write).
 pub const UID: u64 = 1000;
-/// The main recipe's build directory.
+/// The main recipe's build directory, `WORK` to a recipe.
 pub const BUILD: &str = "/work/build";
 /// Shared install prefix for dependency tools.
 pub const TOOLS: &str = "/work/tools";
@@ -65,7 +65,8 @@ pub const TOOLS: &str = "/work/tools";
 pub const TOOL_BIN_DIRS: [&str; 4] = ["usr/bin", "usr/sbin", "bin", "sbin"];
 /// Temporary directory (`TMPDIR`).
 pub const TMP: &str = "/work/tmp";
-/// Installed-target and product tree. Published outputs come from it or from [`WORK`].
+/// The output tree: each declared output is placed below it by the engine
+/// ([`output_path`]); publication takes them from there.
 pub const OUT: &str = "/out";
 /// Every writable directory the domain gets, parents first.
 pub const WRITABLE_DIRS: [&str; 5] = [WORK, BUILD, TOOLS, TMP, OUT];
@@ -116,6 +117,12 @@ pub const MAX_NETWORK_ENDPOINTS: usize = 8;
 pub const MAX_NETWORK_CONNECTIONS: usize = 16;
 /// Longest execution or frame-stall deadline, in seconds.
 pub const MAX_TIMEOUT_SECS: u64 = 86_400;
+
+/// Domain path of the declared output `name`: `/out/NAME`. The engine chooses
+/// it (docs/recipe-format.md, sections 3.1 and 3.2); a recipe never names it.
+pub fn output_path(name: &str) -> String {
+    format!("{OUT}/{name}")
+}
 
 /// Domain path of a staged input.
 pub fn input_path(name: &str) -> String {

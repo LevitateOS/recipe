@@ -1,10 +1,7 @@
 //! Recipe executor: compiling a recipe (with its `//! extends:` base) and the
-//! install, remove and cleanup operations.
-//!
-//! C2: the operations below `private` still run the API 2 lifecycle (ctx,
-//! `is_*` checks and hooks); C2 replaces them with docs/recipe-format.md
-//! sections 3 and 4 (build(src, out), configure, verify, cleanup(reason) and
-//! the engine's constants). Compiling and the declarations are API 1.
+//! worker's operations: install (the download step and the step that builds
+//! the outputs), cleanup (`cleanup("manual")`) and latest (`latest()`), per
+//! docs/recipe-format.md sections 3, 4 and 7.
 
 use anyhow::{Context, Result, anyhow};
 use rhai::{AST, Engine};
@@ -13,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 mod private;
 
-pub(crate) use private::{EngineError, ExecutionContext, Load, check, cleanup, install, remove};
+pub(crate) use private::{EngineError, Load, cleanup, install, latest};
 
 use crate::recipes::parse_extends;
 

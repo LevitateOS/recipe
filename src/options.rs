@@ -26,6 +26,10 @@ pub struct ExecutionOptions {
     pub(crate) network_hosts: Vec<String>,
     /// Cumulative transmitted and received network bytes per invocation.
     pub(crate) network_max_bytes: u64,
+    // C4: the three force options are gone in API 1 (docs/recipe-format.md
+    // 6.3: "to redo a step, clean it up and run it again"). Until C4 decides
+    // what is done from Recipe's own records, every run redoes every step,
+    // so they change nothing; C4 removes them with the CLI flags.
     /// Rerun the main recipe's acquisition, build and installation phases.
     pub force_acquire: bool,
     /// Rerun the main recipe's build and installation phases.
@@ -41,13 +45,13 @@ pub struct ExecutionOptions {
     pub exact_identity: bool,
     /// The folder the package will live in once activated
     /// (`PROFILE/.packages/NAME`, through the profile symlink of the store
-    /// installed into), shown to the recipe as `RUNTIME.paths.prefix`. None
+    /// installed into), shown to the recipe as `PREFIX`. None
     /// with `--no-activate` and for dependencies, which are never activated.
     /// Part of the saved-state identity when set (`crate::retained`).
     #[serde(default)]
     pub package_prefix: Option<String>,
     /// The C library of the system the package will be installed on
-    /// (`crate::clibrary`), shown to the recipe as `RUNTIME.host.libc`. Decided
+    /// (`crate::clibrary`), shown to the recipe as `HOST_LIBC`. Decided
     /// by the coordinator: the worker runs in an image with a C library of its own.
     #[serde(default = "unknown_libc")]
     pub host_libc: String,
@@ -150,15 +154,6 @@ impl ExecutionOptions {
     }
     pub(crate) fn forced(&self) -> bool {
         self.force_acquire || self.force_build || self.force_install
-    }
-    /// Forcing a phase also forces every later phase: acquire ⇒ build ⇒ install.
-    pub(crate) fn forces(&self, phase: crate::lifecycle::Phase) -> bool {
-        use crate::lifecycle::Phase;
-        match phase {
-            Phase::Acquire => self.force_acquire,
-            Phase::Build => self.force_acquire || self.force_build,
-            Phase::Install => self.forced(),
-        }
     }
     pub(crate) fn for_dependency(&self) -> Self {
         Self {

@@ -1,19 +1,19 @@
 //! Loading one recipe for one operation. Every operation goes through
 //! [`with_recipe`].
 
-use super::context::ExecutionContext;
 use crate::core::executor::compile_recipe;
-use crate::core::invocation::{Runtime, RuntimeInputs};
+use crate::core::invocation::{Runtime, compile_engine, literal_constants, set_constants};
 use crate::lifecycle::Phase;
 use rhai::Engine;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// How an engine operation failed.
 #[derive(Debug)]
 pub(crate) enum EngineError {
-    /// Outside a phase: compile, setup, checks, dependencies, remove/cleanup hooks.
+    /// Outside a step: compile, setup, dependencies, `cleanup`, `latest`.
     Recipe(anyhow::Error),
-    /// A phase hook or its verification.
+    /// A step (`download`, or the step that builds the outputs).
     Phase { phase: Phase, error: anyhow::Error },
 }
 
@@ -23,77 +23,56 @@ impl From<anyhow::Error> for EngineError {
     }
 }
 
-/// A recipe compiled, set up and given its saved state.
+/// A recipe compiled with this run's constants.
 pub(crate) struct Loaded<'e> {
     /// Canonical identity (checkpoints and saved state are keyed by it).
     pub path: PathBuf,
     pub base_path: Option<PathBuf>,
-    /// `ctx.name`, or the file stem.
+    /// `PACKAGE.name`, else the file name (docs/recipe-format.md, decision 3).
     pub name: String,
     pub runtime: Runtime<'e>,
-    pub needs: crate::needs::Needs,
+    pub declaration: crate::needs::Declaration,
 }
 
 /// What [`with_recipe`] needs besides the recipe itself.
 pub(crate) struct Load<'x> {
     pub search_path: Option<&'x Path>,
-    pub build_dir: &'x Path,
+    /// A fresh worker engine with its helpers and module resolver.
+    pub make_engine: &'x dyn Fn() -> Engine,
     pub defines: &'x [(String, String)],
-    pub operation: &'x str,
+    /// Each dependency's declared output names (the request's).
+    pub dependencies: &'x BTreeMap<String, Vec<String>>,
+    pub options: &'x crate::ExecutionOptions,
 }
 
-/// Compile `recipe`, run its setup with its saved state, then run `f`.
-pub(crate) fn with_recipe<'e, T>(
-    engine: &'e Engine,
-    exec: &mut ExecutionContext<'_>,
+/// Read `recipe`'s declarations, build this run's constants, compile it with
+/// them, then run `f`.
+pub(crate) fn with_recipe<T>(
     recipe: &Path,
     load: &Load<'_>,
-    f: impl FnOnce(&mut Loaded<'e>, &mut ExecutionContext<'_>) -> Result<T, EngineError>,
+    f: impl FnOnce(&mut Loaded<'_>) -> Result<T, EngineError>,
 ) -> Result<T, EngineError> {
-    let compiled = compile_recipe(engine, recipe, load.search_path)?;
-    let declaration = crate::needs::declaration(&compiled.recipe_path, load.search_path)?;
-    if declaration.source_digests != compiled.source_digests {
+    let declaration = crate::needs::declaration(recipe, load.search_path)?;
+    // Literal constants come from the source as written: the optimizer of
+    // the worker's engine would fold a computed constant into a literal.
+    let plain = compile_recipe(&compile_engine(), recipe, load.search_path)?;
+    let mut constants = literal_constants(&plain.ast);
+    constants.extend(super::constants::of(&declaration, load)?);
+    let mut engine = (load.make_engine)();
+    set_constants(&mut engine, constants);
+    let compiled = compile_recipe(&engine, recipe, load.search_path)?;
+    if declaration.source_digests != compiled.source_digests
+        || plain.source_digests != compiled.source_digests
+    {
         return Err(anyhow::anyhow!("worker declaration changed during compile").into());
     }
-    {
-        let base_dir = compiled.base_path.as_deref().and_then(Path::parent);
-        let mut runtime = Runtime::new(
-            engine,
-            compiled.ast.clone(),
-            RuntimeInputs {
-                recipe: &compiled.recipe_path,
-                base_dir,
-                build_dir: load.build_dir,
-                defines: load.defines,
-                options: exec.options().clone(),
-                operation: load.operation,
-                persist_state: exec.resumable(),
-            },
-        )?;
-        if let Some(state) = exec.saved_state(&compiled.recipe_path) {
-            runtime.restore_state(state)?;
-        }
-        // C2: the name is `declaration.name()` (PACKAGE, the file name);
-        // there is no ctx to read it from in API 1.
-        let name = runtime
-            .ctx()
-            .get("name")
-            .and_then(|value| value.clone().into_string().ok())
-            .unwrap_or_else(|| {
-                compiled
-                    .recipe_path
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned()
-            });
-        let mut loaded = Loaded {
-            path: compiled.recipe_path.clone(),
-            base_path: compiled.base_path.clone(),
-            name,
-            runtime,
-            needs: declaration.needs,
-        };
-        f(&mut loaded, exec)
-    }
+    let runtime = Runtime::new(&engine, compiled.ast.clone())?;
+    let mut loaded = Loaded {
+        path: compiled.recipe_path.clone(),
+        base_path: compiled.base_path.clone(),
+        name: declaration.name().to_owned(),
+        runtime,
+        declaration,
+    };
+    f(&mut loaded)
 }

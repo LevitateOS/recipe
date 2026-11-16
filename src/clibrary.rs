@@ -4,7 +4,7 @@
 //! A recipe says what its build works with in `ABOUT.libc` (a list of
 //! `"glibc"` and `"musl"`; absent means any). Recipe learns the system's C
 //! library from the dynamic loaders present on it and shows it to recipes as
-//! `RUNTIME.host.libc`. Before an install acquires anything, the two are
+//! `HOST_LIBC`. Before an install acquires anything, the two are
 //! compared: a mismatch is reported as facts, with the flag that installs the
 //! package anyway. `ABOUT.libc_carried: true` says the package brings its own
 //! C library and loader (carry_libraries from a library recipe): the program
@@ -17,7 +17,7 @@
 //! The system that decides is the root the package is installed into: `/`, or
 //! for a system change the root it is written into (`detect_root`). Recipe
 //! hands that root to the producer it starts in `RECIPE_HOST_LIBC_ROOT`, so
-//! `RUNTIME.host.libc` describes the target, not the machine Recipe runs on.
+//! `HOST_LIBC` describes the target, not the machine Recipe runs on.
 
 use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};

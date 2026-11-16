@@ -29,9 +29,12 @@
 //!
 //! Payloads carry no host paths: `invocation_id` values follow the
 //! `[A-Za-z0-9_-]{1,64}` shape. Checkpoints name a canonical `/inputs` recipe
-//! and its JSON object `state`; requests carry matching per-recipe saved state.
-//! The coordinator owns all authoritative host destinations. Final contexts
-//! are JSON objects, with named outputs validated separately before publication.
+//! and its saved state ([`SavedState`]: the values `save` kept and the
+//! checkpoints reached); requests carry the matching saved state back. The
+//! coordinator owns all authoritative host destinations. A result names each
+//! declared output by the domain path the engine placed it at
+//! ([`crate::domain::output_path`]); the coordinator validates them before
+//! publication.
 //!
 //! ## Use
 //!
@@ -52,9 +55,10 @@ use std::io::{Read, Write};
 use serde::{Deserialize, Serialize};
 
 /// Protocol version carried in every frame header.
-// NEEDS authority/options and isolated dependency preparation require a
-// matching coordinator and worker; no transport-8 grant-model fallback.
-pub const PROTOCOL_VERSION: u32 = 9;
+// API 1 (docs/recipe-format.md): the operations, the engine-placed outputs,
+// the saved state and the dependencies' outputs of transport 10 require a
+// matching coordinator and worker.
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// Maximum total frame size in bytes (4 MiB), header included.
 pub const MAX_FRAME_LEN: usize = 4 * 1024 * 1024;
@@ -135,43 +139,29 @@ pub enum Direction {
 // Payloads (plain serializable types, §4 field-for-field)
 // ---------------------------------------------------------------------------
 
-/// The engine operation one invocation runs. Serializes as the check or
-/// lifecycle name (`install`, `is_built`, …), which is also its wire form.
+/// The engine operation one invocation runs; its wire form is the name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Operation {
+    /// The download and build steps: the worker builds every declared output
+    /// and returns where it placed them (docs/recipe-format.md, section 6.1).
     Install,
-    Remove,
+    /// `cleanup("manual")` (section 3.7).
     Cleanup,
-    IsInstalled,
-    IsBuilt,
-    IsAcquired,
+    /// `latest()` (sections 2.9 and 3.5): the newest upstream version.
+    Latest,
 }
 
 impl Operation {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Install => "install",
-            Self::Remove => "remove",
             Self::Cleanup => "cleanup",
-            Self::IsInstalled => "is_installed",
-            Self::IsBuilt => "is_built",
-            Self::IsAcquired => "is_acquired",
+            Self::Latest => "latest",
         }
     }
 
-    /// The readiness check a check operation runs.
-    pub fn check(self) -> Option<&'static str> {
-        use crate::lifecycle::Phase;
-        match self {
-            Self::IsInstalled => Some(Phase::Install.check()),
-            Self::IsBuilt => Some(Phase::Build.check()),
-            Self::IsAcquired => Some(Phase::Acquire.check()),
-            Self::Install | Self::Remove | Self::Cleanup => None,
-        }
-    }
-
-    /// Only install runs phases, so only install accepts force options.
+    /// Only install runs steps, so only install accepts force options.
     pub fn accepts_force(self) -> bool {
         self == Self::Install
     }
@@ -184,17 +174,19 @@ impl std::fmt::Display for Operation {
 }
 
 /// Largest saved state the next request can carry for these options: the
-/// frame bound minus a request with the same options and the longest id and
-/// cleanup reason the protocol allows. The worst case is measured, not sent,
-/// so it is not validated (no real request has both force options and a
-/// cleanup reason).
+/// frame bound minus a request with the same options, the longest id the
+/// protocol allows and the most dependency outputs it carries. The worst case
+/// is measured, not sent, so it is not validated.
 pub fn restored_state_budget(options: &InvocationOptions) -> Result<usize, ProtocolError> {
+    let name = |i: usize| format!("{i:0>width$}", width = crate::domain::MAX_NAME);
     let request = RequestPayload {
         invocation_id: "x".repeat(crate::domain::MAX_NAME),
         operation: Operation::Install,
         persist_state: true,
-        cleanup_reason: Some("x".repeat(MAX_CLEANUP_REASON)),
         options: options.clone(),
+        dependencies: (0..MAX_DEPENDENCIES)
+            .map(|i| (name(i), (0..MAX_OUTPUTS).map(name).collect()))
+            .collect(),
         restored_states: Default::default(),
         host: None,
     };
@@ -203,8 +195,10 @@ pub fn restored_state_budget(options: &InvocationOptions) -> Result<usize, Proto
     Ok(MAX_FRAME_LEN.saturating_sub(HEADER_LEN + payload.len()))
 }
 
-/// Longest cleanup reason a request may carry.
-pub const MAX_CLEANUP_REASON: usize = 4096;
+/// Most dependencies (`deps` and `build_deps`) one request names.
+pub const MAX_DEPENDENCIES: usize = 64;
+/// Most outputs a recipe declares (`NEEDS.outputs`).
+pub const MAX_OUTPUTS: usize = 64;
 /// Most saved recipe states (main recipe plus dependencies) one request carries.
 pub const MAX_RESTORED_STATES: usize = 1024;
 
@@ -217,11 +211,17 @@ pub struct RequestPayload {
     pub operation: Operation,
     /// Caller persist flag (`--no-persist-state` negated).
     pub persist_state: bool,
-    /// The cleanup reason, present exactly when `operation` is cleanup.
-    pub cleanup_reason: Option<String>,
     /// Explicit invocation options; never inferred from coordinator environment.
     pub options: InvocationOptions,
-    /// Matching per-recipe runtime state; the coordinator restores its files.
+    /// Each dependency of the recipe (`deps`, `build_deps`) by its name, with
+    /// the output names it declares. The worker builds `DEPS` from it: a
+    /// dependency with one output is that output's staged path, one with
+    /// several a map by output name (docs/recipe-format.md, decision 16). An
+    /// output the coordinator did not stage (it did not run the dependency,
+    /// or a runtime dependency's `system` output in a system change) is `()`.
+    pub dependencies: std::collections::BTreeMap<String, Vec<String>>,
+    /// Matching per-recipe saved state ([`SavedState`]); the coordinator
+    /// restores its files.
     pub restored_states: std::collections::BTreeMap<String, serde_json::Value>,
     /// Present exactly for a host-mode worker (`crate::execution`): where its
     /// directories are and what it may reach. Absent, and not serialized, for
@@ -322,15 +322,40 @@ impl InvocationOptions {
     }
 }
 
+/// The saved state of one recipe (docs/recipe-format.md, section 7), as a
+/// checkpoint reports it, the coordinator keeps it with that checkpoint's
+/// files, and a request restores it. It never proves that work is done.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SavedState {
+    /// `save(name, value)`: each name to its JSON value.
+    pub values: serde_json::Map<String, serde_json::Value>,
+    /// `checkpoint(name)`: the names reached, oldest first.
+    pub reached: Vec<String>,
+}
+
+impl SavedState {
+    /// Read a state object of a checkpoint, a request or the saved record.
+    pub fn from_value(value: &serde_json::Value) -> Result<Self, ProtocolError> {
+        serde_json::from_value(value.clone())
+            .map_err(|e| ProtocolError::PayloadInvalid(format!("invalid saved state: {e}")))
+    }
+
+    pub fn to_value(&self) -> serde_json::Value {
+        serde_json::to_value(self).expect("a saved state always serializes")
+    }
+}
+
 /// Op 2 (worker→host): report one persistence point; the host quiesces
-/// storage, persists `ctx`, then answers with [`AckPayload`].
+/// storage, persists the state with the files, then answers with
+/// [`AckPayload`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckpointPayload {
     /// Checkpoint sequence for the `{seq → generation}` association.
     pub seq: u64,
     /// Canonical staged recipe identity, never a host state destination.
     pub recipe: String,
-    /// Only resumable runtime state; package facts and paths are initialized anew.
+    /// The recipe's [`SavedState`] at this checkpoint.
     pub state: serde_json::Value,
 }
 
@@ -348,10 +373,10 @@ pub struct AckPayload {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureKind {
-    /// A phase hook or its readiness verification failed.
+    /// A step failed (`download` or `build`, which includes `verify`).
     Phase,
-    /// The operation failed outside a phase: compiling or setting up the
-    /// recipe, a check, a dependency, or the remove/cleanup hook.
+    /// The operation failed outside a step: compiling or setting up the
+    /// recipe, a dependency, top-level code, `cleanup` or `latest`.
     Recipe,
     /// The worker could not run the request it was given.
     Request,
@@ -399,8 +424,15 @@ pub struct ResultPayload {
     pub ok: bool,
     /// Present exactly when `ok` is false.
     pub failure: Option<FailureInfo>,
-    /// Summary of the final `ctx` (plain JSON, no paths required).
-    pub ctx_summary: serde_json::Value,
+    /// A successful install: every declared output to the domain path the
+    /// engine placed it at ([`crate::domain::output_path`]). Empty otherwise.
+    pub outputs: std::collections::BTreeMap<String, String>,
+    /// The recipe's [`SavedState`] at the end, which the coordinator keeps
+    /// with the final files.
+    pub saved: serde_json::Value,
+    /// A successful `latest`: the version `latest()` returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest: Option<String>,
     /// A host-mode worker's account of each declared endpoint (Ginux reports
     /// it in its audit log instead). Absent from a Ginux worker's frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -615,7 +647,7 @@ pub enum ProtocolError {
     /// Unknown op code.
     UnknownOp(u16),
     /// Payload is not valid UTF-8 JSON, has the wrong shape, or breaks a
-    /// field rule (bad `invocation_id`, non-object `*_ctx`, ...).
+    /// field rule (bad `invocation_id`, an invalid saved state, ...).
     PayloadInvalid(String),
     /// Trailing bytes after one complete frame in [`decode_message`].
     TrailingBytes { frame_len: usize, buffer_len: usize },
@@ -705,6 +737,28 @@ fn check_result(p: &ResultPayload) -> Result<(), ProtocolError> {
             "a result carries a failure exactly when it is not ok".into(),
         ));
     }
+    if !p.ok && (!p.outputs.is_empty() || p.latest.is_some()) {
+        return Err(ProtocolError::PayloadInvalid(
+            "a failed result names no outputs and no version".into(),
+        ));
+    }
+    if p.outputs.len() > MAX_OUTPUTS
+        || p.outputs.iter().any(|(name, path)| {
+            !crate::domain::valid_name(name) || *path != crate::domain::output_path(name)
+        })
+    {
+        return Err(ProtocolError::PayloadInvalid(
+            "a result names each output at its engine-placed path".into(),
+        ));
+    }
+    SavedState::from_value(&p.saved)?;
+    if p.latest.as_ref().is_some_and(|version| {
+        version.is_empty() || version.len() > 256 || version.chars().any(char::is_control)
+    }) {
+        return Err(ProtocolError::PayloadInvalid(
+            "latest() returns a version of 1 to 256 characters".into(),
+        ));
+    }
     if let Some(failure) = &p.failure
         && failure.phase.is_some() != (failure.kind == FailureKind::Phase)
     {
@@ -717,14 +771,18 @@ fn check_result(p: &ResultPayload) -> Result<(), ProtocolError> {
 
 fn check_request(p: &RequestPayload) -> Result<(), ProtocolError> {
     p.options.validate_for(p.operation)?;
-    match (&p.cleanup_reason, p.operation) {
-        (Some(reason), Operation::Cleanup) if reason.len() <= MAX_CLEANUP_REASON => {}
-        (None, operation) if operation != Operation::Cleanup => {}
-        _ => {
-            return Err(ProtocolError::PayloadInvalid(format!(
-                "a cleanup reason (≤ {MAX_CLEANUP_REASON} B) comes with cleanup and only with cleanup"
-            )));
-        }
+    if p.dependencies.len() > MAX_DEPENDENCIES
+        || p.dependencies.iter().any(|(name, outputs)| {
+            crate::recipes::dependency_file(name).is_err()
+                || outputs.len() > MAX_OUTPUTS
+                || outputs
+                    .iter()
+                    .any(|output| !crate::domain::valid_name(output))
+        })
+    {
+        return Err(ProtocolError::PayloadInvalid(
+            "invalid dependency outputs".into(),
+        ));
     }
     if p.restored_states.len() > MAX_RESTORED_STATES
         || (!p.persist_state && !p.restored_states.is_empty())
@@ -734,11 +792,12 @@ fn check_request(p: &RequestPayload) -> Result<(), ProtocolError> {
         ));
     }
     for (recipe, state) in &p.restored_states {
-        if !valid_recipe_identity(recipe) || !state.is_object() {
+        if !valid_recipe_identity(recipe) {
             return Err(ProtocolError::PayloadInvalid(
                 "invalid restored recipe state".into(),
             ));
         }
+        SavedState::from_value(state)?;
     }
     if let Some(host) = &p.host {
         check_host(host)?;
@@ -763,11 +822,12 @@ fn valid_recipe_identity(path: &str) -> bool {
 }
 
 fn check_checkpoint(p: &CheckpointPayload) -> Result<(), ProtocolError> {
-    if !valid_recipe_identity(&p.recipe) || !p.state.is_object() {
+    if !valid_recipe_identity(&p.recipe) {
         return Err(ProtocolError::PayloadInvalid(
-            "checkpoint requires a staged recipe identity and state object".into(),
+            "checkpoint requires a staged recipe identity".into(),
         ));
     }
+    SavedState::from_value(&p.state)?;
     Ok(())
 }
 

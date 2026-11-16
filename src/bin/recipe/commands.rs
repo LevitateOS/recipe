@@ -274,12 +274,23 @@ fn run(cli: Cli) -> Result<()> {
                 (json_output.as_deref(), json),
             )?;
             let engine = create_engine(&recipe_path, &engine_options)?;
-            let mut ctx = engine.execute(&recipe_path)?;
+            let mut result = engine.execute(&recipe_path)?;
             if !no_activate {
-                activate_package(&package_store, &recipe_path, recipes_path, &mut ctx, None)?;
+                activate_package(
+                    &package_store,
+                    &recipe_path,
+                    recipes_path,
+                    &mut result,
+                    None,
+                )?;
             }
-            ctx["producer_io"] = levitate_recipe::system::io_delta(&io_start);
-            emit_result(&ctx, json_output.as_deref(), json, "Installation completed")?;
+            result["producer_io"] = levitate_recipe::system::io_delta(&io_start);
+            emit_result(
+                &result,
+                json_output.as_deref(),
+                json,
+                "Installation completed",
+            )?;
         }
 
         Commands::Update { recipe } => {
@@ -321,18 +332,18 @@ fn run(cli: Cli) -> Result<()> {
                 (json_output.as_deref(), json),
             )?;
             let engine = create_engine(&recipe_path, &engine_options)?;
-            let mut ctx = engine.execute(&recipe_path)?;
+            let mut result = engine.execute(&recipe_path)?;
             activate_package(
                 &package_store,
                 &recipe_path,
                 recipes_path,
-                &mut ctx,
+                &mut result,
                 Some(&installed.name),
             )?;
             if let Some(source) = &installed.source {
                 all_sources.forget(source, &installed.name, Some(&recipe_path));
             }
-            emit_result(&ctx, json_output.as_deref(), json, "Package updated")?;
+            emit_result(&result, json_output.as_deref(), json, "Package updated")?;
         }
 
         Commands::Installed => {
@@ -389,21 +400,19 @@ fn run(cli: Cli) -> Result<()> {
             }
             let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
             require_output_only_if_inactive(&recipe_path, recipes_path, no_activate)?;
-            let engine = create_engine(&recipe_path, &engine_options)?;
-            let ctx = engine.remove(&recipe_path)?;
-            emit_result(&ctx, json_output.as_deref(), json, "Removal completed")?;
+            // C4: removing what a producer run left (its downloads and build
+            // material, by Recipe's own records) replaces the remove hook.
+            anyhow::bail!(
+                "{} is not installed in this profile; removing a producer's material is not built yet in C2",
+                recipe_path.display()
+            );
         }
 
-        Commands::Cleanup { recipe, reason } => {
+        Commands::Cleanup { recipe } => {
             let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
             let engine = create_engine(&recipe_path, &engine_options)?;
-            let cleanup_reason = reason
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .unwrap_or(levitate_recipe::bin_support::DEFAULT_CLEANUP_REASON);
-            let ctx = engine.cleanup_with_reason(&recipe_path, cleanup_reason)?;
-            emit_result(&ctx, json_output.as_deref(), json, "Cleanup completed")?;
+            let result = engine.cleanup(&recipe_path)?;
+            emit_result(&result, json_output.as_deref(), json, "Cleanup completed")?;
         }
 
         Commands::IsInstalled { recipe } => {
@@ -414,35 +423,22 @@ fn run(cli: Cli) -> Result<()> {
                 emit_result(&result, json_output.as_deref(), json, "Package is active")?;
                 return Ok(());
             }
+            // C4: `recipe state NAME` replaces the three checks; a state
+            // comes from Recipe's own records, never from recipe code.
             let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
-            require_output_only_if_inactive(&recipe_path, recipes_path, no_activate)?;
-            let engine = create_engine(&recipe_path, &engine_options)?;
-            let ctx = engine.is_installed(&recipe_path)?;
-            emit_result(
-                &ctx,
-                json_output.as_deref(),
-                json,
-                "Installation check passed",
-            )?;
+            anyhow::bail!(
+                "{} is not installed in this profile; a producer's state (recipe state) is not built yet in C2",
+                recipe_path.display()
+            );
         }
 
-        Commands::IsBuilt { recipe } => {
+        Commands::IsBuilt { recipe } | Commands::IsAcquired { recipe } => {
+            // C4: replaced by `recipe state NAME`.
             let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
-            let engine = create_engine(&recipe_path, &engine_options)?;
-            let ctx = engine.is_built(&recipe_path)?;
-            emit_result(&ctx, json_output.as_deref(), json, "Build check passed")?;
-        }
-
-        Commands::IsAcquired { recipe } => {
-            let recipe_path = resolve_recipe_path(&recipe, &lookup)?;
-            let engine = create_engine(&recipe_path, &engine_options)?;
-            let ctx = engine.is_acquired(&recipe_path)?;
-            emit_result(
-                &ctx,
-                json_output.as_deref(),
-                json,
-                "Source acquisition check passed",
-            )?;
+            anyhow::bail!(
+                "{}: isbuilt and isacquired ran recipe checks, which API 1 has not; recipe state is not built yet in C2",
+                recipe_path.display()
+            );
         }
 
         Commands::List => list_recipes(&lookup, &package_store, list_json)?,
@@ -642,10 +638,10 @@ fn activate_package(
     store: &PackageStore,
     recipe: &Path,
     search: &Path,
-    ctx: &mut serde_json::Value,
+    result: &mut serde_json::Value,
     updating: Option<&str>,
 ) -> Result<()> {
-    let output = ctx
+    let output = result
         .get("outputs")
         .and_then(|outputs| outputs.get("package"));
     if output.is_none() && updating.is_none() {
@@ -654,14 +650,14 @@ fn activate_package(
     let output = output
         .and_then(|value| value.as_str())
         .context("user-managed recipe must publish a directory output named package")?;
-    let name = ctx
+    let name = result
         .get("name")
         .and_then(|value| value.as_str())
-        .context("package output requires ctx.name")?;
-    let version = ctx
+        .context("a package output's result names the recipe")?;
+    let version = result
         .get("version")
         .and_then(|value| value.as_str())
-        .context("package output requires ctx.version")?;
+        .context("a package output needs PACKAGE.version")?;
     if let Some(expected) = updating {
         anyhow::ensure!(
             name == expected,
@@ -669,10 +665,7 @@ fn activate_package(
         );
     }
     // What was carried was told this folder; it must be where it lands.
-    if let Some(prefix) = ctx
-        .pointer("/runtime/paths/prefix")
-        .and_then(|value| value.as_str())
-    {
+    if let Some(prefix) = result.get("prefix").and_then(|value| value.as_str()) {
         let expected = store.package_prefix(name)?;
         anyhow::ensure!(
             Path::new(prefix) == expected,
@@ -694,7 +687,7 @@ fn activate_package(
         updating.is_some(),
     )?;
     let profile = store.profile_path();
-    ctx["activation"] = serde_json::json!({"name": installed.name, "version": installed.version,
+    result["activation"] = serde_json::json!({"name": installed.name, "version": installed.version,
         "profile": profile, "bin": profile.join("bin")});
     let bin = profile.join("bin");
     if !std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|p| p == bin))
@@ -856,7 +849,7 @@ struct EngineOptions<'a> {
     inputs: &'a [String],
     no_persist_state: bool,
     /// The store a package output will be activated in; None with
-    /// --no-activate. It decides RUNTIME.paths.prefix.
+    /// --no-activate. It decides PREFIX.
     activate_into: Option<&'a PackageStore>,
 }
 

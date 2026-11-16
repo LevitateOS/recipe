@@ -20,8 +20,10 @@
 //!   name), the recipe operation outside a phase, or the request itself.
 //!
 //! The coordinator prepares immutable inputs and restores the matching filesystem.
-//! The worker initializes current facts, restores only ctx.state, and reports
-//! per-recipe state at checkpoints. It never rewrites recipe sources.
+//! The worker builds the run's constants anew, restores only the saved state
+//! (`crate::core::saved`), and reports it at each `checkpoint(name)`. Its
+//! result names every output at the path the engine placed it at. It never
+//! rewrites recipe sources.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -30,11 +32,22 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use crate::core::executor::{EngineError, ExecutionContext, Load};
+use crate::core::executor::{EngineError, Load};
 use crate::worker::protocol::{
     CheckpointPayload, Direction, FailureInfo, FailureKind, FramePayload, FrameReceiver,
-    FrameSender, Operation, ProgressPayload, RequestPayload, ResultPayload,
+    FrameSender, Operation, ProgressPayload, RequestPayload, ResultPayload, SavedState,
 };
+
+/// What a finished operation reports in its result frame.
+#[derive(Default)]
+struct Outcome {
+    /// Install: each declared output to its engine-placed domain path.
+    outputs: std::collections::BTreeMap<String, String>,
+    /// The saved state at the end.
+    saved: SavedState,
+    /// Latest: the version `latest()` returned.
+    latest: Option<String>,
+}
 
 struct WorkerChannel {
     sender: FrameSender,
@@ -134,8 +147,7 @@ fn engine_failure(error: EngineError) -> FailureInfo {
 pub fn run_worker() -> Result<()> {
     let (invocation_id, host_entry) = ensure_internal_entry()?;
 
-    let stdin = std::io::stdin();
-    let mut input = stdin.lock();
+    let mut input = std::io::stdin().lock();
     let stdout = std::io::stdout();
     let mut output = stdout;
     let mut rx = FrameReceiver::new();
@@ -147,25 +159,13 @@ pub fn run_worker() -> Result<()> {
         Ok(req) => req,
         Err(err) => {
             let failure = request_failure(format!("bad request: {err:#}"));
-            return send_result(
-                &mut tx,
-                &mut output,
-                false,
-                Some(failure),
-                serde_json::json!({}),
-            );
+            return send_result(&mut tx, &mut output, Err(failure));
         }
     };
     if request.invocation_id != invocation_id || request.host.is_some() != host_entry {
         let failure =
             request_failure("request invocation id or mode does not match worker bootstrap".into());
-        return send_result(
-            &mut tx,
-            &mut output,
-            false,
-            Some(failure),
-            serde_json::json!({}),
-        );
+        return send_result(&mut tx, &mut output, Err(failure));
     }
     crate::diagnostics::trace(&format!(
         "worker: invocation={} operation={} persist_state={} recipe={}",
@@ -182,13 +182,7 @@ pub fn run_worker() -> Result<()> {
         && let Err(error) = enter_host_mode(host)
     {
         let failure = request_failure(format!("cannot enter host mode: {error:#}"));
-        return send_result(
-            &mut tx,
-            &mut output,
-            false,
-            Some(failure),
-            serde_json::json!({}),
-        );
+        return send_result(&mut tx, &mut output, Err(failure));
     }
 
     let channel = Arc::new(Mutex::new(WorkerChannel {
@@ -202,7 +196,7 @@ pub fn run_worker() -> Result<()> {
     install_progress(&channel);
     crate::core::output::set_machine_events(request.options.execution.machine_events);
     crate::diagnostics::line("recipe: managed worker started");
-    let outcome = run_operation(&request, &mut rx, &mut input, &channel, &mut output);
+    let outcome = run_operation(&request, rx, input, &channel);
     crate::core::output::flush_progress();
     let mut channel = channel
         .lock()
@@ -212,10 +206,7 @@ pub fn run_worker() -> Result<()> {
         bail!("worker diagnostic transport failed");
     }
     let tx = &mut channel.sender;
-    match outcome {
-        Ok(summary) => send_result(tx, &mut output, true, None, summary),
-        Err(failure) => send_result(tx, &mut output, false, Some(failure), serde_json::json!({})),
-    }
+    send_result(tx, &mut output, outcome)
 }
 
 /// Require the private argv entry, the coordinator's bootstrap flag, and an
@@ -407,18 +398,19 @@ fn recv_request(rx: &mut FrameReceiver, input: &mut impl Read) -> Result<Request
 }
 
 /// Run the requested operation, reporting every checkpoint and waiting for
-/// its ack. Returns the final ctx for the result frame; engine, request and
-/// ack problems become a [`FailureInfo`].
+/// its ack. Returns what the result frame reports; engine, request and ack
+/// problems become a [`FailureInfo`]. The checkpoint sink owns the request
+/// stream (`rx`, `input`): the `checkpoint(name)` helper reaches it through
+/// the run's session (`crate::core::saved`).
 fn run_operation(
     req: &RequestPayload,
-    rx: &mut FrameReceiver,
-    input: &mut impl Read,
+    mut rx: FrameReceiver,
+    mut input: std::io::StdinLock<'static>,
     tx: &SharedChannel,
-    output: &mut impl Write,
-) -> std::result::Result<serde_json::Value, FailureInfo> {
-    let recipe = &crate::domain::local(crate::domain::MAIN_RECIPE);
-    let build_dir = &crate::domain::local(crate::domain::BUILD);
-    let search_path = &crate::domain::local(crate::domain::INPUTS);
+) -> std::result::Result<Outcome, FailureInfo> {
+    let recipe = crate::domain::local(crate::domain::MAIN_RECIPE);
+    let build_dir = crate::domain::local(crate::domain::BUILD);
+    let search_path = crate::domain::local(crate::domain::INPUTS);
     if !recipe.is_file() || !build_dir.is_dir() {
         return Err(request_failure(format!(
             "the domain lacks {} or {}",
@@ -426,78 +418,53 @@ fn run_operation(
             build_dir.display()
         )));
     }
-    let engine = build_engine(search_path, req.host.is_none());
-    let mut checkpoint_no: u64 = 0;
-    let mut sink = |recipe: &Path, ctx: &rhai::Map| -> Result<()> {
-        report_checkpoint(tx, output, rx, input, &mut checkpoint_no, recipe, ctx)
-            .map(drop)
-            .map_err(|err| anyhow!("checkpoint #{checkpoint_no}: {err:#}"))
-    };
-    // Saved states are keyed by domain path; a host worker knows its recipes
-    // by their host paths.
+    // Saved states are keyed by domain path; this run has one recipe.
     let restored = req
         .restored_states
-        .iter()
-        .map(|(recipe, state)| {
-            (
-                crate::domain::local(recipe).to_string_lossy().into_owned(),
-                state.clone(),
+        .get(crate::domain::MAIN_RECIPE)
+        .map(SavedState::from_value)
+        .transpose()
+        .map_err(|err| request_failure(format!("restoring saved state: {err}")))?;
+    let channel = Arc::clone(tx);
+    let mut checkpoint_no: u64 = 0;
+    let sink = Box::new(
+        move |recipe: &Path, state: &serde_json::Value| -> Result<()> {
+            report_checkpoint(
+                &channel,
+                &mut std::io::stdout(),
+                &mut rx,
+                &mut input,
+                &mut checkpoint_no,
+                recipe,
+                state,
             )
-        })
-        .collect();
-    let mut exec = ExecutionContext::new(
-        &mut sink,
-        req.options.execution.clone(),
-        &restored,
-        req.persist_state,
-    )
-    .map_err(|err| request_failure(format!("restoring saved state: {err:#}")))?;
+            .map(drop)
+            .map_err(|err| anyhow!("checkpoint #{checkpoint_no}: {err:#}"))
+        },
+    );
+    let _session = crate::core::saved::begin(recipe.clone(), restored, sink);
+    let programs = req.host.is_none();
+    let make_engine = || build_engine(&search_path, programs);
     let load = Load {
-        search_path: Some(search_path),
-        build_dir,
+        search_path: Some(&search_path),
+        make_engine: &make_engine,
         defines: &req.options.defines,
-        operation: req.operation.as_str(),
+        dependencies: &req.dependencies,
+        options: &req.options.execution,
     };
     use crate::core::executor as engine_ops;
-    let final_ctx = match req.operation {
-        Operation::Install => engine_ops::install(&engine, &mut exec, recipe, &load),
-        Operation::Remove => engine_ops::remove(&engine, &mut exec, recipe, &load),
-        Operation::Cleanup => match req.cleanup_reason.as_deref() {
-            Some(reason) => engine_ops::cleanup(&engine, &mut exec, recipe, &load, reason),
-            None => return Err(request_failure("cleanup request without a reason".into())),
-        },
-        Operation::IsInstalled | Operation::IsBuilt | Operation::IsAcquired => {
-            let check = req.operation.check().unwrap_or_default();
-            engine_ops::check(&engine, &mut exec, recipe, &load, check)
+    let mut outcome = Outcome::default();
+    match req.operation {
+        Operation::Install => {
+            outcome.outputs = engine_ops::install(&recipe, &load).map_err(engine_failure)?;
+        }
+        Operation::Cleanup => engine_ops::cleanup(&recipe, &load).map_err(engine_failure)?,
+        Operation::Latest => {
+            outcome.latest = Some(engine_ops::latest(&recipe, &load).map_err(engine_failure)?);
         }
     }
-    .map_err(engine_failure)?;
-    let mut summary = ctx_json(&final_ctx).map_err(|err| engine_failure(err.into()))?;
-    if req.host.is_some() {
-        domain_outputs(&mut summary).map_err(|err| engine_failure(err.into()))?;
-    }
-    Ok(summary)
-}
-
-/// A host run's outputs name host paths; the coordinator takes outputs by
-/// their domain paths (`/out/...`, `/work/...`), as from a Ginux run.
-fn domain_outputs(summary: &mut serde_json::Value) -> Result<()> {
-    let Some(outputs) = summary
-        .get_mut("outputs")
-        .and_then(serde_json::Value::as_object_mut)
-    else {
-        return Ok(());
-    };
-    for (name, value) in outputs.iter_mut() {
-        let Some(path) = value.as_str() else {
-            continue;
-        };
-        let domain = crate::domain::domain_path(Path::new(path)).with_context(|| {
-            format!("ctx.outputs.{name} = {path} is outside this run's directories")
-        })?;
-        *value = serde_json::Value::String(domain);
-    }
-    Ok(())
+    outcome.saved = crate::core::saved::current();
+    Ok(outcome)
 }
 
 /// Resolve modules by [`crate::recipes::find_related`]: beside the importing
@@ -563,17 +530,13 @@ fn report_checkpoint(
     input: &mut impl Read,
     checkpoint_no: &mut u64,
     recipe: &Path,
-    ctx_map: &rhai::Map,
+    state: &serde_json::Value,
 ) -> Result<Option<u64>> {
     // The files a checkpoint snapshots include every manifest a package
     // helper deferred.
     crate::target::flush_pending()?;
     *checkpoint_no += 1;
     let seq = *checkpoint_no;
-    let state = match ctx_map.get("state") {
-        Some(state) => state_json(state)?,
-        None => bail!("checkpoint context is missing ctx.state"),
-    };
     let mut channel = tx.lock().map_err(|_| anyhow!("worker channel poisoned"))?;
     if channel.failed {
         bail!("worker diagnostic transport failed");
@@ -586,7 +549,7 @@ fn report_checkpoint(
                 seq,
                 recipe: crate::domain::domain_path(recipe)
                     .context("recipe identity is not UTF-8 or outside the run")?,
-                state,
+                state: state.clone(),
             }),
         )
         .map_err(|e| {
@@ -680,95 +643,37 @@ fn wait_readable(timeout: Duration) -> Result<()> {
 fn send_result(
     tx: &mut FrameSender,
     output: &mut impl Write,
-    ok: bool,
-    failure: Option<FailureInfo>,
-    ctx_summary: serde_json::Value,
+    outcome: std::result::Result<Outcome, FailureInfo>,
 ) -> Result<()> {
-    // The result's outputs are read from disk: write deferred manifests first.
-    let (ok, failure) = match crate::target::flush_pending() {
-        Ok(()) => (ok, failure),
-        Err(error) => (
-            false,
-            failure.or_else(|| {
-                Some(FailureInfo {
-                    kind: FailureKind::Recipe,
-                    phase: None,
-                    message: format!("cannot write the target metadata: {error:#}"),
-                })
-            }),
-        ),
+    // The outputs are read from disk: write deferred manifests first.
+    let outcome = match crate::target::flush_pending() {
+        Ok(()) => outcome,
+        Err(error) => Err(outcome.err().unwrap_or_else(|| FailureInfo {
+            kind: FailureKind::Recipe,
+            phase: None,
+            message: format!("cannot write the target metadata: {error:#}"),
+        })),
     };
-    tx.send(
-        output,
-        &FramePayload::Result(ResultPayload {
-            ok,
-            failure,
-            ctx_summary,
+    let payload = match outcome {
+        Ok(outcome) => ResultPayload {
+            ok: true,
+            failure: None,
+            outputs: outcome.outputs,
+            saved: outcome.saved.to_value(),
+            latest: outcome.latest,
             network_usage: crate::helpers::acquire::net::usage(),
-        }),
-    )
-    .map_err(|e| anyhow!("send result: {e}"))?;
+        },
+        Err(failure) => ResultPayload {
+            ok: false,
+            failure: Some(failure),
+            outputs: Default::default(),
+            saved: SavedState::default().to_value(),
+            latest: None,
+            network_usage: crate::helpers::acquire::net::usage(),
+        },
+    };
+    tx.send(output, &FramePayload::Result(payload))
+        .map_err(|e| anyhow!("send result: {e}"))?;
     output.flush().context("flush result")?;
     Ok(())
-}
-
-/// Serialize a final/ checkpoint `ctx` map exactly like the CLI's JSON
-/// output does. Must be a JSON object (§4 field rule).
-fn ctx_json(map: &rhai::Map) -> Result<serde_json::Value> {
-    if let Some(state) = map.get("state") {
-        state_json(state)?;
-    }
-    let dynamic = rhai::Dynamic::from(map.clone());
-    let value: serde_json::Value =
-        rhai::serde::from_dynamic(&dynamic).map_err(|e| anyhow!("serialize ctx: {e}"))?;
-    if !value.is_object() {
-        bail!("ctx did not serialize to a JSON object");
-    }
-    Ok(value)
-}
-
-/// Reject values JSON cannot preserve, with the exact field needing migration.
-fn state_json(state: &rhai::Dynamic) -> Result<serde_json::Value> {
-    fn validate(value: &rhai::Dynamic, path: &str, depth: usize) -> Result<()> {
-        if depth > 64 {
-            bail!("{path}: state nesting exceeds 64");
-        }
-        let value = value.flatten_clone();
-        if value.is_unit() || value.is_bool() || value.is_int() || value.is_string() {
-            return Ok(());
-        }
-        if value.is_float() {
-            if !value
-                .as_float()
-                .map_err(|error| anyhow!("{path}: {error}"))?
-                .is_finite()
-            {
-                bail!("{path}: nonfinite numbers cannot be saved");
-            }
-            return Ok(());
-        }
-        if let Some(array) = value.read_lock::<rhai::Array>() {
-            for (index, child) in array.iter().enumerate() {
-                validate(child, &format!("{path}[{index}]"), depth + 1)?;
-            }
-            return Ok(());
-        }
-        if let Some(map) = value.read_lock::<rhai::Map>() {
-            for (name, child) in map.iter() {
-                validate(child, &format!("{path}[{name:?}]"), depth + 1)?;
-            }
-            return Ok(());
-        }
-        bail!(
-            "{path}: {} is not serializable runtime state",
-            value.type_name()
-        )
-    }
-    validate(state, "ctx.state", 0)?;
-    let value =
-        rhai::serde::from_dynamic::<serde_json::Value>(state).context("serialize ctx.state")?;
-    if !value.is_object() {
-        bail!("ctx.state must be a map");
-    }
-    Ok(value)
 }

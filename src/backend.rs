@@ -28,8 +28,14 @@ impl GinuxLauncher {
 /// Each recipe runs where `crate::execution` places it: in Ginux through
 /// `explicit` (or the launcher `GINUX_BIN` names, resolved only when some
 /// recipe needs Ginux), or on the host. Prepare immutable inputs, execute,
-/// and return the final context only after successful completion and
-/// validated publication. Persistence retains separate state/files pairs.
+/// and return the run's result (`crate::launch::finish_outputs`) only after
+/// successful completion and validated publication. Persistence retains
+/// separate state/files pairs.
+///
+/// Install runs the dependencies first, each in its own run, and stages
+/// their published outputs for their consumer. Cleanup and latest run the
+/// main recipe alone; latest always on the host (docs/recipe-format.md,
+/// section 2.9).
 pub(crate) fn run(
     explicit: Option<&GinuxLauncher>,
     invocation: &crate::launch::Invocation<'_>,
@@ -64,14 +70,15 @@ impl Runner<'_> {
             .validate_for(invocation.operation)
             .context(crate::failure::Category::Startup.error("invalid invocation options"))?;
         crate::runtime::set_fetch_events(invocation.options.execution.machine_events);
-        let graph = crate::needs::declarations(invocation.recipe, invocation.search_path)?;
-        if invocation.options.execution.machine_events
-            && invocation.operation == crate::worker::protocol::Operation::Install
-        {
+        let all = crate::needs::declarations(invocation.recipe, invocation.search_path)?;
+        crate::needs::check_defines(&all, &invocation.options.defines)?;
+        let operation = invocation.operation;
+        let install = operation == crate::worker::protocol::Operation::Install;
+        if invocation.options.execution.machine_events && install {
             // For a front end: every recipe of this run in the order they run,
-            // each with the steps it defines. Each recipe says which of them it
-            // needs this time when its own checks have run (`plan` with `recipe`).
-            let recipes: Vec<_> = graph
+            // each with the steps it has (`plan` with `recipe` repeats them
+            // when the recipe starts).
+            let recipes: Vec<_> = all
                 .iter()
                 .map(
                     |node| serde_json::json!({"name": node.name(), "steps": node.declared.steps()}),
@@ -82,21 +89,37 @@ impl Runner<'_> {
                 serde_json::json!({"event": "plan", "recipes": recipes})
             );
         }
-        let bindings =
-            crate::inputs::bind_inputs(&graph, invocation.inputs, invocation.search_path)?;
+        let bindings = crate::inputs::bind_inputs(&all, invocation.inputs, invocation.search_path)?;
         // Resolve all declarations and contracts before the first dependency can
         // execute. Parent restrictions never become dependency grants, and
         // force flags apply to the main recipe only.
-        let main_recipe = &graph.last().context("empty recipe graph")?.recipe;
+        let main_recipe = &all.last().context("empty recipe graph")?.recipe;
+        // C4: cleanup runs the main recipe's cleanup("manual") without running
+        // its dependencies (their DEPS entries are ()); what a recorded result
+        // of a dependency would give it is C4's.
+        let graph: Vec<_> = all
+            .iter()
+            .filter(|node| install || node.recipe == *main_recipe)
+            .collect();
         let mut executions = Vec::with_capacity(graph.len());
         let mut placements = Vec::with_capacity(graph.len());
         for node in &graph {
-            let eligibility = crate::execution::eligibility(&node.recipe, invocation.search_path)?;
-            let placement = crate::execution::Placement::choose(
-                invocation.options.execution.execution,
-                &eligibility,
-            )
-            .with_context(|| format!("placing {}", node.recipe.display()))?;
+            let placement = if operation == crate::worker::protocol::Operation::Latest {
+                // latest() runs alone on the host and may not start programs:
+                // a host worker has no program helpers and cannot exec.
+                crate::execution::Placement {
+                    host: true,
+                    reason: "latest() runs on the host".into(),
+                }
+            } else {
+                let eligibility =
+                    crate::execution::eligibility(&node.recipe, invocation.search_path)?;
+                crate::execution::Placement::choose(
+                    invocation.options.execution.execution,
+                    &eligibility,
+                )
+                .with_context(|| format!("placing {}", node.recipe.display()))?
+            };
             placements.push(placement);
             let mut execution = invocation.options.execution.clone();
             if node.recipe != *main_recipe {
@@ -120,12 +143,11 @@ impl Runner<'_> {
             .any(|(k, _)| k == "RECIPE_SYSTEM_CONTEXT");
         // A system change: packages the root already holds, by recipe digest
         // and version (`RECIPE_SYSTEM_PRESENT`, written by the system route).
-        let present =
-            if system && invocation.operation == crate::worker::protocol::Operation::Install {
-                system_present()?
-            } else {
-                Vec::new()
-            };
+        let present = if system && install {
+            system_present()?
+        } else {
+            Vec::new()
+        };
         let mut skipped = Vec::new();
         for ((node, execution), placement) in graph.iter().zip(executions).zip(&placements) {
             let main = node.recipe == *main_recipe;
@@ -156,11 +178,23 @@ impl Runner<'_> {
                 }
             }
             crate::diagnostics::diag!("recipe: {name}: {}", placement.reason);
-            // Every non-install operation reconstructs the installed input
-            // identity from checked cached products, without installing them.
-            let cached_only = invocation.operation != crate::worker::protocol::Operation::Install;
             crate::cancellation::check()?;
-            let transfer = (!node.dependencies.is_empty())
+            // Each dependency's declared output names, for the worker's DEPS.
+            let dependency_outputs: std::collections::BTreeMap<String, Vec<String>> = node
+                .dependencies
+                .iter()
+                .map(|dependency| -> Result<_> {
+                    let producer = all
+                        .iter()
+                        .find(|node| node.recipe == dependency.recipe)
+                        .context("a dependency is missing from the recipe graph")?;
+                    Ok((
+                        dependency.name.clone(),
+                        producer.needs.outputs.keys().cloned().collect(),
+                    ))
+                })
+                .collect::<Result<_>>()?;
+            let transfer = (install && !node.dependencies.is_empty())
                 .then(crate::temporary::TemporaryDirectory::new)
                 .transpose()?;
             let mut internal = Vec::new();
@@ -194,9 +228,12 @@ impl Runner<'_> {
                         let kind = graph
                             .iter()
                             .find(|node| node.recipe == dependency.recipe)
-                            .unwrap()
+                            .context("dependency was not prepared")?
                             .needs
-                            .outputs[name];
+                            .outputs
+                            .get(name)
+                            .copied()
+                            .context("a dependency published an undeclared output")?;
                         // The input snapshot owner preserves aliases across named
                         // products. Copying each product here would split them.
                         product_inputs.push(crate::inputs::ExtraInput {
@@ -232,48 +269,29 @@ impl Runner<'_> {
                     hex::encode(Sha256::digest(node.recipe.as_os_str().as_encoded_bytes()));
                 invocation.destination.join(".deps").join(&digest[..32])
             };
-            let operation = if main {
-                invocation.operation
-            } else if cached_only {
-                crate::worker::protocol::Operation::IsInstalled
-            } else {
-                crate::worker::protocol::Operation::Install
-            };
             let child = crate::launch::Invocation {
                 recipe: &node.recipe,
                 inputs: &bindings[&node.recipe],
                 destination: &destination,
                 operation,
-                cleanup_reason: if main {
-                    invocation.cleanup_reason
-                } else {
-                    None
-                },
                 options: crate::worker::protocol::InvocationOptions {
                     defines: invocation.options.defines.clone(),
                     execution,
                 },
+                dependencies: &dependency_outputs,
+                // latest() sees no output and keeps nothing: no saved files
+                // are restored into its run, and none are kept after it.
+                persist_state: invocation.persist_state
+                    && operation != crate::worker::protocol::Operation::Latest,
                 ..*invocation
             };
-            let result = self.run_single(&child, &internal, node, placement.host, &mut image).with_context(|| {
-                if !main && cached_only {
-                    format!(
-                        "manual {} requires matching cached products from dependency {}; run install explicitly to prepare them",
-                        invocation.operation, node.recipe.display()
-                    )
-                } else {
-                    format!("running recipe {}", node.recipe.display())
-                }
-            })?;
+            let result = self
+                .run_single(&child, &internal, node, placement.host, &mut image)
+                .with_context(|| format!("running recipe {}", node.recipe.display()))?;
             results.insert(node.recipe.clone(), result);
         }
         let mut result = results.remove(main_recipe).unwrap();
-        if invocation
-            .options
-            .defines
-            .iter()
-            .any(|(k, _)| k == "RECIPE_SYSTEM_CONTEXT")
-        {
+        if install && system {
             let mut runtime = std::collections::BTreeSet::new();
             let mut pending = vec![main_recipe.clone()];
             while let Some(path) = pending.pop() {
@@ -396,14 +414,12 @@ impl Runner<'_> {
                 ),
             );
         }
-        if !report.result.ctx_summary.is_object() {
-            bail!(crate::failure::Category::Protocol.error(format!(
-                "`{operation}` succeeded {place} (invocation {}) but its ctx summary \
-                 is not a JSON object",
+        report.summary.ok_or_else(|| {
+            anyhow::Error::new(crate::failure::Category::Protocol.error(format!(
+                "`{operation}` succeeded {place} (invocation {}) but no result was published",
                 prepared.invocation_id,
-            )));
-        }
-        Ok(report.result.ctx_summary)
+            )))
+        })
     }
 }
 

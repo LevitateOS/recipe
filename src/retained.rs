@@ -221,7 +221,7 @@ impl Retained {
             force_build: _,
             force_install: _,
             exact_identity,
-            // Shown to recipes as RUNTIME.host.libc; the saved files of one
+            // Shown to recipes as HOST_LIBC; the saved files of one
             // store belong to one system.
             host_libc: _,
             package_prefix,
@@ -291,7 +291,7 @@ impl Retained {
             ))?)
         };
         // The package's folder is written into what a build carries
-        // (RUNTIME.paths.prefix), so a build belongs to the store it was
+        // (PREFIX), so a build belongs to the store it was
         // made for: installing the same recipe into another store builds
         // again. Without a prefix (--no-activate, dependencies) the identity
         // is the one it always was, so producer states stay valid.
@@ -406,7 +406,7 @@ impl Retained {
 
     pub fn commit(&mut self, pending: Pending, recipe: &str, state: Value) -> Result<u64> {
         if !self.allowed.contains(recipe) || !state.is_object() {
-            bail!("checkpoint names an unknown recipe or invalid ctx.state");
+            bail!("checkpoint names an unknown recipe or an invalid saved state");
         }
         let mut states = self.current.states.clone();
         states.insert(recipe.to_owned(), state);

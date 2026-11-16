@@ -313,7 +313,7 @@ fn produce_with(
         .arg("--define")
         .arg(format!("RECIPE_SYSTEM_CONTEXT={context}"))
         // The root written into decides what the recipe sees of "this
-        // system" (RUNTIME.host.libc, the libc and systems checks), and a
+        // system" (HOST_LIBC, the libc and systems checks), and a
         // refusal names the command the user gave.
         .env(levitate_recipe::clibrary::ROOT_ENV, root)
         // Read by the producer's graph (`backend::SYSTEM_PRESENT_ENV`).

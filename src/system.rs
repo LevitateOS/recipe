@@ -208,7 +208,7 @@ pub fn payloads(result: &serde_json::Value, target: &str) -> Result<Vec<Payload>
         ensure!(proof["version"] == 1, "unsupported producer receipt");
         let name = producer["name"]
             .as_str()
-            .context("system output needs ctx.name")?
+            .context("a system output's result names the recipe")?
             .to_owned();
         valid_name(&name)?;
         ensure!(
@@ -313,7 +313,7 @@ pub fn payloads(result: &serde_json::Value, target: &str) -> Result<Vec<Payload>
             name,
             version: producer["version"]
                 .as_str()
-                .context("system output needs ctx.version")?
+                .context("a system output needs a version (PACKAGE.version, or the pins file's)")?
                 .into(),
             recipe: PathBuf::from(proof["recipe"].as_str().unwrap()),
             recipe_digest: proof["recipe_digest"]

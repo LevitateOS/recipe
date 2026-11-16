@@ -243,15 +243,11 @@ pub(crate) enum Commands {
 
     /// Clean up build artifacts
     #[command(
-        after_help = "Examples:\n  recipe cleanup kitty\n  recipe cleanup kitty --reason manual\n  recipe cleanup ./recipes/kitty.rhai --build-dir /tmp/recipe-build"
+        after_help = "Examples:\n  recipe cleanup kitty\n  recipe cleanup ./recipes/kitty.rhai --build-dir /tmp/recipe-build\n\nRuns the recipe's own cleanup(\"manual\") when it defines one."
     )]
     Cleanup {
         /// Recipe path or recipe name. Name lookup follows the same rules as `recipe install`.
         recipe: PathBuf,
-
-        /// Cleanup reason passed to `cleanup(ctx, reason)`. Defaults to `manual`.
-        #[arg(long)]
-        reason: Option<String>,
     },
 
     /// Check active package files, or an output-only recipe's installed state

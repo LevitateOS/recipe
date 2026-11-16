@@ -5,21 +5,24 @@
 //! ...), read without running it ([`declarations`], [`needs`]); the format is
 //! docs/recipe-format.md.
 //!
-//! C2: the paragraphs below describe the API 2 run (ctx, hooks), which C2
-//! replaces.
+//! A run: the coordinator ([`RecipeEngine`]) runs each dependency first, in
+//! its own run, then starts a worker for the recipe, in a Ginux domain or on
+//! the host. The worker builds the engine's constants (`PREFIX`, `JOBS`,
+//! `HOST_LIBC`, `PACKAGE_FORMAT`, `INPUTS`, `DEFINES`, `DEPS`, `WORK`), runs
+//! the download step, places the outputs (`/out/NAME`, chosen by the engine),
+//! calls `build(src, out)` or `configure(tree)`, then `verify(out)` and
+//! `cleanup(reason)`, and returns where it placed each output. The
+//! coordinator validates the outputs, publishes them and returns their host
+//! paths in the result's `outputs`; a failed run publishes nothing.
 //!
 //! Explicit `RecipeEngine::add_input` selections are imported read-only under
-//! `/inputs`. Owned build work uses `/work/build`, dependency tools `/work/tools`,
-//! and the installed-target/product tree `/out`. A named `target` input seeds
-//! `/out` on fresh state. Hooks never inspect coordinator host paths.
+//! `/inputs` (`INPUTS.NAME`). Build material goes to `WORK`, dependency tools
+//! to `/work/tools`. A named `target` input seeds the one output on fresh
+//! state. Recipe code never sees coordinator host paths.
 //!
-//! Only `ctx.state` and its matching filesystem snapshot are checkpointed.
-//! Publication validates selected files/directories before returning their host
-//! paths in `ctx.outputs`; failed execution cannot publish incomplete work.
-//!
-//! Acquisition uses `download(url, exact_dest, sha256[, resume])` or pinned
-//! `git_checkout(url, exact_dest, full_commit)`. Explicit invocation network
-//! grants are required. Commands and helpers execute inside the domain.
+//! Only the saved values (`save`, `checkpoint`) and their matching filesystem
+//! snapshot are kept for an interrupted run; a saved value never proves that
+//! work is done.
 //!
 //! See README.md, WRITING_RECIPES.md and HELPERS_AUDIT.md for the current CLI,
 //! helper signatures, input/output contracts, resource limits and recovery.
@@ -95,8 +98,6 @@ pub mod bin_support {
     pub use crate::helpers::internal::hash::{FileHashes, compute_all_hashes};
     pub use crate::invocation_log::retained as retained_invocation;
     pub use crate::worker::protocol::{MAX_DIAGNOSTIC_BYTES, MAX_DIAGNOSTIC_FRAMES};
-    /// The cleanup reason when the user gives none.
-    pub const DEFAULT_CLEANUP_REASON: &str = crate::lifecycle::CleanupReason::Manual.as_str();
     pub use crate::worker::run_worker;
 
     /// The last event of a change, for a front end (`--machine-events`):
@@ -227,68 +228,48 @@ impl RecipeEngine {
         self.inputs.push(inputs::ExtraInput { name, path });
     }
 
-    /// Execute a recipe script (install a package)
+    /// Build a recipe: run its dependencies, then its download step and the
+    /// step that builds its outputs, and publish the outputs.
     ///
-    /// Follows the package lifecycle:
-    /// 1. is_installed() - Skip only on explicit ready(ctx).
-    /// 2. is_built() - Check if build needed
-    /// 3. is_acquired() - Check if acquire needed
-    /// 4. Execute needed phases
-    /// 5. Checkpoint ctx.state together with matching owned files.
-    ///
-    /// Returns the final ctx map containing all recipe state.
+    /// Returns the run's result: `name`, `version`, `outputs` (each output's
+    /// published path), `prefix`, `contract`, `network_usage`.
+    // C4: every step runs on every call; C4 decides what is done already
+    // from Recipe's own records.
     pub fn execute(&self, recipe_path: &Path) -> Result<serde_json::Value> {
-        self.invoke(worker::protocol::Operation::Install, None, recipe_path)
+        self.invoke(worker::protocol::Operation::Install, recipe_path)
     }
 
-    /// Remove an installed package
-    ///
-    /// Returns the final ctx map after removal.
-    pub fn remove(&self, recipe_path: &Path) -> Result<serde_json::Value> {
-        self.invoke(worker::protocol::Operation::Remove, None, recipe_path)
+    /// Run the recipe's own `cleanup("manual")`.
+    // C4: what `recipe cleanup` deletes itself (downloads, build material,
+    // saved state) is C4's.
+    pub fn cleanup(&self, recipe_path: &Path) -> Result<serde_json::Value> {
+        self.invoke(worker::protocol::Operation::Cleanup, recipe_path)
     }
 
-    /// Clean up build artifacts with an explicit reason.
-    ///
-    /// Returns the final ctx map after cleanup.
-    pub fn cleanup_with_reason(
-        &self,
-        recipe_path: &Path,
-        reason: &str,
-    ) -> Result<serde_json::Value> {
-        self.invoke(
-            worker::protocol::Operation::Cleanup,
-            Some(reason),
-            recipe_path,
-        )
-    }
-
-    /// Execute `is_installed(ctx)` manually.
-    pub fn is_installed(&self, recipe_path: &Path) -> Result<serde_json::Value> {
-        self.invoke(worker::protocol::Operation::IsInstalled, None, recipe_path)
-    }
-
-    /// Execute `is_built(ctx)` manually.
-    pub fn is_built(&self, recipe_path: &Path) -> Result<serde_json::Value> {
-        self.invoke(worker::protocol::Operation::IsBuilt, None, recipe_path)
-    }
-
-    /// Execute `is_acquired(ctx)` manually.
-    pub fn is_acquired(&self, recipe_path: &Path) -> Result<serde_json::Value> {
-        self.invoke(worker::protocol::Operation::IsAcquired, None, recipe_path)
+    /// Call the recipe's `latest()` on the host and return the version it
+    /// gives (docs/recipe-format.md, section 2.9).
+    // C5: the upstream check (`recipe updates --upstream`) calls this for a
+    // recipe that defines latest(), and asks GitHub itself for `UPSTREAM`.
+    // Inputs the caller added are still staged and required inputs still
+    // checked; latest() sees no inputs, so C5 runs it without them.
+    pub fn latest(&self, recipe_path: &Path) -> Result<String> {
+        let result = self.invoke(worker::protocol::Operation::Latest, recipe_path)?;
+        result["latest"]
+            .as_str()
+            .map(str::to_owned)
+            .context("latest() returned no version")
     }
 
     fn invoke(
         &self,
         operation: worker::protocol::Operation,
-        cleanup_reason: Option<&str>,
         recipe: &Path,
     ) -> Result<serde_json::Value> {
+        let no_dependencies = Default::default();
         backend::run(
             self.launcher.as_ref(),
             &launch::Invocation {
                 operation,
-                cleanup_reason,
                 recipe,
                 search_path: self.recipes_path.as_deref(),
                 persist_state: self.persist_state,
@@ -299,6 +280,8 @@ impl RecipeEngine {
                 inputs: &self.inputs,
                 destination: &self.build_dir,
                 state_dir: self.state_dir.as_deref(),
+                // Each run of the graph names its own (`backend`).
+                dependencies: &no_dependencies,
             },
         )
     }

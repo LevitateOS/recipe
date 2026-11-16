@@ -25,7 +25,7 @@ use serde::Serialize;
 /// What Recipe does to what a recipe produces.
 ///
 /// Bump it in the same commit as any Recipe change that can alter the files,
-/// metadata or `ctx.state` any recipe produces from the same inputs:
+/// metadata or saved state any recipe produces from the same inputs:
 /// - a helper's output or semantics (what it writes, where, with which
 ///   modes, owners, links or timestamps; what it returns or accepts);
 /// - the target metadata format, staging, publication or export handling;
@@ -40,7 +40,9 @@ use serde::Serialize;
 /// with different diagnostics (such as a faster extractor with the same
 /// result), does not bump it. The coordinator/worker transport version is
 /// named separately (`PROTOCOL_VERSION`).
-pub const ENGINE_BEHAVIOUR: u32 = 1;
+// 2: API 1 (docs/recipe-format.md): the engine's constants, engine-placed
+// outputs at /out/NAME, the target input seeding that output, saved values.
+pub const ENGINE_BEHAVIOUR: u32 = 2;
 
 /// What of Ginux a workload can observe, as Recipe, the consumer, judges it.
 ///
