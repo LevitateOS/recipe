@@ -64,6 +64,58 @@ What the note does not cover yet:
     seven.
 15. The name and form of the pins file.
 
+## 0b. Disk space: requirements (the owner, 2026-11-16)
+
+The owner's model of a recipe: download, build, install, and then nothing is
+left but the installed program. Recipe must respect the user's disk. A survey
+of the code on 2026-11-16 found that it does not:
+
+| Found | Detail |
+|---|---|
+| Nothing is removed after a successful install | Each step saves the whole work folder (downloads, unpacked source, build tree) and the result as one archive. It stays. |
+| The same bytes are stored 4 to 8 times | Two saved-state archives (current and previous, identical when measured), the published result, and a real copy in the package store |
+| Trimming is weak | Two archives for each of up to four variants per recipe, trimmed only when that recipe runs again; no total limit, no age rule; up to 2 GB per archive by default |
+| Earlier versions for "go back" are never removed | Every install, update and remove adds one; no limit |
+| `recipe remove` frees nothing | until the earlier versions are cleared too |
+| It is hidden | `recipe storage` and the app's Storage page count only the package store. On the survey machine about 2.2 GB (923 MB saved state, 1.3 GB cached compiler image) was held and not reported, with no program installed for the user. |
+| The cleanup step does not help | `cleanup(reason)` is optional per recipe; no catalog recipe defines one, and it cannot delete the engine's saved state |
+
+Requirements:
+
+1. **After a successful install, Recipe itself deletes the downloads, the
+   source and the build material**, for every recipe. Only the installed
+   files and the receipt remain. This is the engine's job, not a function a
+   recipe may forget to write.
+2. **Keeping them is a choice the user makes**, in the app and on the command
+   line, for people who rebuild often. It is off by default.
+3. **Files are moved into place, never copied**, wherever source and
+   destination are on the same disk. No stage keeps a second copy of what the
+   next stage already holds.
+4. **Saved state exists only while a run is unfinished.** It lets an
+   interrupted build continue. It is deleted when the install succeeds, and
+   one copy is kept at most, never two identical ones.
+5. **Nothing is hidden.** `recipe storage` and the Storage page report
+   everything Recipe holds, by kind: installed programs, earlier versions,
+   kept build material, unfinished runs, the compiler image cache, logs. Each
+   kind has a way to remove it.
+6. **Removing a program frees its space.**
+7. **Earlier versions kept for "go back" have a small default limit.**
+   The number is the owner's decision and is still open.
+
+The cost, accepted by the owner's model: updating or reinstalling a program
+downloads and builds it again.
+
+Where this lands in the steps below:
+
+- Step 1 (the specification) states these rules, the option's name, and what
+  `recipe storage --json` reports.
+- Step 2d (the engine decides what is done from its own records) is what
+  makes requirement 1 possible: a finished install no longer needs the build
+  material as proof. Step 2d also does requirements 1, 3, 4, 6 and 7.
+- Step 3c (the Recipe app) gains the Storage page of requirement 5 and the
+  "keep build material" option of requirement 2.
+- Step 8a's review checks, by reading, that no step copies where it can move.
+
 ## 1. Finish the format: the specification
 
 **Who:** one opus agent drafts; the main session reviews; the owner approves.
@@ -92,6 +144,7 @@ The draft starts from these proposed answers (numbers as in section 0):
 | 13 | `isinstalled` stays (answered from records). `isbuilt`, `isacquired` and `--force-acquire` go; `--force-build` stays. |
 | 14 | One shared module `look.rhai`; one generated `os-facts.rhai` module instead of seven copied blocks. |
 | 15 | `NAME.pins`: one line per package, written only by the generator, staged with the recipe so it counts toward its identity. |
+| 16 | Disk space (section 0b): the option that keeps build material, the default limit of earlier versions, and the kinds `recipe storage --json` reports. |
 
 The owner sees the spec with the decisions that are theirs marked, before
 step 2 starts.
@@ -107,7 +160,7 @@ and with the reference recipes of its part passing `recipe info`.
 | 2a | Read the declarations (`PACKAGE`, `SOURCES`, `FILES`, `PACKAGES`, `ACCOUNTS`, `RERUN`); one API number; `list`, `info`, `index`, `validate` report the new shape | `needs.rs`, `catalog.rs`, `core/executor.rs` (`declared_metadata`), `core/invocation.rs` (`validate_api`), `sources.rs`, `execution.rs` | medium |
 | 2b | The core: no `ctx`. Constants in place of `RUNTIME`; call `build(src, out)`, `configure`, `verify`, `cleanup(reason)`; outputs mapped by the engine; `save`/`saved`/`checkpoint` | `core/invocation.rs`, `core/executor/private/{flow,actions,loaded,context}.rs`, `worker/run.rs`, `worker/protocol.rs`, `launch.rs`, `host.rs`, `publication.rs`, `backend.rs`, `lifecycle.rs` | **highest** |
 | 2c | Built-in steps: fetch and unpack `SOURCES`; copy `FILES`; package groups (pins file, native RPM/APK unpack, accounts, finish the tree) | new step in `flow.rs`; reuses `helpers/acquire`, `helpers/build/extract.rs`, `helpers/target.rs`, `accounts.rs`, `offline_cache.rs`, `inputs/discover.rs` | medium |
-| 2d | "Done" from Recipe's own records; `remove` hook and `Operation::Remove` gone; autofix and narration renamed | `retained.rs`, `host/snapshot.rs`, `packages.rs`, `system.rs`, `core/autofix/*`, `core/output/narration.rs`, `bin/recipe/commands.rs` | high |
+| 2d | "Done" from Recipe's own records; delete build material and saved state after a successful install, move instead of copy, a limit on earlier versions, `recipe storage` reporting everything (section 0b); `remove` hook and `Operation::Remove` gone; autofix and narration renamed | `retained.rs`, `host/snapshot.rs`, `packages.rs`, `system.rs`, `core/autofix/*`, `core/output/narration.rs`, `bin/recipe/commands.rs` | high |
 
 With 2a–2c the agents also convert the **reference recipes**, one per shape:
 `ripgrep` (a), `cmake` (b), `network` (c), `pi` (d), `desktop-runtime` (e),
@@ -128,7 +181,7 @@ Can start when the spec is approved; needs 2a only for the JSON shape.
 |---|---|---|
 | 3a | `xtask/src/tasks/groups.rs` (about 270 lines in 8 functions), `base.rs` `group_seeds`, `kernels/publish.rs`: read `PACKAGES`, write `NAME.pins` and `os-facts.rhai`, no longer rewrite recipe text. Also `recipes/generators/desktop-runtime-pins.py` | sonnet |
 | 3b | Builder Rust: `recipe/outputs.rs` and `stamp.rs` (read the new result), `default_set.rs` (`deps_of`, `pins_of`, copy pins files to the medium), `update_release.rs` (pins files into the base and `recipes.tar.zst`), `pipeline/kernel.rs` (the `isinstalled` call) | sonnet |
-| 3c | Recipe app: steps from the declarations instead of `hooks`; the stand-in `fixtures/recipe` and `catalog.json`; README | sonnet |
+| 3c | Recipe app: steps from the declarations instead of `hooks`; the Storage page shows everything Recipe holds, by kind, with a way to remove each; the option to keep build material; the stand-in `fixtures/recipe` and `catalog.json`; README | sonnet |
 
 ## 4. The catalog recipes (72)
 
