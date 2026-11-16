@@ -31,17 +31,15 @@ fn managed_deadline_allows_silent_work_beyond_frame_timeout_and_keeps_logs() {
         &recipes,
         "check",
         r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{};
-let ctx = #{name: "silent-work"};
-fn is_installed(ctx) {
+fn build(src, out) {
     exec_checked("/usr/bin/sleep", ["3"]);
     print("silent work finished");
-    ready(ctx)
 }
 "#,
     );
-    let output = command(&recipes, "isinstalled")
+    let output = command(&recipes, "install")
         .env("RECIPE_FRAME_TIMEOUT_SECS", "1")
         .args(["--timeout-secs", "15"])
         .output()
@@ -65,13 +63,12 @@ fn managed_deadline_stops_silent_work_and_retains_failure_record() {
         &recipes,
         "check",
         r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{};
-let ctx = #{name: "execution-deadline"};
-fn is_installed(ctx) { print("deadline work started"); exec_checked("/usr/bin/sleep", ["30"]); ready(ctx) }
+fn build(src, out) { print("deadline work started"); exec_checked("/usr/bin/sleep", ["30"]); }
 "#,
     );
-    let output = command(&recipes, "isinstalled")
+    let output = command(&recipes, "install")
         .args(["--timeout-secs", "2"])
         .output()
         .unwrap();
@@ -99,14 +96,14 @@ fn managed_interrupt_reaps_descendants_keeps_checkpoint_and_reports_cancelled() 
         &recipes,
         "check",
         r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{};
-let ctx = #{name: "interrupt", state: #{built:false}};
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) { if ctx.state.built { return ready(ctx); } needs_work(ctx,"build") }
-fn build(ctx) { write_file("/work/build/checkpoint-product","last complete build"); ctx.state.built=true; ctx }
-fn is_installed(ctx) { needs_work(ctx,"install") }
-fn install(ctx) { print("interrupt-point"); exec_checked("/usr/bin/sleep",["60"]); ctx }
+fn build(src, out) {
+    write_file(join_path(WORK, "checkpoint-product"), "last complete build");
+    checkpoint("built");
+    print("interrupt-point");
+    exec_checked("/usr/bin/sleep", ["60"]);
+}
 "#,
     );
     let mut child = command(&recipes, "install")
@@ -192,7 +189,10 @@ fn install(ctx) { print("interrupt-point"); exec_checked("/usr/bin/sleep",["60"]
         .expect("last complete checkpoint was lost");
     let record: serde_json::Value =
         serde_json::from_slice(&std::fs::read(checkpoint.path()).unwrap()).unwrap();
-    assert_eq!(record["states"]["/inputs/main.rhai"]["built"], true);
+    assert_eq!(
+        record["states"]["/inputs/main.rhai"]["reached"],
+        serde_json::json!(["built"])
+    );
     let snapshot = checkpoint
         .path()
         .parent()
@@ -209,16 +209,9 @@ fn managed_finalization_can_outlast_teardown_grace_within_execution_deadline() {
         &recipes,
         "check",
         r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{ outputs: #{ product: "file" } };
-let ctx = #{name:"completion-deadline"};
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) { ready(ctx) }
-fn is_installed(ctx) {
-    if !is_file("/out/product") { return needs_work(ctx,"create actual product"); }
-    ctx.outputs.product="/out/product"; ready(ctx)
-}
-fn install(ctx) { write_file("/out/product","domain-produced"); ctx }
+fn build(src, out) { write_file(out, "domain-produced"); }
 "#,
     );
     // Exercise the real supervisor/worker and delay only launcher completion.
@@ -258,16 +251,9 @@ fn managed_launcher_failure_after_worker_success_cannot_publish() {
         &recipes,
         "check",
         r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{ outputs: #{ product: "file" } };
-let ctx = #{name:"launcher-status"};
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) { ready(ctx) }
-fn is_installed(ctx) {
-    if !is_file("/out/product") { return needs_work(ctx,"produce output"); }
-    ctx.outputs.product="/out/product"; ready(ctx)
-}
-fn install(ctx) { write_file("/out/product","actual domain output"); ctx }
+fn build(src, out) { write_file(out, "actual domain output"); }
 "#,
     );
     let launcher = dir.path().join("failed-launcher");

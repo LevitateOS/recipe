@@ -3,26 +3,16 @@ use super::*;
 use std::path::PathBuf;
 
 const SOURCE: &str = r#"
-const RECIPE_API = 2;
-const NEEDS = #{ inputs: #{ target: "directory" }, outputs: #{ program: "file" } };
-let ctx = #{name: "selected-target", state: #{removed: false, observed: ""},
-    program: join_path(RUNTIME.paths.target, "usr/bin/target-tool")};
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) { ready(ctx) }
-fn is_installed(ctx) {
-    if ctx.runtime.paths.target != "/out" { throw "target path changed"; }
-    if !is_file(ctx.program) { return needs_work(ctx, "selected target product missing"); }
-    if ctx.state.removed { throw "target was reseeded after retained removal"; }
-    ctx.state.observed = read_file(ctx.program);
-    ctx.outputs.program = ctx.program;
-    ready(ctx)
-}
-fn install(ctx) { throw "existing selected product should have satisfied custom readiness"; }
-fn remove(ctx) {
-    if is_file(ctx.program) { rm(ctx.program); }
-    ctx.state.removed = true;
-    ctx.outputs = #{};
-    ctx
+const RECIPE_API = 1;
+const NEEDS = #{ inputs: #{ target: "directory" }, outputs: #{ tree: "directory" } };
+fn build(src, out) {
+    print("BUILD-RAN");
+    let program = join_path(out, "usr/bin/target-tool");
+    if !is_file(program) { throw "selected target product missing"; }
+    write_file(join_path(out, "observed"), read_file(program));
+    let denied = false;
+    try { write_file(join_path(INPUTS.target, "usr/bin/target-tool"), "changed"); } catch (error) { denied = true; }
+    if !denied { throw "the target input accepted a change"; }
 }
 "#;
 
@@ -70,47 +60,28 @@ fn selected_target(root: &Path, bytes: &str) -> (PathBuf, PathBuf) {
 }
 
 #[test]
-fn managed_target_imports_readiness_and_retains_removal_without_changing_inputs() {
+fn managed_target_seeds_the_output_without_changing_inputs() {
     let (dir, recipes) = create_test_env();
     write_recipe(&recipes, "check", SOURCE);
     let (target, original) = selected_target(dir.path(), "selected product bytes");
-    let (output, ctx) = invoke(
+    let (output, result) = invoke(
         &mut target_command(&recipes, "install", &target),
         dir.path(),
     );
     assert_success(&output);
-    let ctx = ctx.unwrap();
-    assert_eq!(ctx["state"]["observed"], "selected product bytes");
-    assert_eq!(ctx["runtime"]["paths"]["target"], "/out");
-    let prior_publication = PathBuf::from(ctx["outputs"]["program"].as_str().unwrap());
-    assert_ne!(prior_publication, original);
+    let result = result.unwrap();
+    let tree = PathBuf::from(result["outputs"]["tree"].as_str().unwrap());
     assert_eq!(
-        std::fs::read_to_string(&prior_publication).unwrap(),
+        std::fs::read_to_string(tree.join("observed")).unwrap(),
         "selected product bytes"
     );
-
-    let (output, ctx) = invoke(&mut target_command(&recipes, "remove", &target), dir.path());
-    assert_success(&output);
-    assert_eq!(ctx.unwrap()["state"]["removed"], true);
-    let (output, _) = invoke(
-        &mut target_command(&recipes, "isinstalled", &target),
-        dir.path(),
+    assert_eq!(
+        std::fs::read_to_string(tree.join("usr/bin/target-tool")).unwrap(),
+        "selected product bytes"
     );
-    assert!(
-        !output.status.success(),
-        "retained removal was replaced by a fresh import"
-    );
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("selected target product missing"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_ne!(tree.join("usr/bin/target-tool"), original);
     assert_eq!(
         std::fs::read_to_string(&original).unwrap(),
-        "selected product bytes"
-    );
-    assert_eq!(
-        std::fs::read_to_string(&prior_publication).unwrap(),
         "selected product bytes"
     );
     assert_eq!(
@@ -125,28 +96,37 @@ fn managed_target_changed_input_content_gets_fresh_identity_and_seed() {
     write_recipe(&recipes, "check", SOURCE);
     let (target, original) = selected_target(dir.path(), "alpha");
     let (output, first) = invoke(
-        &mut target_command(&recipes, "isinstalled", &target),
+        target_command(&recipes, "install", &target).arg("--keep"),
         dir.path(),
     );
     assert_success(&output);
     let first = first.unwrap();
-    assert_eq!(first["state"]["observed"], "alpha");
-    let first_publication = PathBuf::from(first["outputs"]["program"].as_str().unwrap());
+    let first_tree = PathBuf::from(first["outputs"]["tree"].as_str().unwrap());
+    assert_eq!(
+        std::fs::read_to_string(first_tree.join("observed")).unwrap(),
+        "alpha"
+    );
     // Recipe, paths, options and state directory stay identical. Only input
-    // content changes, so stale files/state would demonstrate an identity bug.
+    // content changes, so a kept result of the first would show an identity bug.
     std::fs::write(&original, "beta").unwrap();
     let (output, second) = invoke(
-        &mut target_command(&recipes, "isinstalled", &target),
+        target_command(&recipes, "install", &target).arg("--keep"),
         dir.path(),
     );
     assert_success(&output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("BUILD-RAN"));
     let second = second.unwrap();
-    assert_eq!(second["state"]["observed"], "beta");
     assert_eq!(
-        std::fs::read_to_string(second["outputs"]["program"].as_str().unwrap()).unwrap(),
+        std::fs::read_to_string(
+            Path::new(second["outputs"]["tree"].as_str().unwrap()).join("observed")
+        )
+        .unwrap(),
         "beta"
     );
-    assert_eq!(std::fs::read_to_string(first_publication).unwrap(), "alpha");
+    assert_eq!(
+        std::fs::read_to_string(first_tree.join("observed")).unwrap(),
+        "alpha"
+    );
 }
 
 #[test]
@@ -156,21 +136,19 @@ fn managed_target_missing_product_is_not_satisfied_by_compiler_image() {
         &recipes,
         "check",
         r#"
-const RECIPE_API = 2;
-const NEEDS = #{ inputs: #{ target: "directory" } };
-let ctx = #{name: "target-image-boundary"};
-fn is_installed(ctx) {
+const RECIPE_API = 1;
+const NEEDS = #{ inputs: #{ target: "directory" }, outputs: #{ tree: "directory" } };
+fn build(src, out) {
     if !is_file("/usr/bin/bash") { throw "compiler-image fixture is missing bash"; }
-    let selected = join_path(ctx.runtime.paths.target, "usr/bin/bash");
-    if !is_file(selected) { return needs_work(ctx, "selected target has no bash"); }
-    throw "compiler image satisfied selected target readiness";
+    if is_file(join_path(out, "usr/bin/bash")) { throw "compiler image satisfied the selected target"; }
+    throw "selected target has no bash";
 }
 "#,
     );
     let target = dir.path().join("empty target");
     std::fs::create_dir(&target).unwrap();
     let (output, _) = invoke(
-        &mut target_command(&recipes, "isinstalled", &target),
+        &mut target_command(&recipes, "install", &target),
         dir.path(),
     );
     assert!(!output.status.success());
@@ -189,7 +167,7 @@ fn managed_target_rejects_file_input_as_installed_target() {
     let target = dir.path().join("file instead of target tree");
     std::fs::write(&target, "preserve this input").unwrap();
     let (output, _) = invoke(
-        &mut target_command(&recipes, "isinstalled", &target),
+        &mut target_command(&recipes, "install", &target),
         dir.path(),
     );
     assert!(!output.status.success());

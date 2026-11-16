@@ -25,20 +25,14 @@ fn image_command(recipes: &Path, archive: &Path, digest: &str) -> Command {
         .env("TMPDIR", recipes.parent().unwrap())
         .env("GINUX_ROOTFS", archive)
         .env("GINUX_ROOT", format!("oci:cli-image@sha256:{digest}"))
-        .args([
-            "isinstalled",
-            "check",
-            "--no-persist-state",
-            "--recipes-path",
-        ])
+        .args(["install", "check", "--no-persist-state", "--recipes-path"])
         .arg(recipes);
     command
 }
 
 fn guarded_recipe(recipes: &Path, sentinel: &Path) -> String {
     let source = format!(
-        "const RECIPE_API = 2;
-const NEEDS = #{{}};\nwrite_file({:?}, \"host recipe code ran\");\nlet ctx = #{{name: \"image-check\"}};\nfn is_installed(ctx) {{ ctx }}\n",
+        "const RECIPE_API = 1;\nconst NEEDS = #{{}};\nwrite_file({:?}, \"host recipe code ran\");\nfn build(src, out) {{}}\n",
         sentinel.to_string_lossy()
     );
     write_recipe(recipes, "check", &source);
@@ -229,27 +223,35 @@ fn managed_invocation_preserves_defines_and_cleanup_reason() {
         &recipes,
         "check",
         r#"
-const RECIPE_API = 2;
-const NEEDS = #{};
-let ctx = #{name: "options", value: CUSTOM_INPUT};
-fn is_installed(ctx) { ready(ctx) }
-fn cleanup(ctx, reason) { ctx.reason = reason; ctx }
+const RECIPE_API = 1;
+const NEEDS = #{ defines: #{ CUSTOM_INPUT: () }, outputs: #{ report: "file" } };
+fn build(src, out) { write_file(out, DEFINES.CUSTOM_INPUT); }
+fn cleanup(reason) { print("cleanup-saw " + reason + " " + DEFINES.CUSTOM_INPUT); }
 "#,
     );
-    for operation in ["isinstalled", "cleanup"] {
-        let mut command = managed_command(&recipes, operation);
-        command.args(["--define", "CUSTOM_INPUT=caller value"]);
-        if operation == "cleanup" {
-            command.args(["--reason", "requested retry"]);
-        }
-        let output = command.output().unwrap();
-        assert_success(&output);
-        let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(context["value"], "caller value");
-        if operation == "cleanup" {
-            assert_eq!(context["reason"], "requested retry");
-        }
-    }
+    let output = managed_command(&recipes, "install")
+        .args(["--define", "CUSTOM_INPUT=caller value"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(result["outputs"]["report"].as_str().unwrap()).unwrap(),
+        "caller value"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("cleanup-saw auto.build.success caller value")
+    );
+    // `recipe cleanup` calls the recipe's own cleanup with the reason "manual".
+    let output = managed_command(&recipes, "cleanup")
+        .args(["--define", "CUSTOM_INPUT=caller value"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["operation"], "cleanup");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cleanup-saw manual caller value"));
 }
 
 #[test]
@@ -265,43 +267,34 @@ fn managed_inputs_preserve_nested_modules_and_dependency_closure() {
         "import \"facts\" as facts; fn value() { facts::value() }",
     )
     .unwrap();
-    std::fs::write(recipes.join("tools/helper.rhai"), r#"
-const RECIPE_API = 2;
+    std::fs::write(
+        recipes.join("tools/helper.rhai"),
+        r#"
+const RECIPE_API = 1;
 const NEEDS = #{ outputs: #{ tools: "directory" } };
-let ctx = #{name: "helper"};
-fn is_acquired(ctx) { ready(ctx) }
-fn is_installed(ctx) {
-    if is_file(join_path(RUNTIME.paths.tools, "dependency-evidence")) { ctx.outputs.tools = RUNTIME.paths.tools; return ready(ctx); }
-    needs_work(ctx, "helper missing")
-}
-
-fn install(ctx) { write_file(join_path(RUNTIME.paths.tools, "dependency-evidence"), "dependency ran"); ctx.outputs.tools = RUNTIME.paths.tools; ctx }
-"#).unwrap();
+fn build(src, out) { write_file(join_path(out, "dependency-evidence"), "dependency ran"); }
+"#,
+    )
+    .unwrap();
     let source = r#"
-const RECIPE_API = 2;
-const NEEDS = #{};
+const RECIPE_API = 1;
+const NEEDS = #{ outputs: #{ report: "file" } };
 import "left/wrapper" as left;
 import "right/facts.rhai" as right;
 let deps = ["tools/helper"];
-let ctx = #{name: "nested-inputs"};
-fn is_acquired(ctx) { ready(ctx) }
-fn is_installed(ctx) {
-    if ctx.contains("complete") { return ready(ctx); }
-    needs_work(ctx, "parent missing")
-}
-fn install(ctx) {
-    ctx.modules = left::value() + ":" + right::value();
-    ctx.dependency = read_file(join_path(RUNTIME.paths.tools, "dependency-evidence"));
-    ctx.complete = true;
-    ctx
+fn build(src, out) {
+    let evidence = read_file(join_path(DEPS["tools/helper"], "dependency-evidence"));
+    write_file(out, left::value() + ":" + right::value() + "|" + evidence);
 }
 "#;
     write_recipe(&recipes, "check", source);
     let output = managed_command(&recipes, "install").output().unwrap();
     assert_success(&output);
-    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(context["modules"], "left:right");
-    assert_eq!(context["dependency"], "dependency ran");
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(result["outputs"]["report"].as_str().unwrap()).unwrap(),
+        "left:right|dependency ran"
+    );
     assert_eq!(
         std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
         source
@@ -312,57 +305,55 @@ fn install(ctx) {
 fn managed_declared_source_tree_preserves_empty_directories_and_confined_links() {
     let (dir, recipes) = create_test_env();
     let source = dir.path().join("source");
-    std::fs::create_dir_all(source.join("nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/")).unwrap();
-    std::fs::write(source.join("nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/value"), "declared input").unwrap();
+    let long = "nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/value";
+    std::fs::create_dir_all(source.join(
+        "nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/",
+    ))
+    .unwrap();
+    std::fs::write(source.join(long), "declared input").unwrap();
     std::fs::write(source.join("C++ résumé.txt"), "named bytes").unwrap();
     write_recipe(
         &recipes,
         "check",
-        r#"
-const RECIPE_API = 2;
-const NEEDS = #{ inputs: #{ "source": "directory", "config.toml": "file" } };
-let ctx = #{name: "source-input"};
-fn is_installed(ctx) {
-    if !is_dir("/inputs/source/empty") { throw "empty input directory missing"; }
-    ctx.value = read_file("/inputs/source/chain");
-    if read_file("/inputs/source/C++ résumé.txt") != "named bytes" { throw "source name changed"; }
-    if read_file("/inputs/config.toml") != "named bytes" { throw "input collided with coordinator metadata"; }
+        &r#"
+const RECIPE_API = 1;
+const NEEDS = #{ inputs: #{ "source": "directory", "config.toml": "file" }, outputs: #{ report: "file" } };
+fn build(src, out) {
+    let tree = INPUTS.source;
+    if !is_dir(join_path(tree, "empty")) { throw "empty input directory missing"; }
+    write_file(out, read_file(join_path(tree, "chain")));
+    if read_file(join_path(tree, "C++ résumé.txt")) != "named bytes" { throw "source name changed"; }
+    if read_file(INPUTS["config.toml"]) != "named bytes" { throw "input collided with coordinator metadata"; }
     let denied = false;
-    try { write_file("/inputs/source/nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/value", "changed"); } catch (error) { denied = true; }
+    try { write_file(join_path(tree, "LONG_PATH"), "changed"); } catch (error) { denied = true; }
     if !denied { throw "input accepted mutation"; }
-    ready(ctx)
 }
-"#,
+"#
+        .replace("LONG_PATH", long),
     );
     std::fs::create_dir(source.join("empty")).unwrap();
-    std::os::unix::fs::symlink("nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/value", source.join("alias")).unwrap();
+    std::os::unix::fs::symlink(long, source.join("alias")).unwrap();
     std::os::unix::fs::symlink("alias", source.join("chain")).unwrap();
     let selection = format!("source={}", source.display());
-    let output = managed_command(&recipes, "isinstalled")
-        .args([
-            "--input",
-            &selection,
-            "--input",
-            &format!("config.toml={}", source.join("C++ résumé.txt").display()),
-        ])
+    let config = format!("config.toml={}", source.join("C++ résumé.txt").display());
+    let output = managed_command(&recipes, "install")
+        .args(["--input", &selection, "--input", &config])
         .output()
         .unwrap();
     assert_success(&output);
-    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(context["value"], "declared input");
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
-        std::fs::read_to_string(source.join("nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/value")).unwrap(),
+        std::fs::read_to_string(result["outputs"]["report"].as_str().unwrap()).unwrap(),
+        "declared input"
+    );
+    assert_eq!(
+        std::fs::read_to_string(source.join(long)).unwrap(),
         "declared input"
     );
     std::fs::remove_file(source.join("alias")).unwrap();
-    std::os::unix::fs::symlink(source.join("nested/long-component/long-component/long-component/long-component/long-component/long-component/long-component/value"), source.join("alias")).unwrap();
-    let rejected = managed_command(&recipes, "isinstalled")
-        .args([
-            "--input",
-            &selection,
-            "--input",
-            &format!("config.toml={}", source.join("C++ résumé.txt").display()),
-        ])
+    std::os::unix::fs::symlink(source.join(long), source.join("alias")).unwrap();
+    let rejected = managed_command(&recipes, "install")
+        .args(["--input", &selection, "--input", &config])
         .output()
         .unwrap();
     assert!(!rejected.status.success());
@@ -372,17 +363,12 @@ fn is_installed(ctx) {
         // nested/up -> .. makes the last path escape after link expansion,
         // despite its apparently contained lexical spelling.
         let up = source.join("nested/up");
-        if !std::fs::symlink_metadata(&up).is_ok() {
+        if std::fs::symlink_metadata(&up).is_err() {
             std::os::unix::fs::symlink("..", &up).unwrap();
         }
         std::os::unix::fs::symlink(target, source.join("alias")).unwrap();
-        let rejected = managed_command(&recipes, "isinstalled")
-            .args([
-                "--input",
-                &selection,
-                "--input",
-                &format!("config.toml={}", source.join("C++ résumé.txt").display()),
-            ])
+        let rejected = managed_command(&recipes, "install")
+            .args(["--input", &selection, "--input", &config])
             .output()
             .unwrap();
         assert!(
@@ -408,21 +394,19 @@ fn managed_large_asset_is_streamed_and_oversized_asset_rejected() {
     write_recipe(
         &recipes,
         "check",
-        &format!(
-            r#"
-const RECIPE_API = 2;
-const NEEDS = #{{ inputs: #{{ "asset.iso": "file" }} }};
-let ctx = #{{name: "large-input"}};
-fn is_installed(ctx) {{
-    if trim(shell_output("wc -c < /inputs/asset.iso")) != "{size}" {{ throw "asset truncated"; }}
-    if shell_output("tail -c 7 /inputs/asset.iso") != "payload" {{ throw "asset bytes changed"; }}
-    ready(ctx)
-}}
+        &r#"
+const RECIPE_API = 1;
+const NEEDS = #{ inputs: #{ "asset.iso": "file" } };
+fn build(src, out) {
+    let asset = INPUTS["asset.iso"];
+    if trim(shell_output("wc -c < " + asset)) != "ASSET_SIZE" { throw "asset truncated"; }
+    if shell_output("tail -c 7 " + asset) != "payload" { throw "asset bytes changed"; }
+}
 "#
-        ),
+        .replace("ASSET_SIZE", &size.to_string()),
     );
     let selection = format!("asset.iso={}", asset.display());
-    let output = managed_command(&recipes, "isinstalled")
+    let output = managed_command(&recipes, "install")
         .args(["--input", &selection])
         .output()
         .unwrap();
@@ -434,7 +418,7 @@ fn is_installed(ctx) {{
         .unwrap()
         .set_len(16 * 1024 * 1024 * 1024 + 1)
         .unwrap();
-    let rejected = managed_command(&recipes, "isinstalled")
+    let rejected = managed_command(&recipes, "install")
         .args(["--input", &selection])
         .output()
         .unwrap();
@@ -443,19 +427,18 @@ fn is_installed(ctx) {{
 }
 
 #[test]
-fn managed_custom_checks_run_independently_and_return_discovered_context() {
+fn managed_build_sees_the_engines_constants_and_returns_its_output() {
     use std::os::unix::fs::PermissionsExt;
     let (_dir, recipes) = create_test_env();
     let source = r#"
-const RECIPE_API = 2;
-const NEEDS = #{};
-let ctx = #{ name: "managed-check", expected: "x86_64" };
-fn is_acquired(ctx) { ctx.observation = "custom source revision"; ready(ctx) }
-fn is_built(ctx) { ctx.observation = "custom compiler configuration"; ready(ctx) }
-fn is_installed(ctx) {
-    if ctx.expected != RUNTIME.target.arch { return needs_work(ctx, "target differs"); }
-    ctx.observation = "custom installation rule";
-    ready(ctx)
+const RECIPE_API = 1;
+const NEEDS = #{ outputs: #{ report: "file" } };
+fn build(src, out) {
+    if WORK != "/work/build" { throw "WORK is " + WORK; }
+    if PREFIX != () { throw "PREFIX is set without a package output"; }
+    if JOBS < 1 || JOBS > 16 { throw "JOBS is outside 1 to 16"; }
+    if HOST_LIBC != "glibc" && HOST_LIBC != "musl" && HOST_LIBC != "unknown" { throw "HOST_LIBC is " + HOST_LIBC; }
+    write_file(out, "constants ok");
 }
 "#;
     write_recipe(&recipes, "check", source);
@@ -464,45 +447,36 @@ fn is_installed(ctx) {
         std::fs::Permissions::from_mode(0o600),
     )
     .unwrap();
-    for (operation, observation) in [
-        ("isacquired", "custom source revision"),
-        ("isbuilt", "custom compiler configuration"),
-        ("isinstalled", "custom installation rule"),
-    ] {
-        let output = managed_command(&recipes, operation).output().unwrap();
-        assert_success(&output);
-        let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(context["observation"], observation);
-        assert_eq!(context["runtime"]["paths"]["inputs"], "/inputs");
-        assert_eq!(context["runtime"]["paths"]["build"], "/work/build");
-        assert_eq!(context["runtime"]["paths"]["tools"], "/work/tools");
-        assert!(String::from_utf8_lossy(&output.stderr).contains("launcher exit 0; result exited"));
-        assert_eq!(
-            std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
-            source
-        );
-    }
+    let output = managed_command(&recipes, "install").output().unwrap();
+    assert_success(&output);
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["operation"], "install");
+    assert_eq!(
+        std::fs::read_to_string(result["outputs"]["report"].as_str().unwrap()).unwrap(),
+        "constants ok"
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("launcher exit 0; result exited"));
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+        source
+    );
 }
 
 #[test]
-fn managed_not_ready_and_real_script_errors_remain_failures() {
+fn managed_script_errors_remain_failures() {
     let (_dir, recipes) = create_test_env();
     for (body, wanted) in [
+        ("throw \"configuration differs\";", "configuration differs"),
         (
-            "needs_work(ctx, \"configuration differs\")",
-            "configuration differs",
-        ),
-        (
-            "undefined_managed_function(ctx)",
+            "undefined_managed_function();",
             "undefined_managed_function",
         ),
     ] {
         let source = format!(
-            "const RECIPE_API = 2;
-const NEEDS = #{{}}; let ctx = #{{name: \"negative-check\"}}; fn is_installed(ctx) {{ {body} }}\n"
+            "const RECIPE_API = 1;\nconst NEEDS = #{{}};\nfn build(src, out) {{ {body} }}\n"
         );
         write_recipe(&recipes, "check", &source);
-        let output = managed_command(&recipes, "isinstalled").output().unwrap();
+        let output = managed_command(&recipes, "install").output().unwrap();
         assert!(!output.status.success());
         let diagnostics = String::from_utf8_lossy(&output.stderr);
         assert!(diagnostics.contains(wanted), "{diagnostics}");
@@ -520,7 +494,7 @@ fn managed_setup_cannot_write_to_an_absolute_host_path() {
     let sentinel = dir.path().join("host-only-marker");
     std::fs::write(&sentinel, "keep host content").unwrap();
     let source = guarded_recipe(&recipes, &sentinel);
-    let output = managed_command(&recipes, "isinstalled").output().unwrap();
+    let output = managed_command(&recipes, "install").output().unwrap();
     assert!(!output.status.success());
     let diagnostics = String::from_utf8_lossy(&output.stderr);
     assert!(diagnostics.contains("workload failure"), "{diagnostics}");
@@ -539,42 +513,38 @@ fn managed_setup_cannot_write_to_an_absolute_host_path() {
 }
 
 #[test]
-fn managed_check_reads_staged_base_and_imported_module() {
+fn managed_build_reads_staged_base_and_imported_module() {
     let (_dir, recipes) = create_test_env();
     let module = "fn selected_fact() { \"pinned module fact\" }\n";
     let base = r#"
-const RECIPE_API = 2;
-const NEEDS = #{};
+const RECIPE_API = 1;
 import "facts.rhai" as facts;
-let ctx = #{name: "base"};
-fn inherited(ctx) { ctx.base_fact = facts::selected_fact(); ctx }
-fn is_installed(ctx) { ready(inherited(ctx)) }
+fn label() { "base" }
+fn build(src, out) { write_file(out, label() + "|" + facts::selected_fact()); }
 "#;
-    let plain_child = "//! extends: base.rhai\nconst RECIPE_API = 2;
-const NEEDS = #{}; let ctx = #{name: \"child\"};\n";
+    let plain_child = r#"//! extends: base.rhai
+const RECIPE_API = 1;
+const NEEDS = #{ outputs: #{ report: "file" } };
+"#;
     let shared_child = r#"//! extends: base.rhai
-const RECIPE_API = 2;
-const NEEDS = #{};
-let ctx = #{name: "child"};
-let captured_name = || ctx.name;
-fn is_installed(ctx) {
-    ctx = inherited(ctx);
-    ctx.captured = call(captured_name);
-    ready(ctx)
-}
+const RECIPE_API = 1;
+const NEEDS = #{ outputs: #{ report: "file" } };
+fn label() { "child" }
 "#;
     write_recipe(&recipes, "facts", module);
     write_recipe(&recipes, "base", base);
-    for child in [plain_child, shared_child] {
+    for (child, wanted) in [
+        (plain_child, "base|pinned module fact"),
+        (shared_child, "child|pinned module fact"),
+    ] {
         write_recipe(&recipes, "check", child);
-        let output = managed_command(&recipes, "isinstalled").output().unwrap();
+        let output = managed_command(&recipes, "install").output().unwrap();
         assert_success(&output);
-        let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(context["name"], "child");
-        assert_eq!(context["base_fact"], "pinned module fact");
-        if child == shared_child {
-            assert_eq!(context["captured"], "child");
-        }
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(result["outputs"]["report"].as_str().unwrap()).unwrap(),
+            wanted
+        );
         for (name, source) in [("facts", module), ("base", base), ("check", child)] {
             assert_eq!(
                 std::fs::read_to_string(recipes.join(format!("{name}.rhai"))).unwrap(),
@@ -585,47 +555,15 @@ fn is_installed(ctx) {
 }
 
 #[test]
-fn managed_cleanup_and_remove_return_context_after_checkpoint_ack() {
+fn managed_cleanup_without_a_function_is_a_noop() {
     let (_dir, recipes) = create_test_env();
-    let source = r#"
-const RECIPE_API = 2;
-const NEEDS = #{};
-let ctx = #{name: "checkpoint-hooks"};
-fn cleanup(ctx, reason) { ctx.state.reason = reason; ctx.state.operation = "cleanup"; ctx }
-fn remove(ctx) { ctx.state.removed = true; ctx.state.build = ctx.runtime.paths.build; ctx.state.operation = "remove"; ctx }
-"#;
-    write_recipe(&recipes, "check", source);
-    for operation in ["cleanup", "remove"] {
-        let output = managed_command(&recipes, operation).output().unwrap();
-        assert_success(&output);
-        let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(context["state"]["operation"], operation);
-        assert_eq!(context["runtime"]["paths"]["tools"], "/work/tools");
-        assert!(String::from_utf8_lossy(&output.stderr).contains("1 checkpoint acked"));
-        if operation == "cleanup" {
-            assert_eq!(context["state"]["reason"], "manual");
-        } else {
-            assert_eq!(context["state"]["removed"], true);
-            assert_eq!(context["state"]["build"], "/work/build");
-        }
-        assert_eq!(
-            std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
-            source
-        );
-    }
-}
-
-#[test]
-fn managed_cleanup_without_a_hook_is_a_noop() {
-    let (_dir, recipes) = create_test_env();
-    let source = "const RECIPE_API = 2;
-const NEEDS = #{}; let ctx = #{name: \"no-cleanup\"};\n";
+    let source = "const RECIPE_API = 1;\nconst NEEDS = #{};\n";
     write_recipe(&recipes, "check", source);
     let output = managed_command(&recipes, "cleanup").output().unwrap();
     assert_success(&output);
-    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(context["name"], "no-cleanup");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("0 checkpoints acked"));
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["operation"], "cleanup");
+    assert_eq!(result["name"], "check");
     assert_eq!(
         std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
         source
@@ -633,112 +571,61 @@ const NEEDS = #{}; let ctx = #{name: \"no-cleanup\"};\n";
 }
 
 #[test]
-fn managed_lifecycle_transforms_files_and_cleanup_reads_actual_product() {
+fn managed_cleanup_reason_follows_the_step_that_ended() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
-const RECIPE_API = 2;
-const NEEDS = #{};
-let ctx = #{name: "file-lifecycle", source: "/work/build/source", built: "/work/build/built", product: "/out/product", state: #{trace: ""}};
-fn is_acquired(ctx) { if !is_file(ctx.source) { return needs_work(ctx, "source missing"); } ready(ctx) }
-fn is_built(ctx) { if !is_file(ctx.built) { return needs_work(ctx, "build missing"); } ready(ctx) }
-fn is_installed(ctx) { if !is_file(ctx.product) { return needs_work(ctx, "product missing"); } ready(ctx) }
-fn acquire(ctx) { write_file(ctx.source, "prepared source"); ctx.state.trace += "acquire;"; ctx }
-fn build(ctx) { write_file(ctx.built, read_file(ctx.source) + ": built"); ctx.state.trace += "build;"; ctx }
-fn install(ctx) { write_file(ctx.product, read_file(ctx.built) + ": installed"); ctx.state.trace += "install;"; ctx }
-fn cleanup(ctx, reason) {
-    if reason == "auto.install.success" {
-        ctx.state.product = read_file(ctx.product);
-        rm(ctx.built);
-        ctx.state.build_removed = !is_file(ctx.built);
-        ctx.state.product_present = is_file(ctx.product);
-    }
-    ctx.state.trace += reason + ";";
-    ctx
+const RECIPE_API = 1;
+const NEEDS = #{ defines: #{ FAIL: "no" }, outputs: #{ product: "file" } };
+fn build(src, out) {
+    write_file(join_path(WORK, "source"), "prepared source");
+    write_file(join_path(WORK, "built"), read_file(join_path(WORK, "source")) + ": built");
+    if DEFINES.FAIL == "yes" { throw "BUILD_FAILED"; }
+    write_file(out, read_file(join_path(WORK, "built")) + ": installed");
 }
+fn cleanup(reason) { print("CLEANUP-REASON " + reason); }
 "#;
     write_recipe(&recipes, "check", source);
     let output = managed_command(&recipes, "install").output().unwrap();
     assert_success(&output);
-    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
-        context["state"]["product"],
+        std::fs::read_to_string(result["outputs"]["product"].as_str().unwrap()).unwrap(),
         "prepared source: built: installed"
     );
-    assert_eq!(context["state"]["build_removed"], true);
-    assert_eq!(context["state"]["product_present"], true);
-    assert_eq!(
-        context["state"]["trace"],
-        "acquire;auto.acquire.success;build;auto.build.success;install;auto.install.success;"
+    assert!(String::from_utf8_lossy(&output.stderr).contains("CLEANUP-REASON auto.build.success"));
+    let failed = managed_command(&recipes, "install")
+        .args(["--define", "FAIL=yes"])
+        .output()
+        .unwrap();
+    assert!(!failed.status.success());
+    let diagnostics = String::from_utf8_lossy(&failed.stderr);
+    assert!(diagnostics.contains("BUILD_FAILED"), "{diagnostics}");
+    assert!(
+        diagnostics.contains("CLEANUP-REASON auto.build.failure"),
+        "{diagnostics}"
     );
-    assert!(String::from_utf8_lossy(&output.stderr).contains("6 checkpoints acked"));
     assert_eq!(
         std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
         source
     );
-}
-
-#[test]
-fn managed_cleanup_and_remove_mutate_domain_files() {
-    let (_dir, recipes) = create_test_env();
-    let source = r#"
-const RECIPE_API = 2;
-const NEEDS = #{};
-let ctx = #{name: "file-hooks", product: "/out/product"};
-write_file(ctx.product, "actual domain artifact");
-fn cleanup(ctx, reason) {
-    ctx.state.before = read_file(ctx.product);
-    rm(ctx.product);
-    ctx.state.absent = !is_file(ctx.product);
-    ctx.state.reason = reason;
-    ctx
-}
-fn remove(ctx) { cleanup(ctx, "remove") }
-"#;
-    write_recipe(&recipes, "check", source);
-    for operation in ["cleanup", "remove"] {
-        let output = managed_command(&recipes, operation).output().unwrap();
-        assert_success(&output);
-        let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(context["state"]["before"], "actual domain artifact");
-        assert_eq!(context["state"]["absent"], true);
-        assert_eq!(
-            context["state"]["reason"],
-            if operation == "cleanup" {
-                "manual"
-            } else {
-                "remove"
-            }
-        );
-        assert!(String::from_utf8_lossy(&output.stderr).contains("1 checkpoint acked"));
-        assert_eq!(
-            std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
-            source
-        );
-    }
 }
 
 #[test]
 fn managed_helpers_use_the_assigned_null_device() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{};
-let ctx = #{name: "null-device"};
-fn is_installed(ctx) {
+fn build(src, out) {
     write_file("/dev/null", "discard these actual helper bytes");
-    ctx.state.null_read = read_file("/dev/null");
-    ctx.state.regular_file = is_file("/dev/null");
-    ctx.state.device_directory = is_dir("/dev");
-    ready(ctx)
+    if read_file("/dev/null") != "" { throw "the null device kept bytes"; }
+    if is_file("/dev/null") { throw "the null device is a regular file"; }
+    if !is_dir("/dev") { throw "the device directory is missing"; }
 }
 "#;
     write_recipe(&recipes, "check", source);
-    let output = managed_command(&recipes, "isinstalled").output().unwrap();
+    let output = managed_command(&recipes, "install").output().unwrap();
     assert_success(&output);
-    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(context["state"]["null_read"], "");
-    assert_eq!(context["state"]["regular_file"], false);
-    assert_eq!(context["state"]["device_directory"], true);
     assert!(String::from_utf8_lossy(&output.stderr).contains("launcher exit 0; result exited"));
     assert_eq!(
         std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
@@ -750,49 +637,27 @@ fn is_installed(ctx) {
 fn managed_bash_child_writes_domain_files_and_keeps_logs_out_of_json() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{ outputs: #{ proof: "file" } };
-let ctx = #{name: "managed-child"};
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) {
-    if ctx.state.contains("child_code") && ctx.state.child_code == 0 && is_file("/work/build/from-child") {
-        if read_file("/work/build/from-child") == "actual-bash-product" { return ready(ctx); }
-    }
-    needs_work(ctx, "child has not produced the requested bytes")
-}
-fn is_installed(ctx) {
-    if is_file("/out/child-proof") {
-        if read_file("/out/child-proof") == "actual-bash-product" { return ready(ctx); }
-    }
-    needs_work(ctx, "child product is not installed")
-}
-fn build(ctx) {
+fn build(src, out) {
     print("rhai-print-proof"); debug("rhai-debug-proof"); warn("rhai-warn-proof");
     let large = "x";
     for index in 0..15 { large += large; }
-    ctx.state.large = large;
-    ctx.state.child_code = exec("/usr/bin/bash", ["--noprofile", "--norc", "-c",
-        "printf actual-bash-product > /work/build/from-child; printf 'child-stdout\\000\\377'; printf child-stderr >&2; exit 0"]);
-    ctx
-}
-fn install(ctx) {
-    write_file("/out/child-proof", read_file("/work/build/from-child"));
-    ctx.outputs.proof = "/out/child-proof";
-    ctx
+    if large.len() != 32768 { throw "large value changed"; }
+    let from_child = join_path(WORK, "from-child");
+    let code = exec("/usr/bin/bash", ["--noprofile", "--norc", "-c",
+        "printf actual-bash-product > " + from_child + "; printf 'child-stdout\\000\\377'; printf child-stderr >&2; exit 0"]);
+    if code != 0 { throw "child failed"; }
+    write_file(out, read_file(from_child));
 }
 "#;
     write_recipe(&recipes, "check", source);
     let output = managed_command(&recipes, "install").output().unwrap();
     assert_success(&output);
-    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(context["state"]["child_code"], 0);
-    assert_eq!(
-        context["state"]["large"].as_str().unwrap(),
-        "x".repeat(32768)
-    );
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(output.stderr.windows(2).any(|window| window == b"\0\xff"));
     assert_eq!(
-        std::fs::read(context["outputs"]["proof"].as_str().unwrap()).unwrap(),
+        std::fs::read(result["outputs"]["proof"].as_str().unwrap()).unwrap(),
         b"actual-bash-product"
     );
     assert!(!String::from_utf8_lossy(&output.stdout).contains("child-stdout"));
@@ -826,25 +691,24 @@ fn managed_diagnostic_limit_drains_child_and_preserves_result() {
     use levitate_recipe::bin_support::MAX_DIAGNOSTIC_BYTES;
     let (_dir, recipes) = create_test_env();
     let source = r#"
-const RECIPE_API = 2;
-const NEEDS = #{};
-let ctx = #{name: "diagnostic-cap", state: #{child_code: -1}};
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) { if ctx.state.child_code == 0 { ready(ctx) } else { needs_work(ctx, "run child") } }
-fn is_installed(ctx) { if ctx.state.child_code == 0 { ready(ctx) } else { needs_work(ctx, "run child") } }
-fn build(ctx) {
+const RECIPE_API = 1;
+const NEEDS = #{ outputs: #{ report: "file" } };
+fn build(src, out) {
     print("before-diagnostic-cap");
-    ctx.state.child_code = exec("/usr/bin/bash", ["--noprofile", "--norc", "-c", "printf '%*s' DIAGNOSTIC_WIDTH x; exit 0"]);
+    let code = exec("/usr/bin/bash", ["--noprofile", "--norc", "-c", "printf '%*s' DIAGNOSTIC_WIDTH x; exit 0"]);
     print("after-diagnostic-cap");
-    ctx
+    write_file(out, "child code " + code);
 }
-fn install(ctx) { ctx }
-"#.replace("DIAGNOSTIC_WIDTH", &(MAX_DIAGNOSTIC_BYTES + 8192).to_string());
+"#
+    .replace("DIAGNOSTIC_WIDTH", &(MAX_DIAGNOSTIC_BYTES + 8192).to_string());
     write_recipe(&recipes, "check", &source);
     let output = managed_command(&recipes, "install").output().unwrap();
     assert_success(&output);
-    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(context["state"]["child_code"], 0);
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(result["outputs"]["report"].as_str().unwrap()).unwrap(),
+        "child code 0"
+    );
     assert!(output.stderr.len() <= MAX_DIAGNOSTIC_BYTES + 4096);
     let diagnostics = String::from_utf8_lossy(&output.stderr);
     assert!(diagnostics.contains("before-diagnostic-cap"));
@@ -858,28 +722,31 @@ fn install(ctx) { ctx }
 }
 
 #[test]
-fn managed_diagnostic_frame_limit_preserves_lifecycle_result() {
+fn managed_diagnostic_frame_limit_preserves_the_result() {
     use levitate_recipe::bin_support::MAX_DIAGNOSTIC_FRAMES;
     let (_dir, recipes) = create_test_env();
     let source = r#"
-const RECIPE_API = 2;
-const NEEDS = #{};
-let ctx = #{name: "diagnostic-frames", state: #{done: false}};
-fn is_acquired(ctx) { ready(ctx) }
-fn is_installed(ctx) { if ctx.state.done { ready(ctx) } else { needs_work(ctx, "run logging hook") } }
-fn install(ctx) {
+const RECIPE_API = 1;
+const NEEDS = #{ outputs: #{ report: "file" } };
+fn build(src, out) {
     print("before-frame-cap");
     for index in 0..DIAGNOSTIC_COUNT { print("frame-data"); }
-    ctx.state.done = true;
+    write_file(out, "logged");
     print("after-frame-cap");
-    ctx
 }
-"#.replace("DIAGNOSTIC_COUNT", &(MAX_DIAGNOSTIC_FRAMES + 1024).to_string());
+"#
+    .replace(
+        "DIAGNOSTIC_COUNT",
+        &(MAX_DIAGNOSTIC_FRAMES + 1024).to_string(),
+    );
     write_recipe(&recipes, "check", &source);
     let output = managed_command(&recipes, "install").output().unwrap();
     assert_success(&output);
-    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(context["state"]["done"], true);
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(result["outputs"]["report"].as_str().unwrap()).unwrap(),
+        "logged"
+    );
     let diagnostics = String::from_utf8_lossy(&output.stderr);
     assert!(diagnostics.contains("before-frame-cap"));
     assert!(!diagnostics.contains("after-frame-cap"));
@@ -895,27 +762,21 @@ fn install(ctx) {
 fn managed_capture_returns_stdout_and_relays_stderr_beyond_pipe_capacity() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{};
-let ctx = #{name: "managed-capture"};
-fn is_installed(ctx) {
-    ctx.state.short = exec_output("/usr/bin/bash", ["--noprofile", "--norc", "-c", "printf ' capture-value\\n'"]);
-    ctx.state.large = exec_output("/usr/bin/bash", ["--noprofile", "--norc", "-c",
+fn build(src, out) {
+    let short = exec_output("/usr/bin/bash", ["--noprofile", "--norc", "-c", "printf ' capture-value\\n'"]);
+    if short != " capture-value\n" { throw "short capture changed: " + short; }
+    let large = exec_output("/usr/bin/bash", ["--noprofile", "--norc", "-c",
         "printf '%080000d' 0; printf capture-stdout-end; printf '%080000d' 0 >&2; printf capture-stderr-end >&2"]);
-    ctx.state.empty = exec_output("/usr/bin/bash", ["--noprofile", "--norc", "-c", "printf only-stderr >&2"]);
-    ready(ctx)
+    if large.len() != 80018 || !large.ends_with("capture-stdout-end") { throw "large capture changed"; }
+    let empty = exec_output("/usr/bin/bash", ["--noprofile", "--norc", "-c", "printf only-stderr >&2"]);
+    if empty != "" { throw "stderr leaked into the capture"; }
 }
 "#;
     write_recipe(&recipes, "check", source);
-    let output = managed_command(&recipes, "isinstalled").output().unwrap();
+    let output = managed_command(&recipes, "install").output().unwrap();
     assert_success(&output);
-    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(context["state"]["short"], " capture-value\n");
-    assert_eq!(
-        context["state"]["large"],
-        "0".repeat(80000) + "capture-stdout-end"
-    );
-    assert_eq!(context["state"]["empty"], "");
     let diagnostics = String::from_utf8_lossy(&output.stderr);
     assert!(
         diagnostics.contains("capture-stderr-end") && diagnostics.contains("only-stderr"),
@@ -940,24 +801,22 @@ fn is_installed(ctx) {
 }
 
 #[test]
-fn managed_capture_nonzero_exit_remains_a_fatal_custom_check_error() {
+fn managed_capture_nonzero_exit_remains_a_fatal_build_error() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{};
-let ctx = #{name: "managed-capture-failure"};
-fn is_installed(ctx) {
-    ctx.state.unreachable = exec_output("/usr/bin/bash", ["--noprofile", "--norc", "-c",
+fn build(src, out) {
+    exec_output("/usr/bin/bash", ["--noprofile", "--norc", "-c",
         "printf capture-failed-stdout; printf capture-failed-stderr >&2; exit 23"]);
-    ready(ctx)
 }
 "#;
     write_recipe(&recipes, "check", source);
-    let output = managed_command(&recipes, "isinstalled").output().unwrap();
+    let output = managed_command(&recipes, "install").output().unwrap();
     assert!(!output.status.success());
     assert!(
         output.stdout.is_empty(),
-        "failure emitted a successful context"
+        "failure emitted a successful result"
     );
     let diagnostics = String::from_utf8_lossy(&output.stderr);
     for message in [
@@ -978,47 +837,27 @@ fn is_installed(ctx) {
 }
 
 #[test]
-fn managed_large_file_lifecycle_preserves_custom_content_checks() {
+fn managed_large_file_output_is_checked_by_verify() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{ outputs: #{ proof: "file" } };
-let ctx = #{name: "managed-large-file"};
 fn expected_content() {
     let value = "x";
     for index in 0..17 { value += value; }
     value
 }
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) {
-    if is_file("/work/build/large-file") {
-        if read_file("/work/build/large-file") == expected_content() { return ready(ctx); }
-    }
-    needs_work(ctx, "large source product has not been verified")
-}
-fn build(ctx) {
-    write_file("/work/build/large-file", expected_content());
-    ctx
-}
-fn is_installed(ctx) {
-    if is_file("/out/large-file") {
-        if read_file("/out/large-file") == expected_content() { return ready(ctx); }
-    }
-    needs_work(ctx, "large installed bytes are missing or invalid")
-}
-fn install(ctx) {
-    write_file("/out/large-file", read_file("/work/build/large-file"));
-    ctx.outputs.proof = "/out/large-file";
-    ctx.state.verified_bytes = 131072;
-    ctx
+fn build(src, out) { write_file(out, expected_content()); }
+fn verify(out) {
+    if read_file(out) != expected_content() { throw "large installed bytes are missing or invalid"; }
 }
 "#;
     write_recipe(&recipes, "check", source);
     let output = managed_command(&recipes, "install").output().unwrap();
     assert_success(&output);
-    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
-        std::fs::read(context["outputs"]["proof"].as_str().unwrap()).unwrap(),
+        std::fs::read(result["outputs"]["proof"].as_str().unwrap()).unwrap(),
         vec![b'x'; 131072]
     );
     assert!(String::from_utf8_lossy(&output.stderr).contains("launcher exit 0; result exited"));
@@ -1029,68 +868,45 @@ fn install(ctx) {
 }
 
 #[test]
-fn managed_directory_lifecycle_copies_moves_and_cleans_nested_products() {
+fn managed_directory_output_copies_moves_and_publishes_nested_products() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{ outputs: #{ tree: "directory" } };
-let ctx = #{name: "managed-directory", state: #{cleaned: false}};
 fn expected_content() {
     let value = "d";
     for index in 0..17 { value += value; }
     value
 }
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) {
-    if is_file("/work/build/source/nested/input") {
-        if read_file("/work/build/source/nested/input") == expected_content() { return ready(ctx); }
-    }
-    needs_work(ctx, "source tree has not been produced and checked")
+fn build(src, out) {
+    let material = join_path(WORK, "source");
+    mkdir(join_path(material, "nested"));
+    write_file(join_path(material, "nested/input"), expected_content());
+    write_file(join_path(material, "manifest"), "directory-product-v1");
+    mkdir(join_path(out, "staged"));
+    copy_tree_contents(material, join_path(out, "staged"));
+    mv(join_path(out, "staged"), join_path(out, "final"));
 }
-fn build(ctx) {
-    mkdir("/work/build/source/nested");
-    write_file("/work/build/source/nested/input", expected_content());
-    write_file("/work/build/source/manifest", "directory-product-v1");
-    mkdir("/work/tmp/copy-scratch/nested");
-    write_file("/work/tmp/copy-scratch/nested/discard", "temporary");
-    ctx
-}
-fn cleanup(ctx, reason) {
-    if is_dir("/work/tmp/copy-scratch") { rm("/work/tmp/copy-scratch"); }
-    ctx.state.cleaned = true;
-    ctx
-}
-fn is_installed(ctx) {
-    if is_file("/out/final/nested/input") && is_file("/out/final/manifest") {
-        if read_file("/out/final/nested/input") == expected_content() &&
-           read_file("/out/final/manifest") == "directory-product-v1" &&
-           !is_dir("/out/staged") && !is_dir("/work/tmp/copy-scratch") { return ready(ctx); }
-    }
-    needs_work(ctx, "copied, moved and cleaned products have not been verified")
-}
-fn install(ctx) {
-    if is_dir("/work/tmp/copy-scratch") { throw "build cleanup did not remove its tree"; }
-    mkdir("/out/staged");
-    copy_tree_contents("/work/build/source", "/out/staged");
-    mv("/out/staged", "/out/final");
-    ctx.outputs.tree = "/out/final";
-    ctx
+fn verify(out) {
+    if is_dir(join_path(out, "staged")) { throw "the staged folder was not moved"; }
+    if read_file(join_path(out, "final/manifest")) != "directory-product-v1" { throw "manifest changed"; }
+    if read_file(join_path(out, "final/nested/input")) != expected_content() { throw "nested bytes changed"; }
 }
 "#;
     write_recipe(&recipes, "check", source);
     let output = managed_command(&recipes, "install").output().unwrap();
     assert_success(&output);
-    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let published = Path::new(context["outputs"]["tree"].as_str().unwrap());
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let published = Path::new(result["outputs"]["tree"].as_str().unwrap());
     assert_eq!(
-        std::fs::read(published.join("manifest")).unwrap(),
+        std::fs::read(published.join("final/manifest")).unwrap(),
         b"directory-product-v1"
     );
     assert_eq!(
-        std::fs::read(published.join("nested/input")).unwrap(),
+        std::fs::read(published.join("final/nested/input")).unwrap(),
         vec![b'd'; 131072]
     );
-    assert_eq!(context["state"]["cleaned"], true);
+    assert!(!published.join("staged").exists());
     let diagnostics = String::from_utf8_lossy(&output.stderr);
     assert!(
         diagnostics.contains("launcher exit 0; result exited"),
@@ -1110,17 +926,15 @@ fn install(ctx) {
 fn managed_rename_cannot_replace_staged_recipe_source() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{};
-let ctx = #{name: "managed-rename-guard"};
-fn is_installed(ctx) {
-    write_file("/work/build/replacement", "replace staged recipe");
-    mv("/work/build/replacement", "/inputs/main.rhai");
-    ready(ctx)
+fn build(src, out) {
+    write_file(join_path(WORK, "replacement"), "replace staged recipe");
+    mv(join_path(WORK, "replacement"), "/inputs/main.rhai");
 }
 "#;
     write_recipe(&recipes, "check", source);
-    let output = managed_command(&recipes, "isinstalled").output().unwrap();
+    let output = managed_command(&recipes, "install").output().unwrap();
     assert!(!output.status.success() && output.stdout.is_empty());
     let diagnostics = String::from_utf8_lossy(&output.stderr);
     assert!(diagnostics.contains("os error 18"), "{diagnostics}");
@@ -1138,44 +952,26 @@ fn is_installed(ctx) {
 fn managed_owned_elf_build_executes_and_validates_its_product() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{ outputs: #{ proof: "file" } };
-let ctx = #{name: "managed-owned-elf"};
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) {
-    if is_file("/work/build/owned-result") && ctx.state.contains("captured") {
-        if read_file("/work/build/owned-result") == "owned-elf-product" &&
-           ctx.state.code == 0 && ctx.state.captured == "owned-elf-capture" { return ready(ctx); }
-    }
-    needs_work(ctx, "generated ELF has not produced verified bytes")
-}
-fn build(ctx) {
-    copy_file("/usr/bin/bash", "/work/build/generated-bash");
-    ctx.state.code = exec("/work/build/generated-bash", ["--noprofile", "--norc", "-c",
-        "printf owned-elf-product > /work/build/owned-result; printf owned-elf-stdout; printf owned-elf-stderr >&2"]);
-    ctx.state.captured = exec_output("/work/build/generated-bash", ["--noprofile", "--norc", "-c", "printf owned-elf-capture"]);
-    ctx
-}
-fn is_installed(ctx) {
-    if is_file("/out/owned-result") {
-        if read_file("/out/owned-result") == "owned-elf-product" { return ready(ctx); }
-    }
-    needs_work(ctx, "owned executable result has not been installed and checked")
-}
-fn install(ctx) {
-    copy_file("/work/build/owned-result", "/out/owned-result");
-    ctx.outputs.proof = "/out/owned-result";
-    ctx
+fn build(src, out) {
+    let generated = join_path(WORK, "generated-bash");
+    let result = join_path(WORK, "owned-result");
+    copy_file("/usr/bin/bash", generated);
+    let code = exec(generated, ["--noprofile", "--norc", "-c",
+        "printf owned-elf-product > " + result + "; printf owned-elf-stdout; printf owned-elf-stderr >&2"]);
+    if code != 0 { throw "generated executable failed"; }
+    let captured = exec_output(generated, ["--noprofile", "--norc", "-c", "printf owned-elf-capture"]);
+    if captured != "owned-elf-capture" { throw "capture changed: " + captured; }
+    copy_file(result, out);
 }
 "#;
     write_recipe(&recipes, "check", source);
     let output = managed_command(&recipes, "install").output().unwrap();
     assert_success(&output);
-    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(context["state"]["code"], 0);
-    assert_eq!(context["state"]["captured"], "owned-elf-capture");
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
-        std::fs::read(context["outputs"]["proof"].as_str().unwrap()).unwrap(),
+        std::fs::read(result["outputs"]["proof"].as_str().unwrap()).unwrap(),
         b"owned-elf-product"
     );
     let diagnostics = String::from_utf8_lossy(&output.stderr);
@@ -1200,17 +996,16 @@ fn install(ctx) {
 fn managed_owned_exec_requires_executable_permissions() {
     let (_dir, recipes) = create_test_env();
     let source = r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{};
-let ctx = #{name: "managed-owned-permissions"};
-fn is_installed(ctx) {
-    write_file("/work/build/not-executable", "ordinary data");
-    exec_checked("/work/build/not-executable", []);
-    ready(ctx)
+fn build(src, out) {
+    let data = join_path(WORK, "not-executable");
+    write_file(data, "ordinary data");
+    exec_checked(data, []);
 }
 "#;
     write_recipe(&recipes, "check", source);
-    let output = managed_command(&recipes, "isinstalled").output().unwrap();
+    let output = managed_command(&recipes, "install").output().unwrap();
     assert!(!output.status.success() && output.stdout.is_empty());
     let diagnostics = String::from_utf8_lossy(&output.stderr);
     assert!(diagnostics.contains("os error 13"), "{diagnostics}");
@@ -1228,50 +1023,26 @@ fn is_installed(ctx) {
 fn managed_generated_shebang_build_preserves_path_arguments_and_products() {
     let (_dir, recipes) = create_test_env();
     let source = r##"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{ outputs: #{ proof: "file" } };
-let ctx = #{name: "managed-owned-script"};
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) {
-    if is_file("/work/build/script-result") && ctx.state.contains("captured") {
-        if read_file("/work/build/script-result") == "script-product" && ctx.state.code == 0 &&
-           ctx.state.captured == "/work/build/generated-script|argument with spaces|last" {
-            return ready(ctx);
-        }
-    }
-    needs_work(ctx, "generated script has not produced verified bytes")
-}
-fn build(ctx) {
-    write_file("/work/build/generated-script", "#!/usr/bin/bash --noprofile\nprintf script-product > /work/build/script-result\nprintf '%s|%s|%s' \"$0\" \"$1\" \"$2\"\nprintf script-stderr >&2\n");
-    chmod("/work/build/generated-script", 0o755);
-    ctx.state.captured = exec_output("/work/build/generated-script", ["argument with spaces", "last"]);
-    copy_file("/usr/bin/true", "/work/build/generated-true");
-    ctx.state.code = exec("/work/build/generated-true", []);
-    ctx
-}
-fn is_installed(ctx) {
-    if is_file("/out/script-result") {
-        if read_file("/out/script-result") == "script-product" { return ready(ctx); }
-    }
-    needs_work(ctx, "script product is not installed and checked")
-}
-fn install(ctx) {
-    copy_file("/work/build/script-result", "/out/script-result");
-    ctx.outputs.proof = "/out/script-result";
-    ctx
+fn build(src, out) {
+    let script = join_path(WORK, "generated-script");
+    let result = join_path(WORK, "script-result");
+    write_file(script, "#!/usr/bin/bash --noprofile\nprintf script-product > " + result + "\nprintf '%s|%s|%s' \"$0\" \"$1\" \"$2\"\nprintf script-stderr >&2\n");
+    chmod(script, 0o755);
+    let captured = exec_output(script, ["argument with spaces", "last"]);
+    if captured != script + "|argument with spaces|last" { throw "script arguments changed: " + captured; }
+    copy_file("/usr/bin/true", join_path(WORK, "generated-true"));
+    if exec(join_path(WORK, "generated-true"), []) != 0 { throw "generated true failed"; }
+    copy_file(result, out);
 }
 "##;
     write_recipe(&recipes, "check", source);
     let output = managed_command(&recipes, "install").output().unwrap();
     assert_success(&output);
-    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(context["state"]["code"], 0);
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
-        context["state"]["captured"],
-        "/work/build/generated-script|argument with spaces|last"
-    );
-    assert_eq!(
-        std::fs::read(context["outputs"]["proof"].as_str().unwrap()).unwrap(),
+        std::fs::read(result["outputs"]["proof"].as_str().unwrap()).unwrap(),
         b"script-product"
     );
     let diagnostics = String::from_utf8_lossy(&output.stderr);
@@ -1294,26 +1065,22 @@ fn install(ctx) {
 fn managed_shell_reopens_an_unlinked_script_after_a_libc_fork() {
     let (_dir, recipes) = create_test_env();
     let source = r##"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{};
-let ctx = #{name: "managed-descriptor-script"};
-fn is_installed(ctx) {
-    write_file("/work/build/fd-script", "printf '%s|%s' \"$0\" \"$1\"\nprintf fd-product > /work/build/fd-result\n");
-    ctx.state.captured = exec_output("/usr/bin/bash", ["--noprofile", "--norc", "-c",
-        "exec 8</work/build/fd-script; /usr/bin/rm /work/build/fd-script; source /dev/fd/8 'spaced argument'", "fd-shell"]);
-    ctx.state.removed = !is_file("/work/build/fd-script");
-    if ctx.state.removed && ctx.state.captured == "fd-shell|spaced argument" && read_file("/work/build/fd-result") == "fd-product" {
-        return ready(ctx);
-    }
-    needs_work(ctx, "descriptor script did not produce the expected bytes")
+fn build(src, out) {
+    let script = join_path(WORK, "fd-script");
+    let result = join_path(WORK, "fd-result");
+    write_file(script, "printf '%s|%s' \"$0\" \"$1\"\nprintf fd-product > " + result + "\n");
+    let captured = exec_output("/usr/bin/bash", ["--noprofile", "--norc", "-c",
+        "exec 8<" + script + "; /usr/bin/rm " + script + "; source /dev/fd/8 'spaced argument'", "fd-shell"]);
+    if is_file(script) { throw "the script was not unlinked"; }
+    if captured != "fd-shell|spaced argument" { throw "descriptor script changed: " + captured; }
+    if read_file(result) != "fd-product" { throw "descriptor script did not produce the expected bytes"; }
 }
 "##;
     write_recipe(&recipes, "check", source);
-    let output = managed_command(&recipes, "isinstalled").output().unwrap();
+    let output = managed_command(&recipes, "install").output().unwrap();
     assert_success(&output);
-    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(context["state"]["captured"], "fd-shell|spaced argument");
-    assert_eq!(context["state"]["removed"], true);
     let diagnostics = String::from_utf8_lossy(&output.stderr);
     assert!(
         diagnostics.contains("launcher exit 0; result exited"),
@@ -1404,17 +1171,15 @@ fn managed_coordinator_death_terminates_launcher_and_worker() {
         &recipes,
         "check",
         r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{};
-let ctx = #{name: "cancel-check"};
-fn is_installed(ctx) {
+fn build(src, out) {
     print("managed-cancellation-ready");
     while true { exec_checked("/usr/bin/sleep", ["1"]); }
-    ready(ctx)
 }
 "#,
     );
-    let mut child = managed_command(&recipes, "isinstalled")
+    let mut child = managed_command(&recipes, "install")
         .env("TMPDIR", dir.path())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -1469,10 +1234,9 @@ fn is_installed(ctx) {
     write_recipe(
         &recipes,
         "check",
-        "const RECIPE_API = 2;
-const NEEDS = #{}; let ctx = #{name: \"quick\"}; fn is_installed(ctx) { ready(ctx) }",
+        "const RECIPE_API = 1;\nconst NEEDS = #{};\nfn build(src, out) {}\n",
     );
-    let output = managed_command(&recipes, "isinstalled")
+    let output = managed_command(&recipes, "install")
         .env("TMPDIR", dir.path())
         .output()
         .unwrap();
@@ -1511,7 +1275,7 @@ const NEEDS = #{}; let ctx = #{name: \"quick\"}; fn is_installed(ctx) { ready(ct
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     reader.join().unwrap();
-    let output = managed_command(&recipes, "isinstalled")
+    let output = managed_command(&recipes, "install")
         .env("TMPDIR", dir.path())
         .output()
         .unwrap();
@@ -1527,34 +1291,27 @@ const NEEDS = #{}; let ctx = #{name: \"quick\"}; fn is_installed(ctx) { ready(ct
 fn managed_publication_selects_products_and_rejects_missing_outputs() {
     let (dir, recipes) = create_test_env();
     let source = r#"
-const RECIPE_API = 2;
-const NEEDS = #{ outputs: #{ alias: "file", file: "file", tree: "directory" } };
-let ctx = #{name: "publication"};
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) { ready(ctx) }
-fn is_installed(ctx) { if ctx.state.contains("done") { ready(ctx) } else { needs_work(ctx, "produce") } }
-fn install(ctx) {
-    mkdir("/out/tree/empty");
-    write_file("/out/tree/product", "published-bytes");
+const RECIPE_API = 1;
+const NEEDS = #{ outputs: #{ file: "file", tree: "directory" } };
+fn build(src, out) {
+    let tree = out.tree;
+    mkdir(join_path(tree, "empty"));
+    write_file(join_path(tree, "product"), "published-bytes");
     let long_name = "";
     for index in 0..120 { long_name += "a"; }
-    write_file("/out/tree/" + long_name, "long-name-product");
-    ln("product", "/out/tree/link");
-    ln("/usr/bin/program", "/out/tree/absolute");
-    ln(long_name, "/out/tree/long-link");
-    write_file("/work/private", "not selected");
-    ctx.outputs.tree = "/out/tree";
-    ctx.outputs.file = "/out/tree/product";
-    ctx.outputs.alias = "/out/tree/product";
-    ctx.state.done = true;
-    ctx
+    write_file(join_path(tree, long_name), "long-name-product");
+    ln("product", join_path(tree, "link"));
+    ln("/usr/bin/program", join_path(tree, "absolute"));
+    ln(long_name, join_path(tree, "long-link"));
+    write_file(join_path(WORK, "private"), "not selected");
+    write_file(out.file, "published-bytes");
 }
 "#;
     write_recipe(&recipes, "check", source);
     let output = managed_command(&recipes, "install").output().unwrap();
     assert_success(&output);
-    let context: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let tree = Path::new(context["outputs"]["tree"].as_str().unwrap());
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let tree = Path::new(result["outputs"]["tree"].as_str().unwrap());
     let published = tree.parent().unwrap();
     assert!(tree.join("empty").is_dir());
     assert_eq!(
@@ -1577,14 +1334,10 @@ fn install(ctx) {
         std::fs::read(tree.join("a".repeat(120))).unwrap(),
         b"long-name-product"
     );
-    for path in [
-        tree.join("product"),
-        published.join("file"),
-        published.join("alias"),
-    ] {
+    for path in [tree.join("product"), published.join("file")] {
         assert_eq!(std::fs::read(path).unwrap(), b"published-bytes");
     }
-    assert_eq!(std::fs::read_dir(published).unwrap().count(), 3);
+    assert_eq!(std::fs::read_dir(published).unwrap().count(), 2);
     assert!(published.starts_with(dir.path().join("state/recipe/exports")));
     let before = std::fs::read_dir(published.parent().unwrap())
         .unwrap()
@@ -1592,14 +1345,14 @@ fn install(ctx) {
     write_recipe(
         &recipes,
         "check",
-        &source.replace(
-            "ctx.outputs.alias = \"/out/tree/product\";",
-            "ctx.outputs.alias = \"/out/missing\";",
-        ),
+        &source.replace("    write_file(out.file, \"published-bytes\");\n", ""),
     );
     let output = managed_command(&recipes, "install").output().unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("NEEDS.outputs.alias is absent"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("NEEDS.outputs.file is a file the recipe did not make")
+    );
     assert_eq!(
         std::fs::read_dir(published.parent().unwrap())
             .unwrap()
@@ -1617,13 +1370,9 @@ fn managed_publication_rejects_archive_traversal_and_link_redirects() {
     use std::os::unix::fs::PermissionsExt;
     let (dir, recipes) = create_test_env();
     let source = r#"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{ outputs: #{ product: "file" } };
-let ctx = #{name: "export-boundary"};
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) { ready(ctx) }
-fn is_installed(ctx) { if ctx.state.contains("done") { ready(ctx) } else { needs_work(ctx, "produce") } }
-fn install(ctx) { write_file("/out/product", "valid"); ctx.outputs.product = "/out/product"; ctx.state.done = true; ctx }
+fn build(src, out) { write_file(out, "valid"); }
 "#;
     write_recipe(&recipes, "check", source);
     let sentinel = dir.path().join("sentinel");
@@ -1706,29 +1455,26 @@ fn managed_generated_scripts_use_owned_and_image_interpreter_chains() {
         &recipes,
         "check",
         r##"
-const RECIPE_API = 2;
+const RECIPE_API = 1;
 const NEEDS = #{};
-let ctx = #{name: "interpreter-chain"};
-fn is_installed(ctx) {
+fn build(src, out) {
     copy_file("/usr/bin/bash", "/work/tools/bash"); chmod("/work/tools/bash", 0o755);
     let body = "\nprintf '%s|%s|%s|%s|%s' \"$0\" \"$1\" \"$2\" \"$3\" \"$4\"\n";
     write_file("/work/tools/middle", "#!/work/tools/bash --noprofile" + body);
     chmod("/work/tools/middle", 0o755);
     write_file("/work/tools/outer", "#!/work/tools/middle outer option\n");
     chmod("/work/tools/outer", 0o755);
-    ctx.owned = exec_output("/work/tools/outer", ["spaced argument", "last"]);
+    let expected = "/work/tools/middle|outer option|/work/tools/outer|spaced argument|last";
+    let owned = exec_output("/work/tools/outer", ["spaced argument", "last"]);
+    if owned != expected { throw "owned interpreter chain changed: " + owned; }
     // A completed interpreter releases script pins so a later launch can use
     // changed contents while the original executable input stays immutable.
     write_file("/work/tools/middle", "#!/usr/bin/bash --noprofile" + body);
-    ctx.image = exec_output("/work/tools/outer", ["spaced argument", "last"]);
-    ready(ctx)
+    let image = exec_output("/work/tools/outer", ["spaced argument", "last"]);
+    if image != expected { throw "image interpreter chain changed: " + image; }
 }
 "##,
     );
-    let output = managed_command(&recipes, "isinstalled").output().unwrap();
+    let output = managed_command(&recipes, "install").output().unwrap();
     assert_success(&output);
-    let ctx: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let expected = "/work/tools/middle|outer option|/work/tools/outer|spaced argument|last";
-    assert_eq!(ctx["owned"], expected);
-    assert_eq!(ctx["image"], expected);
 }

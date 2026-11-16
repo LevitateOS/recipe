@@ -10,24 +10,15 @@ fn managed_retention_bounds_history_preserves_active_logs_and_published_products
         &recipes,
         "check",
         r#"
-const RECIPE_API = 2;
-const NEEDS = #{ outputs: #{ product: "file" } };
-let ctx = #{name: "retention", value: FACT};
-fn is_acquired(ctx) { ready(ctx) }
-fn is_built(ctx) { if is_file("/work/build/product") { return ready(ctx); } needs_work(ctx,"build") }
-fn build(ctx) { write_file("/work/build/product", ctx.value); ctx }
-fn is_installed(ctx) {
-    if !is_file("/out/product") { return needs_work(ctx,"install"); }
-    if read_file("/out/product") != ctx.value { throw "wrong retained identity"; }
-    ctx.outputs.product="/out/product"; ready(ctx)
-}
-fn install(ctx) { copy_file("/work/build/product", "/out/product"); ctx }
+const RECIPE_API = 1;
+const NEEDS = #{ defines: #{ FACT: () }, outputs: #{ product: "file" } };
+fn build(src, out) { write_file(out, DEFINES.FACT); }
 "#,
     );
     let state = dir.path().join("retained");
     let invoke = |value: &str| {
         let output = recipe_command(&recipes)
-            .args(["install", "check", "--recipes-path"])
+            .args(["install", "check", "--keep", "--recipes-path"])
             .arg(&recipes)
             .arg("--state-dir")
             .arg(&state)
@@ -96,22 +87,22 @@ fn install(ctx) { copy_file("/work/build/product", "/out/product"); ctx }
         (31..=33).contains(&ownedlogs),
         "history not bounded: {ownedlogs}"
     );
+    // One saved state at most: the identity that ran last keeps its single
+    // generation, and the four before it are gone.
     let pointers = walkdir::WalkDir::new(&state)
         .into_iter()
         .filter_map(Result::ok)
         .filter(|entry| entry.file_name() == "current.json")
         .collect::<Vec<_>>();
-    assert_eq!(pointers.len(), 4, "input identity history not bounded");
-    for pointer in pointers {
-        let identity = pointer.path().parent().unwrap();
-        let generations = std::fs::read_dir(identity)
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_type().unwrap().is_dir())
-            .count();
-        assert_eq!(generations, 2, "current/previous generation not preserved");
-        let record: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(pointer.path()).unwrap()).unwrap();
-        assert!(identity.join(record["archive"].as_str().unwrap()).is_file());
-    }
+    assert_eq!(pointers.len(), 1, "saved state of earlier identities kept");
+    let identity = pointers[0].path().parent().unwrap();
+    let generations = std::fs::read_dir(identity)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().unwrap().is_dir())
+        .count();
+    assert_eq!(generations, 1, "an earlier generation was kept");
+    let record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(pointers[0].path()).unwrap()).unwrap();
+    assert!(identity.join(record["archive"].as_str().unwrap()).is_file());
 }
