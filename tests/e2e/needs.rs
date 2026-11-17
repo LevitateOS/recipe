@@ -47,7 +47,9 @@ write_file({marker:?}, "SETUP_EXECUTED"); throw "SETUP_EXECUTED";
         (vec!["--network-host", "127.0.0.1:12346"], "NEEDS.network"),
         (vec!["--timeout-secs", "121"], "NEEDS.timeout_secs"),
         (
-            vec!["--network-max-bytes", "65537"],
+            // Above the cap of a declared 65536: 65536 + 64 KiB (one file)
+            // + 65536 / 4 (docs/recipe-format.md, section 2.1).
+            vec!["--network-max-bytes", "147457"],
             "NEEDS.network_max_bytes",
         ),
     ] {
@@ -682,7 +684,7 @@ fn build(src, out) {{ {body} }}
         if name == "child" {
             assert_eq!(
                 effective,
-                &serde_json::json!({"memory_mib":2048,"storage_max_objects":5000,"storage_max_bytes":16777216,"timeout_secs":60,"network_max_bytes":2048,"network":[]})
+                &serde_json::json!({"memory_mib":2048,"storage_max_objects":5000,"storage_max_bytes":16777216,"timeout_secs":60,"network_max_bytes":4096,"network":[]})
             );
         } else {
             assert_eq!(name, "leaf");

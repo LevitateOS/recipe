@@ -181,7 +181,8 @@ root's os-release ID and a serial lower than the root's
 /usr/lib/levitate/release.json, and checks the archives' SHA-256 first. The base
 tree replaces the reserved receipt entry base (edited etc/ files kept with
 NAME.recipe-new beside them; fstab, crypttab, hostname, machine-id, localtime,
-adjtime, mtab, resolv.conf, subuid, subgid, ld.so.cache and the account files never part of it;
+adjtime, mtab, resolv.conf, subuid, subgid, ld.so.cache, the account files and
+\&.recipe\-target\-metadata.json never part of it;
 missing release accounts added), the manifest becomes
 usr/lib/levitate/release.json, every held package the release has NAME.rhai for
 is installed from it, and the effects and the library cache run once. The groups are installed from the
@@ -351,7 +352,9 @@ is not restricted. \fBupdates\fR and \-\-system update never take a newer
 version of a name the release carries from elsewhere; a package installed from
 a release's recipes that the current release no longer carries is reported
 (update JSON not_in_release true, changed false; installed \-\-json
-from_release and not_in_release) and not updated. A recipe given as a file path
+from_release and not_in_release) and not updated. A package installed from
+another copy of a recipe the release carries with the same content (the install
+medium's) counts as installed from the release. A recipe given as a file path
 is used as it is.
 .TP
 .B refresh [NAME]
@@ -400,7 +403,8 @@ Explicit --recipes-path or RECIPE_PATH uses that directory alone.
 .B --system
 System scope (see SYSTEM SCOPE): install, update, remove, installed and state
 act on the computer's root. install takes several recipes (recipe --system install A B C) and
-skips a recipe or dependency the root holds at the same recipe digest and version. On an A/B system the change is written into the other
+skips a recipe or dependency the root holds at the same recipe digest and version
+(the digest names the recipe's content, not the folder it lies in). On an A/B system the change is written into the other
 (unlocked) root and becomes active when that root is booted; the booted root is
 never written.
 .TP

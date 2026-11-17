@@ -53,6 +53,9 @@ impl From<&str> for Fail {
 /// Classify the failure of sending a request; `prefix` starts the message.
 pub(super) fn call_failure(prefix: &str, error: ureq::Error) -> Fail {
     let message = format!("{prefix}: {error}");
+    if source_io(&error).is_some_and(super::net::is_limit) {
+        return Fail::Fatal(super::net::limit_reached(&message).into());
+    }
     let transient = match &error {
         ureq::Error::Status(code, _) => matches!(code, 408 | 425 | 429 | 500 | 502 | 503 | 504),
         ureq::Error::Transport(transport) => match transport.kind() {
@@ -79,7 +82,9 @@ pub(super) fn call_failure(prefix: &str, error: ureq::Error) -> Fail {
 /// and the like (kinds that are not about the connection) are answers.
 pub(super) fn read_failure(prefix: &str, error: std::io::Error) -> Fail {
     let message = format!("{prefix}: {error}");
-    if transient_io(error.kind()) {
+    if super::net::is_limit(&error) {
+        Fail::Fatal(super::net::limit_reached(&message).into())
+    } else if transient_io(error.kind()) {
         Fail::Transient(message)
     } else {
         Fail::Fatal(message.into())
@@ -106,10 +111,15 @@ fn transient_io(kind: ErrorKind) -> bool {
 /// a lookup failure from the system resolver has no useful kind of its own
 /// and is retried.
 fn source_io_kind(error: &ureq::Error) -> Option<ErrorKind> {
+    source_io(error).map(std::io::Error::kind)
+}
+
+/// The first `io::Error` in the error's chain of causes.
+fn source_io(error: &ureq::Error) -> Option<&std::io::Error> {
     let mut cause: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(error);
     while let Some(current) = cause {
         if let Some(io) = current.downcast_ref::<std::io::Error>() {
-            return Some(io.kind());
+            return Some(io);
         }
         cause = current.source();
     }

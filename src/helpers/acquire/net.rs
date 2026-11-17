@@ -7,8 +7,9 @@
 //! - every agent gets a resolver that answers only `HOST:PORT` pairs the
 //!   recipe declared, with the coordinator's pinned addresses, and refuses
 //!   everything else (other hosts, other ports, redirects to either);
-//! - response bodies are counted against `network_max_bytes` (bodies only:
-//!   request and header bytes are small and not counted);
+//! - response bodies are counted against the run's network byte cap (bodies
+//!   only; the cap, `crate::needs::Needs::network_budget`, carries an
+//!   allowance for the handshakes and headers Ginux counts and this does not);
 //! - each declared endpoint records whether it was attempted (resolved for a
 //!   connection) and connected (answered), the shape the coordinator reports
 //!   as `network_usage`.
@@ -35,6 +36,52 @@ pub(crate) struct HostNetwork {
 }
 
 static NETWORK: OnceLock<HostNetwork> = OnceLock::new();
+
+/// The run's network byte cap, as the coordinator resolved it; set for every
+/// run (Ginux or host) so a failure on the cap can name it.
+static LIMIT: OnceLock<u64> = OnceLock::new();
+
+/// Remember the run's network byte cap ([`limit_reached`] names it).
+pub(crate) fn set_limit(max_bytes: u64) {
+    let _ = LIMIT.set(max_bytes);
+}
+
+/// The error a host run's counted body returns past the cap.
+#[derive(Debug)]
+struct LimitReached;
+
+impl std::fmt::Display for LimitReached {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("network byte limit reached")
+    }
+}
+
+impl std::error::Error for LimitReached {}
+
+/// Whether `error` is the run's network byte cap: Ginux answers a send or a
+/// receive past `[network] max_bytes` with EDQUOT; a host run's counted body
+/// returns [`LimitReached`].
+pub(crate) fn is_limit(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(libc::EDQUOT)
+        || error
+            .get_ref()
+            .is_some_and(|inner| inner.downcast_ref::<LimitReached>().is_some())
+}
+
+/// The message of a transfer stopped by the run's network byte cap; `what`
+/// is the transfer and the error it ended with.
+pub(crate) fn limit_reached(what: &str) -> String {
+    let limit = LIMIT
+        .get()
+        .map_or_else(|| "its".to_owned(), |bytes| format!("{bytes} bytes,"));
+    format!(
+        "{what}: the run's network byte limit was reached ({limit} the most this run may \
+         transfer). The limit is NEEDS.network_max_bytes plus, for a recipe with PACKAGES, the \
+         pins in use, plus Recipe's allowance for connections and retries \
+         (docs/recipe-format.md, section 2.1). If the recipe downloads more than it declares, \
+         raise NEEDS.network_max_bytes; a group's pins are counted from its .pins file"
+    )
+}
 
 /// Install the host run's grant: declared endpoint → pinned addresses.
 pub(crate) fn install(
@@ -195,10 +242,7 @@ impl Read for Counted {
             .expect("counted body exists only with a host network");
         let used = network.used.fetch_add(count as u64, Ordering::Relaxed) + count as u64;
         if used > network.max_bytes {
-            return Err(std::io::Error::other(format!(
-                "network byte limit reached: this run received {used} bytes, over NEEDS.network_max_bytes {}",
-                network.max_bytes
-            )));
+            return Err(std::io::Error::other(LimitReached));
         }
         Ok(count)
     }

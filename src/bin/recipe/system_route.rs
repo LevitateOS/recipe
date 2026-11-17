@@ -845,7 +845,7 @@ fn summary(r: &Receipt, root: &Path) -> Vec<serde_json::Value> {
                         && path.ends_with(".desktop")
                 })
                 .count();
-            let from_release = sources::from_release(&p.recipe);
+            let from_release = sources::installed_from_release(p, release.as_ref());
             let not_in_release = from_release
                 && release
                     .as_ref()
@@ -1138,7 +1138,9 @@ fn not_in_release(
         .find(recipe)
         .or_else(|_| installed.find(Path::new(&stem(recipe))))
         .ok()?;
-    if !sources::from_release(&package.recipe) || release.carries(&package.name).is_some() {
+    if release.carries(&package.name).is_some()
+        || !sources::installed_from_release(package, Some(&release))
+    {
         return None;
     }
     Some((
@@ -1181,13 +1183,25 @@ fn resolve_for(
             std::fs::canonicalize(path)?
         }
         Err(e) if action == "install" || explicit => return Err(e),
-        // An update with no catalog entry uses the recipe the package came from.
-        Err(_) => installed
-            .find(recipe)
-            .or_else(|_| installed.find(Path::new(&stem(recipe))))
-            .with_context(|| format!("{} is not installed in {place}", recipe.display()))?
-            .recipe
-            .clone(),
+        // An update with no catalog entry uses the recipe the package came
+        // from. The receipt's path is a note of where that copy lay (on an
+        // install medium, it is gone once the system runs): it is used only
+        // while the file is still there.
+        Err(_) => {
+            let package = installed
+                .find(recipe)
+                .or_else(|_| installed.find(Path::new(&stem(recipe))))
+                .with_context(|| format!("{} is not installed in {place}", recipe.display()))?;
+            anyhow::ensure!(
+                package.recipe.is_file(),
+                "{} {} was installed from {}, which is no longer there, and no recipe source here has a recipe named {}; add a source that has it (recipe source add), or give the recipe with --recipes-path FOLDER or as a file",
+                package.name,
+                package.version,
+                package.recipe.display(),
+                package.name
+            );
+            package.recipe.clone()
+        }
     })
 }
 

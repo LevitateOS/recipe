@@ -97,6 +97,17 @@ impl Release {
         })
     }
 
+    /// Whether the release's recipe of this name is the recipe a package
+    /// with this `recipe_digest` was produced from: the same content,
+    /// wherever that package's copy lay (the install medium, an earlier
+    /// root's release recipes).
+    pub fn carries_same(&self, name: &str, recipe_digest: &str) -> bool {
+        self.carries(name)
+            .and_then(|file| crate::needs::declaration(&file, Some(&self.path)).ok())
+            .and_then(|declaration| declaration.producer_digest().ok())
+            .is_some_and(|digest| digest == recipe_digest)
+    }
+
     /// The release's recipe of this name, if it carries one.
     pub fn carries(&self, name: &str) -> Option<PathBuf> {
         if !catalog::is_file_name(name) {
@@ -134,7 +145,9 @@ pub fn release_refusal(entry: &serde_json::Value, release: &Release) -> Option<S
 
 /// Whether a recipe file is a release's copy: in a root's release recipes,
 /// or unpacked from a release's `recipes.tar.zst` by an `apply-release` of an
-/// earlier Recipe (`/var/lib/recipe/release/SERIAL/`).
+/// earlier Recipe (`/var/lib/recipe/release/SERIAL/`). A package installed
+/// from another copy of the same recipe (the install medium's) is the
+/// release's too: [`installed_from_release`].
 pub fn from_release(recipe: &Path) -> bool {
     let Some(folder) = recipe.parent() else {
         return false;
@@ -143,6 +156,16 @@ pub fn from_release(recipe: &Path) -> bool {
         || folder
             .parent()
             .is_some_and(|parent| parent.ends_with("recipe/release"))
+}
+
+/// Whether an installed package came from a release's recipes: its recipe
+/// file was a release's copy ([`from_release`]), or the root's release
+/// carries a recipe of its name with the content it was produced from
+/// ([`Release::carries_same`]), wherever the copy it was installed from lay.
+pub fn installed_from_release(package: &crate::system::Package, release: Option<&Release>) -> bool {
+    from_release(&package.recipe)
+        || release
+            .is_some_and(|release| release.carries_same(&package.name, &package.recipe_digest))
 }
 
 const INDEX_LIMIT: u64 = 32 * 1024 * 1024;

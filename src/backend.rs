@@ -186,7 +186,7 @@ impl Runner<'_> {
                 .map(|stem| stem.to_string_lossy().into_owned())
                 .unwrap_or_default();
             if !present.is_empty() {
-                let digest = producer_digest(node)?;
+                let digest = node.producer_digest()?;
                 let version = node.version().map(str::to_owned);
                 if let Some(held) = present
                     .iter()
@@ -397,7 +397,7 @@ impl Runner<'_> {
             }
             let mut packages = Vec::new();
             for node in &graph {
-                let digest = producer_digest(node)?;
+                let digest = node.producer_digest()?;
                 let mut output = if node.recipe == *main_recipe {
                     result.clone()
                 } else {
@@ -549,13 +549,6 @@ impl Drop for Staged<'_> {
 
 /// The identity a system receipt records for the recipe of `node`
 /// (`recipe_digest`): the digest of its source digests.
-fn producer_digest(node: &crate::needs::Declaration) -> Result<String> {
-    use sha2::Digest;
-    Ok(hex::encode(sha2::Sha256::digest(serde_json::to_vec(
-        &node.source_digests,
-    )?)))
-}
-
 /// A package a system change's root already holds.
 #[derive(serde::Deserialize)]
 struct Present {

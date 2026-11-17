@@ -110,7 +110,7 @@ only narrow it.
 | `defines` | name to its default value; `()` means required |
 | `outputs` | name to `"file"` or `"directory"` |
 | `network` | `"host:port"` endpoints, redirect hosts included |
-| `network_max_bytes` | bytes sent and received, default 8 GiB |
+| `network_max_bytes` | bytes the recipe downloads, default 8 GiB; Recipe adds 64 KiB per file and a quarter for retries (docs/recipe-format.md, 2.1) |
 | `memory_mib` | default 2048 |
 | `storage_max_objects` | default 16384 |
 | `storage_max_bytes` | default bounded by memory |

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A run's network byte cap has room for more than the payload: it is the declared bytes (and a group's pins) plus 64 KiB per file (TLS handshake, HTTP headers, a redirect) plus a quarter of the payload (retries, record framing), one rule for Ginux runs, which count every byte sent and received, and host runs (`docs/recipe-format.md`, section 2.1). A package group no longer fails near the end of its pinned downloads with "Disk quota exceeded"; `SOURCES` recipes get the same allowance on top of their declared `network_max_bytes`. A transfer stopped by the cap now says that the run's network byte limit was reached, with the cap and the fields that set it.
+- The recipe digest of a produced package (receipt `recipe_digest`, "already holds" in a system change) and the state key name the recipe's content and its files' names beside it (recipe, pins, base, modules), not the folder it lies in: the medium's copy and a release's copy of the same group match, so `apply-release` no longer produces every group again. `--system installed --json` reports `from_release` for a package installed from any copy of a recipe the release carries with the same content.
+- An update by name of a package with no recipe in any source no longer uses a recipe path the receipt recorded that is gone (such as the install medium's): it says so and how to give the recipe.
+- `record-base` no longer records the staged tree's `.recipe-target-metadata.json` in the base entry (it rewrote that file afterwards, so a later `apply-release` saw it as changed); `apply-release` neither writes nor compares it, nor any other path the base never holds, also where an older base entry recorded it.
+
 ### Changed
 
 - Downloads (`download`, `download_exact`, the metadata fetches, and the built-in fetch of `SOURCES` and pinned packages) are tried again after a transient network failure: name lookup, refused/reset/timed-out connection, cut-off body, HTTP 408, 425, 429, 500, 502, 503, 504. Up to 4 attempts, after 1, 3 and 9 s, each retry printed with host, path and reason; the final error says how many attempts were made. A 404, a checksum mismatch, a refused host or a size limit still fails at once.

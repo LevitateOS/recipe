@@ -146,19 +146,14 @@ fn node_key(
         };
         dependencies.push((&dependency.name, dependency.build_only, key));
     }
-    let mut modules = Vec::new();
-    for module in &node.declared.modules {
-        let bytes = std::fs::read(module)
-            .with_context(|| format!("cannot read the module {}", module.display()))?;
-        modules.push((module, hex::encode(Sha256::digest(bytes))));
-    }
+    // The recipe's files by name and content, wherever its folder lies.
+    let content = node.content()?;
     let mut defines = defines.to_vec();
     defines.sort();
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(&(
         "recipe-state-key-v1",
         crate::identity::Declared::current(),
-        &node.source_digests,
-        modules,
+        content,
         defines,
         prefix,
         host_libc,

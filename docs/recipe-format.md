@@ -132,7 +132,7 @@ callers can only narrow it.
 | `defines` | name to its default value (new, see below) |
 | `outputs` | name to `"file"` or `"directory"` |
 | `network` | `"host:port"` endpoints, redirect hosts included |
-| `network_max_bytes` | bytes sent and received, default 8 GiB |
+| `network_max_bytes` | bytes the recipe downloads, default 8 GiB; Recipe adds an allowance (below) |
 | `memory_mib` | default 2048 |
 | `storage_max_objects` | default 16384 |
 | `storage_max_bytes` | default bounded by memory |
@@ -147,6 +147,25 @@ the name (section 3.1). Five OS-building recipes declare several outputs
 
 Every host of a `SOURCES` URL, and every redirect host, must be in `network`.
 `recipe validate` and `recipe info` say which one is missing.
+
+**The network byte cap.** `network_max_bytes` is the payload: the bytes of the
+files the recipe downloads (with a recipe's own margin, as today). A recipe
+with `PACKAGES` adds the bytes of the pins in use (section 2.7). The run's cap
+is that payload plus Recipe's allowance for what travels besides the files:
+
+    cap = payload + 64 KiB × files + payload / 4
+
+`files` is the number of `SOURCES` entries fetched on this system plus the
+pins in use (declared bytes without a `SOURCES` entry count as one file).
+64 KiB per file covers its connection's TLS handshake, the HTTP request and
+response headers and one redirect to a mirror; a quarter of the payload covers
+retries of transient failures (a cut-off body is fetched again) and TLS record
+framing. Ginux counts every byte sent and received on the run's connections
+against the cap; a host run counts response bodies. The cap stays bounded by
+what the recipe declares and pins: a run cannot pull unrelated gigabytes. A
+transfer stopped by the cap fails with "the run's network byte limit was
+reached", the cap in bytes and the fields that set it. `--network-max-bytes`
+narrows the cap.
 
 #### Defines (answer 2)
 

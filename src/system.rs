@@ -796,6 +796,18 @@ pub fn plan_base(
         "a base plan needs the base package"
     );
     let mut old = old.clone();
+    // What is never the base's (machine files, the target metadata, the
+    // receipt; `crate::release::is_base_path`) is neither written nor
+    // compared, also where an older base entry recorded it: such an entry
+    // forgets the path and leaves the file as it is.
+    if let Some(base) = old.packages.get_mut(BASE_PACKAGE) {
+        base.files
+            .retain(|path, _| crate::release::is_base_path(path));
+    }
+    payload
+        .package
+        .files
+        .retain(|path, _| crate::release::is_base_path(path));
     let mut kept_modules = 0;
     if let Some(previous) = old.packages.remove(PREVIOUS_KERNEL_PACKAGE)
         && let Some(base) = old.packages.get_mut(BASE_PACKAGE)

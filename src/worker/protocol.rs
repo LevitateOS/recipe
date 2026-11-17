@@ -259,7 +259,7 @@ pub struct HostRun {
     pub root: String,
     /// Declared `HOST:PORT` → the addresses the coordinator pinned for it.
     pub network: std::collections::BTreeMap<String, Vec<String>>,
-    /// The run's received-byte budget (`NEEDS.network_max_bytes`).
+    /// The run's network byte cap (`crate::needs::Needs::network_budget`).
     pub network_max_bytes: u64,
     /// The offline cache directory (`crate::offline_cache`), read-only.
     #[serde(default, skip_serializing_if = "Option::is_none")]

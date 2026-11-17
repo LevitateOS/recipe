@@ -97,6 +97,9 @@ recipes and installs them in order in one run. Before producing anything, Recipe
 tells the producer what the root already holds; a recipe, or a dependency, that the
 root's receipt holds at the same recipe digest and version is not produced or written
 again, in the same run and across runs (with or without `--no-persist-state`). The
+recipe digest names the recipe's content (the recipe, its pins, the base it extends,
+the modules it imports, by their names beside the recipe), not the folder it lies
+in: the install medium's copy and a release's copy of the same recipe match. The
 JSON lists every package written (`packages`) and every one already there
 (`present`). A runtime dependency's `system` output is written into the root, not
 staged into its consumer's inputs. (`update` and `remove` take one recipe; an update
@@ -150,7 +153,9 @@ checks both archives' size and SHA-256 against the manifest before anything chan
    (and not even that when the release did not change the file). The machine's own
    files (`etc/fstab`, `crypttab`, `hostname`, `machine-id`, `localtime`, `adjtime`,
    `mtab`, `resolv.conf`, `subuid`, `subgid`, `ld.so.cache` and the account files) are never the
-   base's. The release's accounts the root lacks are created with the release's ids
+   base's, nor is a staged tree's target metadata (`.recipe-target-metadata.json`,
+   bookkeeping like the receipt); an older base entry that recorded one of them
+   forgets it and leaves the file as it is. The release's accounts the root lacks are created with the release's ids
    where free (the users made at installation stay); file owners are resolved by
    name. A file no package owns where the release now has one (made by the
    installation) is kept beside under `etc/` and replaced elsewhere. The manifest
@@ -420,7 +425,8 @@ anything runs:
   own directories (inputs read-only, work and out read-write; no `..`) and
   refuses anything else; the HTTP client reaches only the `NEEDS.network`
   host:port pairs, at the addresses Recipe pinned (never a loopback or
-  private address a host name resolved to), within `network_max_bytes`; the
+  private address a host name resolved to), within the run's network byte cap
+  (`NEEDS.network_max_bytes` with Recipe's allowance, docs/recipe-format.md 2.1); the
   program helpers are not registered at all; and a seccomp filter refuses
   `execve` and new processes. The run's inputs, work folder and output are host
   directories there.
@@ -657,7 +663,12 @@ existing prepared artifacts.
     current release no longer carries is reported (`"not_in_release": true`,
     `"changed": false`, exit 0) and not updated from anywhere else.
     `--system installed --json` gives each package `from_release` and
-    `not_in_release`.
+    `not_in_release`. A package is from the release when it was installed from
+    a release's recipes, or from any other copy (the install medium's) of the
+    recipe the root's release carries with the same content. The recipe path a
+    receipt records is a note of where that copy lay; an update by name finds
+    the release's or a source's recipe by its name, and falls back to that path
+    only while the file is still there.
 - Naming a recipe of a remote source downloads it with every recipe it needs
   (`deps`, `build_deps`), each file at the index's commit and checked against
   the index's SHA-256 and size; a file that differs stops before anything

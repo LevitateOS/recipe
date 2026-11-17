@@ -198,6 +198,7 @@ pub fn run_worker() -> Result<()> {
     install_diagnostics(&channel)?;
     install_progress(&channel);
     crate::core::output::set_machine_events(request.options.execution.machine_events);
+    crate::helpers::acquire::net::set_limit(request.options.execution.network_max_bytes);
     crate::diagnostics::line("recipe: managed worker started");
     let outcome = run_operation(&request, rx, input, &channel);
     crate::core::output::flush_progress();

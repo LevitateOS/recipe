@@ -24,9 +24,12 @@
 //! - left out, if present: `boot`, `home`, `root`, `proc`, `sys`, `dev`,
 //!   `run`, `tmp`, `lost+found` and what is below them; `usr/lib/recab/`;
 //!   Recipe's receipt and profile (`usr/lib/recipe/system.json`,
-//!   `usr/lib/recipe/profile/`); the machine files ([`MACHINE_FILES`]); and
-//!   `usr/lib/levitate/release.json`, which Recipe writes from the manifest
-//!   itself (the archive cannot carry the manifest that names its digest).
+//!   `usr/lib/recipe/profile/`); the machine files ([`MACHINE_FILES`]); a
+//!   staged tree's target metadata (`.recipe-target-metadata.json`, which
+//!   [`record_base`] rewrites after recording, bookkeeping like the
+//!   receipt); and `usr/lib/levitate/release.json`, which Recipe writes from
+//!   the manifest itself (the archive cannot carry the manifest that names
+//!   its digest).
 //!
 //! The base entry in an image is written at build time by
 //! `recipe --system --root TREE record-base --release release.json` from
@@ -225,11 +228,21 @@ enum Place {
     Left,
 }
 
+/// Whether `rel` can be a path of the base entry: false for everything the
+/// module documentation leaves out, `var/` included; true for
+/// `usr/lib/levitate/release.json`, which Recipe writes into the base from
+/// the manifest. [`record_base`], the base archive and
+/// [`system::plan_base`] all go by it.
+pub fn is_base_path(rel: &str) -> bool {
+    rel == INSTALLED || place(rel) == Place::Base
+}
+
 fn place(rel: &str) -> Place {
     let top = rel.split('/').next().unwrap_or_default();
     if NOT_BASE.contains(&top)
         || rel == "usr/lib/recab"
         || rel.starts_with("usr/lib/recab/")
+        || rel == target::MANIFEST
         || rel == system::RECEIPT
         || rel == system::PROFILE
         || rel.starts_with(&format!("{}/", system::PROFILE))

@@ -50,13 +50,54 @@ pub struct Needs {
     pub timeout_secs: u64,
     /// The bytes the recipe declares for its own downloads. For a recipe
     /// with `PACKAGES` it is what `NEEDS.network_max_bytes` says, or 0 when
-    /// left out; the pins in use are added by [`Needs::network_budget`].
+    /// left out; the pins in use and Recipe's allowance for connections and
+    /// retries are added by [`Needs::network_budget`].
     pub network_max_bytes: u64,
     /// For a recipe with `PACKAGES`: each pins section's C library (`glibc`,
-    /// `musl`, `any`) to the bytes of its packages (docs/recipe-format.md,
-    /// section 2.7, decision 9). Read from the pins file, never declared.
+    /// `musl`, `any`) to the bytes and number of its packages
+    /// (docs/recipe-format.md, section 2.7, decision 9). Read from the pins
+    /// file, never declared.
     #[serde(skip)]
-    pub pins_bytes: BTreeMap<String, u64>,
+    pub pins: BTreeMap<String, Payload>,
+    /// The number of `SOURCES` entries fetched on each C library: `any` for
+    /// the entries without `libc`, `glibc` and `musl` for the others.
+    #[serde(skip)]
+    pub source_files: BTreeMap<String, u64>,
+}
+
+/// What a run downloads: bytes of payload in a number of files.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Payload {
+    pub bytes: u64,
+    pub files: u64,
+}
+
+/// Bytes one downloaded file may cost on the wire besides its own bytes: the
+/// TLS handshake of its connection (key exchange and the server's
+/// certificate chain, 3-10 KiB), the HTTP request and response headers
+/// (about 1-2 KiB), and the same once more when the server redirects to a
+/// mirror or a CDN on another connection, with room to spare.
+const ALLOWANCE_PER_FILE: u64 = 64 * 1024;
+
+/// The share of the payload set aside for retries (`helpers/acquire/retry.rs`
+/// tries a transient failure up to four times, and a body cut off is fetched
+/// again from its start) and for the framing of TLS records (under 0.5%): a
+/// quarter of the payload may be transferred a second time.
+const RETRY_SHARE_DIVISOR: u64 = 4;
+
+/// The network byte cap of a run that downloads `payload`. One rule for both
+/// kinds of run: Ginux counts every byte sent and received on the run's
+/// connections against `[network] max_bytes`; a host run counts response
+/// bodies (`helpers/acquire/net.rs`). The cap stays bounded by the payload:
+/// a run cannot pull unrelated gigabytes.
+pub fn download_cap(payload: Payload) -> u64 {
+    // The files themselves.
+    let files = payload.bytes;
+    // Handshakes, headers and redirects, per file.
+    let connections = payload.files.saturating_mul(ALLOWANCE_PER_FILE);
+    // Retries and record framing.
+    let retries = payload.bytes / RETRY_SHARE_DIVISOR;
+    files.saturating_add(connections).saturating_add(retries)
 }
 
 #[derive(Default, Deserialize)]
@@ -165,26 +206,43 @@ impl Needs {
             storage_max_bytes: raw.storage_max_bytes,
             timeout_secs: raw.timeout_secs.unwrap_or(defaults.timeout_secs),
             network_max_bytes: raw.network_max_bytes.unwrap_or(defaults.network_max_bytes),
-            pins_bytes: BTreeMap::new(),
+            pins: BTreeMap::new(),
+            source_files: BTreeMap::new(),
         };
         needs.resolve(&Narrowing::default(), &defaults)?;
         Ok(needs)
     }
 
-    /// The received-byte budget of a run on a system whose C library is
-    /// `host_libc`: the declared bytes plus the pins in use (the section of
-    /// that C library, else the `any` section), as `crate::pins::Pins::section`
-    /// chooses it. A group without pins for this system downloads nothing and
-    /// its download step refuses the run; its budget stays one byte so the
-    /// network policy is still valid until then.
+    /// The network byte cap of a run on a system whose C library is
+    /// `host_libc`: [`download_cap`] of the declared bytes plus the pins in
+    /// use (the section of that C library, else the `any` section, as
+    /// `crate::pins::Pins::section` chooses it), in the `SOURCES` entries
+    /// fetched there plus those pins. Declared bytes without a `SOURCES`
+    /// entry (a recipe that fetches with the download helpers) count as one
+    /// file. A group without pins for this system downloads nothing and its
+    /// download step refuses the run; its cap stays one byte so the network
+    /// policy is still valid until then.
     pub fn network_budget(&self, host_libc: &str) -> u64 {
         let pins = self
-            .pins_bytes
+            .pins
             .get(host_libc)
-            .or_else(|| self.pins_bytes.get("any"))
+            .or_else(|| self.pins.get("any"))
             .copied()
-            .unwrap_or(0);
-        self.network_max_bytes.saturating_add(pins).max(1)
+            .unwrap_or_default();
+        let sources = ["any", host_libc]
+            .iter()
+            .filter_map(|libc| self.source_files.get(*libc))
+            .sum::<u64>();
+        let declared_files = if self.network_max_bytes > 0 {
+            sources.max(1)
+        } else {
+            sources
+        };
+        download_cap(Payload {
+            bytes: self.network_max_bytes.saturating_add(pins.bytes),
+            files: declared_files.saturating_add(pins.files),
+        })
+        .max(1)
     }
 
     /// Resolve caller restrictions once; the same values govern config, worker,
@@ -428,6 +486,49 @@ impl Declaration {
     pub fn version(&self) -> Option<&str> {
         self.declared.package.version.as_deref()
     }
+
+    /// The recipe's code wherever its folder lies: each file it is compiled
+    /// from (the recipe, its pins, the base it extends, the modules it
+    /// imports) by its name relative to the recipe's folder, to its SHA-256.
+    /// The same recipe on the install medium, in a release's recipes and in
+    /// a working copy has the same content; this, never `source_digests`
+    /// (keyed by where the files lie), is what names a result.
+    pub fn content(&self) -> Result<BTreeMap<String, String>> {
+        use sha2::Digest;
+        let folder = self.recipe.parent().unwrap_or(Path::new("/"));
+        let name = |path: &Path| -> String {
+            match path.strip_prefix(folder) {
+                Ok(relative) => relative.to_string_lossy().into_owned(),
+                // A base found on the search path, outside the folder: its
+                // file name; `//! extends:` in the recipe names it already.
+                Err(_) => path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            }
+        };
+        let mut content = self
+            .source_digests
+            .iter()
+            .map(|(path, digest)| (name(path), digest.clone()))
+            .collect::<BTreeMap<_, _>>();
+        for module in &self.declared.modules {
+            let bytes = std::fs::read(module)
+                .with_context(|| format!("cannot read the module {}", module.display()))?;
+            content.insert(name(module), hex::encode(sha2::Sha256::digest(bytes)));
+        }
+        Ok(content)
+    }
+
+    /// What names the recipe that produced a package (a receipt's
+    /// `recipe_digest`): the SHA-256 of its [`Declaration::content`], so the
+    /// medium's copy and a release's copy of the same recipe match.
+    pub fn producer_digest(&self) -> Result<String> {
+        use sha2::Digest;
+        Ok(hex::encode(sha2::Sha256::digest(serde_json::to_vec(
+            &self.content()?,
+        )?)))
+    }
 }
 
 /// Inspect source declarations only, including the same base/child code the
@@ -497,11 +598,23 @@ pub(crate) fn declaration_named(
         if !budget_declared {
             needs.network_max_bytes = 0;
         }
-        needs.pins_bytes = pins
+        needs.pins = pins
             .sections
             .iter()
-            .map(|section| (section.libc.as_str().to_owned(), section.bytes()))
+            .map(|section| {
+                (
+                    section.libc.as_str().to_owned(),
+                    Payload {
+                        bytes: section.bytes(),
+                        files: section.packages.len() as u64,
+                    },
+                )
+            })
             .collect();
+    }
+    for source in declared.sources.values() {
+        let libc = source.libc.map_or("any", |libc| libc.as_str());
+        *needs.source_files.entry(libc.to_owned()).or_default() += 1;
     }
     let mut dependencies = BTreeMap::<String, Vec<String>>::new();
     for statement in compiled.ast.statements() {
