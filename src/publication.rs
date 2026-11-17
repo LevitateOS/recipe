@@ -702,6 +702,29 @@ pub(crate) fn remove_orphans(root: &Path) -> u64 {
     freed
 }
 
+/// [`discard`] each of `results` (runs' `outputs`), unless a process holds
+/// the publications of the state root (a run in progress, or a reader that
+/// holds them, [`hold`], this process included): then nothing is deleted and
+/// this returns false, so the caller tries again later.
+pub(crate) fn discard_unheld(
+    state_dir: Option<&Path>,
+    results: &[&serde_json::Value],
+) -> Result<bool> {
+    use fs2::FileExt;
+    let base = crate::retained::state_root(state_dir)?.join("exports");
+    if !base.is_dir() {
+        return Ok(true);
+    }
+    let lock = crate::fsx::open_lease(&hold_lock(&base), true)?;
+    if lock.try_lock_exclusive().is_err() {
+        return Ok(false);
+    }
+    for outputs in results {
+        discard(state_dir, outputs);
+    }
+    Ok(true)
+}
+
 /// Delete the publications that hold `outputs` (output name to published
 /// path, as a run's result names them): each output's parent directory, when
 /// it is a publication directly in the state root's `exports`. Used once

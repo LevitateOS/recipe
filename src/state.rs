@@ -533,6 +533,21 @@ pub fn hold_publications(state_dir: Option<&Path>) -> Result<()> {
     crate::publication::hold(&base.canonicalize()?)
 }
 
+/// Delete the publications of earlier runs that a caller kept and no longer
+/// needs (a newer run replaced them): `results` are those runs' `outputs`
+/// (output name to published path, as each result names them); only a
+/// publication directly in the state root's `exports` is deleted. While any
+/// process holds the publications there (a run in progress, or a reader
+/// that called [`hold_publications`], this process included) nothing is
+/// deleted and this returns false: they are left for a later call or
+/// `recipe cleanup`. Failing to delete one is reported, never fatal.
+pub fn discard_publications(
+    state_dir: Option<&Path>,
+    results: &[&serde_json::Value],
+) -> Result<bool> {
+    crate::publication::discard_unheld(state_dir, results)
+}
+
 /// `recipe cleanup --logs`: delete the diagnostic logs of every finished
 /// invocation (a running one keeps its own). Returns the bytes freed.
 pub fn cleanup_logs(state_dir: Option<&Path>) -> Result<u64> {
