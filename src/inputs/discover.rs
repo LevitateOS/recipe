@@ -18,8 +18,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 
-use crate::recipes::parse_extends;
-
 use crate::domain::{MAIN_RECIPE_NAME as MAIN_NAME, MAX_INPUT_NAME};
 /// Explicit assets include installation DVDs; stream bounded copies.
 const MAX_INPUT_FILE: u64 = 16 * 1024 * 1024 * 1024;
@@ -534,8 +532,8 @@ impl<'a> Collector<'a> {
     /// Stage the base a recipe file extends and the modules they import,
     /// each under the name the worker looks for it by (beside its referrer's
     /// staged name, or at the top of the inputs when it came from the search
-    /// path). Which modules and where they lie is [`crate::recipes::imports`],
-    /// the engine's own walk.
+    /// path). Which files and where they lie is [`crate::recipes::related`],
+    /// the engine's own rule.
     fn collect_related(
         &mut self,
         canonical: &Path,
@@ -543,32 +541,25 @@ impl<'a> Collector<'a> {
         source: &str,
         depth: usize,
     ) -> Result<()> {
-        let mut pending = vec![(canonical.to_path_buf(), domain_name.to_owned(), depth)];
-        let mut roots = vec![(canonical.to_path_buf(), source.to_owned())];
         // Dependencies are selected once from the merged executable
         // declaration by collect_executable above.
-        if let Some(base) = parse_extends(source) {
-            let (host, beside) = self.resolve_related(&base, canonical, "recipe/module")?;
-            let (base, name, base_source) =
-                self.stage_related(&base, &host, beside, domain_name)?;
+        let related = crate::recipes::related(canonical, source, self.search_path)?;
+        let mut pending = vec![(canonical.to_path_buf(), domain_name.to_owned(), depth)];
+        if let Some(base) = &related.base {
+            let (base, name) =
+                self.stage_related(&base.target, &base.found, base.beside, domain_name)?;
             if self.visited.insert((base.clone(), name.clone())) {
-                pending.push((base.clone(), name, depth + 1));
+                pending.push((base, name, depth + 1));
             }
-            roots.push((base, base_source));
         }
-        let roots = roots
-            .iter()
-            .map(|(path, text)| (path.as_path(), text.as_str()))
-            .collect::<Vec<_>>();
-        let imports = crate::recipes::imports(&roots, self.search_path)?;
         while let Some((file, name, depth)) = pending.pop() {
             if depth > MAX_IMPORT_DEPTH {
                 bail!(
                     "input preparation failure: import/dependency nesting exceeds {MAX_IMPORT_DEPTH}"
                 );
             }
-            for import in imports.edges.get(&file).into_iter().flatten() {
-                let (module, module_name, _) =
+            for import in related.edges.get(&file).into_iter().flatten() {
+                let (module, module_name) =
                     self.stage_related(&import.file, &import.found, import.beside, &name)?;
                 if self.visited.insert((module.clone(), module_name.clone())) {
                     pending.push((module, module_name, depth + 1));
@@ -580,16 +571,16 @@ impl<'a> Collector<'a> {
 
     /// Stage the base or module `target` that its referrer (staged as
     /// `referrer_name`) names, found at `host`, `beside` the referrer or in
-    /// the search path. Returns its canonical path, its domain name and its
-    /// text. Preserves each reference's directory layout instead of
-    /// flattening names.
+    /// the search path. Returns its canonical path and its domain name.
+    /// Preserves each reference's directory layout instead of flattening
+    /// names.
     fn stage_related(
         &mut self,
         target: &str,
         host: &Path,
         beside: bool,
         referrer_name: &str,
-    ) -> Result<(PathBuf, String, String)> {
+    ) -> Result<(PathBuf, String)> {
         let name = if beside {
             Path::new(referrer_name)
                 .parent()
@@ -604,37 +595,11 @@ impl<'a> Collector<'a> {
             .to_owned();
         crate::domain::validate_input_name(&name)?;
         // Validate the selected path before canonicalization, preserving symlink rejection.
-        let source = read_recipe_file(host)?;
+        read_recipe_file(host)?;
         let canonical = canonical_host(host)?;
         self.note_host_dir(&canonical);
         self.stage_kind(&name, host, InputKind::File)?;
-        Ok((canonical, name, source))
-    }
-
-    /// Resolve an `extends:` target like the executor does, refusing
-    /// absolute host paths outright; `true` when it lies beside `referrer`.
-    fn resolve_related(
-        &self,
-        target: &str,
-        referrer: &Path,
-        kind: &str,
-    ) -> Result<(PathBuf, bool)> {
-        let target = target.trim();
-        if let Err(problem) = crate::recipes::check_related_target(target) {
-            bail!(
-                "input preparation failure: {kind} target {target:?} in {} {problem} \
-                 (use a path relative to the recipe or the recipes search path)",
-                referrer.display()
-            );
-        }
-        crate::recipes::locate_related(target, referrer, self.search_path).with_context(|| {
-            format!(
-                "input preparation failure: {kind} target {target:?} from {} not found \
-                 (tried the recipe directory and {:?}; only declared files are staged)",
-                referrer.display(),
-                self.search_path,
-            )
-        })
+        Ok((canonical, name))
     }
 
     fn finish(self, recipe_stem: String) -> Result<Discovered> {

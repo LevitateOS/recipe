@@ -1,8 +1,8 @@
 //! How recipes name each other: `//! extends:` headers, base/module targets
 //! and `deps`/`build_deps` names. Input discovery (coordinator), the engine
 //! (worker) all resolve through these rules, so what discovery
-//! stages is what the engine looks for; [`imports`] is the one walk of a
-//! recipe's modules.
+//! stages is what the engine looks for; [`related`] finds a recipe's base
+//! and modules, for all of them.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -69,7 +69,21 @@ pub fn locate_related(
     search_path.and_then(candidate).map(|path| (path, false))
 }
 
-/// One literal `import` of a recipe, base or module, resolved by [`imports`].
+/// The base a recipe extends, as [`related`] found and read it.
+#[derive(Debug)]
+pub(crate) struct Base {
+    /// The path `//! extends:` names.
+    pub target: String,
+    /// Where [`locate_related`] found it, as found (not canonical).
+    pub found: PathBuf,
+    /// Found beside the recipe, not in the search path.
+    pub beside: bool,
+    /// `found`, canonical: the base's identity.
+    pub canonical: PathBuf,
+    pub text: String,
+}
+
+/// One literal `import` of a recipe, base or module, resolved by [`related`].
 #[derive(Debug)]
 pub(crate) struct Import {
     /// The path as the import writes it (`"look"` in `import "look" as look;`).
@@ -84,7 +98,7 @@ pub(crate) struct Import {
     pub canonical: PathBuf,
 }
 
-/// An imported module as [`imports`] read it.
+/// An imported module as [`related`] read it.
 #[derive(Debug)]
 pub(crate) struct Module {
     pub text: String,
@@ -92,38 +106,97 @@ pub(crate) struct Module {
     pub ast: rhai::AST,
 }
 
-/// What a recipe and its base import, recursively.
+/// The files a recipe is compiled from besides itself and its pins file.
 #[derive(Debug)]
-pub(crate) struct Imports {
-    /// Each imported module once, by canonical path.
+pub(crate) struct Related {
+    /// The base it extends.
+    pub base: Option<Base>,
+    /// Each module it, its base or a module imports, once, by canonical path.
     pub modules: std::collections::BTreeMap<PathBuf, Module>,
-    /// The imports of each file walked (the given files, then each module by
-    /// its canonical path), in the order the file makes them.
+    /// The imports of each file walked (the recipe, its base by its
+    /// canonical path, each module by its canonical path), in the order the
+    /// file makes them.
     pub edges: std::collections::BTreeMap<PathBuf, Vec<Import>>,
 }
 
-/// The one rule for which modules `files` (a recipe and its base, each with
-/// its text) import and where each lives: literal paths only (`import
-/// "look.rhai" as look;`), each named file found beside the importing file,
-/// then in the search path, recursively, each module read once. Imports are
-/// found on ASTs compiled without the optimizer, so an import is found
-/// whatever engine later compiles the recipe. The engine's digests
-/// (`compile_recipe`), input discovery and the placement check all use it.
-pub(crate) fn imports(
-    files: &[(&Path, &str)],
+/// The one rule for what the recipe `recipe` (whose text is `source`) is
+/// compiled from besides itself, used by the engine's digests
+/// (`compile_recipe`), input discovery and the placement check:
+///
+/// - its base: the `//! extends:` target, a relative path inside the
+///   recipe tree, found beside the recipe, then in the search path; one
+///   level only, a base that extends again is refused;
+/// - the modules the recipe and its base import, recursively: literal paths
+///   only (`import "look.rhai" as look;`), each named file found beside the
+///   importing file, then in the search path, each module read once.
+///
+/// Imports are found on ASTs compiled without the optimizer, so an import is
+/// found whatever engine later compiles the recipe.
+pub(crate) fn related(
+    recipe: &Path,
+    source: &str,
     search_path: Option<&Path>,
-) -> anyhow::Result<Imports> {
+) -> anyhow::Result<Related> {
     use anyhow::{Context, anyhow};
     use rhai::{ASTNode, Expr, Stmt};
+    let base = match parse_extends(source) {
+        None => None,
+        Some(target) => {
+            check_related_target(&target)
+                .map_err(|problem| anyhow!("Base recipe '{target}' {problem}"))?;
+            let (found, beside) =
+                locate_related(&target, recipe, search_path).with_context(|| {
+                    format!(
+                        "Base recipe '{}' not found (child: {}, search_path: {:?})",
+                        target,
+                        recipe.display(),
+                        search_path
+                    )
+                })?;
+            let canonical = found.canonicalize().unwrap_or_else(|_| found.clone());
+            let text = std::fs::read_to_string(&canonical)
+                .with_context(|| format!("Failed to read base recipe: {}", canonical.display()))?;
+            if parse_extends(&text).is_some() {
+                anyhow::bail!(
+                    "Recursive extends not supported: {} extends {} which also extends",
+                    recipe.display(),
+                    canonical.display()
+                );
+            }
+            Some(Base {
+                target,
+                found,
+                beside,
+                canonical,
+                text,
+            })
+        }
+    };
     let plain = crate::core::invocation::compile_engine();
+    // The base compiles first, as in `compile_recipe`; the recipe is walked
+    // after it.
     let mut pending = Vec::new();
-    for (path, text) in files {
-        let ast = plain
-            .compile(*text)
-            .map_err(|e| anyhow!("Failed to compile recipe {}: {}", path.display(), e))?;
-        pending.push((path.to_path_buf(), ast));
+    let base_ast = base
+        .as_ref()
+        .map(|base| {
+            plain.compile(&base.text).map_err(|e| {
+                anyhow!(
+                    "Failed to compile base recipe {}: {}",
+                    base.canonical.display(),
+                    e
+                )
+            })
+        })
+        .transpose()?;
+    let ast = plain
+        .compile(source)
+        .map_err(|e| anyhow!("Failed to compile recipe {}: {}", recipe.display(), e))?;
+    pending.push((recipe.to_path_buf(), ast));
+    if let (Some(base), Some(ast)) = (&base, base_ast) {
+        pending.push((base.canonical.clone(), ast));
     }
-    let mut found = Imports {
+    let mut found = Related {
+        base,
         modules: Default::default(),
         edges: Default::default(),
     };

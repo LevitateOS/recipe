@@ -161,16 +161,12 @@ pub fn eligibility(recipe: &Path, search_path: Option<&Path>) -> Result<Eligibil
     let child = engine
         .compile(&source)
         .map_err(|e| anyhow::anyhow!("cannot compile {}: {e}", recipe.display()))?;
+    let related = crate::recipes::related(&recipe, &source, search_path)?;
     let mut files = vec![(recipe.clone(), child.clone())];
-    let mut roots = vec![(recipe.clone(), source.clone())];
-    if let Some(base) = crate::recipes::parse_extends(&source) {
-        let path = crate::recipes::find_related(&base, &recipe, search_path)
-            .with_context(|| format!("base recipe {base:?} of {} not found", recipe.display()))?;
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("cannot read base recipe {}", path.display()))?;
+    if let Some(base) = &related.base {
         let mut ast = engine
-            .compile(&text)
-            .map_err(|e| anyhow::anyhow!("cannot compile {}: {e}", path.display()))?;
+            .compile(&base.text)
+            .map_err(|e| anyhow::anyhow!("cannot compile {}: {e}", base.canonical.display()))?;
         // A base function the child replaces (same name and arity) never runs.
         let replaced: Vec<(String, usize)> = child
             .iter_functions()
@@ -179,14 +175,8 @@ pub fn eligibility(recipe: &Path, search_path: Option<&Path>) -> Result<Eligibil
         ast.retain_functions(|_, _, name, arity| {
             !replaced.iter().any(|(n, a)| n == name && *a == arity)
         });
-        files.push((path.clone(), ast));
-        roots.push((path, text));
+        files.push((base.canonical.clone(), ast));
     }
-    let roots = roots
-        .iter()
-        .map(|(path, text)| (path.as_path(), text.as_str()))
-        .collect::<Vec<_>>();
-    let imports = crate::recipes::imports(&roots, search_path)?;
     let mut seen = std::collections::BTreeSet::new();
     while let Some((path, ast)) = files.pop() {
         if !seen.insert(path.clone()) {
@@ -199,14 +189,14 @@ pub fn eligibility(recipe: &Path, search_path: Option<&Path>) -> Result<Eligibil
             });
         }
         // Only the imports of the code that runs (a base function the child
-        // replaces is left out above), each where `imports` found it.
+        // replaces is left out above), each where `related` found it.
         for module in modules {
-            let import = imports
+            let import = related
                 .edges
                 .get(&path)
                 .and_then(|edges| edges.iter().find(|import| import.target == module))
                 .with_context(|| format!("module {module:?} of {} not found", path.display()))?;
-            let ast = imports.modules[&import.canonical].ast.clone();
+            let ast = related.modules[&import.canonical].ast.clone();
             files.push((import.canonical.clone(), ast));
         }
     }
