@@ -253,6 +253,24 @@ cannot be resolved is left out with a warning rather than failing the run.
 output-only builder execution. Other commands, including catalog listing and
 validation, keep their normal routes.
 
+## Install on another Linux
+
+No `recipe-pm` release is published yet (the last GitHub release, 0.1.4 from March 2026,
+is the old program), so this works only once `cargo xtask release recipe` output has been
+published. Then, on any x86_64 Linux:
+
+```sh
+curl -fsSL https://levitateos.org/recipe/install.sh | sh
+```
+
+`scripts/web-install.sh` reads `/etc/os-release`, picks an RPM, `.deb`, APK or tarball,
+downloads it from the newest release, checks its SHA-256 against `SHA256SUMS`, and installs it
+with the system's own tool (root only for that step). Arch, Void, Gentoo, NixOS and
+image-based systems (Silverblue, Bazzite, SteamOS, MicroOS) get the tarball, which installs
+into `/usr/local`. `--dry-run` shows what it would do without a network request;
+`RECIPE_INSTALL_TYPE` and `RECIPE_VERSION` override its choices. The six formats are described
+in the superproject's `docs/recipe-standalone-release.md`.
+
 ## Independent user software
 
 On a mutable system, or with an explicit independent package root (use `doas` on AcornOS):
