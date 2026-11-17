@@ -226,6 +226,58 @@ pub(crate) fn recorded(
     outcome
 }
 
+/// Descriptors the launcher and supervisor use besides Ginux's storage
+/// reservation (control, result, log, lease and epoll descriptors).
+const LAUNCHER_FD_MARGIN: u64 = 256;
+
+/// Ginux reserves one backing descriptor per possible storage object plus 128
+/// (`launch_storage.rs`) and refuses to start when the HARD `RLIMIT_NOFILE` is
+/// below that; it raises the soft limit itself. systemd hosts have a hard limit
+/// of 524288, but OpenRC/busybox hosts (AcornOS, live medium) typically have
+/// 4096, so a recipe with a large `storage_max_objects` could never start there.
+/// Raise the hard limit (never above `nr_open`) before the launcher is spawned:
+/// root may, an ordinary user may not, and then Ginux's own error follows this
+/// line. The soft limit stays as it is; the limit only ever grows.
+fn ensure_open_file_limit(storage_max_objects: u64) {
+    let needed = storage_max_objects + 128 + LAUNCHER_FD_MARGIN;
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        return;
+    }
+    let hard = limit.rlim_max as u64;
+    if hard >= needed {
+        return;
+    }
+    let nr_open = std::fs::read_to_string("/proc/sys/fs/nr_open")
+        .ok()
+        .and_then(|text| text.trim().parse::<u64>().ok())
+        .unwrap_or(needed);
+    let target = needed.min(nr_open);
+    if target > hard {
+        let raised = libc::rlimit {
+            rlim_cur: limit.rlim_cur,
+            rlim_max: target as libc::rlim_t,
+        };
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raised) } == 0 {
+            if target >= needed {
+                return;
+            }
+            crate::diagnostics::diag!(
+                "recipe: the system allows at most {target} open files (/proc/sys/fs/nr_open) \
+                 but this recipe needs {needed}; raise fs.nr_open"
+            );
+            return;
+        }
+    }
+    crate::diagnostics::diag!(
+        "recipe: the hard open-file limit is {hard} but this recipe needs {needed}; \
+         run recipe as root or raise the hard nofile limit (ulimit -Hn {needed})"
+    );
+}
+
 fn run_domain_inner(
     prepared: &PreparedInvocation,
     invocation: &Invocation<'_>,
@@ -336,6 +388,7 @@ fn run_domain_inner(
     };
     let control_fd = control_server.as_ref().map(AsRawFd::as_raw_fd);
 
+    ensure_open_file_limit(options.execution.storage_max_objects);
     let mut command = Command::new(launcher);
     command.process_group(0);
     let parent = unsafe { libc::getpid() };
