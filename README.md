@@ -255,9 +255,8 @@ validation, keep their normal routes.
 
 ## Install on another Linux
 
-No `recipe-pm` release is published yet (the last GitHub release, 0.1.4 from March 2026,
-is the old program), so this works only once `cargo xtask release recipe` output has been
-published. Then, on any x86_64 Linux:
+Releases of `recipe-pm` start with 0.2.0 (the older 0.1.4 GitHub release from March 2026
+is the old program). On any x86_64 Linux:
 
 ```sh
 curl -fsSL https://levitateos.org/recipe/install.sh | sh

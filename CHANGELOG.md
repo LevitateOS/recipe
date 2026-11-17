@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-17
+
+- First release under the package name `recipe-pm`, for any x86_64 Linux, as a tarball, RPM, .deb and APK (plus AUR and Void build files).
 - Recipe format API 1 (`docs/recipe-format.md`) replaces API 2/3, `ctx`, `RUNTIME` and the hooks.
 
 ### Added

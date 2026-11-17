@@ -1,10 +1,10 @@
 [package]
 name = "levitate-recipe"
 default-run = "recipe"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.93"
-description = "Rhai-based package recipe executor for LevitateOS"
+description = "Recipe: a package manager that installs software from readable recipes"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/LevitateOS/recipe"
 homepage = "https://github.com/LevitateOS/recipe"
