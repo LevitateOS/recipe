@@ -108,7 +108,8 @@ to what the root already holds writes nothing.)
 **Root effects.** After a successful system change to a root, if the root ships
 `/usr/lib/recipe/effects.rhai`, Recipe runs it once against that root and writes its
 `system` output into the root as the reserved package `system-effects`, replacing that
-package's previous files. That recipe rebuilds whole-root caches (GSettings schemas,
+package's previous files (they are caches other programs regenerate in place, so the
+administrator-edit check does not apply to them). That recipe rebuilds whole-root caches (GSettings schemas,
 GIO modules, pixbuf loaders, MIME and icon caches, fonts, desktop database, ...),
 which package scripts would have rebuilt; the OS provides it. Its contract:
 

@@ -426,7 +426,11 @@ pub fn reconcile(
                 {
                     current.xattrs.remove("security.selinux");
                 }
-                if current.as_ref() != Some(prior) {
+                // The effects package holds caches that other programs
+                // regenerate in place (fc-cache, glib-compile-schemas, ...);
+                // the next effects output replaces or removes them whatever
+                // their content, so a changed file is not an administrator edit.
+                if *name != EFFECTS_PACKAGE && current.as_ref() != Some(prior) {
                     ensure!(
                         edited_config(path, prior, current.as_ref()),
                         "administrator edit or damaged owned file at {path}; refusing to overwrite/remove it"
