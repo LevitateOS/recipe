@@ -1,7 +1,8 @@
 //! How recipes name each other: `//! extends:` headers, base/module targets
 //! and `deps`/`build_deps` names. Input discovery (coordinator), the engine
 //! (worker) all resolve through these rules, so what discovery
-//! stages is what the engine looks for.
+//! stages is what the engine looks for; [`imports`] is the one walk of a
+//! recipe's modules.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -50,13 +51,142 @@ pub fn check_related_target(target: &str) -> Result<(), &'static str> {
 /// Locate `target`: beside the referring recipe first, then in the search path.
 /// This is the rule for bases, modules and dependencies alike.
 pub fn find_related(target: &str, referrer: &Path, search_path: Option<&Path>) -> Option<PathBuf> {
+    locate_related(target, referrer, search_path).map(|(path, _)| path)
+}
+
+/// [`find_related`], and whether the file lies beside the referrer (`true`)
+/// or in the search path (`false`).
+pub fn locate_related(
+    target: &str,
+    referrer: &Path,
+    search_path: Option<&Path>,
+) -> Option<(PathBuf, bool)> {
     let target = target.trim();
-    referrer
-        .parent()
-        .into_iter()
-        .chain(search_path)
-        .map(|directory| directory.join(target))
-        .find(|candidate| candidate.is_file())
+    let candidate = |directory: &Path| Some(directory.join(target)).filter(|path| path.is_file());
+    if let Some(path) = referrer.parent().and_then(candidate) {
+        return Some((path, true));
+    }
+    search_path.and_then(candidate).map(|path| (path, false))
+}
+
+/// One literal `import` of a recipe, base or module, resolved by [`imports`].
+#[derive(Debug)]
+pub(crate) struct Import {
+    /// The path as the import writes it (`"look"` in `import "look" as look;`).
+    pub target: String,
+    /// The file it names: [`module_file`] of `target`.
+    pub file: String,
+    /// Where [`locate_related`] found it, as found (not canonical).
+    pub found: PathBuf,
+    /// Found beside the importing file, not in the search path.
+    pub beside: bool,
+    /// `found`, canonical: the module's identity.
+    pub canonical: PathBuf,
+}
+
+/// An imported module as [`imports`] read it.
+#[derive(Debug)]
+pub(crate) struct Module {
+    pub text: String,
+    /// Compiled without the optimizer.
+    pub ast: rhai::AST,
+}
+
+/// What a recipe and its base import, recursively.
+#[derive(Debug)]
+pub(crate) struct Imports {
+    /// Each imported module once, by canonical path.
+    pub modules: std::collections::BTreeMap<PathBuf, Module>,
+    /// The imports of each file walked (the given files, then each module by
+    /// its canonical path), in the order the file makes them.
+    pub edges: std::collections::BTreeMap<PathBuf, Vec<Import>>,
+}
+
+/// The one rule for which modules `files` (a recipe and its base, each with
+/// its text) import and where each lives: literal paths only (`import
+/// "look.rhai" as look;`), each named file found beside the importing file,
+/// then in the search path, recursively, each module read once. Imports are
+/// found on ASTs compiled without the optimizer, so an import is found
+/// whatever engine later compiles the recipe. The engine's digests
+/// (`compile_recipe`), input discovery and the placement check all use it.
+pub(crate) fn imports(
+    files: &[(&Path, &str)],
+    search_path: Option<&Path>,
+) -> anyhow::Result<Imports> {
+    use anyhow::{Context, anyhow};
+    use rhai::{ASTNode, Expr, Stmt};
+    let plain = crate::core::invocation::compile_engine();
+    let mut pending = Vec::new();
+    for (path, text) in files {
+        let ast = plain
+            .compile(*text)
+            .map_err(|e| anyhow!("Failed to compile recipe {}: {}", path.display(), e))?;
+        pending.push((path.to_path_buf(), ast));
+    }
+    let mut found = Imports {
+        modules: Default::default(),
+        edges: Default::default(),
+    };
+    let mut depth = 0;
+    while let Some((path, ast)) = pending.pop() {
+        depth += 1;
+        anyhow::ensure!(depth < 256, "too many imported modules");
+        let mut targets = Vec::new();
+        let mut computed = None;
+        ast.walk(&mut |nodes| {
+            if let Some(ASTNode::Stmt(Stmt::Import(import, position))) = nodes.last() {
+                match &import.0 {
+                    Expr::StringConstant(target, _) => targets.push(target.to_string()),
+                    _ => computed = Some(*position),
+                }
+            }
+            true
+        });
+        if let Some(position) = computed {
+            let line = position
+                .line()
+                .map(|line| format!("line {line}: "))
+                .unwrap_or_default();
+            anyhow::bail!(
+                "{}: {line}import takes a literal path (`import \"look.rhai\" as look;`), so Recipe can stage the module",
+                path.display(),
+            );
+        }
+        let mut edges = Vec::new();
+        for target in targets {
+            check_related_target(&target)
+                .map_err(|problem| anyhow!("module {target:?} {problem}"))?;
+            let file = module_file(&target);
+            let (module, beside) =
+                locate_related(&file, &path, search_path).with_context(|| {
+                    format!(
+                        "{}: module {target:?} not found beside it or in the recipe folder",
+                        path.display()
+                    )
+                })?;
+            let canonical = module.canonicalize().unwrap_or_else(|_| module.clone());
+            if !found.modules.contains_key(&canonical) {
+                let text = std::fs::read_to_string(&canonical)
+                    .with_context(|| format!("cannot read module {}", canonical.display()))?;
+                let ast = plain
+                    .compile(&text)
+                    .map_err(|e| anyhow!("cannot compile module {}: {e}", canonical.display()))?;
+                pending.push((canonical.clone(), ast.clone()));
+                found
+                    .modules
+                    .insert(canonical.clone(), Module { text, ast });
+            }
+            edges.push(Import {
+                target,
+                file,
+                found: module,
+                beside,
+                canonical,
+            });
+        }
+        found.edges.insert(path, edges);
+    }
+    Ok(found)
 }
 
 /// The file an `import "target"` names: `target.rhai`.

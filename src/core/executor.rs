@@ -119,7 +119,7 @@ pub(crate) fn compile_recipe(
     if let Some((base_path, base_source)) = &base {
         files.push((base_path.as_path(), base_source.as_str()));
     }
-    let modules = imported_modules(&files, search_path)?;
+    let modules = crate::recipes::imports(&files, search_path)?.modules;
 
     let mut source_digests = std::collections::BTreeMap::new();
     source_digests.insert(recipe_path.clone(), digest(source.as_bytes()));
@@ -130,8 +130,8 @@ pub(crate) fn compile_recipe(
     if let Some((base_path, base_source)) = &base {
         source_digests.insert(base_path.clone(), digest(base_source.as_bytes()));
     }
-    for module in &modules {
-        source_digests.insert(module.path.clone(), digest(module.text.as_bytes()));
+    for (path, module) in &modules {
+        source_digests.insert(path.clone(), digest(module.text.as_bytes()));
     }
 
     // Merge: child overrides base functions, top-level runs base then child
@@ -151,94 +151,9 @@ pub(crate) fn compile_recipe(
         source_digests,
         modules: modules
             .into_iter()
-            .map(|module| (module.path, module.ast))
+            .map(|(path, module)| (path, module.ast))
             .collect(),
         recipe_path,
         base_path: base.map(|(base_path, _)| base_path),
     })
-}
-
-/// One imported module as it was read.
-struct ImportedModule {
-    path: PathBuf,
-    text: String,
-    ast: AST,
-}
-
-/// The modules `files` (a recipe and its base, with their text) import,
-/// recursively, each read once: literal paths (`import "look.rhai" as
-/// look;`), resolved beside the importing file, then in the search path.
-/// Imports are found on ASTs compiled without the optimizer, so an import
-/// is found whatever engine compiles the recipe.
-fn imported_modules(
-    files: &[(&Path, &str)],
-    search_path: Option<&Path>,
-) -> Result<Vec<ImportedModule>> {
-    use rhai::{ASTNode, Expr, Stmt};
-    let plain = crate::core::invocation::compile_engine();
-    let mut pending = Vec::new();
-    for (path, text) in files {
-        let ast = plain
-            .compile(*text)
-            .map_err(|e| anyhow!("Failed to compile recipe {}: {}", path.display(), e))?;
-        pending.push((path.to_path_buf(), ast));
-    }
-    let mut found = std::collections::BTreeMap::<PathBuf, ImportedModule>::new();
-    let mut depth = 0;
-    while let Some((path, ast)) = pending.pop() {
-        depth += 1;
-        anyhow::ensure!(depth < 256, "too many imported modules");
-        let mut targets = Vec::new();
-        let mut computed = None;
-        ast.walk(&mut |nodes| {
-            if let Some(ASTNode::Stmt(Stmt::Import(import, position))) = nodes.last() {
-                match &import.0 {
-                    Expr::StringConstant(target, _) => targets.push(target.to_string()),
-                    _ => computed = Some(*position),
-                }
-            }
-            true
-        });
-        if let Some(position) = computed {
-            let line = position
-                .line()
-                .map(|line| format!("line {line}: "))
-                .unwrap_or_default();
-            anyhow::bail!(
-                "{}: {line}import takes a literal path (`import \"look.rhai\" as look;`), so Recipe can stage the module",
-                path.display(),
-            );
-        }
-        for target in targets {
-            crate::recipes::check_related_target(&target)
-                .map_err(|problem| anyhow!("module {target:?} {problem}"))?;
-            let file = crate::recipes::module_file(&target);
-            let module =
-                crate::recipes::find_related(&file, &path, search_path).with_context(|| {
-                    format!(
-                        "{}: module {target:?} not found beside it or in the recipe folder",
-                        path.display()
-                    )
-                })?;
-            let module = module.canonicalize().unwrap_or(module);
-            if found.contains_key(&module) {
-                continue;
-            }
-            let text = fs::read_to_string(&module)
-                .with_context(|| format!("cannot read module {}", module.display()))?;
-            let ast = plain
-                .compile(&text)
-                .map_err(|e| anyhow!("cannot compile module {}: {e}", module.display()))?;
-            pending.push((module.clone(), ast.clone()));
-            found.insert(
-                module.clone(),
-                ImportedModule {
-                    path: module,
-                    text,
-                    ast,
-                },
-            );
-        }
-    }
-    Ok(found.into_values().collect())
 }

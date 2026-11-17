@@ -1,9 +1,10 @@
 //! Input discovery: base recipe, Rhai imports, and declared extras.
 //!
-//! Resolution mirrors the executor: `//! extends:` and `import "..."` paths
+//! Resolution is the executor's: `//! extends:` and `import "..."` paths
 //! resolve relative to the referring file's directory first, then against the
-//! executor search path. Anything else — absolute host paths, missing files,
-//! recipe symlinks, undeclared directories, secret-bearing names — fails with an explicit
+//! executor search path; the modules come from [`crate::recipes::imports`].
+//! Anything else — absolute host paths, missing files, recipe symlinks,
+//! undeclared directories, secret-bearing names — fails with an explicit
 //! error instead of staging unchecked host state.
 //!
 //! Staged domain names preserve relative directories under `/inputs`. Literal
@@ -530,7 +531,11 @@ impl<'a> Collector<'a> {
         Ok(())
     }
 
-    /// Preserve each reference's directory layout instead of flattening names.
+    /// Stage the base a recipe file extends and the modules they import,
+    /// each under the name the worker looks for it by (beside its referrer's
+    /// staged name, or at the top of the inputs when it came from the search
+    /// path). Which modules and where they lie is [`crate::recipes::imports`],
+    /// the engine's own walk.
     fn collect_related(
         &mut self,
         canonical: &Path,
@@ -538,57 +543,82 @@ impl<'a> Collector<'a> {
         source: &str,
         depth: usize,
     ) -> Result<()> {
-        if depth > MAX_IMPORT_DEPTH {
-            bail!(
-                "input preparation failure: import/dependency nesting exceeds {MAX_IMPORT_DEPTH}"
-            );
-        }
-        // Imports/base setup still execute. Dependencies are selected once from
-        // the merged executable declaration by collect_executable above.
-        let mut references = static_references(source)?
-            .into_iter()
-            .filter(|(_, module)| *module)
-            .collect::<Vec<_>>();
+        let mut pending = vec![(canonical.to_path_buf(), domain_name.to_owned(), depth)];
+        let mut roots = vec![(canonical.to_path_buf(), source.to_owned())];
+        // Dependencies are selected once from the merged executable
+        // declaration by collect_executable above.
         if let Some(base) = parse_extends(source) {
-            references.push((base, false));
+            let (host, beside) = self.resolve_related(&base, canonical, "recipe/module")?;
+            let (base, name, base_source) =
+                self.stage_related(&base, &host, beside, domain_name)?;
+            if self.visited.insert((base.clone(), name.clone())) {
+                pending.push((base.clone(), name, depth + 1));
+            }
+            roots.push((base, base_source));
         }
-        for (target, module) in references {
-            let target = if module {
-                crate::recipes::module_file(&target)
-            } else {
-                target
-            };
-            let host = self.resolve_related(&target, canonical, "recipe/module")?;
-            let beside_referrer = canonical
-                .parent()
-                .is_some_and(|parent| parent.join(&target).is_file());
-            let name = if beside_referrer {
-                Path::new(domain_name)
-                    .parent()
-                    .unwrap_or(Path::new(""))
-                    .join(&target)
-            } else {
-                PathBuf::from(&target)
-            };
-            let name = name
-                .to_str()
-                .context("input preparation failure: non-Unicode domain path")?;
-            crate::domain::validate_input_name(name)?;
-            // Validate the selected path before canonicalization, preserving symlink rejection.
-            let source = read_recipe_file(&host)?;
-            let canonical = canonical_host(&host)?;
-            self.note_host_dir(&canonical);
-            self.stage_kind(name, &host, InputKind::File)?;
-            if self.visited.insert((canonical.clone(), name.to_owned())) {
-                self.collect_related(&canonical, name, &source, depth + 1)?;
+        let roots = roots
+            .iter()
+            .map(|(path, text)| (path.as_path(), text.as_str()))
+            .collect::<Vec<_>>();
+        let imports = crate::recipes::imports(&roots, self.search_path)?;
+        while let Some((file, name, depth)) = pending.pop() {
+            if depth > MAX_IMPORT_DEPTH {
+                bail!(
+                    "input preparation failure: import/dependency nesting exceeds {MAX_IMPORT_DEPTH}"
+                );
+            }
+            for import in imports.edges.get(&file).into_iter().flatten() {
+                let (module, module_name, _) =
+                    self.stage_related(&import.file, &import.found, import.beside, &name)?;
+                if self.visited.insert((module.clone(), module_name.clone())) {
+                    pending.push((module, module_name, depth + 1));
+                }
             }
         }
         Ok(())
     }
 
-    /// Resolve an `extends:`/`import` target like the executor does, refusing
-    /// absolute host paths outright.
-    fn resolve_related(&self, target: &str, referrer: &Path, kind: &str) -> Result<PathBuf> {
+    /// Stage the base or module `target` that its referrer (staged as
+    /// `referrer_name`) names, found at `host`, `beside` the referrer or in
+    /// the search path. Returns its canonical path, its domain name and its
+    /// text. Preserves each reference's directory layout instead of
+    /// flattening names.
+    fn stage_related(
+        &mut self,
+        target: &str,
+        host: &Path,
+        beside: bool,
+        referrer_name: &str,
+    ) -> Result<(PathBuf, String, String)> {
+        let name = if beside {
+            Path::new(referrer_name)
+                .parent()
+                .unwrap_or(Path::new(""))
+                .join(target)
+        } else {
+            PathBuf::from(target)
+        };
+        let name = name
+            .to_str()
+            .context("input preparation failure: non-Unicode domain path")?
+            .to_owned();
+        crate::domain::validate_input_name(&name)?;
+        // Validate the selected path before canonicalization, preserving symlink rejection.
+        let source = read_recipe_file(host)?;
+        let canonical = canonical_host(host)?;
+        self.note_host_dir(&canonical);
+        self.stage_kind(&name, host, InputKind::File)?;
+        Ok((canonical, name, source))
+    }
+
+    /// Resolve an `extends:` target like the executor does, refusing
+    /// absolute host paths outright; `true` when it lies beside `referrer`.
+    fn resolve_related(
+        &self,
+        target: &str,
+        referrer: &Path,
+        kind: &str,
+    ) -> Result<(PathBuf, bool)> {
         let target = target.trim();
         if let Err(problem) = crate::recipes::check_related_target(target) {
             bail!(
@@ -597,7 +627,7 @@ impl<'a> Collector<'a> {
                 referrer.display()
             );
         }
-        crate::recipes::find_related(target, referrer, self.search_path).with_context(|| {
+        crate::recipes::locate_related(target, referrer, self.search_path).with_context(|| {
             format!(
                 "input preparation failure: {kind} target {target:?} from {} not found \
                  (tried the recipe directory and {:?}; only declared files are staged)",
@@ -749,64 +779,6 @@ pub fn hash_file(host: &Path, expected: u64) -> Result<[u8; 32]> {
         );
     }
     Ok(hasher.finalize().into())
-}
-
-/// Compile only: no module loading, top-level evaluation or native helpers on
-/// the coordinator. Dynamic imports/dependency declarations need explicit inputs.
-pub(crate) fn static_references(source: &str) -> Result<Vec<(String, bool)>> {
-    use rhai::{ASTNode, Expr, Stmt};
-    let engine = crate::core::invocation::compile_engine();
-    let ast = engine
-        .compile(source)
-        .context("input preparation failure: invalid Rhai source")?;
-    let mut references = Vec::new();
-    let mut invalid: Option<String> = None;
-    ast.walk(&mut |nodes| {
-        if let Some(ASTNode::Stmt(Stmt::Import(import, _))) = nodes.last() {
-            match &import.0 {
-                Expr::StringConstant(path, _) => references.push((path.to_string(), true)),
-                _ => {
-                    invalid =
-                        Some("dynamic import cannot be prepared; use a literal module path".into())
-                }
-            }
-        }
-        true
-    });
-    for statement in ast.statements() {
-        if let Stmt::Var(declaration, _, _) = statement
-            && crate::recipes::DEPENDENCY_FIELDS.contains(&declaration.0.name.as_str())
-        {
-            match &declaration.1 {
-                Expr::Array(items, _) => {
-                    for item in items {
-                        match item {
-                            Expr::StringConstant(name, _) => {
-                                match crate::recipes::dependency_file(name) {
-                                    Ok(file) => references.push((file, false)),
-                                    Err(problem) => invalid = Some(problem),
-                                }
-                            }
-                            _ => invalid = Some(
-                                "dependency names must be literal strings for input preparation"
-                                    .into(),
-                            ),
-                        }
-                    }
-                }
-                _ => {
-                    invalid = Some(
-                        "dependency declarations must be literal arrays for input preparation"
-                            .into(),
-                    )
-                }
-            }
-        }
-    }
-    if let Some(reason) = invalid {
-        bail!("input preparation failure: {reason}");
-    }
-    Ok(references)
 }
 
 /// Same host file reached under two names (e.g. via search path overlap).

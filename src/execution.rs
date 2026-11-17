@@ -162,6 +162,7 @@ pub fn eligibility(recipe: &Path, search_path: Option<&Path>) -> Result<Eligibil
         .compile(&source)
         .map_err(|e| anyhow::anyhow!("cannot compile {}: {e}", recipe.display()))?;
     let mut files = vec![(recipe.clone(), child.clone())];
+    let mut roots = vec![(recipe.clone(), source.clone())];
     if let Some(base) = crate::recipes::parse_extends(&source) {
         let path = crate::recipes::find_related(&base, &recipe, search_path)
             .with_context(|| format!("base recipe {base:?} of {} not found", recipe.display()))?;
@@ -178,8 +179,14 @@ pub fn eligibility(recipe: &Path, search_path: Option<&Path>) -> Result<Eligibil
         ast.retain_functions(|_, _, name, arity| {
             !replaced.iter().any(|(n, a)| n == name && *a == arity)
         });
-        files.push((path, ast));
+        files.push((path.clone(), ast));
+        roots.push((path, text));
     }
+    let roots = roots
+        .iter()
+        .map(|(path, text)| (path.as_path(), text.as_str()))
+        .collect::<Vec<_>>();
+    let imports = crate::recipes::imports(&roots, search_path)?;
     let mut seen = std::collections::BTreeSet::new();
     while let Some((path, ast)) = files.pop() {
         if !seen.insert(path.clone()) {
@@ -191,17 +198,16 @@ pub fn eligibility(recipe: &Path, search_path: Option<&Path>) -> Result<Eligibil
                 blocker: Some(blocker),
             });
         }
+        // Only the imports of the code that runs (a base function the child
+        // replaces is left out above), each where `imports` found it.
         for module in modules {
-            let target = crate::recipes::module_file(&module);
-            let found = crate::recipes::find_related(&target, &path, search_path)
+            let import = imports
+                .edges
+                .get(&path)
+                .and_then(|edges| edges.iter().find(|import| import.target == module))
                 .with_context(|| format!("module {module:?} of {} not found", path.display()))?;
-            let found = found.canonicalize().unwrap_or(found);
-            let text = std::fs::read_to_string(&found)
-                .with_context(|| format!("cannot read module {}", found.display()))?;
-            let ast = engine
-                .compile(&text)
-                .map_err(|e| anyhow::anyhow!("cannot compile {}: {e}", found.display()))?;
-            files.push((found, ast));
+            let ast = imports.modules[&import.canonical].ast.clone();
+            files.push((import.canonical.clone(), ast));
         }
     }
     Ok(Eligibility { blocker: None })
