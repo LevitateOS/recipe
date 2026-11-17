@@ -471,7 +471,9 @@ pub struct Dependency {
 #[derive(Clone, Debug, Serialize)]
 pub struct Declaration {
     pub recipe: PathBuf,
-    /// The recipe, its base and its pins file, each by SHA-256.
+    /// Every file it is compiled from, each by SHA-256 as read once with
+    /// the recipe: the recipe, its pins file, the base it extends and the
+    /// modules it, its base or a module imports.
     pub source_digests: BTreeMap<PathBuf, String>,
     pub needs: Needs,
     pub dependencies: Vec<Dependency>,
@@ -488,36 +490,30 @@ impl Declaration {
     }
 
     /// The recipe's code wherever its folder lies: each file it is compiled
-    /// from (the recipe, its pins, the base it extends, the modules it
-    /// imports) by its name relative to the recipe's folder, to its SHA-256.
-    /// The same recipe on the install medium, in a release's recipes and in
-    /// a working copy has the same content; this, never `source_digests`
-    /// (keyed by where the files lie), is what names a result.
+    /// from (`source_digests`: the recipe, its pins, the base it extends, the
+    /// modules it imports) by its name relative to the recipe's folder, to
+    /// its SHA-256 as read with the recipe. The same recipe on the install
+    /// medium, in a release's recipes and in a working copy has the same
+    /// content; this, never `source_digests` (keyed by where the files lie),
+    /// is what names a result.
     pub fn content(&self) -> Result<BTreeMap<String, String>> {
-        use sha2::Digest;
         let folder = self.recipe.parent().unwrap_or(Path::new("/"));
         let name = |path: &Path| -> String {
             match path.strip_prefix(folder) {
                 Ok(relative) => relative.to_string_lossy().into_owned(),
-                // A base found on the search path, outside the folder: its
-                // file name; `//! extends:` in the recipe names it already.
+                // A base or module found on the search path, outside the
+                // folder: its file name; the recipe names it already.
                 Err(_) => path
                     .file_name()
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_default(),
             }
         };
-        let mut content = self
+        Ok(self
             .source_digests
             .iter()
             .map(|(path, digest)| (name(path), digest.clone()))
-            .collect::<BTreeMap<_, _>>();
-        for module in &self.declared.modules {
-            let bytes = std::fs::read(module)
-                .with_context(|| format!("cannot read the module {}", module.display()))?;
-            content.insert(name(module), hex::encode(sha2::Sha256::digest(bytes)));
-        }
-        Ok(content)
+            .collect())
     }
 
     /// What names the recipe that produced a package (a receipt's
@@ -591,7 +587,7 @@ pub(crate) fn declaration_named(
         }
     }
     let mut needs = needs.context("recipe must declare literal const NEEDS = #{...}")?;
-    let declared = crate::declarations::read(&compiled, name, &needs, search_path)?;
+    let declared = crate::declarations::read(&compiled, name, &needs)?;
     // A group declares only the budget of its other sources (0 when it has
     // none); Recipe adds the bytes of the pins in use (decision 9).
     if let Some(pins) = &declared.pins {

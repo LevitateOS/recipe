@@ -282,7 +282,6 @@ pub(crate) fn read(
     compiled: &crate::core::executor::CompiledRecipe,
     name: &str,
     needs: &Needs,
-    search_path: Option<&Path>,
 ) -> Result<Declared> {
     let recipe = &compiled.recipe_path;
     let files = files(compiled);
@@ -410,7 +409,7 @@ pub(crate) fn read(
         Some(_) => bail!("RERUN is `const RERUN = true;` or left out"),
     };
 
-    let modules = modules(&files_of(compiled), search_path)?;
+    let modules = modules(compiled)?;
 
     Ok(Declared {
         package,
@@ -426,14 +425,6 @@ pub(crate) fn read(
         modules,
         pins,
     })
-}
-
-fn files_of(compiled: &crate::core::executor::CompiledRecipe) -> Vec<(PathBuf, AST)> {
-    let mut files = vec![(compiled.recipe_path.clone(), compiled.source_ast.clone())];
-    if let (Some(base), Some(ast)) = (&compiled.base_path, &compiled.base_ast) {
-        files.push((base.clone(), ast.clone()));
-    }
-    files
 }
 
 fn line_of(position: Position) -> String {
@@ -567,73 +558,31 @@ fn top_level<'a>(path: &Path, ast: &'a AST) -> Result<BTreeMap<String, Binding<'
     Ok(bindings)
 }
 
-/// The modules a recipe imports, recursively: literal paths, resolved beside
-/// the importing file, then in the search path. A module has no `RECIPE_API`
-/// and no `NEEDS`.
-fn modules(files: &[(PathBuf, AST)], search_path: Option<&Path>) -> Result<Vec<PathBuf>> {
-    use rhai::ASTNode;
-    let engine = crate::core::invocation::compile_engine();
-    let mut pending: Vec<(PathBuf, AST)> = files.to_vec();
-    let mut found = BTreeSet::new();
-    let mut depth = 0;
-    while let Some((path, ast)) = pending.pop() {
-        depth += 1;
-        ensure!(depth < 256, "too many imported modules");
-        let mut targets = Vec::new();
-        let mut computed = None;
-        ast.walk(&mut |nodes| {
-            if let Some(ASTNode::Stmt(Stmt::Import(import, position))) = nodes.last() {
-                match &import.0 {
-                    Expr::StringConstant(target, _) => targets.push(target.to_string()),
-                    _ => computed = Some(*position),
-                }
+/// The modules a recipe imports ([`compile_recipe`] found and read them): a
+/// module has no `RECIPE_API` and no `NEEDS`, and none of the old forms.
+///
+/// [`compile_recipe`]: crate::core::executor::compile_recipe
+fn modules(compiled: &crate::core::executor::CompiledRecipe) -> Result<Vec<PathBuf>> {
+    for (module, ast) in &compiled.modules {
+        for statement in ast.statements() {
+            if let Stmt::Var(binding, _, position) = statement
+                && matches!(binding.0.name.as_str(), "RECIPE_API" | "NEEDS")
+            {
+                bail!(
+                    "{}: {}a module has no {}; it is imported by recipes, which declare it",
+                    module.display(),
+                    line_of(*position),
+                    binding.0.name
+                );
             }
-            true
-        });
-        if let Some(position) = computed {
-            bail!(
-                "{}: {}import takes a literal path (`import \"look.rhai\" as look;`), so Recipe can stage the module",
-                path.display(),
-                line_of(position)
-            );
         }
-        for target in targets {
-            crate::recipes::check_related_target(&target)
-                .map_err(|problem| anyhow::anyhow!("module {target:?} {problem}"))?;
-            let file = crate::recipes::module_file(&target);
-            let module =
-                crate::recipes::find_related(&file, &path, search_path).with_context(|| {
-                    format!(
-                        "{}: module {target:?} not found beside it or in the recipe folder",
-                        path.display()
-                    )
-                })?;
-            let module = module.canonicalize().unwrap_or(module);
-            if !found.insert(module.clone()) {
-                continue;
-            }
-            let text = std::fs::read_to_string(&module)
-                .with_context(|| format!("cannot read module {}", module.display()))?;
-            let ast = engine
-                .compile(&text)
-                .map_err(|e| anyhow::anyhow!("cannot compile module {}: {e}", module.display()))?;
-            for statement in ast.statements() {
-                if let Stmt::Var(binding, _, position) = statement
-                    && matches!(binding.0.name.as_str(), "RECIPE_API" | "NEEDS")
-                {
-                    bail!(
-                        "{}: {}a module has no {}; it is imported by recipes, which declare it",
-                        module.display(),
-                        line_of(*position),
-                        binding.0.name
-                    );
-                }
-            }
-            check_old_forms(&module, &ast)?;
-            pending.push((module, ast));
-        }
+        check_old_forms(module, ast)?;
     }
-    Ok(found.into_iter().collect())
+    Ok(compiled
+        .modules
+        .iter()
+        .map(|(module, _)| module.clone())
+        .collect())
 }
 
 fn object(

@@ -270,7 +270,6 @@ pub fn index(folder: &Path) -> Result<Index> {
             .source_digests
             .keys()
             .filter(|source| **source != pins)
-            .chain(&compiled.declared.modules)
         {
             let name = source
                 .file_name()
