@@ -19,6 +19,7 @@ pub fn validate(
         .map(|(name, path)| crate::inputs::ExtraInput {
             name: name.clone(),
             path: path.clone(),
+            live: false,
         })
         .collect::<Vec<_>>();
     crate::inputs::bind_inputs(&graph, &supplied, search, true)?;

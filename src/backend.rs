@@ -272,6 +272,7 @@ impl Runner<'_> {
                                 dependency.name
                             ),
                             path: path.clone(),
+                            live: false,
                         });
                         if kind == crate::needs::PathKind::Directory && name == "tools" {
                             crate::target::merge_tree(&path, &tools)?;
@@ -282,10 +283,12 @@ impl Runner<'_> {
                     crate::inputs::ExtraInput {
                         name: crate::domain::DEPENDENCY_INPUT.into(),
                         path: dependencies,
+                        live: false,
                     },
                     crate::inputs::ExtraInput {
                         name: crate::domain::DEPENDENCY_TOOLS.into(),
                         path: tools,
+                        live: false,
                     },
                 ]);
                 internal.extend(product_inputs);
@@ -317,13 +320,16 @@ impl Runner<'_> {
                 finish: if main { invocation.finish } else { None },
                 // latest() and cleanup("manual") see no kept files and keep
                 // nothing: no saved files are restored into their run, and
-                // none are kept after it.
+                // none are kept after it. Nor does a run given a live system
+                // root: its folders are bound, not hashed, so its identity
+                // cannot tell one root from another.
                 persist_state: invocation.persist_state
                     && !matches!(
                         operation,
                         crate::worker::protocol::Operation::Latest
                             | crate::worker::protocol::Operation::Cleanup
-                    ),
+                    )
+                    && !bindings[&node.recipe].iter().any(|input| input.live),
                 ..*invocation
             };
             let result = self

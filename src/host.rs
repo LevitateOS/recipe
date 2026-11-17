@@ -128,6 +128,11 @@ fn run_inner(
     };
     let run_started = Instant::now();
     let inputs = root.join(crate::domain::INPUTS.trim_start_matches('/'));
+    // Only a Ginux launcher binds a folder (`crate::inputs::prepare_invocation`
+    // copies a live root for a host run).
+    if prepared.binds().next().is_some() {
+        return Err(startup(anyhow::anyhow!("a host run cannot bind an input")));
+    }
     crate::inputs::stage_inputs(prepared, &inputs).map_err(startup)?;
     for path in crate::domain::WRITABLE_DIRS {
         let directory = root.join(path.trim_start_matches('/'));

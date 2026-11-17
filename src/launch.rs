@@ -278,6 +278,62 @@ fn ensure_open_file_limit(storage_max_objects: u64) {
     );
 }
 
+/// In the launcher's child, before it execs: bind each host folder of a live
+/// system root read-only on its empty folder under the domain's `/inputs`
+/// (`crate::inputs::InputKind::Bind`). The binds are made in a mount
+/// namespace of the launcher's own, entered here, whose mounts are slaves of
+/// the host's: nothing propagates back to the host, so the coordinator and
+/// every other process see only the empty folders (the domain root is
+/// removed as before), and the kernel drops the binds with the namespace when
+/// the launcher and its tasks are gone, however the run ends. Each bind is
+/// remounted read-only, nosuid and nodev; it is not recursive, so mounts below
+/// the folder (`proc`, a separate `var`) are not in it. No allocation:
+/// this runs between fork and exec.
+fn bind_read_only(binds: &[(std::ffi::CString, std::ffi::CString)]) -> std::io::Result<()> {
+    if binds.is_empty() {
+        return Ok(());
+    }
+    let check = |result: libc::c_int| {
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    };
+    let none = std::ptr::null::<libc::c_char>();
+    unsafe {
+        check(libc::unshare(libc::CLONE_NEWNS))?;
+        check(libc::mount(
+            none,
+            c"/".as_ptr(),
+            none,
+            libc::MS_REC | libc::MS_SLAVE,
+            std::ptr::null(),
+        ))?;
+        for (source, target) in binds {
+            check(libc::mount(
+                source.as_ptr(),
+                target.as_ptr(),
+                none,
+                libc::MS_BIND,
+                std::ptr::null(),
+            ))?;
+            check(libc::mount(
+                none,
+                target.as_ptr(),
+                none,
+                libc::MS_BIND
+                    | libc::MS_REMOUNT
+                    | libc::MS_RDONLY
+                    | libc::MS_NOSUID
+                    | libc::MS_NODEV,
+                std::ptr::null(),
+            ))?;
+        }
+    }
+    Ok(())
+}
+
 fn run_domain_inner(
     prepared: &PreparedInvocation,
     invocation: &Invocation<'_>,
@@ -398,6 +454,8 @@ fn run_domain_inner(
         run_dir.lease_fd(),
         diagnostics.lease_fd(),
     ];
+    let binds = domain_root.binds().to_vec();
+    let binding = !binds.is_empty();
     // Killing the coordinator must not orphan the supervisor. Ginux's
     // PTRACE_O_EXITKILL then tears down the supervised tasks.
     unsafe {
@@ -414,7 +472,7 @@ fn run_domain_inner(
             if libc::getppid() != parent {
                 libc::_exit(125);
             }
-            Ok(())
+            bind_read_only(&binds)
         });
     }
     command
@@ -441,8 +499,13 @@ fn run_domain_inner(
         .map_err(|err| {
             anyhow::Error::new(crate::failure::Category::Startup.error(format!(
                 "cannot spawn ginux launcher {} for invocation \
-                 {invocation}: {err:#}",
+                 {invocation}: {err:#}{}",
                 launcher.display(),
+                if binding {
+                    " (while binding the system root read-only in a private mount namespace)"
+                } else {
+                    ""
+                },
             )))
         })?;
 

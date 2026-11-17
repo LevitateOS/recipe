@@ -244,7 +244,26 @@ impl RecipeEngine {
     /// Source imports exclude root .git/target metadata; contained links are preserved.
     /// Named rootfs/target trees preserve filesystem links and permissions.
     pub fn add_input(&mut self, name: String, path: PathBuf) {
-        self.inputs.push(inputs::ExtraInput { name, path });
+        self.inputs.push(inputs::ExtraInput {
+            name,
+            path,
+            live: false,
+        });
+    }
+
+    /// Give the recipe the root of a system change as its read-only input
+    /// `root`, live: in a Ginux run as root, each of the root's top-level
+    /// folders (but `var`, `boot`, `home`, ...) is bound read-only into the
+    /// domain for the run, not hashed or copied, and the run keeps no state;
+    /// anywhere else the root is copied like [`Self::add_input`] would
+    /// (README, "Root effects"). The system scope gives it to the root's
+    /// effects recipe.
+    pub fn add_system_root(&mut self, path: PathBuf) {
+        self.inputs.push(inputs::ExtraInput {
+            name: inputs::SYSTEM_ROOT_INPUT.into(),
+            path,
+            live: true,
+        });
     }
 
     /// Install a recipe (docs/recipe-format.md, section 6.3): run its

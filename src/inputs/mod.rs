@@ -13,7 +13,9 @@
 //! the allowlisted environment (interfaces §5), and the domain config text
 //! (interfaces §2). Nothing staged embeds an absolute host checkout path or
 //! a secret: host files are selected explicitly, copied under relative
-//! `/inputs/NAME` domain paths, and referenced only by content hash.
+//! `/inputs/NAME` domain paths, and referenced only by content hash. The one
+//! exception is the live system root of an effects run, whose top-level
+//! folders the launcher binds read-only instead (`InputKind::Bind`).
 //!
 //! Launch, channel transport, retained storage and result export live in
 //! `launch`, `retained` and `publication`. Literal dependency and module closures preserve
@@ -41,7 +43,7 @@ pub(crate) use config::InstanceConfig;
 
 /// Name of the staged domain config inside the staging directory.
 const CONFIG_FILE: &str = "config.toml";
-pub(crate) use discover::{ExtraInput, InputKind, StagedInput, discover_inputs};
+pub(crate) use discover::{ExtraInput, InputKind, SYSTEM_ROOT_INPUT, StagedInput, discover_inputs};
 pub(crate) use env::{allowlisted_env, invocation_id};
 
 use std::path::{Path, PathBuf};
@@ -83,6 +85,15 @@ impl PreparedInvocation {
     pub fn staging_dir(&self) -> &Path {
         self.staging.path()
     }
+
+    /// The host folders the launcher binds read-only into `/inputs` for this
+    /// run ([`InputKind::Bind`]), as (host folder, input name).
+    pub(crate) fn binds(&self) -> impl Iterator<Item = (&Path, &str)> {
+        self.inputs
+            .iter()
+            .filter(|input| input.kind == InputKind::Bind)
+            .map(|input| (input.host_path.as_path(), input.name.as_str()))
+    }
 }
 
 /// Assemble the invocation input set for `recipe`.
@@ -106,6 +117,27 @@ pub fn prepare_invocation(
     dependency_inputs: &[ExtraInput],
     require_inputs: bool,
 ) -> Result<PreparedInvocation> {
+    // A live system root is bound read-only by the launcher, which needs a
+    // Ginux run and root (`crate::launch`); anywhere else it is copied.
+    let copied;
+    let extra_inputs = if extra_inputs.iter().any(|input| input.live)
+        && (launcher.is_none() || !can_bind())
+    {
+        crate::diagnostics::diag!(
+            "recipe: the system root is copied into this run, not bound read-only: \
+             binding it needs root with CAP_SYS_ADMIN, a Ginux run and a / that is a mount (not a chroot)"
+        );
+        copied = extra_inputs
+            .iter()
+            .map(|input| ExtraInput {
+                live: false,
+                ..input.clone()
+            })
+            .collect::<Vec<_>>();
+        &copied[..]
+    } else {
+        extra_inputs
+    };
     let graph = crate::needs::declarations(recipe, search_path)?;
     let declaration = graph.last().context("empty recipe graph")?.clone();
     declaration.needs.validate_inputs(
@@ -207,6 +239,36 @@ pub fn prepare_invocation(
         contract,
         staging,
     })
+}
+
+/// Whether a launcher started by this process can bind a live system root
+/// (`crate::launch`): this process is root (Ginux then runs the workload as
+/// its unprivileged host user) with `CAP_SYS_ADMIN` (to enter a mount
+/// namespace and mount), and its `/` is a mount root, so the launcher's
+/// namespace can be made a slave of the host's (in a chroot it cannot, and a
+/// bind would propagate back to the host).
+fn can_bind() -> bool {
+    /// `CAP_SYS_ADMIN`, the capability `unshare(CLONE_NEWNS)` and `mount` need.
+    const CAP_SYS_ADMIN: u32 = 21;
+    if unsafe { libc::geteuid() } != 0 {
+        return false;
+    }
+    let admin = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix("CapEff:"))
+                .and_then(|caps| u64::from_str_radix(caps.trim(), 16).ok())
+        })
+        .is_some_and(|caps| caps & (1 << CAP_SYS_ADMIN) != 0);
+    let mut stat: libc::statx = unsafe { std::mem::zeroed() };
+    let root = unsafe { libc::statx(libc::AT_FDCWD, c"/".as_ptr(), 0, 0, &mut stat) } == 0;
+    let mount_root = libc::STATX_ATTR_MOUNT_ROOT as u64;
+    admin
+        && root
+        && stat.stx_attributes_mask & mount_root != 0
+        && stat.stx_attributes & mount_root != 0
 }
 
 /// Last-line defense over actual path values, after the field owners validate
@@ -323,6 +385,7 @@ pub(crate) fn bind_inputs(
         bindings.get_mut(recipe).unwrap().push(ExtraInput {
             name: name.into(),
             path: input.path.clone(),
+            live: input.live,
         });
     }
     for node in graph {

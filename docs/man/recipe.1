@@ -447,6 +447,15 @@ undeclared, duplicate and wrong-kind bindings fail before setup. Use DEP::NAME
 for a dependency input; inputs are never implicitly inherited. A named target input seeds owned
 /out on a fresh identity; retained state restores that target instead.
 .TP
+.B --effects-root PATH
+Give the recipe the system root PATH as its read-only input root, live: as root
+with CAP_SYS_ADMIN, in a Ginux run, outside a chroot, each top-level folder of
+PATH (but var, boot, home, root, tmp, run, proc, sys, dev, mnt, media, srv,
+lost+found) is bound read-only at /inputs/root in the launcher's own mount
+namespace for the run, instead of hashed and copied; top-level links are kept,
+top-level files left out, and the run keeps no state. Otherwise PATH is copied
+like --input root=PATH. --system passes it to the root's effects recipe.
+.TP
 .B -d, --define KEY=VALUE
 Recipe-specific scope constant. A host path in a define grants no input access.
 .TP

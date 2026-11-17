@@ -125,6 +125,11 @@ pub(crate) struct Cli {
     #[arg(help_heading = "Recipe inputs")]
     pub(crate) inputs: Vec<String>,
 
+    /// Give the recipe the system root PATH as its read-only input `root`, bound read-only for the run instead of copied (as root, in Ginux; otherwise copied like --input root=PATH). `--system` passes it to the root's effects recipe.
+    #[arg(long, global = true, value_name = "PATH", conflicts_with = "system")]
+    #[arg(help_heading = "Recipe inputs")]
+    pub(crate) effects_root: Option<PathBuf>,
+
     /// Write the full JSON result to a file instead of stdout
     #[arg(long, global = true)]
     #[arg(help_heading = "Output")]

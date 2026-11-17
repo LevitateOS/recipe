@@ -196,6 +196,7 @@ fn run(cli: Cli) -> Result<()> {
         recipes_path: Some(recipes_path),
         defines: &cli.defines,
         inputs: &cli.inputs,
+        effects_root: cli.effects_root.as_deref(),
         no_persist_state: cli.no_persist_state,
         activate_into: (!no_activate).then_some(&package_store),
     };
@@ -1456,6 +1457,8 @@ struct EngineOptions<'a> {
     recipes_path: Option<&'a Path>,
     defines: &'a [String],
     inputs: &'a [String],
+    /// `--effects-root`: the live system root input `root`.
+    effects_root: Option<&'a Path>,
     no_persist_state: bool,
     /// The store a package output will be activated in; None with
     /// --no-activate. It decides PREFIX.
@@ -1470,6 +1473,7 @@ fn create_engine(recipe: &Path, options: &EngineOptions<'_>) -> Result<RecipeEng
         recipes_path,
         defines,
         inputs,
+        effects_root,
         no_persist_state,
         activate_into,
     } = options;
@@ -1502,6 +1506,9 @@ fn create_engine(recipe: &Path, options: &EngineOptions<'_>) -> Result<RecipeEng
 
     for (name, path) in parse_inputs(inputs)? {
         engine.add_input(name, path);
+    }
+    if let Some(root) = effects_root {
+        engine.add_system_root(std::path::absolute(root)?);
     }
 
     Ok(engine)

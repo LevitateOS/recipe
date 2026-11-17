@@ -545,7 +545,13 @@ const RERUN = true;
 
 The recipe is run every time it is asked for; a result is never reused and
 it is never "built". Only `root-effects` needs it: it rebuilds a root's
-caches after every system change.
+caches after every system change. Its input `root` is that root, given live
+(`--effects-root ROOT`): in a Ginux run as root, the root's top-level folders
+(but `var`, `boot`, `home`, `root`, `tmp`, `run`, `proc`, `sys`, `dev`, `mnt`,
+`media`, `srv`, `lost+found`) are bound read-only under `/inputs/root` for the
+run, not hashed or copied, its top-level links are kept and its top-level files
+left out; such a run keeps no state. Anywhere else the root is copied like any
+input (README, "Root effects").
 
 ### 2.11 `deps`, `build_deps`
 

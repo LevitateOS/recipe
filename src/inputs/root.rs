@@ -3,6 +3,7 @@
 //! the content digest in domain.root. No recipe code runs during preparation.
 
 use std::collections::HashMap;
+use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::PermissionsExt;
@@ -70,6 +71,10 @@ pub(super) fn verified_snapshot<'a>(
 pub(crate) struct PreparedRoot {
     directory: crate::temporary::TemporaryDirectory,
     pub(crate) worker_digest: String,
+    /// The read-only binds the launcher makes in its own mount namespace
+    /// before it starts ([`super::InputKind::Bind`]): (host folder, empty
+    /// folder under this root's `inputs`).
+    binds: Vec<(CString, CString)>,
 }
 
 impl PreparedRoot {
@@ -78,6 +83,9 @@ impl PreparedRoot {
     }
     pub(crate) fn path(&self) -> &Path {
         self.directory.path()
+    }
+    pub(crate) fn binds(&self) -> &[(CString, CString)] {
+        &self.binds
     }
 }
 
@@ -91,6 +99,7 @@ pub(crate) fn prepare_root(
     let mut root = PreparedRoot {
         worker_digest: String::new(),
         directory: crate::temporary::TemporaryDirectory::new()?,
+        binds: Vec::new(),
     };
     // A clone of the verified image's cached tree where the filesystem can
     // clone; otherwise the verified image unpacked here (see image_cache).
@@ -106,6 +115,12 @@ pub(crate) fn prepare_root(
         .path()
         .join(crate::domain::INPUTS.trim_start_matches('/'));
     stage_inputs(invocation, &inputs)?;
+    use std::os::unix::ffi::OsStrExt;
+    let path = |path: &Path| CString::new(path.as_os_str().as_bytes()).map_err(anyhow::Error::from);
+    root.binds = invocation
+        .binds()
+        .map(|(host, name)| Ok((path(host)?, path(&inputs.join(name))?)))
+        .collect::<Result<_>>()?;
     let worker_path = worker_binary()?;
     let mut worker = crate::fsx::open_regular(&worker_path)
         .with_context(|| format!("cannot open worker {}", worker_path.display()))?;
@@ -161,6 +176,12 @@ pub(crate) fn stage_inputs(invocation: &PreparedInvocation, inputs: &Path) -> Re
                 if !std::fs::symlink_metadata(&path)?.is_dir() {
                     bail!("input directory collision: {}", input.name);
                 }
+                continue;
+            }
+            // The empty folder the launcher binds the host folder on
+            // (`crate::launch`); a host run is never given one.
+            super::InputKind::Bind => {
+                std::fs::create_dir(inputs.join(&input.name))?;
                 continue;
             }
             super::InputKind::Hardlink(_) => continue,
@@ -489,6 +510,7 @@ pub(crate) fn seed_target(
                 let link = mapping(target).unwrap();
                 archive.append_link(&mut header, name, link)?;
             }
+            InputKind::Bind => bail!("a bound input cannot seed a target: {}", input.name),
             InputKind::File | InputKind::Hardlink(_) => {
                 let mut file = crate::fsx::open_regular(
                     &root

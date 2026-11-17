@@ -1492,8 +1492,9 @@ fn effects_recipe(cli: &Cli, root: &Path) -> Run {
     eprintln!("Rebuilding the root's caches with /{EFFECTS_RECIPE}...");
     let run = || -> Result<usize> {
         let mut args = producer_args(cli)?;
-        args.push("--input".into());
-        args.push(format!("root={}", root.display()));
+        // Bound read-only for the run, not copied (README, "Root effects").
+        args.push("--effects-root".into());
+        args.push(root.display().to_string());
         let produced = produce_with(cli, root, &recipe, &args, "effects", false)?;
         let applied = (|| -> Result<usize> {
             let mut payloads = system::payloads(&produced, "effects")?;

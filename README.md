@@ -114,12 +114,26 @@ GIO modules, pixbuf loaders, MIME and icon caches, fonts, desktop database, ...)
 which package scripts would have rebuilt; the OS provides it. Its contract:
 
 - it receives the root, read-only, as its input `root`
-  (`NEEDS.inputs: #{ root: "directory" }`, as `INPUTS.root`), without the
-  root's top-level folders `var`, `boot`, `home`, `root`, `tmp`, `run`, `proc`,
-  `sys`, `dev`, `mnt`, `media`, `srv` and `lost+found` (top-level links such as
-  `lib -> usr/lib` are kept) and without files the secret-bearing guard refuses
-  (key material, `etc/pki/tls/cert.pem`), and
-  runs where its helpers put it (in Ginux when it runs the root's own programs);
+  (`NEEDS.inputs: #{ root: "directory" }`, as `INPUTS.root`; the system scope
+  passes it with `--effects-root ROOT`), without the root's top-level folders
+  `var`, `boot`, `home`, `root`, `tmp`, `run`, `proc`, `sys`, `dev`, `mnt`,
+  `media`, `srv` and `lost+found`, and runs where its helpers put it (in Ginux
+  when it runs the root's own programs). The root is not copied or hashed:
+  each other top-level folder (`usr`, `etc`, and `lib`, `bin`, `sbin` where
+  they are folders) is bound read-only (and nosuid, nodev) on its place under
+  `/inputs/root` by the Ginux launcher, in a mount namespace of the launcher's
+  own whose mounts do not propagate to the host, so the binds go with the
+  launcher however the run ends and no other process sees them; top-level
+  links (`lib -> usr/lib`) are kept as links and top-level files are left out.
+  A bind is not recursive: a file system mounted below one of those folders is
+  not in it. The recipe cannot write the root (read-only mounts) and runs as
+  Ginux's unprivileged host user, so files the root keeps from other users
+  (`etc/shadow`, host keys) cannot be read. The run keeps no state. Binding
+  needs root with `CAP_SYS_ADMIN`, a Ginux run and a `/` that is a mount (not
+  a chroot); otherwise Recipe says so in one line and copies the root into the
+  run as for any input (every file hashed and copied, without files the
+  secret-bearing guard refuses, such as key material and
+  `etc/pki/tls/cert.pem`, and with the top-level files);
 - it returns one `system` output (Recipe finishes the tree), holding only the
   cache files; it has no runtime `deps`; it declares `const RERUN = true;`;
 - `system-effects` is in the receipt but not listed by `installed`, cannot be
