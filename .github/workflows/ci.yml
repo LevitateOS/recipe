@@ -12,14 +12,14 @@ permissions:
 
 jobs:
   changes:
-    uses: LevitateOS/LevitateOS/.github/workflows/detect-changes.yml@eea341c64a065d8465727919a72bc592878ea70b
+    uses: LevitateOS/LevitateOS/.github/workflows/detect-changes.yml@00996159fb2d8a454df85a292b78b9cb99ea90a6
     with:
       type: any
 
   ci:
     needs: changes
     if: needs.changes.outputs.has_changes == 'true' || github.event_name == 'workflow_dispatch'
-    uses: LevitateOS/LevitateOS/.github/workflows/rust-ci.yml@eea341c64a065d8465727919a72bc592878ea70b
+    uses: LevitateOS/LevitateOS/.github/workflows/rust-ci.yml@00996159fb2d8a454df85a292b78b9cb99ea90a6
     with:
       msrv: '1.93'
 
@@ -34,7 +34,7 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: '1.99.0'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Load tracked runtime inputs
@@ -54,7 +54,7 @@ jobs:
               for name, value in pins.items():
                   output.write(f'{name}={value}\n')
           PYTHON
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: ${{ env.GINUX_REPOSITORY }}
           ref: ${{ env.GINUX_SOURCE_SHA }}
@@ -95,7 +95,7 @@ jobs:
             --ginux-source "$GINUX_SOURCE_SHA" \
             --image .artifacts/managed-ci/image/rootfs.tar --image-sha256 "$RECIPE_IMAGE_SHA256" \
             --output .artifacts/managed-ci/results
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: managed-integration-receipts
