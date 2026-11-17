@@ -123,7 +123,7 @@ with `save` and a `checkpoint`.
 
 `download` requires a full SHA256. Its optional fourth boolean requests checked
 resume. Errors in status, length, range identity, hash or destination publication
-cannot replace a previously valid destination. `git_checkout` requires a full
+cannot replace a previously valid destination. A transient network failure (name lookup, connection refused/reset/timed out, cut-off body, HTTP 408/425/429/500/502/503/504) is retried up to 4 attempts in all (pauses of 1, 3 and 9 s); other statuses, a checksum mismatch, a refused host and a size limit fail at once, and the final error names the attempts made. `git_checkout` requires a full
 commit, exact destination and direct repository URL; Git redirects are disabled.
 Cached includes, URL rewrites, transport overrides, filters and duplicate origins
 are rejected intact. Hooks, fsmonitor, replacement objects and submodule

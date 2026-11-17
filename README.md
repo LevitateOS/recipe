@@ -249,6 +249,13 @@ SHA-256 of its bytes: `RECIPE_CACHE_DIR` (absolute; empty turns it off), else
 with no network; a cached file whose bytes do not match is ignored. Host runs use
 it; Ginux runs do not see it. With a cache present, a `NEEDS.network` host that
 cannot be resolved is left out with a warning rather than failing the run.
+
+A download that fails the way a network does (a name lookup, a refused, reset or
+timed-out connection, a body cut off, HTTP 408, 425, 429, 500, 502, 503, 504) is
+tried again up to 4 attempts in all, after 1, 3 and 9 s, each retry printed with
+its host, path and reason; a 404, a wrong checksum, a refused host or a size limit
+fails at once. This holds for `download`, `download_exact`, the metadata fetches
+and the download step of `SOURCES` and `PACKAGES`.
 `--package-root DIR` retains an independent profile and `--no-activate` retains
 output-only builder execution. Other commands, including catalog listing and
 validation, keep their normal routes.

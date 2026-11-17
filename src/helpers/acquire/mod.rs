@@ -4,6 +4,7 @@ pub mod download;
 pub mod git;
 pub mod http;
 pub(crate) mod net;
+mod retry;
 pub mod verify;
 
 pub use download::download;

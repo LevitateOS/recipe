@@ -22,6 +22,7 @@ use super::super::confine;
 use super::super::internal::fs_utils;
 use super::super::internal::hash::{self, HashAlgorithm};
 use super::super::internal::progress::Spinner;
+use super::retry::{Fail, call_failure, read_failure, retrying};
 
 /// Acquire a complete payload at an explicit path, checking SHA256 before
 /// atomically replacing any existing file. Resume preserves the old prefix on
@@ -49,11 +50,13 @@ pub fn download(
     if from_cache(path, sha256)? {
         return Ok(dest.to_owned());
     }
-    if resume {
-        resume_impl(url, dest, sha256)
-    } else {
-        download_impl(url, dest, sha256)
-    }
+    retrying(url, || {
+        if resume {
+            resume_impl(url, dest, sha256)
+        } else {
+            download_impl(url, dest, sha256)
+        }
+    })
 }
 
 /// Note the digest of a download just published, so a recipe's check of it
@@ -107,7 +110,7 @@ fn from_cache(dest: &Path, sha256: &str) -> Result<bool, Box<EvalAltResult>> {
     Ok(true)
 }
 
-fn download_impl(url: &str, dest: &str, sha256: &str) -> Result<String, Box<EvalAltResult>> {
+fn download_impl(url: &str, dest: &str, sha256: &str) -> Result<String, Fail> {
     let dest_path = Path::new(dest);
 
     let filename = dest_path
@@ -118,7 +121,7 @@ fn download_impl(url: &str, dest: &str, sha256: &str) -> Result<String, Box<Eval
 
     let response = request(url)?
         .call()
-        .map_err(|e| format!("download failed: {}", e))?;
+        .map_err(|e| call_failure("download failed", e))?;
     let total_bytes = save_response(response, dest_path, &filename, sha256)?;
     output::detail(&format!("downloaded {} ({} bytes)", filename, total_bytes));
 
@@ -154,7 +157,7 @@ fn content_length(response: &ureq::Response) -> Result<Option<u64>, Box<EvalAltR
         .transpose()
 }
 
-fn resume_impl(url: &str, dest: &str, sha256: &str) -> Result<String, Box<EvalAltResult>> {
+fn resume_impl(url: &str, dest: &str, sha256: &str) -> Result<String, Fail> {
     let dest_path = Path::new(dest);
     let prefix = match confine::open_read(dest_path) {
         Ok(file) => {
@@ -178,7 +181,7 @@ fn resume_impl(url: &str, dest: &str, sha256: &str) -> Result<String, Box<EvalAl
     let response = match req.call() {
         Ok(response) => response,
         Err(ureq::Error::Status(416, response)) if existing_len > 0 => response,
-        Err(error) => return Err(format!("download failed: {error}").into()),
+        Err(error) => return Err(call_failure("download failed", error)),
     };
     let filename = dest_path.file_name().unwrap_or_default().to_string_lossy();
     if existing_len == 0 {
@@ -226,7 +229,7 @@ fn save_response(
     dest: &Path,
     filename: &str,
     sha256: &str,
-) -> Result<u64, Box<EvalAltResult>> {
+) -> Result<u64, Fail> {
     if response.status() != 200 {
         return Err(format!(
             "expected complete HTTP response (200), received {}",
@@ -246,13 +249,13 @@ fn save_response_with_prefix(
     prefix: Option<(File, u64)>,
     expected_total: Option<u64>,
     sha256: &str,
-) -> Result<u64, Box<EvalAltResult>> {
+) -> Result<u64, Fail> {
     let pb = Spinner::new(&format!("downloading {}", filename));
     if let Some(len) = expected_total {
         pb.bytes(len);
     }
 
-    let result = (|| {
+    let result = (|| -> Result<u64, Fail> {
         fs_utils::ensure_parent_dir(dest)?;
         let parent = dest
             .parent()
@@ -283,7 +286,7 @@ fn save_response_with_prefix(
         loop {
             let bytes_read = reader
                 .read(&mut buffer)
-                .map_err(|e| format!("read error: {}", e))?;
+                .map_err(|e| read_failure("read error", e))?;
             if bytes_read == 0 {
                 break;
             }
@@ -304,7 +307,9 @@ fn save_response_with_prefix(
         }
         crate::core::output::fetch_event(filename, total_bytes, expected_total);
         if expected_total.is_some_and(|total| total_bytes != total) {
-            return Err("download ended before the declared length".into());
+            return Err(Fail::Transient(
+                "download ended before the declared length".into(),
+            ));
         }
         hash::verify_file_hash(file.path(), sha256, HashAlgorithm::Sha256)?;
         file.file()
@@ -326,13 +331,15 @@ pub fn fetch_bounded(url: &str, dest: &str, limit: i64) -> Result<String, Box<Ev
     if !(1..=1024 * 1024).contains(&limit) {
         return Err("metadata acquisition bound must be 1..1048576 bytes".into());
     }
-    fetch_response(
-        request(url)?
-            .call()
-            .map_err(|e| format!("metadata acquisition failed: {e}"))?,
-        dest,
-        limit,
-    )
+    retrying(url, || {
+        fetch_response(
+            request(url)?
+                .call()
+                .map_err(|e| call_failure("metadata acquisition failed", e))?,
+            dest,
+            limit,
+        )
+    })
 }
 pub fn fetch_bounded_scoped(
     url: &str,
@@ -343,13 +350,11 @@ pub fn fetch_bounded_scoped(
     if !(1..=1024 * 1024).contains(&limit) {
         return Err("metadata acquisition bound must be 1..1048576 bytes".into());
     }
-    fetch_response(scoped_response(url, prefixes)?, dest, limit)
+    retrying(url, || {
+        fetch_response(scoped_response(url, prefixes.clone())?, dest, limit)
+    })
 }
-fn fetch_response(
-    response: ureq::Response,
-    dest: &str,
-    limit: i64,
-) -> Result<String, Box<EvalAltResult>> {
+fn fetch_response(response: ureq::Response, dest: &str, limit: i64) -> Result<String, Fail> {
     if !(1..=1024 * 1024).contains(&limit) {
         return Err("metadata acquisition bound must be 1..1048576 bytes".into());
     }
@@ -368,7 +373,7 @@ fn fetch_response(
         .map_err(|e| format!("metadata staging: {e}"))?;
     let mut input = super::net::body(response).take(limit as u64 + 1);
     let size =
-        std::io::copy(&mut input, output.file()).map_err(|e| format!("metadata read: {e}"))?;
+        std::io::copy(&mut input, output.file()).map_err(|e| read_failure("metadata read", e))?;
     if size > limit as u64 || declared.is_some_and(|n| n != size) {
         return Err("metadata length differs from acquisition bound/Content-Length".into());
     }
@@ -396,14 +401,16 @@ pub fn download_exact(
     if from_cache(Path::new(dest), sha256)? {
         return Ok(dest.to_owned());
     }
-    exact_response(
-        request(url)?
-            .call()
-            .map_err(|e| format!("download failed: {e}"))?,
-        dest,
-        sha256,
-        size,
-    )
+    retrying(url, || {
+        exact_response(
+            request(url)?
+                .call()
+                .map_err(|e| call_failure("download failed", e))?,
+            dest,
+            sha256,
+            size,
+        )
+    })
 }
 pub fn download_exact_scoped(
     url: &str,
@@ -419,14 +426,16 @@ pub fn download_exact_scoped(
     if from_cache(Path::new(dest), sha256)? {
         return Ok(dest.to_owned());
     }
-    exact_response(scoped_response(url, prefixes)?, dest, sha256, size)
+    retrying(url, || {
+        exact_response(scoped_response(url, prefixes.clone())?, dest, sha256, size)
+    })
 }
 fn exact_response(
     response: ureq::Response,
     dest: &str,
     sha256: &str,
     size: i64,
-) -> Result<String, Box<EvalAltResult>> {
+) -> Result<String, Fail> {
     if size <= 0 {
         return Err("download length must be positive".into());
     }
@@ -452,11 +461,8 @@ fn exact_response(
 
 /// Follow only explicitly granted HTTPS prefixes, validating before each request.
 /// Numeric Ginux grants remain enforced independently; no proxy/DNS bypass.
-fn scoped_response(
-    initial: &str,
-    prefixes: rhai::Array,
-) -> Result<ureq::Response, Box<EvalAltResult>> {
-    let failure = |message: String| -> Box<EvalAltResult> { message.into() };
+fn scoped_response(initial: &str, prefixes: rhai::Array) -> Result<ureq::Response, Fail> {
+    let failure = |message: String| -> Fail { message.into() };
     if prefixes.is_empty() || prefixes.len() > 5 {
         return Err("invalid acquisition prefix count".into());
     }
@@ -492,7 +498,6 @@ fn scoped_response(
     let agent = agent.build();
     let mut address = url::Url::parse(initial).map_err(|e| failure(e.to_string()))?;
     let mut redirects = 0;
-    let mut retries = 0;
     loop {
         if address.scheme() != "https"
             || !address.username().is_empty()
@@ -513,31 +518,7 @@ fn scoped_response(
             record.as_ref(),
         ) {
             Ok(r) => r,
-            Err(ureq::Error::Status(code, r))
-                if matches!(code, 429 | 502 | 503 | 504) && retries < 2 =>
-            {
-                let seconds = r
-                    .header("retry-after")
-                    .map(|s| {
-                        // HTTP-date is valid too. Defer rather than treating it
-                        // as a missing header and retrying before its deadline.
-                        s.parse::<u64>().map_err(|_| failure(
-                            "update origin supplied a non-numeric Retry-After; automatic retry deferred".into()
-                        ))
-                    })
-                    .transpose()?
-                    .unwrap_or(1 << retries);
-                if seconds > 5 {
-                    return Err(
-                        "update origin asks for a longer Retry-After; retry this operation later"
-                            .into(),
-                    );
-                }
-                retries += 1;
-                std::thread::sleep(Duration::from_secs(seconds));
-                continue;
-            }
-            Err(e) => return Err(failure(format!("scoped acquisition failed: {e}"))),
+            Err(e) => return Err(call_failure("scoped acquisition failed", e)),
         };
         if matches!(response.status(), 301 | 302 | 303 | 307 | 308) {
             if redirects == 5 {

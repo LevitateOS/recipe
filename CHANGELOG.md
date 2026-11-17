@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Downloads (`download`, `download_exact`, the metadata fetches, and the built-in fetch of `SOURCES` and pinned packages) are tried again after a transient network failure: name lookup, refused/reset/timed-out connection, cut-off body, HTTP 408, 425, 429, 500, 502, 503, 504. Up to 4 attempts, after 1, 3 and 9 s, each retry printed with host, path and reason; the final error says how many attempts were made. A 404, a checksum mismatch, a refused host or a size limit still fails at once.
+
 ## [0.2.0] - 2026-11-17
 
 - First release under the package name `recipe-pm`, for any x86_64 Linux, as a tarball, RPM, .deb and APK (plus AUR and Void build files).

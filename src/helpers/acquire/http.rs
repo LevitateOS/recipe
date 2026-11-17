@@ -47,10 +47,12 @@ fn response_json(response: ureq::Response) -> Result<serde_json::Value, Box<Eval
 
 /// Fetch content from a URL (GET request)
 pub fn http_get(url: &str) -> Result<String, Box<EvalAltResult>> {
-    let response = super::http_request(url, HTTP_TIMEOUT)?
-        .call()
-        .map_err(|error| format!("HTTP GET failed: {error}"))?;
-    response_text(response)
+    super::retry::retrying(url, || -> Result<String, super::retry::Fail> {
+        let response = super::http_request(url, HTTP_TIMEOUT)?
+            .call()
+            .map_err(|error| super::retry::call_failure("HTTP GET failed", error))?;
+        Ok(response_text(response)?)
+    })
 }
 
 fn github_error(repo: &str, error: ureq::Error) -> String {
