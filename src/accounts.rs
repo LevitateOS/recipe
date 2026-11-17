@@ -7,7 +7,9 @@
 //! the OS image builder makes them (`fedora-rpm-package-effects.rhai`, `sysusers`),
 //! which is how systemd-sysusers makes them: `g` lines first, then `u` lines; an
 //! account already there is kept; an id of `-` is the highest free system id
-//! below 1000. Other line kinds are ignored, as the builder ignores them.
+//! below 1000. A `u!` line is a `u` line whose account is fully locked, as
+//! systemd-sysusers makes it (shadow expiry day 1; there is no `g!`). Other
+//! line kinds are ignored, as the builder ignores them.
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -67,12 +69,18 @@ pub fn words(line: &str) -> Vec<String> {
     out
 }
 
-/// Check a declared account line: a `u` or `g` line with a name.
+/// The kind of a sysusers.d line, its first word: `u!` (a fully locked user)
+/// is a `u` line.
+fn kind(word: &str) -> &str {
+    if word == "u!" { "u" } else { word }
+}
+
+/// Check a declared account line: a `u`, `u!` or `g` line with a name.
 pub fn check_declared(line: &str) -> Result<()> {
     let w = words(line.trim());
     ensure!(
-        (w.len() >= 2 && (w[0] == "u" || w[0] == "g")) || (w.len() == 3 && w[0] == "m"),
-        "account declaration {line:?} is not a sysusers.d `u`, `g` or `m` line \
+        (w.len() >= 2 && matches!(kind(&w[0]), "u" | "g")) || (w.len() == 3 && w[0] == "m"),
+        "account declaration {line:?} is not a sysusers.d `u`, `u!`, `g` or `m` line \
          (for example \"g polkitd -\", \"u polkitd - 'polkit' /var/lib/polkit /sbin/nologin\" \
          or \"m sddm video\")"
     );
@@ -125,8 +133,11 @@ fn free(used: &BTreeMap<String, u32>) -> Result<u32> {
     Ok(id)
 }
 
-fn shadow_line(name: &str, password: &str) -> String {
-    format!("{name}:{password}:20000:0:99999:7:::\n")
+/// A shadow line; a `locked` account expired on day 1, as systemd-sysusers
+/// writes a `u!` account, so no login works whatever the password.
+fn shadow_line(name: &str, password: &str, locked: bool) -> String {
+    let expire = if locked { "1" } else { "" };
+    format!("{name}:{password}:20000:0:99999:7::{expire}:\n")
 }
 
 /// Make the accounts `lines` (each with the index of the package it came
@@ -147,10 +158,10 @@ pub fn create(
         .collect();
     let mut lines = lines.to_vec();
     {
-        let declared = |kind: &[&str], name: &str| {
+        let declared = |kinds: &[&str], name: &str| {
             lines.iter().any(|(_, l)| {
                 let w = words(l.trim());
-                w.len() >= 2 && kind.contains(&w[0].as_str()) && w[1] == name
+                w.len() >= 2 && kinds.contains(&kind(&w[0])) && w[1] == name
             })
         };
         let (users, groups) = (ids(&files.passwd), ids(&files.group));
@@ -180,16 +191,16 @@ pub fn create(
     let mut users = ids(&files.passwd);
     let mut groups = ids(&files.group);
     let mut created: BTreeMap<usize, Vec<Account>> = BTreeMap::new();
-    for kind in ["g", "u"] {
+    for pass in ["g", "u"] {
         for (owner, line) in lines {
             let w = words(line.trim());
-            if w.len() < 2 || w[0] != kind {
+            if w.len() < 2 || kind(&w[0]) != pass {
                 continue;
             }
             let name = &w[1];
             valid_name(name).with_context(|| format!("sysusers.d line {line:?}"))?;
             let id = w.get(2).map_or("-", String::as_str);
-            if kind == "g" {
+            if pass == "g" {
                 if groups.contains_key(name) {
                     continue;
                 }
@@ -267,7 +278,7 @@ pub fn create(
             }
             users.insert(name.clone(), uid);
             files.passwd += &format!("{name}:x:{uid}:{gid}:{gecos}:{home}:{shell}\n");
-            files.shadow += &shadow_line(name, "!*");
+            files.shadow += &shadow_line(name, "!*", w[0] == "u!");
             created.entry(*owner).or_default().push(Account {
                 kind: "user".into(),
                 name: name.clone(),

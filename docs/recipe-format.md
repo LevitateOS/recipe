@@ -485,7 +485,7 @@ recipes by the generator, and phase D1 stops it from touching recipe text.
 const ACCOUNTS = #{ musl: ["g plugdev -"] };
 ```
 
-A map from C library to sysusers.d lines (`u`, `g`, `m`), for accounts a
+A map from C library to sysusers.d lines (`u`, `u!`, `g`, `m`), for accounts a
 system tree needs that its packages' own `usr/lib/sysusers.d` does not make
 (Alpine packages make theirs in scripts, which never run). Unchanged in
 meaning from `ACCOUNTS_GLIBC`/`ACCOUNTS_MUSL` and the `accounts` option of

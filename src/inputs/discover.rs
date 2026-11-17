@@ -25,6 +25,69 @@ const MAX_INPUT_FILE: u64 = 16 * 1024 * 1024 * 1024;
 const MAX_INPUTS_TOTAL: u64 = 32 * 1024 * 1024 * 1024;
 /// Transitive import depth; deeper nesting is an explicit failure, not a hang.
 const MAX_IMPORT_DEPTH: usize = 16;
+/// Entries (files, directories, links) one invocation stages. A recipe with a
+/// larger filesystem-tree input says so in `NEEDS.storage_max_objects`, which
+/// is then the cap ([`discover_inputs`]).
+const MAX_INPUT_ENTRIES: u64 = 100_000;
+
+/// The input name of the root of a system change, which Recipe gives the
+/// root's effects recipe read-only (README, "Root effects").
+const SYSTEM_ROOT_INPUT: &str = "root";
+
+/// Top-level folders of a [`SYSTEM_ROOT_INPUT`] that are not staged: run-time
+/// data, mount points, home folders and the boot partition. The effects
+/// recipe reads only `etc/`, `usr/` and the root's loader and libraries;
+/// these may be large (a whole desktop's `var/`), change while they are read
+/// (`var/log`, mounted `proc`, `sys`, `dev`), or hold this very run's scratch
+/// pool (`var/tmp` of an installer's target).
+const SYSTEM_ROOT_LEFT_OUT: [&str; 13] = [
+    "var",
+    "boot",
+    "home",
+    "root",
+    "tmp",
+    "run",
+    "proc",
+    "sys",
+    "dev",
+    "mnt",
+    "media",
+    "srv",
+    "lost+found",
+];
+
+/// Extra directory inputs that are whole filesystem trees: absolute links in
+/// them resolve within the tree, and no `.git` or `target` is left out as in a
+/// source checkout.
+fn filesystem_tree(name: &str) -> bool {
+    matches!(name, "rootfs" | "target" | SYSTEM_ROOT_INPUT)
+        || name == crate::domain::DEPENDENCY_INPUT
+        || name.starts_with(&format!("{}/", crate::domain::DEPENDENCY_INPUT))
+        || name == crate::domain::DEPENDENCY_TOOLS
+}
+
+/// Whether `entry` of a [`SYSTEM_ROOT_INPUT`] is left out, the one rule for
+/// what of a system root is staged. A top-level folder of
+/// [`SYSTEM_ROOT_LEFT_OUT`] is, but only a real folder: a top-level link
+/// (`lib -> usr/lib`) is kept, as the effects recipe finds the loader through
+/// it. So is what the secret-bearing guard refuses (`etc/pki/tls/cert.pem`, a
+/// link to the CA bundle; a host's private keys): a whole root is never
+/// refused for its key material, and the effects recipe reads none of it.
+fn left_out_of_system_root(entry: &walkdir::DirEntry) -> bool {
+    if entry.depth() == 0 {
+        return false;
+    }
+    if entry.depth() == 1
+        && entry.file_type().is_dir()
+        && entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| SYSTEM_ROOT_LEFT_OUT.contains(&name))
+    {
+        return true;
+    }
+    reject_secret_bearing_host(entry.path(), SYSTEM_ROOT_INPUT).is_err()
+}
 
 /// Kind and link bytes participate in the retained input identity.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -74,12 +137,24 @@ pub struct Discovered {
 }
 
 /// Discover and hash the full input set without copying anything yet.
+/// `declared_objects` is the recipe's `NEEDS.storage_max_objects`: with a
+/// filesystem-tree input, the entry cap is that or [`MAX_INPUT_ENTRIES`],
+/// whichever is larger; otherwise [`MAX_INPUT_ENTRIES`].
 pub fn discover_inputs(
     recipe: &Path,
     search_path: Option<&Path>,
     extra_inputs: &[ExtraInput],
+    declared_objects: u64,
 ) -> Result<Discovered> {
-    let mut collector = Collector::new(search_path);
+    let max_entries = if extra_inputs
+        .iter()
+        .any(|extra| filesystem_tree(&extra.name))
+    {
+        MAX_INPUT_ENTRIES.max(declared_objects)
+    } else {
+        MAX_INPUT_ENTRIES
+    };
+    let mut collector = Collector::new(search_path, max_entries);
 
     let recipe_source = read_recipe_file(recipe)?;
     let recipe_stem = recipe
@@ -105,18 +180,17 @@ pub fn discover_inputs(
         crate::domain::validate_input_name(&extra.name)?;
         let meta = std::fs::symlink_metadata(&extra.path)?;
         if meta.is_dir() {
-            let filesystem_tree = matches!(extra.name.as_str(), "rootfs" | "target")
-                || extra.name == crate::domain::DEPENDENCY_INPUT
-                || extra
-                    .name
-                    .starts_with(&format!("{}/", crate::domain::DEPENDENCY_INPUT))
-                || extra.name == crate::domain::DEPENDENCY_TOOLS;
+            let filesystem_tree = filesystem_tree(&extra.name);
+            let system_root = extra.name == SYSTEM_ROOT_INPUT;
             let mut links = HashMap::new();
             for entry in walkdir::WalkDir::new(&extra.path)
                 .follow_links(false)
                 .sort_by_file_name()
                 .into_iter()
                 .filter_entry(|entry| {
+                    if system_root {
+                        return !left_out_of_system_root(entry);
+                    }
                     filesystem_tree
                         || entry.depth() != 1
                         || !matches!(entry.file_name().to_str(), Some(".git" | "target"))
@@ -263,10 +337,11 @@ struct Collector<'a> {
     visited: HashSet<(PathBuf, String)>,
     total: u64,
     host_dirs: Vec<PathBuf>,
+    max_entries: u64,
 }
 
 impl<'a> Collector<'a> {
-    fn new(search_path: Option<&'a Path>) -> Self {
+    fn new(search_path: Option<&'a Path>, max_entries: u64) -> Self {
         Self {
             search_path,
             staged: Vec::new(),
@@ -274,6 +349,7 @@ impl<'a> Collector<'a> {
             visited: HashSet::new(),
             total: 0,
             host_dirs: Vec::new(),
+            max_entries,
         }
     }
 
@@ -304,8 +380,12 @@ impl<'a> Collector<'a> {
                 host.display()
             );
         }
-        if self.staged.len() >= 100_000 {
-            bail!("input preparation failure: too many input files");
+        if self.staged.len() as u64 >= self.max_entries {
+            bail!(
+                "input preparation failure: more than {} input entries \
+                 (a recipe with a larger filesystem-tree input declares NEEDS.storage_max_objects)",
+                self.max_entries
+            );
         }
         let staged = if kind == InputKind::File {
             validate_and_hash(name, host)?

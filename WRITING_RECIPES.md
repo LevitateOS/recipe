@@ -387,11 +387,11 @@ owned or removed) and `ACCOUNTS`. A recipe does not call `target_finalize` on a
 `system` output. Trees for images (`rootfs`, `overlay`, `medium`) are not
 `system` outputs; their recipes finalize them.
 
-`ACCOUNTS` is a map from C library to sysusers.d lines (`u`, `g`, `m`) for
+`ACCOUNTS` is a map from C library to sysusers.d lines (`u`, `u!`, `g`, `m`) for
 accounts a tree needs that its packages' own `usr/lib/sysusers.d` does not make
 (Alpine packages make theirs in scripts, which never run). It is only valid with
 a `system` output. Accounts are made as the OS builder makes them: `g` lines,
-then `u` lines, an existing account kept, `-` the highest free id below 1000,
+then `u` lines (`u!`: the account is fully locked, as systemd-sysusers makes it), an existing account kept, `-` the highest free id below 1000,
 `u NAME -` takes the group NAME when it exists, `m USER GROUP` adds USER to
 GROUP once. An owner no account resolves fails the change naming the line to
 declare.

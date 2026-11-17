@@ -313,7 +313,7 @@ target_finalize on one; the options form target_finalize(root, #{ owners: "apply
 accounts: [LINES], seed: "var" }) is what that finishing does:
 owner names stay in the manifest and are resolved in the root the system change writes;
 seed: "var" keeps var/ as state seeds created there only where missing; accounts is an
-optional list of sysusers.d "u"/"g"/"m" lines (for Alpine packages, whose install scripts would have
+optional list of sysusers.d "u"/"u!"/"g"/"m" lines (for Alpine packages, whose install scripts would have
 added them), created there together with the tree's own usr/lib/sysusers.d accounts.
 target_extract_rpm(archive, root, members) also writes the record of the
 extraction to members, from which a package is composed into another root.

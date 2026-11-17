@@ -126,7 +126,8 @@ pub(crate) fn prepare_root(
         crate::fsx::snapshot_hashed(&mut worker, &mut destination, MAX_WORKER_BYTES)?.1;
     destination.set_permissions(std::fs::Permissions::from_mode(0o555))?;
 
-    // No shared cached tree or mutable hardlinks are handed to the domain.
+    // No shared cached tree or mutable hardlinks are handed to the domain (an
+    // input's only other name is this invocation's private staged copy).
     // Write syscalls still require Ginux storage mediation; these directories
     // do not grant native host filesystem access.
     for path in crate::domain::WRITABLE_DIRS {
@@ -139,8 +140,10 @@ pub(crate) fn prepare_root(
     Ok(root)
 }
 
-/// Copy the staged inputs into `inputs` (created here), checking every byte
-/// against its discovery digest, and write the input permission manifest.
+/// Put the staged inputs into `inputs` (created here): each file by hard link
+/// to its private staged copy where both share a filesystem, else as a copy;
+/// either way every byte is read back and checked against its discovery
+/// digest. Then write the input permission manifest.
 /// [`seal_inputs`] then makes them read-only. Shared by the Ginux root and
 /// the host run.
 pub(crate) fn stage_inputs(invocation: &PreparedInvocation, inputs: &Path) -> Result<()> {
@@ -164,15 +167,40 @@ pub(crate) fn stage_inputs(invocation: &PreparedInvocation, inputs: &Path) -> Re
             super::InputKind::Symlink(_) => continue, // Install links after all ordinary paths.
             super::InputKind::File => {}
         }
-        let mut source =
-            crate::fsx::open_regular(&invocation.staging_dir().join(format!("input-{index}")))?;
-        let mut destination = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(inputs.join(&input.name))?;
-        let (size, digest) =
-            crate::fsx::snapshot_hashed(&mut source, &mut destination, input.size)?;
+        let staged = invocation.staging_dir().join(format!("input-{index}"));
+        let path = inputs.join(&input.name);
+        // The staged file is this invocation's own, in the coordinator's
+        // private pool, and nothing reads or writes it after this: take it by
+        // hard link where it shares a filesystem with `inputs`, so a large
+        // input (a whole system root) does not take its size twice on a disk
+        // without reflinks. The link is read back and hashed like a copy.
+        let (destination, (size, digest)) = match std::fs::hard_link(&staged, &path) {
+            Ok(()) => {
+                let mut linked = crate::fsx::open_regular(&path)?;
+                let hashed =
+                    crate::fsx::copy_hashed(&mut linked, &mut std::io::sink(), input.size)?;
+                (linked, hashed)
+            }
+            Err(error)
+                if matches!(
+                    error.raw_os_error(),
+                    Some(libc::EXDEV | libc::EMLINK | libc::EPERM | libc::EOPNOTSUPP)
+                ) =>
+            {
+                let mut source = crate::fsx::open_regular(&staged)?;
+                let mut destination = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)?;
+                let hashed =
+                    crate::fsx::snapshot_hashed(&mut source, &mut destination, input.size)?;
+                (destination, hashed)
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("cannot stage /inputs/{}", input.name));
+            }
+        };
         if size != input.size || digest != hex::encode(input.sha256) {
             bail!(
                 "staged input changed after discovery: /inputs/{}",

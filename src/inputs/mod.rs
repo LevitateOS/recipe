@@ -119,7 +119,12 @@ pub fn prepare_invocation(
     let options = &execution;
     let mut staged_inputs = extra_inputs.to_vec();
     staged_inputs.extend_from_slice(dependency_inputs);
-    let discovered = discover_inputs(recipe, search_path, &staged_inputs)?;
+    let discovered = discover_inputs(
+        recipe,
+        search_path,
+        &staged_inputs,
+        declaration.needs.storage_max_objects,
+    )?;
 
     for node in &graph {
         for (path, digest) in &node.source_digests {
@@ -330,8 +335,13 @@ pub(crate) fn bind_inputs(
                 require_inputs,
             )
             .with_context(|| format!("inputs for {}", node.recipe.display()))?;
-        let discovered = discover_inputs(&node.recipe, search, &bindings[&node.recipe])
-            .with_context(|| format!("input/source closure for {}", node.recipe.display()))?;
+        let discovered = discover_inputs(
+            &node.recipe,
+            search,
+            &bindings[&node.recipe],
+            node.needs.storage_max_objects,
+        )
+        .with_context(|| format!("input/source closure for {}", node.recipe.display()))?;
         for (source, digest) in &node.source_digests {
             ensure!(
                 discovered

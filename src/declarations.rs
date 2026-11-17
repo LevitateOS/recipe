@@ -1152,10 +1152,7 @@ fn parse_accounts(
         let what = format!("ACCOUNTS.{field}");
         let lines = strings(&value, &what)?;
         for line in &lines {
-            ensure!(
-                matches!(line.get(..2), Some("u " | "g " | "m ")),
-                "{what}: {line:?} is a sysusers.d line starting with u, g or m"
-            );
+            crate::accounts::check_declared(line).with_context(|| what.clone())?;
         }
         accounts.insert(libc.as_str().to_owned(), lines);
     }

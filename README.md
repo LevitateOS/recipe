@@ -113,7 +113,11 @@ GIO modules, pixbuf loaders, MIME and icon caches, fonts, desktop database, ...)
 which package scripts would have rebuilt; the OS provides it. Its contract:
 
 - it receives the root, read-only, as its input `root`
-  (`NEEDS.inputs: #{ root: "directory" }`, as `INPUTS.root`), and
+  (`NEEDS.inputs: #{ root: "directory" }`, as `INPUTS.root`), without the
+  root's top-level folders `var`, `boot`, `home`, `root`, `tmp`, `run`, `proc`,
+  `sys`, `dev`, `mnt`, `media`, `srv` and `lost+found` (top-level links such as
+  `lib -> usr/lib` are kept) and without files the secret-bearing guard refuses
+  (key material, `etc/pki/tls/cert.pem`), and
   runs where its helpers put it (in Ginux when it runs the root's own programs);
 - it returns one `system` output (Recipe finishes the tree), holding only the
   cache files; it has no runtime `deps`; it declares `const RERUN = true;`;
@@ -222,7 +226,8 @@ Writing into any root (the other root, the running root, or `--root`):
   root's `etc/passwd` and `etc/group`. Accounts the change needs are created first,
   from its own `usr/lib/sysusers.d/*.conf` files and the `accounts` its recipe
   declares (`ACCOUNTS`), the way
-  the OS builder creates them; the receipt records them with the package
+  the OS builder creates them (a `u!` line's account fully locked, as
+  systemd-sysusers makes it); the receipt records them with the package
   (`accounts`), and removing the package keeps them. Ownership is applied when
   Recipe runs as root.
 - **Edited configuration.** A file under `etc/` changed since it was installed is
@@ -689,8 +694,10 @@ required, undeclared, duplicate or wrong-kind inputs fail before setup. Use
 A host path in a define grants no filesystem access. Root `.git` and `target`
 directories are omitted from ordinary source imports. Input bytes, modes, link
 identity and link targets participate in state identity. Confined relative links
-and hardlinks are preserved. Named `rootfs`/`target` trees may contain absolute
-rootfs symlink bytes; they never authorize following host paths.
+and hardlinks are preserved. Named `rootfs`/`target`/`root` trees may contain absolute
+rootfs symlink bytes, resolved within the tree; they never authorize following host
+paths. One invocation stages at most 100,000 entries, or, with such a tree,
+`NEEDS.storage_max_objects` when that is larger.
 
 `--input target=PATH` seeds the output before `build` runs (with one output,
 `out` starts as a copy of the input). Compiler-image files under `/usr` cannot
