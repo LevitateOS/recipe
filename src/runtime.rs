@@ -40,10 +40,31 @@ pub fn root_reference() -> Result<String> {
     Ok(root)
 }
 
+/// The program that runs Recipe again. A base written into `/` replaces
+/// `/usr/bin/recipe` while this process runs; Linux then reports the running
+/// binary as `/usr/bin/recipe (deleted)`, a path that does not exist. The file
+/// that replaced it is the release's newer recipe, which is the right program
+/// to run next; when even that is gone, `/proc/self/exe` still execs the old
+/// image.
+pub fn own_program() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if exe.exists() {
+            return exe;
+        }
+        if let Some(name) = exe.to_str().and_then(|s| s.strip_suffix(" (deleted)")) {
+            let replaced = PathBuf::from(name);
+            if replaced.exists() {
+                return replaced;
+            }
+        }
+    }
+    PathBuf::from("/proc/self/exe")
+}
+
 /// The install prefix of the running executable: `/usr` for `/usr/bin/recipe`,
 /// `~/.local` for `~/.local/bin/recipe`.
 pub fn prefix() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let exe = own_program().canonicalize().ok()?;
     Some(exe.parent()?.parent()?.to_path_buf())
 }
 

@@ -287,7 +287,7 @@ pub(crate) fn worker_binary() -> Result<PathBuf> {
             .canonicalize()
             .context("cannot resolve RECIPE_WORKER_BIN");
     }
-    let current = std::env::current_exe().context("cannot locate the Recipe worker")?;
+    let current = crate::runtime::own_program();
     if current.file_name().is_some_and(|name| name == "recipe") {
         return Ok(current);
     }

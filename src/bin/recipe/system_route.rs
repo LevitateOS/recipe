@@ -315,7 +315,7 @@ fn produce_with(
                 .collect::<Vec<_>>(),
         )?,
     )?;
-    let status = Command::new(std::env::current_exe()?)
+    let status = Command::new(levitate_recipe::runtime::own_program())
         .arg("install")
         .arg(recipe)
         .args(args)
