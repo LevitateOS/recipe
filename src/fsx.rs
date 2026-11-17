@@ -391,6 +391,24 @@ pub fn start_writeback(file: &File) {
     }
 }
 
+/// Write back every dirty page of the filesystem holding `path` and wait for
+/// it (`syncfs`). Unlike [`sync_files`] this also waits for other writers'
+/// data on that filesystem: for a caller that must not start work while the
+/// disk is still busy with a large tree it has just written.
+pub fn sync_filesystem(path: &Path) -> Result<()> {
+    let directory = File::open(path)
+        .with_context(|| format!("cannot open {} to flush its filesystem", path.display()))?;
+    // SAFETY: plain syscall on an open descriptor.
+    if unsafe { libc::syncfs(directory.as_raw_fd()) } != 0 {
+        bail!(
+            "cannot flush the filesystem holding {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        );
+    }
+    Ok(())
+}
+
 /// Paths opened at once by [`sync_files`] and [`sync_new_directories`].
 const SYNC_CHUNK: usize = 512;
 

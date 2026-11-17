@@ -103,7 +103,8 @@ pub(crate) fn prepare_root(
     };
     // A clone of the verified image's cached tree where the filesystem can
     // clone; otherwise the verified image unpacked here (see image_cache).
-    if !super::image_cache::populate(&invocation.root_reference, image, root.path())? {
+    let unpacked = !super::image_cache::populate(&invocation.root_reference, image, root.path())?;
+    if unpacked {
         unpack_image(
             verified_snapshot(image, &invocation.root_reference)?,
             root.path(),
@@ -152,6 +153,19 @@ pub(crate) fn prepare_root(
     }
     seal_inputs(&inputs)?;
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o555))?;
+    // An unpacked root is the whole runtime image written anew (about 1.2 GB
+    // on a filesystem without reflinks, ext4 among them). Left dirty, the
+    // kernel writes it back while the run is under way, and a program's page
+    // faults and reads then wait behind that writeback, uninterruptibly, for
+    // seconds. Ginux stops every running task before it lets one task's
+    // path or file-mapping call proceed and gives up after 5 s: such a wait
+    // aborted runs ("launch supervision failure: argument peer interrupt
+    // timed out", root effects after an update). So the run starts only once
+    // the root is on the disk. A cloned root writes no data and is not
+    // flushed.
+    if unpacked {
+        crate::fsx::sync_filesystem(root.path())?;
+    }
     Ok(root)
 }
 
@@ -370,6 +384,9 @@ pub(super) fn unpack_image(snapshot: &mut File, root: &Path) -> Result<()> {
                 bail!("truncated rootfs image entry: {}", relative.display());
             }
             file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+            // Written back while the rest unpacks, so the flush before the
+            // run (`prepare_root`) finds little left to wait for.
+            crate::fsx::start_writeback(&file);
         } else if kind.is_symlink() {
             // Absolute symlinks are meaningful inside chroot (e.g. /proc/mounts).
             // They are never traversed while constructing or cleaning the root.
