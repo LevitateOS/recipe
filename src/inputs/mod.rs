@@ -185,6 +185,7 @@ pub fn prepare_invocation(
                 &invocation_id,
                 &env,
                 options,
+                declaration.needs.runtime,
                 network.clone(),
                 archive_import,
                 random_devices,

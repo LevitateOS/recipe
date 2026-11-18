@@ -95,8 +95,10 @@ if sha(inputs / manifest['base']['path']) != manifest['base']['sha256']:
     raise SystemExit('public OCI producer output does not match image manifest')
 subprocess.run([str(producer), '--manifest', str(manifest_path), '--input-root', str(inputs),
                 '--output', str(output)], check=True)
-if sha(output / 'rootfs.tar') != spec['image_sha256']:
-    raise SystemExit('produced managed image digest differs from tracked CI pin')
+produced = sha(output / 'rootfs.tar')
+if produced != spec['image_sha256']:
+    raise SystemExit('produced managed image digest ' + produced + ' differs from tracked CI pin '
+                     + repr(spec['image_sha256']) + ' in ' + str(spec_path))
 provenance = json.loads((output / 'provenance.json').read_text())
 if provenance['sha256'] != spec['image_sha256']:
     raise SystemExit('produced provenance differs from tracked CI pin')

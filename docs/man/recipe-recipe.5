@@ -25,7 +25,10 @@ Required. inputs (name to "file", "directory", "file?" or "directory?"), defines
 (name to its default; () means required), outputs (name to "file" or
 "directory"), network ("host:port" endpoints, redirect hosts included),
 network_max_bytes (default 8 GiB), memory_mib (2048), storage_max_objects
-(16384), storage_max_bytes and timeout_secs (3600, 1 to 86400). Callers can only
+(16384), storage_max_bytes, timeout_secs (3600, 1 to 86400) and runtime
+("minimal" runs a Ginux run in the minimal runtime image of a shell, coreutils,
+findutils, sed and grep, for a recipe whose programs are the tools of a root it
+is given; left out, the full compiler image). Callers can only
 narrow it. outputs holds one name in a normal recipe (package, system, tools or
 a product name); the body never uses it. Every host of a SOURCES URL, redirects
 included, must be in network.

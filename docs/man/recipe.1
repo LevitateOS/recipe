@@ -87,9 +87,13 @@ build material (unpacked sources, work folder, a result not installed) and an
 unfinished run's saved state. These rules also apply to producer runs
 (--no-activate, the OS builder), with install meaning outputs published.
 .SH RUNTIME SELECTION
-Installed defaults are libexec/recipe/ginux and
-share/recipe/runtime/rootfs.tar with its root-reference file, under the prefix of
-the recipe binary (/usr for /usr/bin/recipe), else under /usr. Explicit
+Installed defaults are libexec/recipe/ginux,
+share/recipe/runtime/rootfs.tar with its root-reference file and
+share/recipe/runtime/minimal.tar with its minimal-reference file, under the
+prefix of the recipe binary (/usr for /usr/bin/recipe), else under /usr. A recipe
+with NEEDS.runtime "minimal" runs in the minimal image, selected with
+GINUX_MINIMAL_ROOT and GINUX_MINIMAL_ROOTFS as the full image is with GINUX_ROOT
+and GINUX_ROOTFS; where none is named it runs in the full image. Explicit
 environment selections override these defaults. When the image tar is neither
 installed nor in $XDG_CACHE_HOME/recipe/images, Recipe downloads it on first use
 and checks its SHA-256. RECIPE_RUNTIME_URL names another address; {digest} and

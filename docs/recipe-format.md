@@ -137,6 +137,16 @@ callers can only narrow it.
 | `storage_max_objects` | default 16384 |
 | `storage_max_bytes` | default bounded by memory |
 | `timeout_secs` | default 3600, 1 to 86400 |
+| `runtime` | `"minimal"`, or left out: the image a Ginux run is unpacked from (below) |
+
+`runtime: "minimal"` is for a recipe whose own programs are the tools of a root
+it is given (a root's effects recipe): its Ginux root is unpacked from the
+minimal runtime image, a shell, GNU coreutils, findutils, sed and grep with
+their libraries (about 8 MB), instead of the full compiler image (about 1.3 GB).
+Each run still gets a private copy of its image, verified against its digest.
+Where no minimal image is named (`GINUX_MINIMAL_ROOT`, or the
+`minimal-reference` an install ships), the run uses the full image. A recipe
+that starts no program runs on the host either way.
 
 `outputs` holds exactly one name in a normal recipe. The name tells Recipe and
 the caller what the output is (`package`: a package activated in a profile;
@@ -1444,7 +1454,8 @@ const FILES = [["busybox", "", 0o755]];   // the source file becomes the output 
 const RECIPE_API = 1;
 const NEEDS = #{
     inputs: #{ source: "directory", program: "file?", catalog: "directory?", launcher: "file?",
-               runtime_image: "file?", runtime_reference: "file?", dist: "directory?", keys: "directory?" },
+               runtime_image: "file?", runtime_reference: "file?", minimal_image: "file?",
+               minimal_reference: "file?", dist: "directory?", keys: "directory?" },
     defines: #{ BIN: "recstrap", INSTALL_PATH: "", INIT: "" },
     outputs: #{ program: "file", rootfs: "directory" },
     memory_mib: 8192,

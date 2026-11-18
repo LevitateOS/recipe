@@ -85,6 +85,54 @@ product builds; the default specification remains the smaller standalone
 acceptance image. The product image is pinned to the previously verified
 `4ec20be0f93bdd650ba42b0fd08b18d5ae61494f83c805a6a714e2f361042eff` output.
 
+## Minimal runtime image
+
+[`ginux-minimal-image.json`](ginux-minimal-image.json) keeps a few members of the
+pinned Rocky base and nothing else: the merged-`/usr` links and the root folders a
+domain uses (`dev`, `proc`, `sys`, `etc`, `tmp`, ...), `etc/passwd`, `etc/group` and
+`os-release`, the C library and its loader, Bash as `sh`, GNU coreutils (the one
+program and the command scripts that name it), findutils (`find`, `xargs`), sed and
+grep, and the libraries those load (`libtinfo`, `libselinux`, `libpcre2-8`, `libacl`,
+`libattr`, `libcap`). It has no RPMs and no Rust. Its `keep` list names each member
+exactly; `recipe-image` also keeps the directories above them and follows links (a
+kept `usr/lib64/libacl.so.1` brings the file it names), and fails on a name the base
+does not have. The result is about 8 MB in about 95 members, against 1.3 GB for the
+compiler image.
+
+A recipe declares `NEEDS.runtime: "minimal"` to run in it: one whose own programs are
+only the tools of a root it is given. The root effects recipe of LevitateOS and AcornOS
+(`distro/builder/os-recipes/root-effects.rhai`) is such a recipe: it runs the root's
+own cache tools through the root's loader, and of its own uses `sh`, `ls`, `cp`, and
+in `icon_cache_inputs` GNU `find`, `sort`, `sed`, `xargs`, `realpath`, `paste` and
+`sha256sum`. A tool added to such a recipe must be in this list; add it with the
+libraries its `DT_NEEDED` entries name (`readelf -d`).
+
+[`minimal-runtime.json`](minimal-runtime.json) pins its output as `image_sha256`, in
+the form of `product-ci.json`, with no downloaded inputs besides the Rocky base. The
+LevitateOS builder ships the pinned image with the installed Recipe
+(`usr/share/recipe/runtime/minimal.tar` and `minimal-reference`, through
+`recipe runtime stage --minimal-reference REF --minimal-image TAR`) and reads it from
+`.artifacts/ginux-env/prepared-image-minimal`. With the Rocky base already prepared
+under `.artifacts/ginux-env/oci-cache` (as for the compiler image; the producer checks
+its digest), produce it from the workspace root and pin the digest it records:
+
+```sh
+cargo build --locked -p levitate-recipe --bin recipe-image
+target/debug/recipe-image \
+  --manifest tools/recipe/bootstrap/ginux-minimal-image.json \
+  --input-root .artifacts/ginux-env \
+  --output .artifacts/ginux-env/prepared-image-minimal
+jq -r .sha256 .artifacts/ginux-env/prepared-image-minimal/provenance.json
+```
+
+Write that digest into `minimal-runtime.json` as `image_sha256`; until then the
+builder stops before it builds a system. `scripts/prepare-managed-image.py --spec
+bootstrap/minimal-runtime.json` reproduces it from public inputs as for the other
+images, and checks the pin (on a mismatch it names the digest it made).
+
+Select it with `GINUX_MINIMAL_ROOTFS` and
+`GINUX_MINIMAL_ROOT=oci:recipe-minimal@sha256:<sha256 from provenance.json>`.
+
 ## Acquisition and musl compiler image
 
 [`ginux-acquisition-image.json`](ginux-acquisition-image.json) is the complete

@@ -2454,8 +2454,15 @@ fn show_info(recipe_path: &Path, search_path: Option<&Path>, json: bool) -> Resu
     }
     // Where `--execution auto` runs it, from its source alone.
     if let Ok(eligibility) = levitate_recipe::execution::eligibility(recipe_path, search_path) {
+        let minimal = levitate_recipe::needs::declarations(recipe_path, search_path)
+            .ok()
+            .and_then(|graph| graph.last().map(|d| d.needs.runtime))
+            == Some(levitate_recipe::runtime::Image::Minimal);
         let runs = match &eligibility.blocker {
             None => "on the host (it starts no program)".to_owned(),
+            Some(blocker) if minimal => {
+                format!("in Ginux, in the minimal runtime image (it {blocker})")
+            }
             Some(blocker) => format!("in Ginux (it {blocker})"),
         };
         row("Runs:", &runs);

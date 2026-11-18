@@ -115,6 +115,7 @@ only narrow it.
 | `storage_max_objects` | default 16384 |
 | `storage_max_bytes` | default bounded by memory |
 | `timeout_secs` | default 3600, 1 to 86400 |
+| `runtime` | `"minimal"` for a recipe whose programs are the tools of a root it is given: its Ginux run is unpacked from the small minimal image (shell, coreutils, findutils, sed, grep) instead of the full compiler image; left out otherwise (docs/recipe-format.md, 2.1) |
 
 `outputs` holds exactly one name in a normal recipe. The name tells Recipe and
 the caller what the output is: `package` (a package activated in a profile),

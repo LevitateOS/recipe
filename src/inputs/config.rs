@@ -44,16 +44,18 @@ pub struct InstanceConfig {
 impl InstanceConfig {
     /// Build the invocation config: id/root/init/args/env plus fixed
     /// profile selections. `env` is the §5 allowlisted environment; the worker
-    /// init and argv come from [`crate::domain`].
+    /// init and argv come from [`crate::domain`]; `image` is the runtime image
+    /// the recipe asks for (`NEEDS.runtime`).
     pub fn for_invocation(
         invocation_id: &str,
         env: &[(String, String)],
         options: &crate::ExecutionOptions,
+        image: crate::runtime::Image,
         network: super::network::NetworkPolicy,
         archive_import: bool,
         random_devices: bool,
     ) -> Result<Self> {
-        let root = crate::runtime::root_reference()?;
+        let root = crate::runtime::reference_for(image)?;
         if env.len() > MAX_ENV {
             bail!(
                 "input preparation failure: {} env entries exceed the §2 limit of {MAX_ENV} × 256 B",

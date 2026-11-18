@@ -136,6 +136,9 @@ which package scripts would have rebuilt; the OS provides it. Its contract:
   `etc/pki/tls/cert.pem`, and with the top-level files);
 - it returns one `system` output (Recipe finishes the tree), holding only the
   cache files; it has no runtime `deps`; it declares `const RERUN = true;`;
+- it runs the root's own tools, so it declares `NEEDS.runtime: "minimal"`: its
+  Ginux root is unpacked from the minimal runtime image (a shell, coreutils,
+  findutils, sed and grep, about 8 MB) instead of the 1.3 GB compiler image;
 - `system-effects` is in the receipt but not listed by `installed`, cannot be
   removed by itself, and no recipe may take the name;
 - a failed effects run is reported (JSON `effects: {"status": "failed", "error"}`,
@@ -396,7 +399,8 @@ run, since it needs a failed install under Ginux. These were run on a hand-made 
 install has compiled and not run, since an install needs Ginux.
 
 The OS builder packages the public catalog, `/usr/libexec/recipe/ginux`, and
-`/usr/share/recipe/runtime/{rootfs.tar,root-reference}`. These are runtime defaults;
+`/usr/share/recipe/runtime/{rootfs.tar,root-reference,minimal.tar,minimal-reference}`
+(the compiler image and the minimal image). These are runtime defaults;
 explicit `GINUX_*` selections still take precedence. The image is digest-verified
 before execution. Existing images must be rebuilt to carry these files; a source
 change alone does not update a running installation. Native Ginux still requires
@@ -507,7 +511,17 @@ export RECIPE_WORKER_BIN=/absolute/path/to/recipe
 ```
 
 `GINUX_ROOTFS` must match the digest in `GINUX_ROOT`. Without `GINUX_ROOT`, the
-pinned bare Rocky base (no compiler) is selected. If `GINUX_ROOTFS` is omitted, Recipe uses the
+pinned bare Rocky base (no compiler) is selected.
+
+A recipe that declares `NEEDS.runtime: "minimal"` (one whose programs are the tools of
+a root it is given, such as a root's effects recipe) runs in the minimal runtime image
+instead: a few megabytes of the same Rocky base with a shell, GNU coreutils, findutils,
+sed and grep (`bootstrap/ginux-minimal-image.json`). `GINUX_MINIMAL_ROOT` and
+`GINUX_MINIMAL_ROOTFS` select it as the two variables above select the full image;
+without them Recipe reads the `minimal-reference` its install ships and uses
+`minimal.tar` beside it, else the download cache. Where no minimal image is named at
+all, such a recipe runs in the full image, which has every program the minimal one has,
+and Recipe says so in one line. If `GINUX_ROOTFS` is omitted, Recipe uses the
 tar its install ships (`<prefix>/share/recipe/runtime/rootfs.tar`, where the prefix is the
 parent of the directory holding the `recipe` binary, for example `/usr`), else
 `$XDG_CACHE_HOME/recipe/images/<digest>.tar`. When neither exists, Recipe downloads the

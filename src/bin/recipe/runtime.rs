@@ -21,10 +21,14 @@ pub(crate) fn execute(command: &RuntimeCommands, cli: &Cli) -> Result<()> {
     match command {
         RuntimeCommands::Status => status(cli),
         RuntimeCommands::Fetch => {
+            // The full image, then the minimal one when one is named: one
+            // path per line.
             runtime::set_fetch_events(cli.machine_events);
-            let reference = runtime::root_reference()?;
-            let path = runtime::ensure_rootfs(&reference)?;
-            println!("{}", path.display());
+            let full = runtime::root_reference()?;
+            println!("{}", runtime::ensure_rootfs(&full)?.display());
+            if let Some(minimal) = runtime::minimal_reference()?.filter(|m| *m != full) {
+                println!("{}", runtime::ensure_rootfs(&minimal)?.display());
+            }
             Ok(())
         }
         RuntimeCommands::Remove => {
@@ -60,14 +64,18 @@ pub(crate) fn execute(command: &RuntimeCommands, cli: &Cli) -> Result<()> {
             launcher,
             reference,
             image,
+            minimal_reference,
+            minimal_image,
             catalog,
             apparmor,
         } => stage(
             root,
             prefix,
             launcher,
-            reference,
-            image.as_deref(),
+            (reference, image.as_deref()),
+            minimal_reference
+                .as_deref()
+                .map(|reference| (reference, minimal_image.as_deref())),
             catalog,
             *apparmor,
         ),
@@ -79,22 +87,38 @@ fn executable(path: &Path) -> bool {
         .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
+/// Where `image`'s tar, selected at `path`, comes from.
+fn selected_from(image: runtime::Image, path: &Path) -> &'static str {
+    if std::env::var_os(image.rootfs_env()).is_some() {
+        image.rootfs_env()
+    } else if path == image.shipped_rootfs() {
+        "installed with Recipe"
+    } else {
+        "download cache"
+    }
+}
+
 fn status(cli: &Cli) -> Result<()> {
     let reference = runtime::root_reference()?;
     let digest = runtime::root_digest(&reference)?.to_owned();
-    let origin = runtime::reference_origin();
+    let origin = runtime::reference_origin(runtime::Image::Full);
     let (launcher, launcher_from) = match std::env::var_os("GINUX_BIN") {
         Some(path) if !path.is_empty() => (PathBuf::from(path), "GINUX_BIN"),
         _ => (runtime::launcher(), "install prefix"),
     };
     let image = runtime::rootfs_path(&reference)?;
-    let image_from = if std::env::var_os("GINUX_ROOTFS").is_some() {
-        "GINUX_ROOTFS"
-    } else if image == runtime::shipped_rootfs() {
-        "installed with Recipe"
-    } else {
-        "download cache"
+    let image_from = selected_from(runtime::Image::Full, &image);
+    // The minimal image, when one is named: (reference, digest, tar, from).
+    let minimal = match runtime::minimal_reference()? {
+        Some(reference) => {
+            let digest = runtime::root_digest(&reference)?.to_owned();
+            let path = runtime::rootfs_path(&reference)?;
+            let from = selected_from(runtime::Image::Minimal, &path);
+            Some((reference, digest, path, from))
+        }
+        None => None,
     };
+    let minimal_origin = runtime::reference_origin(runtime::Image::Minimal);
     let sources = runtime::shipped_sources();
     let result = serde_json::json!({
         "schema_version": 1,
@@ -105,6 +129,9 @@ fn status(cli: &Cli) -> Result<()> {
         "launcher": {"path": launcher, "from": launcher_from,
             "exists": launcher.exists(), "executable": executable(&launcher)},
         "image": {"path": image, "from": image_from, "present": image.exists()},
+        "minimal": minimal.as_ref().map(|(reference, digest, path, from)| serde_json::json!({
+            "reference": reference, "reference_from": minimal_origin, "digest": digest,
+            "image": {"path": path, "from": from, "present": path.exists()}})),
         "shipped_sources": {"path": sources, "exists": sources.exists()},
     });
     let json = cli.json || !std::io::stdout().is_terminal();
@@ -117,6 +144,13 @@ fn status(cli: &Cli) -> Result<()> {
     } else if json {
         println!("{}", serde_json::to_string(&result)?);
     } else {
+        let presence = |path: &Path| {
+            if path.exists() {
+                "present"
+            } else {
+                "absent, downloaded on first use or with 'recipe runtime fetch'"
+            }
+        };
         println!("Runtime image: {reference}\n  selected by: {origin}");
         println!(
             "Launcher:      {} ({}; {})",
@@ -132,12 +166,22 @@ fn status(cli: &Cli) -> Result<()> {
             "Image file:    {} ({}; {})",
             image.display(),
             image_from,
-            if image.exists() {
-                "present"
-            } else {
-                "absent, downloaded on first use or with 'recipe runtime fetch'"
-            }
+            presence(&image)
         );
+        match &minimal {
+            Some((reference, _, path, from)) => {
+                println!("Minimal image: {reference}\n  selected by: {minimal_origin}");
+                println!(
+                    "Minimal file:  {} ({}; {})",
+                    path.display(),
+                    from,
+                    presence(path)
+                );
+            }
+            None => println!(
+                "Minimal image: none named; recipes with NEEDS.runtime \"minimal\" run in the full image"
+            ),
+        }
         println!(
             "Sources:       {}{}",
             sources.display(),
@@ -264,17 +308,36 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<usize> {
     Ok(count)
 }
 
+/// Check that `image`, when given, is the tar `reference` names.
+fn check_image(reference: &str, image: Option<&Path>, option: &str) -> Result<()> {
+    runtime::validate_reference(reference)?;
+    let digest = runtime::root_digest(reference)?;
+    if let Some(image) = image {
+        let actual = sha256_file(image)?;
+        ensure!(
+            actual == digest,
+            "the image {} has SHA-256 {actual}, not {digest} from the reference; pass the matching tar or leave out {option}",
+            image.display()
+        );
+    }
+    Ok(())
+}
+
+/// `full` and `minimal` are each an image reference with the tar to ship,
+/// if any; without a minimal reference the install names no minimal image.
 fn stage(
     root: &Path,
     prefix: &Path,
     launcher: &Path,
-    reference: &str,
-    image: Option<&Path>,
+    full: (&str, Option<&Path>),
+    minimal: Option<(&str, Option<&Path>)>,
     catalog: &Path,
     apparmor: bool,
 ) -> Result<()> {
-    runtime::validate_reference(reference)?;
-    let digest = runtime::root_digest(reference)?;
+    check_image(full.0, full.1, "--image")?;
+    if let Some((reference, image)) = minimal {
+        check_image(reference, image, "--minimal-image")?;
+    }
     ensure!(
         launcher.is_file(),
         "the launcher {} is not a file; pass --launcher with the Ginux launcher to ship",
@@ -293,24 +356,25 @@ fn stage(
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'_' | b'-')),
         "--prefix {prefix_text:?} must be an absolute path of letters, digits and `/._-`"
     );
-    if let Some(image) = image {
-        let actual = sha256_file(image)?;
-        ensure!(
-            actual == digest,
-            "the image {} has SHA-256 {actual}, not {digest} from the reference; pass the matching tar or leave out --image",
-            image.display()
-        );
-    }
 
     let base = root.join(prefix_text.trim_start_matches('/'));
     copy_file(launcher, &base.join("libexec/recipe/ginux"), 0o755)?;
-    put(
-        &base.join("share/recipe/runtime/root-reference"),
-        format!("{reference}\n").as_bytes(),
-        0o644,
-    )?;
-    if let Some(image) = image {
-        copy_file(image, &base.join("share/recipe/runtime/rootfs.tar"), 0o644)?;
+    let runtime_dir = base.join("share/recipe/runtime");
+    for (selected, reference_name, image_name) in [
+        (Some(full), "root-reference", "rootfs.tar"),
+        (minimal, "minimal-reference", "minimal.tar"),
+    ] {
+        let Some((reference, image)) = selected else {
+            continue;
+        };
+        put(
+            &runtime_dir.join(reference_name),
+            format!("{reference}\n").as_bytes(),
+            0o644,
+        )?;
+        if let Some(image) = image {
+            copy_file(image, &runtime_dir.join(image_name), 0o644)?;
+        }
     }
     let sources = base.join("share/recipe/sources");
     let files = copy_tree(catalog, &sources.join("levitate"))?;

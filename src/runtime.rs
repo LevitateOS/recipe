@@ -2,11 +2,14 @@
 //! Explicit environment selections take precedence; payload verification and
 //! mandatory managed execution remain unchanged.
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const LAUNCHER: &str = "/usr/libexec/recipe/ginux";
 pub const ROOTFS: &str = "/usr/share/recipe/runtime/rootfs.tar";
 pub const ROOT_REFERENCE: &str = "/usr/share/recipe/runtime/root-reference";
+pub const MINIMAL_ROOTFS: &str = "/usr/share/recipe/runtime/minimal.tar";
+pub const MINIMAL_REFERENCE: &str = "/usr/share/recipe/runtime/minimal-reference";
 /// Where a standalone install keeps the sources it ships, under the prefix.
 pub const SOURCES: &str = "/usr/share/recipe/sources";
 const MAX_CONFIG_PATH: usize = 128;
@@ -17,17 +20,108 @@ const MAX_CONFIG_PATH: usize = 128;
 /// the same reference validation. The launcher resolves the reference.
 const DEFAULT_ROOT_REF: &str = "oci:rocky-10.2.20260525.0-amd64-rootfs@sha256:b93bfd0f6deea2a7a96216655cda3ebbd87a445231548ff491ee30aed20a36ab";
 
-/// Image reference: the pin by default, `GINUX_ROOT` override when set.
+/// The two runtime images a Ginux run's private root is unpacked from.
+///
+/// `Full` is the compiler image (Rocky with GCC, Rust, Git and the ISO
+/// tools, about 1.3 GB). `Minimal` is a few megabytes of the same Rocky base:
+/// a shell, GNU coreutils, findutils, sed and grep and the libraries they load
+/// (`bootstrap/ginux-minimal-image.json`), for a run whose own programs are
+/// the tools of a root it is given, such as a root's effects recipe. A recipe
+/// asks for it with `NEEDS.runtime: "minimal"`; every other recipe runs in
+/// the full image. Each run still gets its own private copy of the image it
+/// runs in, verified against the digest of its reference.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Image {
+    #[default]
+    Full,
+    Minimal,
+}
+
+impl Image {
+    pub fn is_full(&self) -> bool {
+        *self == Image::Full
+    }
+
+    /// The variable that selects this image's reference.
+    pub fn root_env(self) -> &'static str {
+        match self {
+            Image::Full => "GINUX_ROOT",
+            Image::Minimal => "GINUX_MINIMAL_ROOT",
+        }
+    }
+
+    /// The variable that selects this image's tar.
+    pub fn rootfs_env(self) -> &'static str {
+        match self {
+            Image::Full => "GINUX_ROOTFS",
+            Image::Minimal => "GINUX_MINIMAL_ROOTFS",
+        }
+    }
+
+    /// The file naming the image of this kind this install was made for.
+    pub fn reference_file(self) -> PathBuf {
+        match self {
+            Image::Full => under_prefix("share/recipe/runtime/root-reference", ROOT_REFERENCE),
+            Image::Minimal => {
+                under_prefix("share/recipe/runtime/minimal-reference", MINIMAL_REFERENCE)
+            }
+        }
+    }
+
+    /// The tar of this image this install ships; it may not exist.
+    pub fn shipped_rootfs(self) -> PathBuf {
+        match self {
+            Image::Full => under_prefix("share/recipe/runtime/rootfs.tar", ROOTFS),
+            Image::Minimal => under_prefix("share/recipe/runtime/minimal.tar", MINIMAL_ROOTFS),
+        }
+    }
+}
+
+/// The full image's reference: `GINUX_ROOT` when set, else the installed
+/// `root-reference`, else the built-in pin.
+pub fn root_reference() -> Result<String> {
+    match selected_reference(Image::Full)? {
+        Some(root) => Ok(root),
+        None => Ok(DEFAULT_ROOT_REF.to_string()),
+    }
+}
+
+/// The minimal image's reference: `GINUX_MINIMAL_ROOT` when set, else the
+/// installed `minimal-reference`; None when neither names one.
+pub fn minimal_reference() -> Result<Option<String>> {
+    selected_reference(Image::Minimal)
+}
+
+/// The reference a run that asks for `image` runs in. A run that asks for
+/// the minimal image where none is named runs in the full image, which has
+/// every program the minimal one has.
+pub fn reference_for(image: Image) -> Result<String> {
+    if image == Image::Minimal {
+        if let Some(reference) = minimal_reference()? {
+            return Ok(reference);
+        }
+        crate::diagnostics::diag!(
+            "recipe: no minimal runtime image is named (GINUX_MINIMAL_ROOT or {}); this run uses the full image",
+            Image::Minimal.reference_file().display()
+        );
+    }
+    root_reference()
+}
+
+/// The image's reference from its variable, else from its installed file.
 /// Mirrors the instance parser's reference rule (no leading `/`, no `..`,
 /// charset `[A-Za-z0-9_.:/@-]`), plus the §2 ≤ 128 B bound.
-pub fn root_reference() -> Result<String> {
-    let root = match std::env::var("GINUX_ROOT") {
+fn selected_reference(image: Image) -> Result<Option<String>> {
+    let name = image.root_env();
+    let root = match std::env::var(name) {
         Ok(root) => root,
-        Err(std::env::VarError::NotPresent) => {
-            installed_reference()?.unwrap_or_else(|| DEFAULT_ROOT_REF.to_string())
-        }
+        Err(std::env::VarError::NotPresent) => match installed_reference(image)? {
+            Some(root) => root,
+            None => return Ok(None),
+        },
         Err(std::env::VarError::NotUnicode(_)) => {
-            bail!("input preparation failure: GINUX_ROOT is not valid UTF-8")
+            bail!("input preparation failure: {name} is not valid UTF-8")
         }
     };
     if root.is_empty() || root.len() > MAX_CONFIG_PATH {
@@ -37,7 +131,19 @@ pub fn root_reference() -> Result<String> {
         );
     }
     validate_reference(&root)?;
-    Ok(root)
+    Ok(Some(root))
+}
+
+/// Which image `reference` is: the minimal one when it is the selected
+/// minimal reference, else the full one. Its tar is looked up where that
+/// image's is (its variable, its shipped file); a reference both name is one
+/// image, the same bytes either way.
+fn image_of(reference: &str) -> Image {
+    if minimal_reference().ok().flatten().as_deref() == Some(reference) {
+        Image::Minimal
+    } else {
+        Image::Full
+    }
 }
 
 /// The program that runs Recipe again. A base written into `/` replaces
@@ -81,29 +187,21 @@ pub fn launcher() -> PathBuf {
     under_prefix("libexec/recipe/ginux", LAUNCHER)
 }
 
-/// The rootfs tar this install ships; it may not exist.
-pub fn shipped_rootfs() -> PathBuf {
-    under_prefix("share/recipe/runtime/rootfs.tar", ROOTFS)
-}
-
-/// The file naming the runtime image this install was made for.
-pub fn reference_file() -> PathBuf {
-    under_prefix("share/recipe/runtime/root-reference", ROOT_REFERENCE)
-}
-
 /// The sources this install ships.
 pub fn shipped_sources() -> PathBuf {
     under_prefix("share/recipe/sources", SOURCES)
 }
 
-/// Where the selected reference came from, for `recipe runtime status`.
-pub fn reference_origin() -> String {
-    if std::env::var_os("GINUX_ROOT").is_some() {
-        "GINUX_ROOT".to_owned()
-    } else if installed_reference().ok().flatten().is_some() {
-        format!("installed root-reference ({})", reference_file().display())
-    } else {
+/// Where `image`'s selected reference came from, for `recipe runtime status`.
+pub fn reference_origin(image: Image) -> String {
+    if std::env::var_os(image.root_env()).is_some() {
+        image.root_env().to_owned()
+    } else if installed_reference(image).ok().flatten().is_some() {
+        format!("installed ({})", image.reference_file().display())
+    } else if image == Image::Full {
         "built-in pin".to_owned()
+    } else {
+        "none".to_owned()
     }
 }
 
@@ -141,26 +239,30 @@ pub fn root_digest(reference: &str) -> Result<&str> {
     Ok(digest)
 }
 
-fn installed_reference() -> Result<Option<String>> {
-    match std::fs::read_to_string(reference_file()) {
+fn installed_reference(image: Image) -> Result<Option<String>> {
+    match std::fs::read_to_string(image.reference_file()) {
         Ok(value) => Ok(Some(value.trim().to_owned())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e).context("cannot read installed Recipe runtime reference"),
     }
 }
 
-/// Select the root archive; the engine hashes the selected bytes before use.
+/// Select the root archive of `reference`: its image's variable
+/// (`GINUX_ROOTFS`, `GINUX_MINIMAL_ROOTFS`), else the tar the install ships,
+/// else the download cache. The engine hashes the selected bytes before use.
 pub fn rootfs_path(reference: &str) -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os("GINUX_ROOTFS") {
+    let image = image_of(reference);
+    let variable = image.rootfs_env();
+    if let Some(path) = std::env::var_os(variable) {
         if path.is_empty() {
-            bail!("GINUX_ROOTFS is empty; select a verified assembled rootfs tar");
+            bail!("{variable} is empty; select a verified assembled rootfs tar");
         }
         return Ok(PathBuf::from(path));
     }
     let digest = root_digest(reference)?;
-    if installed_reference()?.as_deref() == Some(reference) {
+    if installed_reference(image)?.as_deref() == Some(reference) {
         // A standalone install ships the reference but not the tar.
-        let shipped = shipped_rootfs();
+        let shipped = image.shipped_rootfs();
         if shipped.is_file() {
             return Ok(shipped);
         }
@@ -195,11 +297,12 @@ fn runtime_url(digest: &str) -> String {
 /// engine verifies its bytes before use either way.
 pub fn ensure_rootfs(reference: &str) -> Result<PathBuf> {
     let path = rootfs_path(reference)?;
-    if std::env::var_os("GINUX_ROOTFS").is_some() || path.exists() {
+    let variable = image_of(reference).rootfs_env();
+    if std::env::var_os(variable).is_some() || path.exists() {
         return Ok(path);
     }
     let digest = root_digest(reference)?;
-    fetch_image(digest, &path)?;
+    fetch_image(digest, &path, variable)?;
     Ok(path)
 }
 
@@ -211,7 +314,7 @@ pub fn open_rootfs(reference: &str) -> Result<(PathBuf, std::fs::File)> {
     use fs2::FileExt;
     for _ in 0..3 {
         let path = ensure_rootfs(reference)?;
-        let downloaded = std::env::var_os("GINUX_ROOTFS").is_none()
+        let downloaded = std::env::var_os(image_of(reference).rootfs_env()).is_none()
             && path.parent().is_some_and(|directory| {
                 images_directory().is_ok_and(|images| images == directory)
             });
@@ -279,7 +382,9 @@ impl<R: std::io::Read> std::io::Read for Counting<R> {
     }
 }
 
-fn fetch_image(digest: &str, destination: &Path) -> Result<()> {
+/// Download the image `digest` to `destination`; `variable` is the one that
+/// would select a local copy instead, for the way forward.
+fn fetch_image(digest: &str, destination: &Path, variable: &str) -> Result<()> {
     use crate::failure::Category::Startup;
     use fs2::FileExt;
     use sha2::{Digest, Sha256};
@@ -313,7 +418,7 @@ fn fetch_image(digest: &str, destination: &Path) -> Result<()> {
     let url = runtime_url(digest);
     crate::diagnostics::diag!("recipe: downloading the runtime image {digest:.16} from {url}");
     let way_forward = format!(
-        "Next: run 'recipe runtime fetch' later, or select a local copy with GINUX_ROOTFS=/path/rootfs.tar (its SHA-256 must be {digest}); RECIPE_RUNTIME_URL names another address"
+        "Next: run 'recipe runtime fetch' later, or select a local copy with {variable}=/path/rootfs.tar (its SHA-256 must be {digest}); RECIPE_RUNTIME_URL names another address"
     );
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(30))
@@ -408,11 +513,12 @@ fn fetch_image(digest: &str, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The compiler image Recipe holds (`recipe storage`, kind `build_image`):
+/// The runtime images Recipe holds (`recipe storage`, kind `build_image`):
 /// the downloaded image files in the download cache and their unpacked
-/// copies in the scratch pool, plus the image installed with Recipe when it
-/// is the one in use. An image selected with `GINUX_ROOTFS` is the caller's
-/// file, not Recipe's, and is not counted.
+/// copies in the scratch pool, plus each image installed with Recipe (full
+/// and minimal) when it is the one in use. An image selected with
+/// `GINUX_ROOTFS` or `GINUX_MINIMAL_ROOTFS` is the caller's file, not
+/// Recipe's, and is not counted.
 pub struct BuildImage {
     /// The download cache (`~/.cache/recipe/images`).
     pub path: PathBuf,
@@ -452,15 +558,17 @@ pub fn build_image() -> Result<BuildImage> {
         .map(|(_, bytes)| bytes)
         .sum::<u64>()
         + crate::inputs::image_cache_bytes();
-    let shipped = std::env::var_os("GINUX_ROOTFS").is_none()
-        && root_reference()
-            .and_then(|reference| rootfs_path(&reference))
-            .is_ok_and(|selected| selected == shipped_rootfs());
-    let shipped_bytes = if shipped {
-        std::fs::metadata(shipped_rootfs()).map_or(0, |metadata| metadata.len())
-    } else {
-        0
-    };
+    let full = root_reference().ok();
+    let minimal = minimal_reference().ok().flatten();
+    let shipped_bytes = [(Image::Full, full), (Image::Minimal, minimal)]
+        .into_iter()
+        .filter_map(|(image, reference)| {
+            let shipped = std::env::var_os(image.rootfs_env()).is_none()
+                && rootfs_path(&reference?)
+                    .is_ok_and(|selected| selected == image.shipped_rootfs());
+            shipped.then(|| std::fs::metadata(image.shipped_rootfs()).map_or(0, |m| m.len()))
+        })
+        .sum::<u64>();
     Ok(BuildImage {
         path,
         bytes: removable_bytes + shipped_bytes,
@@ -470,8 +578,8 @@ pub fn build_image() -> Result<BuildImage> {
 
 /// `recipe runtime remove`: delete the downloaded runtime images and their
 /// unpacked copies. A download in progress (its lock held) is left alone;
-/// the image installed with Recipe and one selected with `GINUX_ROOTFS` are
-/// never touched. The image is downloaded again when a recipe needs it.
+/// the images installed with Recipe and those selected with `GINUX_ROOTFS`
+/// or `GINUX_MINIMAL_ROOTFS` are never touched. The image is downloaded again when a recipe needs it.
 /// Returns the bytes freed.
 pub fn remove_build_image() -> Result<u64> {
     use fs2::FileExt;

@@ -53,6 +53,13 @@ pub struct Needs {
     /// left out; the pins in use and Recipe's allowance for connections and
     /// retries are added by [`Needs::network_budget`].
     pub network_max_bytes: u64,
+    /// The runtime image a Ginux run of the recipe is unpacked from:
+    /// `NEEDS.runtime: "minimal"` for a recipe whose programs are the tools
+    /// of a root it is given (a shell, coreutils, findutils, sed and grep are
+    /// all it has of its own), the full image otherwise
+    /// ([`crate::runtime::Image`]).
+    #[serde(default, skip_serializing_if = "crate::runtime::Image::is_full")]
+    pub runtime: crate::runtime::Image,
     /// For a recipe with `PACKAGES`: each pins section's C library (`glibc`,
     /// `musl`, `any`) to the bytes and number of its packages
     /// (docs/recipe-format.md, section 2.7, decision 9). Read from the pins
@@ -112,6 +119,7 @@ struct LiteralNeeds {
     storage_max_bytes: Option<u64>,
     timeout_secs: Option<u64>,
     network_max_bytes: Option<u64>,
+    runtime: Option<String>,
 }
 
 /// Explicit caller restrictions. None uses the recipe's declaration; an empty
@@ -194,6 +202,13 @@ impl Needs {
                 "NEEDS.network has a duplicate endpoint"
             );
         }
+        let runtime = match raw.runtime.as_deref() {
+            None => crate::runtime::Image::Full,
+            Some("minimal") => crate::runtime::Image::Minimal,
+            Some(other) => bail!(
+                "NEEDS.runtime is \"minimal\" (the small image of a shell, coreutils, findutils, sed and grep) or left out (the full compiler image), not {other:?}"
+            ),
+        };
         let needs = Self {
             inputs,
             defines,
@@ -206,6 +221,7 @@ impl Needs {
             storage_max_bytes: raw.storage_max_bytes,
             timeout_secs: raw.timeout_secs.unwrap_or(defaults.timeout_secs),
             network_max_bytes: raw.network_max_bytes.unwrap_or(defaults.network_max_bytes),
+            runtime,
             pins: BTreeMap::new(),
             source_files: BTreeMap::new(),
         };

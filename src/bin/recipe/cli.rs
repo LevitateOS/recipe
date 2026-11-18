@@ -338,7 +338,7 @@ pub(crate) enum Commands {
 
     /// Show, fetch or stage the runtime Recipe runs recipes in (Ginux and its image)
     #[command(
-        after_help = "Examples:\n  recipe runtime status\n  recipe runtime fetch\n  recipe runtime stage --root ./pkg --launcher ./ginux --reference oci:NAME@sha256:DIGEST --catalog ./recipes\n\nThe image is downloaded on first use when it is not on this computer; 'fetch'\ndoes it now. RECIPE_RUNTIME_URL names another address ({digest} and {short} are\nreplaced). GINUX_ROOTFS selects a local image; its SHA-256 must match."
+        after_help = "Examples:\n  recipe runtime status\n  recipe runtime fetch\n  recipe runtime stage --root ./pkg --launcher ./ginux --reference oci:NAME@sha256:DIGEST --catalog ./recipes\n\nRecipe has two runtime images: the full compiler image, and the minimal image a\nrecipe with NEEDS.runtime \"minimal\" runs in (without one named, it runs in the\nfull image). An image is downloaded on first use when it is not on this\ncomputer; 'fetch' does it now. RECIPE_RUNTIME_URL names another address ({digest}\nand {short} are replaced). GINUX_ROOTFS and GINUX_MINIMAL_ROOTFS select local\nimages; their SHA-256 must match GINUX_ROOT and GINUX_MINIMAL_ROOT."
     )]
     Runtime {
         #[command(subcommand)]
@@ -411,9 +411,9 @@ pub(crate) enum SourceCommands {
 
 #[derive(Subcommand)]
 pub(crate) enum RuntimeCommands {
-    /// Show the selected runtime image, the launcher and the shipped sources
+    /// Show the selected runtime images, the launcher and the shipped sources
     Status,
-    /// Download the selected runtime image now, unless it is already here
+    /// Download the selected runtime images now, unless they are already here
     Fetch,
     /// Delete the downloaded runtime image and its unpacked copies; it is downloaded again when a recipe needs it
     Remove,
@@ -434,6 +434,13 @@ pub(crate) enum RuntimeCommands {
         /// The image tar to ship; without it packages download the image on first use.
         #[arg(long, value_name = "FILE")]
         image: Option<PathBuf>,
+        /// The minimal runtime image reference, oci:NAME@sha256:DIGEST, which a
+        /// recipe with NEEDS.runtime "minimal" runs in (a root's effects recipe).
+        #[arg(long, value_name = "REF")]
+        minimal_reference: Option<String>,
+        /// The minimal image tar to ship; without it packages download it on first use.
+        #[arg(long, value_name = "FILE", requires = "minimal_reference")]
+        minimal_image: Option<PathBuf>,
         /// The official recipes folder, with its index.json.
         #[arg(long, value_name = "DIR")]
         catalog: PathBuf,

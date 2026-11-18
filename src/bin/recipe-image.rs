@@ -2,7 +2,7 @@
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -43,6 +43,13 @@ struct Manifest {
     rust_additions: Vec<Input>,
     rust_components: Vec<String>,
     rpms: Vec<Input>,
+    /// The base members the image keeps, each named exactly. Empty keeps the
+    /// whole base. Otherwise the directories above each kept member and the
+    /// targets of kept links (followed through links, as the kernel would)
+    /// are kept too, and every other base member is left out. A name the base
+    /// does not have fails the image.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    keep: Vec<String>,
 }
 struct Addition {
     header: tar::Header,
@@ -63,6 +70,7 @@ fn main() -> Result<()> {
         || manifest.rpms.len() > 64
         || manifest.rust_additions.len() > 16
         || manifest.rust_components.len() > 16
+        || manifest.keep.len() > 4096
         || (manifest.rust.is_some() || !manifest.rust_additions.is_empty())
             != !manifest.rust_components.is_empty()
     {
@@ -90,6 +98,11 @@ fn main() -> Result<()> {
     let input_root = cli.input_root.canonicalize()?;
     let mut total = 0;
     let base = snapshot(&input_root, &manifest.base, scratch.path(), &mut total)?;
+    let kept = if manifest.keep.is_empty() {
+        None
+    } else {
+        Some(kept_members(&base, &manifest.keep)?)
+    };
     let mut additions = BTreeMap::new();
     let mut expanded = 0;
     for input in &manifest.rpms {
@@ -179,7 +192,8 @@ fn main() -> Result<()> {
         if !seen.insert(path.clone()) {
             bail!("duplicate base image entry: {path}");
         }
-        if additions.contains_key(&path) {
+        if additions.contains_key(&path) || kept.as_ref().is_some_and(|kept| !kept.contains(&path))
+        {
             continue;
         }
         let mut header = entry.header().clone();
@@ -258,6 +272,104 @@ fn main() -> Result<()> {
     File::open(parent)?.sync_all()?;
     println!("{}", serde_json::to_string_pretty(&record)?);
     Ok(())
+}
+
+/// The base members a `keep` list selects: each named member, every link
+/// met on the way to it and the member each link leads to, the target of a
+/// kept hardlink, and the directories above all of them.
+fn kept_members(base: &tempfile::NamedTempFile, keep: &[String]) -> Result<HashSet<String>> {
+    // Each base member's type and link target.
+    let mut members = HashMap::new();
+    for entry in tar::Archive::new(base.reopen()?).entries()? {
+        let entry = entry?;
+        let path = safe_name(&entry.path()?)?;
+        if path.is_empty() {
+            continue;
+        }
+        let link = entry.link_name()?.map(|link| link.into_owned());
+        members.insert(path, (entry.header().entry_type(), link));
+    }
+    let mut kept = HashSet::new();
+    let mut pending = keep
+        .iter()
+        .map(|name| safe_name(Path::new(name)))
+        .collect::<Result<Vec<_>>>()?;
+    while let Some(name) = pending.pop() {
+        if name.is_empty() {
+            bail!("the keep list names the image root");
+        }
+        let path = resolve(&members, &name, &mut kept)?;
+        let (kind, link) = &members[&path];
+        if kind.is_hard_link() {
+            let target = safe_name(link.as_deref().context("hardlink without a target")?)?;
+            if !kept.contains(&target) {
+                pending.push(target);
+            }
+        }
+        kept.insert(path);
+    }
+    // The directories above every kept member.
+    for path in kept.clone() {
+        let mut parent = Path::new(&path).parent();
+        while let Some(directory) = parent.filter(|p| !p.as_os_str().is_empty()) {
+            kept.insert(
+                directory
+                    .to_str()
+                    .context("non-UTF-8 archive path")?
+                    .to_owned(),
+            );
+            parent = directory.parent();
+        }
+    }
+    Ok(kept)
+}
+
+/// The base member `name` leads to, following links in every component as
+/// the kernel would inside the image; each link met is added to `kept`.
+fn resolve(
+    members: &HashMap<String, (tar::EntryType, Option<PathBuf>)>,
+    name: &str,
+    kept: &mut HashSet<String>,
+) -> Result<String> {
+    let mut hops = 0;
+    let mut remaining: Vec<String> = name.split('/').rev().map(str::to_owned).collect();
+    let mut current: Vec<String> = Vec::new();
+    while let Some(component) = remaining.pop() {
+        match component.as_str() {
+            "" | "." => continue,
+            ".." => {
+                current.pop();
+                continue;
+            }
+            _ => {}
+        }
+        current.push(component);
+        let path = current.join("/");
+        let (kind, link) = members.get(&path).with_context(|| {
+            format!(
+                "the keep list leads to {path} (from {name}), which the base image does not have"
+            )
+        })?;
+        if !kind.is_symlink() {
+            continue;
+        }
+        hops += 1;
+        if hops > 40 {
+            bail!("too many links resolving {name} in the base image");
+        }
+        kept.insert(path);
+        let target = link.as_deref().context("symlink without a target")?;
+        let target = target.to_str().context("non-UTF-8 link target")?;
+        current.pop();
+        if target.starts_with('/') {
+            current.clear();
+        }
+        remaining.extend(target.split('/').rev().map(str::to_owned));
+    }
+    if current.is_empty() {
+        bail!("{name} leads to the image root");
+    }
+    Ok(current.join("/"))
 }
 
 fn snapshot(

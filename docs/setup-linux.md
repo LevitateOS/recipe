@@ -133,9 +133,18 @@ If `GINUX_ROOTFS` is not set, Recipe looks for the tar its install ships, then i
 `$XDG_CACHE_HOME/recipe/images/<digest>.tar`, and downloads it there when it is absent
 (`recipe runtime fetch`; `RECIPE_RUNTIME_URL` names another address).
 
+A recipe with `NEEDS.runtime: "minimal"` (a root's effects recipe) runs in the minimal
+runtime image (`bootstrap/README.md`, "Minimal runtime image"). Select it the same way,
+or leave it out and such a recipe runs in the image above:
+
+```sh
+export GINUX_MINIMAL_ROOTFS=/absolute/path/to/prepared-image-minimal/rootfs.tar
+export GINUX_MINIMAL_ROOT="oci:recipe-minimal@sha256:$(jq -er .sha256 /absolute/path/to/prepared-image-minimal/provenance.json)"
+```
+
 Each run unpacks the image into a private scratch directory on disk,
 `~/.cache/recipe/scratch` (`/root/.cache/recipe/scratch` for root). It needs
-about 1.3 GB per run. Set `RECIPE_SCRATCH_DIR` to an absolute path to use
+about 1.3 GB per run (about 8 MB for a run in the minimal image). Set `RECIPE_SCRATCH_DIR` to an absolute path to use
 another disk; it wins over `TMPDIR`, which, when set, keeps `$TMPDIR/recipe-scratch-<uid>`. Published
 outputs go to `<state-dir>/exports`, not into the current directory.
 
