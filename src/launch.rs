@@ -247,7 +247,7 @@ fn ensure_open_file_limit(storage_max_objects: u64) {
     if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
         return;
     }
-    let hard = limit.rlim_max as u64;
+    let hard = limit.rlim_max;
     if hard >= needed {
         return;
     }
