@@ -383,7 +383,8 @@ fn apply(cli: &mut Cli, folder: &Path) -> Result<()> {
         unpacked.clone()
     };
     let saved_path = cli.recipes_path.replace(recipes.clone());
-    let receipt = system::read_receipt(&root)?;
+    // Read once after the base: each write hands on the receipt it wrote.
+    let mut receipt = system::read_receipt(&root)?;
     let context = if target.ab.is_some() {
         "other-root"
     } else {
@@ -407,17 +408,28 @@ fn apply(cli: &mut Cli, folder: &Path) -> Result<()> {
         match write_into(
             cli,
             &root,
+            &receipt,
             &target.state_root,
             &std::fs::canonicalize(&path)?,
             &args,
             context,
         ) {
-            Ok(w) => {
+            Ok(mut w) => {
+                if let Some(wrote) = w.receipt.take() {
+                    receipt = wrote;
+                }
                 seen.extend(w.expects.keys().cloned());
                 seen.extend(w.present.iter().cloned());
                 written.push(w);
             }
-            Err(e) => failed.push((name, format!("{e:#}"))),
+            Err(e) => {
+                failed.push((name, format!("{e:#}")));
+                // A group can fail after its receipt was written (its seeds,
+                // discarding the producer's outputs, the flush that follows
+                // the rename): the next group writes on the receipt on the
+                // disk, not on the one from before.
+                receipt = system::read_receipt(&root)?;
+            }
         }
     }
     cli.recipes_path = saved_path;
@@ -435,12 +447,12 @@ fn apply(cli: &mut Cli, folder: &Path) -> Result<()> {
     // 3. The effects, once.
     step(&mut record, "effects")?;
     step_event(cli, 4, "Rebuilding the root's caches");
-    let effects = effects(cli, &root);
+    let mut effects = effects(cli, &root, &receipt);
     // A change waiting in Recipe's A/B record for a package the release has
     // just replaced is done with: written again after a copy, it would bring
     // back the older recipe.
     if target.ab.is_some() {
-        let after = system::read_receipt(&root)?;
+        let after = effects.receipt.take().unwrap_or(receipt);
         let mut changes = load_record()?;
         let before = changes.changes.len();
         changes.changes.retain(|c| {

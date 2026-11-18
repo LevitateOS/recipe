@@ -15,9 +15,10 @@ use super::PreparedInvocation;
 
 const MAX_WORKER_BYTES: u64 = 512 * 1024 * 1024;
 
-/// Verified image bytes owned by one command's sequential dependency graph.
-/// Only this anonymous archive and the verified cache made from it
-/// (`image_cache`) are reused; every domain gets a fresh root.
+/// Verified image bytes owned by one command's sequential dependency graph,
+/// made where an image cache is built from them (`image_cache`). Only this
+/// anonymous archive and the verified cache made from it are reused; every
+/// domain gets a fresh root.
 pub(crate) struct VerifiedImage {
     root_reference: String,
     snapshot: File,
@@ -47,6 +48,62 @@ impl VerifiedImage {
             root_reference: root_reference.to_owned(),
             snapshot,
         })
+    }
+}
+
+/// Unpack the image `root_reference` into the new, private, empty `root`,
+/// hashing every byte as it is read instead of first copying the archive to a
+/// verified snapshot (`VerifiedImage`). On a filesystem without reflinks that
+/// snapshot is a second full copy of the image written to the disk for every
+/// root. The root is still only made of verified bytes when it is handed
+/// over: an archive that does not hash to the pinned digest (read to its
+/// end) fails here, before any domain starts, and `root` is removed with its
+/// invocation's directory. Each member is validated as it is unpacked either
+/// way (`unpack_image`).
+fn unpack_verified(root_reference: &str, root: &Path) -> Result<()> {
+    let digest = crate::runtime::root_digest(root_reference)?;
+    let (_, archive) = crate::runtime::open_rootfs(root_reference).with_context(|| {
+        format!(
+            "cannot open the Ginux rootfs image; set GINUX_ROOTFS to the assembled tar matching {root_reference}"
+        )
+    })?;
+    let mut hashed = Hashed {
+        input: std::io::BufReader::with_capacity(1 << 20, archive),
+        hash: sha2::Sha256::default(),
+        count: 0,
+    };
+    let unpacked = unpack_image(&mut hashed, root);
+    crate::cancellation::check()?;
+    // The rest of the archive after its last member (the end blocks and any
+    // padding) counts as well. An archive that is not the pinned one is
+    // reported as such, whatever its unpacking made of it.
+    std::io::copy(&mut hashed, &mut std::io::sink())?;
+    let actual = hex::encode(sha2::Digest::finalize(hashed.hash));
+    if actual != digest {
+        bail!("Ginux rootfs digest mismatch: expected {digest}, got {actual}");
+    }
+    unpacked
+}
+
+/// A reader that hashes what it reads, bounded like a snapshot of the image.
+struct Hashed<R> {
+    input: R,
+    hash: sha2::Sha256,
+    count: u64,
+}
+
+impl<R: Read> Read for Hashed<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.input.read(buffer)?;
+        self.count += read as u64;
+        if self.count > crate::image::MAX_ARCHIVE_BYTES {
+            return Err(std::io::Error::other(format!(
+                "the rootfs image exceeds its bound of {} bytes",
+                crate::image::MAX_ARCHIVE_BYTES
+            )));
+        }
+        sha2::Digest::update(&mut self.hash, &buffer[..read]);
+        Ok(read)
     }
 }
 
@@ -102,13 +159,23 @@ pub(crate) fn prepare_root(
         binds: Vec::new(),
     };
     // A clone of the verified image's cached tree where the filesystem can
-    // clone; otherwise the verified image unpacked here (see image_cache).
+    // clone; otherwise the image unpacked here and verified as it unpacks
+    // (see image_cache).
     let unpacked = !super::image_cache::populate(&invocation.root_reference, image, root.path())?;
     if unpacked {
-        unpack_image(
-            verified_snapshot(image, &invocation.root_reference)?,
-            root.path(),
-        )?;
+        // Verified bytes already at hand (the cache's build made them) are
+        // unpacked as they are; otherwise the image is hashed as it unpacks.
+        if image
+            .as_ref()
+            .is_some_and(|image| image.root_reference == invocation.root_reference)
+        {
+            unpack_image(
+                verified_snapshot(image, &invocation.root_reference)?,
+                root.path(),
+            )?;
+        } else {
+            unpack_verified(&invocation.root_reference, root.path())?;
+        }
     }
 
     super::network::install_hosts(&invocation.network, root.path())?;
@@ -335,7 +402,7 @@ fn ensure_parents(root: &Path, relative: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn unpack_image(snapshot: &mut File, root: &Path) -> Result<()> {
+pub(super) fn unpack_image(snapshot: impl Read, root: &Path) -> Result<()> {
     let mut archive = tar::Archive::new(snapshot);
     let mut validator = crate::image::Validator::default();
     let mut directories = HashMap::new();

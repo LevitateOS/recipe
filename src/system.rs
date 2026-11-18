@@ -40,6 +40,8 @@ pub struct Package {
     pub architecture: String,
     pub target: String,
     pub dependencies: Vec<String>,
+    /// In the receipt as compact records ([`file_records`]).
+    #[serde(with = "file_records")]
     pub files: BTreeMap<String, Entry>,
     /// Accounts this package's changes created in the root (kept when the
     /// package is removed).
@@ -52,24 +54,44 @@ pub struct Receipt {
     pub schema_version: u32,
     pub packages: BTreeMap<String, Package>,
 }
+/// The receipt's format: version 2 records each package's files compactly
+/// ([`file_records`]).
+const SCHEMA_VERSION: u32 = 2;
 impl Default for Receipt {
     fn default() -> Self {
         Self {
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION,
             packages: BTreeMap::new(),
         }
     }
 }
+/// A receipt of another schema is not read (Recipe keeps one form).
+fn older_schema(found: u32) -> anyhow::Error {
+    anyhow::anyhow!(
+        "this system receipt is schema {found}, written by an older Recipe, which this Recipe (schema {SCHEMA_VERSION}) does not read: install the system again from a current image"
+    )
+}
 impl Receipt {
     pub fn parse(text: Option<&str>) -> Result<Self> {
         let result: Self = match text {
-            Some(t) => serde_json::from_str(t)?,
+            Some(t) => serde_json::from_str(t).map_err(|error| {
+                // Another schema's layout fails to parse as this one: say so.
+                #[derive(Deserialize)]
+                struct Schema {
+                    schema_version: u32,
+                }
+                match serde_json::from_str::<Schema>(t) {
+                    Ok(other) if other.schema_version != SCHEMA_VERSION => {
+                        older_schema(other.schema_version)
+                    }
+                    _ => error.into(),
+                }
+            })?,
             None => Self::default(),
         };
-        ensure!(
-            result.schema_version == 1,
-            "unsupported system selection receipt"
-        );
+        if result.schema_version != SCHEMA_VERSION {
+            return Err(older_schema(result.schema_version));
+        }
         ensure!(result.packages.len() <= 4096, "too many selected packages");
         for (name, p) in &result.packages {
             valid_name(name)?;
@@ -105,6 +127,263 @@ impl Receipt {
             .collect()
     }
 }
+/// A package's files in the receipt, one array per path in path order:
+///
+/// `[shared, rest, kind, value..., extra?]`
+///
+/// - `shared`: how many leading bytes the path shares with the path before it
+///   (front coding: a root's paths share long prefixes), `rest` the remainder;
+/// - `kind`: `f` file, `l` symlink, `h` hardlink, `d` directory, followed by the
+///   mode in octal unless it is the kind's usual one (files and hardlinks 644,
+///   symlinks 777, directories 755);
+/// - values: a file's SHA-256 (hex, or null); a symlink's target; a hardlink's
+///   target, then its SHA-256 (or null); a directory has none;
+/// - `extra`, only when needed: `uid` and `gid` when not 0, `user`, `group`,
+///   `xattrs`, and a `link` or `sha256` the kind does not carry above.
+///
+/// Less than half the size of one object per path (12.1 MB to 5.5 MB on an
+/// AcornOS desktop), with the same entries.
+pub(crate) mod file_records {
+    use super::Entry;
+    use serde::de::{self, SeqAccess, Visitor};
+    use serde::ser::SerializeSeq;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::BTreeMap;
+
+    #[derive(Serialize, Deserialize, Default)]
+    #[serde(deny_unknown_fields)]
+    struct Extra {
+        #[serde(default, skip_serializing_if = "is_zero")]
+        uid: u32,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        gid: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group: Option<String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        xattrs: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        link: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sha256: Option<String>,
+    }
+
+    fn is_zero(value: &u32) -> bool {
+        *value == 0
+    }
+
+    /// The code and usual mode of a kind.
+    fn code(kind: &str) -> Option<(char, u32)> {
+        Some(match kind {
+            "file" => ('f', 0o644),
+            "symlink" => ('l', 0o777),
+            "hardlink" => ('h', 0o644),
+            "dir" => ('d', 0o755),
+            _ => return None,
+        })
+    }
+
+    fn kind(code: char) -> Option<(&'static str, u32)> {
+        Some(match code {
+            'f' => ("file", 0o644),
+            'l' => ("symlink", 0o777),
+            'h' => ("hardlink", 0o644),
+            'd' => ("dir", 0o755),
+            _ => return None,
+        })
+    }
+
+    struct Record<'a> {
+        shared: usize,
+        path: &'a str,
+        entry: &'a Entry,
+    }
+
+    impl Serialize for Record<'_> {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::Error;
+            let entry = self.entry;
+            let (code, usual) = code(&entry.kind)
+                .ok_or_else(|| S::Error::custom(format!("unknown kind {}", entry.kind)))?;
+            let kind = if entry.mode == usual {
+                code.to_string()
+            } else {
+                format!("{code}{:o}", entry.mode)
+            };
+            // What the kind's values do not carry goes into `extra`.
+            let link = entry.link.as_ref().filter(|_| !matches!(code, 'l' | 'h'));
+            let sha256 = entry.sha256.as_ref().filter(|_| !matches!(code, 'f' | 'h'));
+            let plain = entry.uid == 0
+                && entry.gid == 0
+                && entry.user.is_none()
+                && entry.group.is_none()
+                && entry.xattrs.is_empty()
+                && link.is_none()
+                && sha256.is_none();
+            let mut seq = serializer.serialize_seq(None)?;
+            seq.serialize_element(&self.shared)?;
+            seq.serialize_element(&self.path[self.shared..])?;
+            seq.serialize_element(&kind)?;
+            match code {
+                'f' => seq.serialize_element(&entry.sha256)?,
+                'l' => seq.serialize_element(&entry.link)?,
+                'h' => {
+                    seq.serialize_element(&entry.link)?;
+                    seq.serialize_element(&entry.sha256)?;
+                }
+                _ => {}
+            }
+            if !plain {
+                seq.serialize_element(&Extra {
+                    uid: entry.uid,
+                    gid: entry.gid,
+                    user: entry.user.clone(),
+                    group: entry.group.clone(),
+                    xattrs: entry.xattrs.clone(),
+                    link: link.cloned(),
+                    sha256: sha256.cloned(),
+                })?;
+            }
+            seq.end()
+        }
+    }
+
+    pub(crate) fn serialize<S: Serializer>(
+        files: &BTreeMap<String, Entry>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(files.len()))?;
+        let mut previous = "";
+        for (path, entry) in files {
+            let mut shared = previous
+                .bytes()
+                .zip(path.bytes())
+                .take_while(|(a, b)| a == b)
+                .count();
+            while !path.is_char_boundary(shared) {
+                shared -= 1;
+            }
+            seq.serialize_element(&Record {
+                shared,
+                path,
+                entry,
+            })?;
+            previous = path;
+        }
+        seq.end()
+    }
+
+    /// One record, read against the path before it.
+    struct Decoded {
+        shared: usize,
+        rest: String,
+        entry: Entry,
+    }
+
+    impl<'de> Deserialize<'de> for Decoded {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            struct RecordVisitor;
+            impl<'de> Visitor<'de> for RecordVisitor {
+                type Value = Decoded;
+                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    f.write_str("a receipt file record")
+                }
+                fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Decoded, A::Error> {
+                    let missing = || de::Error::custom("truncated receipt file record");
+                    let shared: usize = seq.next_element()?.ok_or_else(missing)?;
+                    let rest: String = seq.next_element()?.ok_or_else(missing)?;
+                    let code: String = seq.next_element()?.ok_or_else(missing)?;
+                    let mut chars = code.chars();
+                    let (kind, usual) = chars
+                        .next()
+                        .and_then(kind)
+                        .ok_or_else(|| de::Error::custom(format!("unknown kind {code}")))?;
+                    let digits = chars.as_str();
+                    let mode = if digits.is_empty() {
+                        usual
+                    } else {
+                        u32::from_str_radix(digits, 8)
+                            .map_err(|_| de::Error::custom(format!("bad mode {code}")))?
+                    };
+                    let (mut link, mut sha256) = (None, None);
+                    match kind {
+                        "file" => {
+                            sha256 = seq.next_element::<Option<String>>()?.ok_or_else(missing)?
+                        }
+                        "symlink" => {
+                            link = seq.next_element::<Option<String>>()?.ok_or_else(missing)?
+                        }
+                        "hardlink" => {
+                            link = seq.next_element::<Option<String>>()?.ok_or_else(missing)?;
+                            sha256 = seq.next_element::<Option<String>>()?.ok_or_else(missing)?;
+                        }
+                        _ => {}
+                    }
+                    let extra: Extra = seq.next_element()?.unwrap_or_default();
+                    link = link.or(extra.link);
+                    sha256 = sha256.or(extra.sha256);
+                    if seq.next_element::<de::IgnoredAny>()?.is_some() {
+                        return Err(de::Error::custom("overlong receipt file record"));
+                    }
+                    Ok(Decoded {
+                        shared,
+                        rest,
+                        entry: Entry {
+                            kind: kind.to_owned(),
+                            mode,
+                            uid: extra.uid,
+                            gid: extra.gid,
+                            user: extra.user,
+                            group: extra.group,
+                            xattrs: extra.xattrs,
+                            link,
+                            sha256,
+                        },
+                    })
+                }
+            }
+            deserializer.deserialize_seq(RecordVisitor)
+        }
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<String, Entry>, D::Error> {
+        struct FilesVisitor;
+        impl<'de> Visitor<'de> for FilesVisitor {
+            type Value = BTreeMap<String, Entry>;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("receipt file records")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut files = BTreeMap::new();
+                let mut previous = String::new();
+                while let Some(record) = seq.next_element::<Decoded>()? {
+                    if record.shared > previous.len() || !previous.is_char_boundary(record.shared) {
+                        return Err(de::Error::custom("receipt file record shares too much"));
+                    }
+                    previous.truncate(record.shared);
+                    previous.push_str(&record.rest);
+                    // In path order, each path once: what serializing a map
+                    // writes.
+                    if files
+                        .last_key_value()
+                        .is_some_and(|(last, _)| *last >= previous)
+                    {
+                        return Err(de::Error::custom(format!(
+                            "receipt file records out of order at {previous}"
+                        )));
+                    }
+                    files.insert(previous.clone(), record.entry);
+                }
+                Ok(files)
+            }
+        }
+        deserializer.deserialize_seq(FilesVisitor)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Payload {
     pub package: Package,
@@ -129,11 +408,23 @@ fn valid_name(name: &str) -> Result<()> {
     );
     Ok(())
 }
+/// Checked for every path of every package each time a receipt is read, so
+/// it allocates nothing: a normalized relative path (what
+/// [`target::relative`] leaves unchanged) outside the shared and reserved
+/// places.
 pub fn allowed(name: &str) -> Result<()> {
     ensure!(
-        !name.is_empty() && target::relative(Path::new(name))? == Path::new(name),
+        !name.is_empty()
+            && name.len() <= 4096
+            && name
+                .split('/')
+                .all(|part| !part.is_empty() && part != "." && part != ".."),
         "invalid system path"
     );
+    let under = |place: &str| {
+        name.strip_prefix(place)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    };
     ensure!(
         ![
             "boot",
@@ -148,13 +439,15 @@ pub fn allowed(name: &str) -> Result<()> {
             "lost+found"
         ]
         .iter()
-        .any(|p| name == *p || name.starts_with(&format!("{p}/"))),
+        .any(|place| under(place)),
         "system package cannot own shared/runtime data: {name}"
     );
     ensure!(
         !name.starts_with("usr/lib/recab/")
             && name != RECEIPT
-            && name != format!("{PROFILE}/.installed.json")
+            && name
+                .strip_prefix(PROFILE)
+                .is_none_or(|rest| rest != "/.installed.json")
             && name != "etc/fstab",
         "reserved system identity/receipt path: {name}"
     );
@@ -1377,6 +1670,10 @@ pub fn apply(root: &Path, payloads: &[Payload], plan: &Plan) -> Result<()> {
             let _ = fs::remove_dir(&path);
         }
     }
+    // The new receipt is written beside the old one first, so that the one
+    // flush of the filesystem makes it durable with everything it records;
+    // only then does it replace the old one.
+    let receipt = stage_receipt(root, &plan.receipt)?;
     let flushing = std::time::Instant::now();
     sync_root(root)?;
     if std::env::var_os("RECIPE_TIMING").is_some() {
@@ -1385,19 +1682,39 @@ pub fn apply(root: &Path, payloads: &[Payload], plan: &Plan) -> Result<()> {
             flushing.elapsed().as_secs_f64()
         );
     }
-    write_receipt(root, &plan.receipt)
+    receipt.commit()
 }
 
 /// Record `receipt` as the system receipt of the root at `root`, durably.
 pub fn write_receipt(root: &Path, receipt: &Receipt) -> Result<()> {
+    let staged = stage_receipt(root, receipt)?;
+    fs::File::open(&staged.temp)?.sync_all()?;
+    staged.commit()
+}
+
+/// A new receipt written beside the root's receipt, not yet in its place.
+struct StagedReceipt {
+    temp: PathBuf,
+    path: PathBuf,
+}
+
+/// Write `receipt` beside the receipt of the root at `root`, unflushed.
+fn stage_receipt(root: &Path, receipt: &Receipt) -> Result<StagedReceipt> {
     let path = confined(root, RECEIPT, true)?;
     let temp = path.with_extension("json.new");
     let mut out = fs::File::create(&temp)?;
     out.write_all(&serde_json::to_vec(receipt)?)?;
-    out.sync_all()?;
-    fs::rename(temp, &path)?;
-    fs::File::open(path.parent().context("receipt has no directory")?)?.sync_all()?;
-    Ok(())
+    Ok(StagedReceipt { temp, path })
+}
+
+impl StagedReceipt {
+    /// Put the staged receipt in place, durably. Its bytes must be on the
+    /// disk already (flushed by the caller).
+    fn commit(self) -> Result<()> {
+        fs::rename(&self.temp, &self.path)?;
+        fs::File::open(self.path.parent().context("receipt has no directory")?)?.sync_all()?;
+        Ok(())
+    }
 }
 
 /// The glibc dynamic loader whose presence makes a root a glibc root (the same

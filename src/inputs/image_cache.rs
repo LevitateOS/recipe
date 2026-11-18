@@ -15,7 +15,9 @@
 //!   unpacked bytes that never reached the disk; instead of an fsync of the
 //!   whole tree, a cache from another boot is discarded and rebuilt.
 //! - Without reflinks (tmpfs, ext4, another filesystem) there is no cache and
-//!   every root is unpacked from the verified image, as before.
+//!   every root is unpacked from the image, every byte hashed against the
+//!   pinned digest as it is read; a root whose image does not match fails
+//!   before any domain starts (`root::unpack_verified`).
 //!
 //! One lock orders the pool's caches: cloning holds it shared; eviction and
 //! the rename that publishes a cache hold it exclusively, briefly, so a cache

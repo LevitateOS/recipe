@@ -226,12 +226,19 @@ pub(super) fn settle(
                     change.package, roots.other_name
                 );
                 let again = if change.action == "remove" {
-                    remove_package(roots, &change.package, &change.producer_args)
+                    remove_package(roots, other, &change.package, &change.producer_args)
                         .map(|_| change.clone())
                 } else {
                     let recipe = change.recipe.clone().context("the record has no recipe")?;
-                    install_package(cli, roots, &recipe, &change.producer_args, &change.action)
-                        .map(|(done, _)| done)
+                    install_package(
+                        cli,
+                        roots,
+                        &other,
+                        &recipe,
+                        &change.producer_args,
+                        &change.action,
+                    )
+                    .map(|(done, _)| done)
                 };
                 match again {
                     Ok(done) => {
@@ -252,7 +259,10 @@ pub(super) fn settle(
     // written into again ends as every system change does, once, after all
     // of them (the effects recipe unless --no-effects, then the library
     // cache). A failure leaves the parts written; the command goes on.
-    if rewrote && let Err(error) = effects(cli, &roots.other).result() {
+    if rewrote
+        && let Err(error) = system::read_receipt(&roots.other)
+            .and_then(|held| effects(cli, &roots.other, &held).result())
+    {
         eprintln!("recipe: warning: {error:#}");
     }
     Ok(failed)
@@ -270,22 +280,24 @@ fn remember(change: Change) -> Result<()> {
 fn produce(
     cli: &Cli,
     root: &Path,
+    held: &Receipt,
     recipe: &Path,
     args: &[String],
     context: &str,
 ) -> Result<serde_json::Value> {
-    produce_with(cli, root, recipe, args, context, true)
+    produce_with(cli, root, Some(held), recipe, args, context)
 }
 
-/// `produce`; with `skip_present`, a recipe the root holds at the same digest
-/// and version is not produced again (the effects recipe always runs).
+/// `produce`; with `held` (the root's receipt), a recipe the root holds at
+/// the same digest and version is not produced again; without, everything
+/// runs (the effects recipe always runs).
 fn produce_with(
     cli: &Cli,
     root: &Path,
+    held: Option<&Receipt>,
     recipe: &Path,
     args: &[String],
     context: &str,
-    skip_present: bool,
 ) -> Result<serde_json::Value> {
     let (base, state, build) = producer_dirs(cli)?;
     std::fs::create_dir_all(&base)?;
@@ -298,16 +310,12 @@ fn produce_with(
     // What the root holds, so the producer skips a recipe (or dependency) it
     // already holds at the same recipe digest and version.
     let present = base.join("present.json");
-    let mut held = system::read_receipt(root)?;
-    if !skip_present {
-        held.packages.clear();
-    }
     std::fs::write(
         &present,
         serde_json::to_vec(
             &held
-                .packages
-                .values()
+                .into_iter()
+                .flat_map(|held| held.packages.values())
                 .map(|p| {
                     serde_json::json!({"name": p.name, "version": p.version,
                         "recipe_digest": p.recipe_digest})
@@ -490,6 +498,8 @@ pub(super) struct Written {
     /// its outputs were published (decision 23), and the published outputs
     /// once they were written into the root.
     pub(super) freed: u64,
+    /// The root's receipt as this change wrote it; None when it wrote none.
+    pub(super) receipt: Option<Receipt>,
 }
 
 impl Written {
@@ -504,9 +514,13 @@ impl Written {
             seeded: Vec::new(),
             present: Vec::new(),
             freed: 0,
+            receipt: None,
         };
         for w in all {
             merged.freed += w.freed;
+            if w.receipt.is_some() {
+                merged.receipt = w.receipt;
+            }
             merged.expects.extend(w.expects);
             merged.kept.extend(w.kept);
             merged.beside.extend(w.beside);
@@ -535,16 +549,20 @@ impl Written {
 
 /// Produce `recipe` and write it, with the runtime dependencies it brings, into
 /// the root at `root`.
+/// `held` is the root's receipt, read once for the whole change.
 pub(super) fn write_into(
     cli: &Cli,
     root: &Path,
+    held: &Receipt,
     state_root: &Path,
     recipe: &Path,
     args: &[String],
     context: &str,
 ) -> Result<Written> {
-    let produced = timed("produce", || produce(cli, root, recipe, args, context))?;
-    let written = write_produced(cli, root, state_root, &produced, context);
+    let produced = timed("produce", || {
+        produce(cli, root, held, recipe, args, context)
+    })?;
+    let written = write_produced(cli, root, held, state_root, &produced, context);
     if written.is_err() {
         // Nothing takes the producer's outputs any more: they go, and the
         // next attempt produces them again.
@@ -559,6 +577,7 @@ pub(super) fn write_into(
 fn write_produced(
     cli: &Cli,
     root: &Path,
+    old: &Receipt,
     state_root: &Path,
     produced: &serde_json::Value,
     context: &str,
@@ -588,6 +607,7 @@ fn write_produced(
             seeded: Vec::new(),
             present,
             freed: producer_freed,
+            receipt: None,
         });
     }
     let mut payloads = system::payloads(produced, context)?;
@@ -599,9 +619,8 @@ fn write_produced(
             std::env::consts::ARCH
         );
     }
-    let old = timed("read receipt", || system::read_receipt(root))?;
-    let plan = timed("accounts, observe, reconcile", || {
-        system::plan(root, &old, &mut payloads, None)
+    let mut plan = timed("accounts, observe, reconcile", || {
+        system::plan(root, old, &mut payloads, None)
     })?;
     timed("apply", || system::apply(root, &payloads, &plan))?;
     let seeded = timed("seeds", || system::seed(state_root, &payloads))?;
@@ -640,12 +659,12 @@ fn write_produced(
         seeded,
         present,
         freed: producer_freed + discarded,
+        receipt: Some(std::mem::take(&mut plan.receipt)),
     })
 }
 
-/// Remove the package `name` from the root at `root`.
-fn remove_from(root: &Path, name: &str) -> Result<Written> {
-    let old = system::read_receipt(root)?;
+/// Remove the package `name` from the root at `root`, whose receipt is `old`.
+fn remove_from(root: &Path, name: &str, old: Receipt) -> Result<Written> {
     let name = old.find(Path::new(name))?.name.clone();
     anyhow::ensure!(
         name != EFFECTS_PACKAGE,
@@ -657,7 +676,7 @@ fn remove_from(root: &Path, name: &str) -> Result<Written> {
         "{} keeps the modules of the kernel this system ran before its last update, which stays as the second boot entry; the next update gives them back to the base and removes them",
         system::PREVIOUS_KERNEL_PACKAGE
     );
-    let plan = system::plan(root, &old, &mut [], Some(&name))?;
+    let mut plan = system::plan(root, &old, &mut [], Some(&name))?;
     let had_session = has_session(root);
     system::apply(root, &[], &plan)?;
     tell(&plan, &[]);
@@ -675,6 +694,7 @@ fn remove_from(root: &Path, name: &str) -> Result<Written> {
         seeded: Vec::new(),
         present: Vec::new(),
         freed: 0,
+        receipt: Some(std::mem::take(&mut plan.receipt)),
     })
 }
 
@@ -696,12 +716,21 @@ fn has_session(root: &Path) -> bool {
 fn install_package(
     cli: &Cli,
     roots: &Roots,
+    held: &Receipt,
     recipe: &Path,
     args: &[String],
     action: &str,
 ) -> Result<(Change, Written)> {
     // The shared /var is the running system's: seeds go there, once.
-    let written = write_into(cli, &roots.other, &roots.booted, recipe, args, "other-root")?;
+    let written = write_into(
+        cli,
+        &roots.other,
+        held,
+        &roots.booted,
+        recipe,
+        args,
+        "other-root",
+    )?;
     if written.expects.is_empty() {
         eprintln!(
             "{} is in the other root ({}) already, from the same recipe; nothing was written.",
@@ -720,8 +749,13 @@ fn install_package(
     Ok((change, written))
 }
 
-fn remove_package(roots: &Roots, name: &str, args: &[String]) -> Result<(Change, Written)> {
-    let written = remove_from(&roots.other, name)?;
+fn remove_package(
+    roots: &Roots,
+    held: Receipt,
+    name: &str,
+    args: &[String],
+) -> Result<(Change, Written)> {
+    let written = remove_from(&roots.other, name, held)?;
     let change = Change {
         package: written.name.clone(),
         action: "remove".into(),
@@ -894,11 +928,13 @@ pub(crate) fn route(cli: &mut Cli) -> Result<bool> {
             Commands::List => return Ok(false),
             Commands::ApplyRelease { folder } => {
                 let folder = folder.clone();
+                let _change = change_lock(cli, true)?;
                 super::release_route::apply_release(cli, &folder)?;
                 return Ok(true);
             }
             Commands::RecordBase { release } => {
                 let release = release.clone();
+                let _change = change_lock(cli, true)?;
                 super::release_route::record_base(cli, &release)?;
                 return Ok(true);
             }
@@ -942,6 +978,15 @@ pub(crate) fn route(cli: &mut Cli) -> Result<bool> {
     }
     let recipe =
         command.context("--system supports install, update, remove, installed and state")?;
+    // A change waits for the one running; a report (installed, state) never
+    // waits: it takes the lock only to settle the other root below, and
+    // skips that while a change runs.
+    let reporting = matches!(cli.command, Commands::Installed | Commands::State { .. });
+    let _change = if reporting {
+        None
+    } else {
+        change_lock(cli, true)?
+    };
     if let Some(dir) = cli.root.clone() {
         // A root that is not running (an installer's target, an image tree).
         root_route(cli, &dir, "target", recipe)?;
@@ -956,7 +1001,28 @@ pub(crate) fn route(cli: &mut Cli) -> Result<bool> {
         return Ok(true);
     }
     let roots = roots()?;
-    let failed = settle(cli, &roots, skipped(&cli.command).as_deref())?;
+    // Settling writes the other root and the record: only under the lock,
+    // and a report skips it while a change holds the lock. A caller that
+    // cannot open the lock (it lies beside its own record, under its own
+    // package root) settles as it always did: its record is that caller's,
+    // and without one there is nothing to settle.
+    let (_report_lock, busy) = if reporting {
+        match change_lock(cli, false) {
+            Ok(Some(lock)) => (Some(lock), false),
+            Ok(None) => (None, true),
+            Err(_) => (None, false),
+        }
+    } else {
+        (None, false)
+    };
+    let failed = if busy {
+        eprintln!(
+            "A system change is running; this reports the roots as they are now, without first writing again what a copy wiped from the other root."
+        );
+        Vec::new()
+    } else {
+        settle(cli, &roots, skipped(&cli.command).as_deref())?
+    };
     let booted = system::read_receipt(&roots.booted)?;
     match &cli.command {
         Commands::Installed => report(cli, &roots, &booted, &failed)?,
@@ -971,6 +1037,35 @@ pub(crate) fn route(cli: &mut Cli) -> Result<bool> {
         }
     }
     Ok(true)
+}
+
+/// The lock that lets one command write system state at a time: a root's
+/// receipt (a change reads it once and writes it back as it changed it; a
+/// second writer in between would be lost from it), Recipe's A/B record and
+/// the system producer's state. Taken once per process, in [`route`], and
+/// held until the command ends. With `wait`, waits for the command holding
+/// it; without, returns None while one does.
+fn change_lock(cli: &Cli, wait: bool) -> Result<Option<std::fs::File>> {
+    use fs2::FileExt;
+    let (base, _, _) = producer_dirs(cli)?;
+    std::fs::create_dir_all(&base)?;
+    let lock = levitate_recipe::fsx::open_lease(&base.join("change.lock"), true)?;
+    if lock.try_lock_exclusive().is_ok() {
+        return Ok(Some(lock));
+    }
+    if !wait {
+        return Ok(None);
+    }
+    eprintln!("Waiting for another system change to finish...");
+    match lock.lock_exclusive() {
+        Ok(()) => Ok(Some(lock)),
+        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+            anyhow::bail!(
+                "interrupted while waiting for another system change to finish; nothing was changed"
+            )
+        }
+        Err(error) => Err(error).context("cannot lock the system change"),
+    }
 }
 
 /// A system change keeps no material: its producer's downloads and build
@@ -998,7 +1093,9 @@ fn stem(recipe: &Path) -> String {
 }
 
 fn change(cli: &Cli, roots: &Roots, booted: &Receipt, recipe: &Path) -> Result<()> {
-    let other = system::read_receipt(&roots.other)?;
+    // The other root's receipt is read once: each write hands on the receipt
+    // it wrote.
+    let mut other = system::read_receipt(&roots.other)?;
     let lacking = missing_in_other(booted, &other);
     if !lacking.is_empty() {
         eprintln!(
@@ -1051,15 +1148,20 @@ fn change(cli: &Cli, roots: &Roots, booted: &Receipt, recipe: &Path) -> Result<(
             .or_else(|_| other.find(Path::new(&stem(recipe))))
             .map(|p| p.name.clone())
             .unwrap_or_else(|_| stem(recipe));
-        let (done, written) = remove_package(roots, &name, &args)?;
+        let (done, mut written) = remove_package(roots, std::mem::take(&mut other), &name, &args)?;
+        if let Some(wrote) = written.receipt.take() {
+            other = wrote;
+        }
         all_written.push(written);
         done
     } else {
         let mut first = None;
         for recipe in std::iter::once(recipe.to_path_buf()).chain(more_recipes(cli)) {
-            let other = system::read_receipt(&roots.other)?;
             let path = resolve_for(cli, &recipe, action, &other, "the other root", &roots.other)?;
-            let (change, written) = install_package(cli, roots, &path, &args, action)?;
+            let (change, mut written) = install_package(cli, roots, &other, &path, &args, action)?;
+            if let Some(wrote) = written.receipt.take() {
+                other = wrote;
+            }
             all_names.extend(change.expects.keys().cloned());
             all_written.push(written);
             first.get_or_insert(change);
@@ -1069,12 +1171,12 @@ fn change(cli: &Cli, roots: &Roots, booted: &Receipt, recipe: &Path) -> Result<(
     if action == "remove" {
         all_names.extend(done.expects.keys().cloned());
     }
-    let effects = if action == "remove" || !all_names.is_empty() {
-        effects(cli, &roots.other)
+    let mut effects = if action == "remove" || !all_names.is_empty() {
+        effects(cli, &roots.other, &other)
     } else {
         Effects::unchanged()
     };
-    let after = system::read_receipt(&roots.other)?;
+    let after = effects.receipt.take().unwrap_or(other);
     let mut value = serde_json::json!({"action": action, "package": done.package, "packages": all_names,
         "other_root": roots.other_name, "other_mount": roots.other,
         "running_root": roots.booted_name, "active_now": false,
@@ -1277,29 +1379,43 @@ fn root_route(cli: &Cli, dir: &Path, kind: &str, recipe: Option<PathBuf>) -> Res
             why,
         );
     }
+    // The receipt read above is the only read: each write hands on the
+    // receipt it wrote.
+    let mut receipt = receipt;
     let mut all = Vec::new();
     for recipe in std::iter::once(recipe).chain(more_recipes(cli)) {
-        let receipt = system::read_receipt(&root)?;
-        all.push(if action == "remove" {
+        let mut written = if action == "remove" {
             let name = receipt
                 .find(&recipe)
                 .or_else(|_| receipt.find(Path::new(&stem(&recipe))))
                 .map(|p| p.name.clone())
                 .with_context(|| format!("{} is not installed in {place}", stem(&recipe)))?;
-            remove_from(&root, &name)?
+            remove_from(&root, &name, std::mem::take(&mut receipt))?
         } else {
             let path = resolve_for(cli, &recipe, action, &receipt, &place, &root)?;
-            write_into(cli, &root, &root, &path, &producer_args(cli)?, "root")?
-        });
+            write_into(
+                cli,
+                &root,
+                &receipt,
+                &root,
+                &path,
+                &producer_args(cli)?,
+                "root",
+            )?
+        };
+        if let Some(wrote) = written.receipt.take() {
+            receipt = wrote;
+        }
+        all.push(written);
     }
     let changed = action == "remove" || all.iter().any(|w| !w.expects.is_empty());
-    let effects = if changed {
-        effects(cli, &root)
+    let mut effects = if changed {
+        effects(cli, &root, &receipt)
     } else {
         Effects::unchanged()
     };
     let first = all[0].name.clone();
-    let after = system::read_receipt(&root)?;
+    let after = effects.receipt.take().unwrap_or(receipt);
     let mut value = serde_json::json!({"action": action, "package": first,
         "packages": all.iter().flat_map(|w| w.expects.keys()).collect::<Vec<_>>(),
         "root": root, "receipt": root.join(system::RECEIPT),
@@ -1361,6 +1477,9 @@ fn base_refusal(verb: &str) -> String {
 pub(super) struct Effects {
     recipe: Run,
     cache: Cache,
+    /// The root's receipt as the effects recipe's output wrote it; None when
+    /// that wrote none.
+    pub(super) receipt: Option<Receipt>,
 }
 
 /// What running the root's effects recipe did.
@@ -1394,6 +1513,7 @@ impl Effects {
         Effects {
             recipe: Run::Unchanged,
             cache: Cache::Unchanged,
+            receipt: None,
         }
     }
 
@@ -1469,11 +1589,13 @@ impl Cache {
 /// recipe to a caller's last change, and the cache is not part of that
 /// recipe; it takes a moment, and every change leaves the root's libraries
 /// findable.
-pub(super) fn effects(cli: &Cli, root: &Path) -> Effects {
-    let recipe = effects_recipe(cli, root);
+/// `held` is the root's receipt as the change left it.
+pub(super) fn effects(cli: &Cli, root: &Path, held: &Receipt) -> Effects {
+    let (recipe, receipt) = effects_recipe(cli, root, held);
     Effects {
         recipe,
         cache: Cache::of(root),
+        receipt,
     }
 }
 
@@ -1481,46 +1603,69 @@ pub(super) fn effects(cli: &Cli, root: &Path) -> Effects {
 /// one, with the root as its read-only input `root`, and write its `system`
 /// output into the root as the reserved package `system-effects`, replacing
 /// that package's previous files.
-fn effects_recipe(cli: &Cli, root: &Path) -> Run {
+fn effects_recipe(cli: &Cli, root: &Path, held: &Receipt) -> (Run, Option<Receipt>) {
     if cli.no_effects {
-        return Run::Skipped;
+        return (Run::Skipped, None);
     }
     let recipe = root.join(EFFECTS_RECIPE);
     if !std::fs::symlink_metadata(&recipe).is_ok_and(|m| m.is_file()) {
-        return Run::None;
+        return (Run::None, None);
     }
     eprintln!("Rebuilding the root's caches with /{EFFECTS_RECIPE}...");
-    let run = || -> Result<usize> {
+    let mut wrote = None;
+    let mut run = || -> Result<usize> {
         let mut args = producer_args(cli)?;
         // Bound read-only for the run, not copied (README, "Root effects").
         args.push("--effects-root".into());
         args.push(root.display().to_string());
-        let produced = produce_with(cli, root, &recipe, &args, "effects", false)?;
-        let applied = (|| -> Result<usize> {
-            let mut payloads = system::payloads(&produced, "effects")?;
-            anyhow::ensure!(
-                payloads.len() == 1,
-                "the effects recipe has runtime dependencies; it must produce one system output"
-            );
-            payloads[0].package.name = EFFECTS_PACKAGE.into();
-            payloads[0].package.dependencies.clear();
-            let old = system::read_receipt(root)?;
-            let plan = system::plan(root, &old, &mut payloads, None)?;
-            system::apply(root, &payloads, &plan)?;
-            Ok(plan
-                .receipt
-                .packages
-                .get(EFFECTS_PACKAGE)
-                .map_or(0, |p| p.files.len()))
-        })();
+        let produced = produce_with(cli, root, None, &recipe, &args, "effects")?;
+        let applied = apply_effects(root, held, &produced);
         // Written or not, nothing takes the producer's outputs any more.
-        discard_outputs(cli, &produced)?;
-        applied
+        let discarded = discard_outputs(cli, &produced);
+        let (files, receipt) = applied?;
+        wrote = Some(receipt);
+        discarded?;
+        Ok(files)
     };
-    match run() {
+    let run = match run() {
         Ok(files) => Run::Done(files),
-        Err(error) => Run::Failed(format!("{error:#}")),
-    }
+        Err(error) => {
+            // The output may have been written before the failure (the
+            // receipt is in place, then its folder's flush failed; or the
+            // producer's outputs were not discarded): what follows reads
+            // the receipt on the disk.
+            if wrote.is_none() {
+                wrote = system::read_receipt(root).ok();
+            }
+            Run::Failed(format!("{error:#}"))
+        }
+    };
+    (run, wrote)
+}
+
+/// Write the effects recipe's output (`produced`) into the root, whose
+/// receipt is `held`, as the package `system-effects`. Returns how many files
+/// that package holds and the receipt written.
+fn apply_effects(
+    root: &Path,
+    held: &Receipt,
+    produced: &serde_json::Value,
+) -> Result<(usize, Receipt)> {
+    let mut payloads = system::payloads(produced, "effects")?;
+    anyhow::ensure!(
+        payloads.len() == 1,
+        "the effects recipe has runtime dependencies; it must produce one system output"
+    );
+    payloads[0].package.name = EFFECTS_PACKAGE.into();
+    payloads[0].package.dependencies.clear();
+    let plan = system::plan(root, held, &mut payloads, None)?;
+    system::apply(root, &payloads, &plan)?;
+    let files = plan
+        .receipt
+        .packages
+        .get(EFFECTS_PACKAGE)
+        .map_or(0, |p| p.files.len());
+    Ok((files, plan.receipt))
 }
 
 pub(super) fn pending_json(failed: &[(String, String)]) -> Vec<serde_json::Value> {
