@@ -142,7 +142,8 @@ callers can only narrow it.
 `runtime: "minimal"` is for a recipe whose own programs are the tools of a root
 it is given (a root's effects recipe): its Ginux root is unpacked from the
 minimal runtime image, a shell, GNU coreutils, findutils, sed and grep with
-their libraries (about 8 MB), instead of the full compiler image (about 1.3 GB).
+their libraries and what the Recipe worker needs for itself and its downloads
+(about 9 MB), instead of the full compiler image (about 1.3 GB).
 Each run still gets a private copy of its image, verified against its digest.
 Where no minimal image is named (`GINUX_MINIMAL_ROOT`, or the
 `minimal-reference` an install ships), the run uses the full image. A recipe

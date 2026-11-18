@@ -25,14 +25,15 @@ pub(crate) struct VerifiedImage {
 }
 
 impl VerifiedImage {
-    fn open(root_reference: &str) -> Result<Self> {
+    fn open(root_reference: &str, kind: crate::runtime::Image) -> Result<Self> {
         let digest = crate::runtime::root_digest(root_reference)?;
         // Snapshot and hash the same bytes into an unlinked file (a
         // copy-on-write clone where the filesystem can). Later nodes read
         // these verified bytes, never a potentially changed source path.
-        let (_, mut archive) = crate::runtime::open_rootfs(root_reference).with_context(|| {
+        let (_, mut archive) = crate::runtime::open_rootfs(root_reference, kind).with_context(|| {
             format!(
-                "cannot open the Ginux rootfs image; set GINUX_ROOTFS to the assembled tar matching {root_reference}"
+                "cannot open the Ginux rootfs image; set {} to the assembled tar matching {root_reference}",
+                kind.rootfs_env()
             )
         })?;
         let mut snapshot = tempfile::tempfile().context("cannot snapshot the rootfs image")?;
@@ -60,11 +61,12 @@ impl VerifiedImage {
 /// end) fails here, before any domain starts, and `root` is removed with its
 /// invocation's directory. Each member is validated as it is unpacked either
 /// way (`unpack_image`).
-fn unpack_verified(root_reference: &str, root: &Path) -> Result<()> {
+fn unpack_verified(root_reference: &str, kind: crate::runtime::Image, root: &Path) -> Result<()> {
     let digest = crate::runtime::root_digest(root_reference)?;
-    let (_, archive) = crate::runtime::open_rootfs(root_reference).with_context(|| {
+    let (_, archive) = crate::runtime::open_rootfs(root_reference, kind).with_context(|| {
         format!(
-            "cannot open the Ginux rootfs image; set GINUX_ROOTFS to the assembled tar matching {root_reference}"
+            "cannot open the Ginux rootfs image; set {} to the assembled tar matching {root_reference}",
+            kind.rootfs_env()
         )
     })?;
     let mut hashed = Hashed {
@@ -107,17 +109,19 @@ impl<R: Read> Read for Hashed<R> {
     }
 }
 
-/// The verified bytes of `root_reference`, verified now unless `image` already
-/// holds them, positioned at their start.
+/// The verified bytes of `root_reference` (of kind `kind`, which selects its
+/// tar), verified now unless `image` already holds them, positioned at their
+/// start.
 pub(super) fn verified_snapshot<'a>(
     image: &'a mut Option<VerifiedImage>,
     root_reference: &str,
+    kind: crate::runtime::Image,
 ) -> Result<&'a mut File> {
     if image
         .as_ref()
         .is_none_or(|image| image.root_reference != root_reference)
     {
-        *image = Some(VerifiedImage::open(root_reference)?);
+        *image = Some(VerifiedImage::open(root_reference, kind)?);
     }
     let image = image.as_mut().expect("verified image initialized");
     image.snapshot.seek(SeekFrom::Start(0))?;
@@ -161,7 +165,8 @@ pub(crate) fn prepare_root(
     // A clone of the verified image's cached tree where the filesystem can
     // clone; otherwise the image unpacked here and verified as it unpacks
     // (see image_cache).
-    let unpacked = !super::image_cache::populate(&invocation.root_reference, image, root.path())?;
+    let kind = invocation.root_image;
+    let unpacked = !super::image_cache::populate(&invocation.root_reference, kind, image, root.path())?;
     if unpacked {
         // Verified bytes already at hand (the cache's build made them) are
         // unpacked as they are; otherwise the image is hashed as it unpacks.
@@ -170,11 +175,11 @@ pub(crate) fn prepare_root(
             .is_some_and(|image| image.root_reference == invocation.root_reference)
         {
             unpack_image(
-                verified_snapshot(image, &invocation.root_reference)?,
+                verified_snapshot(image, &invocation.root_reference, kind)?,
                 root.path(),
             )?;
         } else {
-            unpack_verified(&invocation.root_reference, root.path())?;
+            unpack_verified(&invocation.root_reference, kind, root.path())?;
         }
     }
 

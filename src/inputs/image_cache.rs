@@ -48,12 +48,14 @@ const BUILD: &str = ".build";
 const READY: &str = "ready";
 const TREE: &str = "tree";
 
-/// Fill the empty directory `root` with the image named by `reference`, cloned
+/// Fill the empty directory `root` with the image named by `reference` (of
+/// kind `kind`, which selects its tar), cloned
 /// from its cache (built first from the verified image when absent). Returns
 /// false, with `root` still empty, when no cache can serve it: the caller then
 /// unpacks the verified image itself.
 pub(super) fn populate(
     reference: &str,
+    kind: crate::runtime::Image,
     image: &mut Option<VerifiedImage>,
     root: &Path,
 ) -> Result<bool> {
@@ -99,7 +101,7 @@ pub(super) fn populate(
             .lock_exclusive()
             .context("cannot lock the image cache build")?;
         if !ready(&cache, &boot) {
-            build(&pool, &cache, &boot, reference, image, &lock)?;
+            build(&pool, &cache, &boot, reference, kind, image, &lock)?;
         }
         drop(building);
     }
@@ -161,6 +163,7 @@ fn build(
     cache: &Path,
     boot: &str,
     reference: &str,
+    kind: crate::runtime::Image,
     image: &mut Option<VerifiedImage>,
     lock: &std::fs::File,
 ) -> Result<()> {
@@ -174,7 +177,7 @@ fn build(
     let directory = partial.0.as_ref().expect("partial cache").path().to_owned();
     let tree = directory.join(TREE);
     fs::create_dir(&tree)?;
-    super::root::unpack_image(super::root::verified_snapshot(image, reference)?, &tree)?;
+    super::root::unpack_image(super::root::verified_snapshot(image, reference, kind)?, &tree)?;
     fs::write(directory.join(READY), boot)?;
     lock.lock_exclusive()
         .context("cannot lock the image cache")?;

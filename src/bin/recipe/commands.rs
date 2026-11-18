@@ -2458,11 +2458,24 @@ fn show_info(recipe_path: &Path, search_path: Option<&Path>, json: bool) -> Resu
             .ok()
             .and_then(|graph| graph.last().map(|d| d.needs.runtime))
             == Some(levitate_recipe::runtime::Image::Minimal);
+        let minimal_named = if minimal && eligibility.blocker.is_some() {
+            levitate_recipe::runtime::minimal_named()
+        } else {
+            Ok(false)
+        };
         let runs = match &eligibility.blocker {
             None => "on the host (it starts no program)".to_owned(),
-            Some(blocker) if minimal => {
+            Some(blocker) if minimal && minimal_named.is_err() => format!(
+                "in Ginux, but the minimal runtime image is not usable: {:#} (it {blocker})",
+                minimal_named.as_ref().unwrap_err()
+            ),
+            Some(blocker) if minimal && matches!(minimal_named, Ok(true)) => {
                 format!("in Ginux, in the minimal runtime image (it {blocker})")
             }
+            Some(blocker) if minimal => format!(
+                "in Ginux, in the full image: it asks for the minimal runtime image, but none is named \
+                 (GINUX_MINIMAL_ROOT with GINUX_MINIMAL_ROOTFS, or an installed minimal-reference) (it {blocker})"
+            ),
             Some(blocker) => format!("in Ginux (it {blocker})"),
         };
         row("Runs:", &runs);

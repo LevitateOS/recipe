@@ -93,20 +93,28 @@ pub fn minimal_reference() -> Result<Option<String>> {
     selected_reference(Image::Minimal)
 }
 
-/// The reference a run that asks for `image` runs in. A run that asks for
-/// the minimal image where none is named runs in the full image, which has
-/// every program the minimal one has.
-pub fn reference_for(image: Image) -> Result<String> {
+/// The image a run that asks for `image` runs in, and its reference. A run
+/// that asks for the minimal image where none is named runs in the full
+/// image, which has every program the minimal one has.
+pub fn reference_for(image: Image) -> Result<(Image, String)> {
     if image == Image::Minimal {
         if let Some(reference) = minimal_reference()? {
-            return Ok(reference);
+            return Ok((Image::Minimal, reference));
         }
         crate::diagnostics::diag!(
-            "recipe: no minimal runtime image is named (GINUX_MINIMAL_ROOT or {}); this run uses the full image",
+            "recipe: no minimal runtime image is named (GINUX_MINIMAL_ROOT with GINUX_MINIMAL_ROOTFS, or {}); this run uses the full image",
             Image::Minimal.reference_file().display()
         );
     }
-    root_reference()
+    Ok((Image::Full, root_reference()?))
+}
+
+/// Whether a run that asks for the minimal image gets it: a minimal image is
+/// named (`GINUX_MINIMAL_ROOT` or the installed minimal-reference).
+/// An invalid `GINUX_MINIMAL_ROOT` or installed reference is an error, as it is
+/// for the run itself.
+pub fn minimal_named() -> Result<bool> {
+    Ok(minimal_reference()?.is_some())
 }
 
 /// The image's reference from its variable, else from its installed file.
@@ -132,18 +140,6 @@ fn selected_reference(image: Image) -> Result<Option<String>> {
     }
     validate_reference(&root)?;
     Ok(Some(root))
-}
-
-/// Which image `reference` is: the minimal one when it is the selected
-/// minimal reference, else the full one. Its tar is looked up where that
-/// image's is (its variable, its shipped file); a reference both name is one
-/// image, the same bytes either way.
-fn image_of(reference: &str) -> Image {
-    if minimal_reference().ok().flatten().as_deref() == Some(reference) {
-        Image::Minimal
-    } else {
-        Image::Full
-    }
 }
 
 /// The program that runs Recipe again. A base written into `/` replaces
@@ -247,11 +243,11 @@ fn installed_reference(image: Image) -> Result<Option<String>> {
     }
 }
 
-/// Select the root archive of `reference`: its image's variable
+/// Select the root archive of `reference`, the reference of `image` (the
+/// image the run asked for and got, [`reference_for`]): that image's variable
 /// (`GINUX_ROOTFS`, `GINUX_MINIMAL_ROOTFS`), else the tar the install ships,
 /// else the download cache. The engine hashes the selected bytes before use.
-pub fn rootfs_path(reference: &str) -> Result<PathBuf> {
-    let image = image_of(reference);
+pub fn rootfs_path(reference: &str, image: Image) -> Result<PathBuf> {
     let variable = image.rootfs_env();
     if let Some(path) = std::env::var_os(variable) {
         if path.is_empty() {
@@ -295,9 +291,9 @@ fn runtime_url(digest: &str) -> String {
 /// The runtime image for `reference`, downloaded on first use. An image
 /// selected with `GINUX_ROOTFS`, or already on disk, is returned as it is; the
 /// engine verifies its bytes before use either way.
-pub fn ensure_rootfs(reference: &str) -> Result<PathBuf> {
-    let path = rootfs_path(reference)?;
-    let variable = image_of(reference).rootfs_env();
+pub fn ensure_rootfs(reference: &str, image: Image) -> Result<PathBuf> {
+    let path = rootfs_path(reference, image)?;
+    let variable = image.rootfs_env();
     if std::env::var_os(variable).is_some() || path.exists() {
         return Ok(path);
     }
@@ -310,11 +306,11 @@ pub fn ensure_rootfs(reference: &str) -> Result<PathBuf> {
 /// when missing. A downloaded image is opened under its download lock, the
 /// lock `recipe runtime remove` also takes, so it is never deleted between
 /// being found and being opened (once open, deleting it only unlinks it).
-pub fn open_rootfs(reference: &str) -> Result<(PathBuf, std::fs::File)> {
+pub fn open_rootfs(reference: &str, image: Image) -> Result<(PathBuf, std::fs::File)> {
     use fs2::FileExt;
     for _ in 0..3 {
-        let path = ensure_rootfs(reference)?;
-        let downloaded = std::env::var_os(image_of(reference).rootfs_env()).is_none()
+        let path = ensure_rootfs(reference, image)?;
+        let downloaded = std::env::var_os(image.rootfs_env()).is_none()
             && path.parent().is_some_and(|directory| {
                 images_directory().is_ok_and(|images| images == directory)
             });
@@ -564,7 +560,7 @@ pub fn build_image() -> Result<BuildImage> {
         .into_iter()
         .filter_map(|(image, reference)| {
             let shipped = std::env::var_os(image.rootfs_env()).is_none()
-                && rootfs_path(&reference?)
+                && rootfs_path(&reference?, image)
                     .is_ok_and(|selected| selected == image.shipped_rootfs());
             shipped.then(|| std::fs::metadata(image.shipped_rootfs()).map_or(0, |m| m.len()))
         })

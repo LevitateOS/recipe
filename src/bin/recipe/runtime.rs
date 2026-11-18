@@ -25,9 +25,15 @@ pub(crate) fn execute(command: &RuntimeCommands, cli: &Cli) -> Result<()> {
             // path per line.
             runtime::set_fetch_events(cli.machine_events);
             let full = runtime::root_reference()?;
-            println!("{}", runtime::ensure_rootfs(&full)?.display());
+            println!(
+                "{}",
+                runtime::ensure_rootfs(&full, runtime::Image::Full)?.display()
+            );
             if let Some(minimal) = runtime::minimal_reference()?.filter(|m| *m != full) {
-                println!("{}", runtime::ensure_rootfs(&minimal)?.display());
+                println!(
+                    "{}",
+                    runtime::ensure_rootfs(&minimal, runtime::Image::Minimal)?.display()
+                );
             }
             Ok(())
         }
@@ -106,13 +112,13 @@ fn status(cli: &Cli) -> Result<()> {
         Some(path) if !path.is_empty() => (PathBuf::from(path), "GINUX_BIN"),
         _ => (runtime::launcher(), "install prefix"),
     };
-    let image = runtime::rootfs_path(&reference)?;
+    let image = runtime::rootfs_path(&reference, runtime::Image::Full)?;
     let image_from = selected_from(runtime::Image::Full, &image);
     // The minimal image, when one is named: (reference, digest, tar, from).
     let minimal = match runtime::minimal_reference()? {
         Some(reference) => {
             let digest = runtime::root_digest(&reference)?.to_owned();
-            let path = runtime::rootfs_path(&reference)?;
+            let path = runtime::rootfs_path(&reference, runtime::Image::Minimal)?;
             let from = selected_from(runtime::Image::Minimal, &path);
             Some((reference, digest, path, from))
         }
@@ -365,6 +371,18 @@ fn stage(
         (minimal, "minimal-reference", "minimal.tar"),
     ] {
         let Some((reference, image)) = selected else {
+            // No minimal image named: one an earlier stage shipped goes, so
+            // the install never names an image this stage did not choose.
+            for name in [reference_name, image_name] {
+                let path = runtime_dir.join(name);
+                match std::fs::remove_file(&path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(error).with_context(|| format!("removing {}", path.display()));
+                    }
+                }
+            }
             continue;
         };
         put(
@@ -372,8 +390,20 @@ fn stage(
             format!("{reference}\n").as_bytes(),
             0o644,
         )?;
+        let image_path = runtime_dir.join(image_name);
         if let Some(image) = image {
-            copy_file(image, &runtime_dir.join(image_name), 0o644)?;
+            copy_file(image, &image_path, 0o644)?;
+        } else {
+            // A new reference without an image: an image an earlier stage
+            // shipped is for the old reference, so it goes.
+            match std::fs::remove_file(&image_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("removing {}", image_path.display()));
+                }
+            }
         }
     }
     let sources = base.join("share/recipe/sources");

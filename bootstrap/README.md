@@ -93,14 +93,19 @@ domain uses (`dev`, `proc`, `sys`, `etc`, `tmp`, ...), `etc/passwd`, `etc/group`
 `os-release`, the C library and its loader, Bash as `sh`, GNU coreutils (the one
 program and the command scripts that name it), findutils (`find`, `xargs`), sed and
 grep, and the libraries those load (`libtinfo`, `libselinux`, `libpcre2-8`, `libacl`,
-`libattr`, `libcap`). It has no RPMs and no Rust. Its `keep` list names each member
+`libattr`, `libcap`). The Recipe worker runs in it too: a workspace-built (glibc)
+`recipe` loads `libm`, `libgcc_s` and `liblzma`, which are kept; `libpthread` and
+`libdl` are kept for downloaded glibc toolchains such as Bun. For the worker's own
+downloads it keeps `etc/pki/tls/cert.pem` (the CA bundle Recipe's HTTPS client reads)
+and `etc/nsswitch.conf` (`hosts: files ...`, so names resolve through the `/etc/hosts`
+a Ginux run is given). It has no RPMs and no Rust. Its `keep` list names each member
 exactly; `recipe-image` also keeps the directories above them and follows links (a
 kept `usr/lib64/libacl.so.1` brings the file it names), and fails on a name the base
-does not have. The result is about 8 MB in about 95 members, against 1.3 GB for the
+does not have. The result is about 9 MB in about 110 members, against 1.3 GB for the
 compiler image.
 
 A recipe declares `NEEDS.runtime: "minimal"` to run in it: one whose own programs are
-only the tools of a root it is given. The root effects recipe of LevitateOS and AcornOS
+only the tools of a root it is given, programs it downloads or Recipe's helpers. The root effects recipe of LevitateOS and AcornOS
 (`distro/builder/os-recipes/root-effects.rhai`) is such a recipe: it runs the root's
 own cache tools through the root's loader, and of its own uses `sh`, `ls`, `cp`, and
 in `icon_cache_inputs` GNU `find`, `sort`, `sed`, `xargs`, `realpath`, `paste` and
@@ -125,8 +130,9 @@ target/debug/recipe-image \
 jq -r .sha256 .artifacts/ginux-env/prepared-image-minimal/provenance.json
 ```
 
-Write that digest into `minimal-runtime.json` as `image_sha256`; until then the
-builder stops before it builds a system. `scripts/prepare-managed-image.py --spec
+That digest is pinned in `minimal-runtime.json` as `image_sha256`
+(`b748031a3080c9adacc43c947eff67da66ff5037663479b86afc42320abf3d09`); change the
+manifest, and the pin with it. `scripts/prepare-managed-image.py --spec
 bootstrap/minimal-runtime.json` reproduces it from public inputs as for the other
 images, and checks the pin (on a mismatch it names the digest it made).
 

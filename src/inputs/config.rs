@@ -22,6 +22,9 @@ const MAX_CONFIG: usize = 4096;
 pub struct InstanceConfig {
     id: String,
     root: String,
+    /// The image `root` names: the one the recipe asked for, or the full one
+    /// where it asked for a minimal image and none is named.
+    image: crate::runtime::Image,
     init: String,
     args: Vec<String>,
     environment: Vec<String>,
@@ -55,7 +58,7 @@ impl InstanceConfig {
         archive_import: bool,
         random_devices: bool,
     ) -> Result<Self> {
-        let root = crate::runtime::reference_for(image)?;
+        let (image, root) = crate::runtime::reference_for(image)?;
         if env.len() > MAX_ENV {
             bail!(
                 "input preparation failure: {} env entries exceed the §2 limit of {MAX_ENV} × 256 B",
@@ -80,6 +83,7 @@ impl InstanceConfig {
         Ok(Self {
             id: invocation_id.to_string(),
             root,
+            image,
             init: crate::domain::WORKER.to_string(),
             args: crate::domain::WORKER_ARGS.map(str::to_string).to_vec(),
             environment,
@@ -96,6 +100,12 @@ impl InstanceConfig {
 
     pub(crate) fn root_reference(&self) -> &str {
         &self.root
+    }
+
+    /// Which image the root reference names, so its tar is selected by that
+    /// image's variable and shipped file.
+    pub(crate) fn root_image(&self) -> crate::runtime::Image {
+        self.image
     }
 
     /// Render the parser-accepted config text (≤ 4096 B). Archive import and

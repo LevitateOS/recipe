@@ -63,6 +63,8 @@ pub struct PreparedInvocation {
     /// Staged inputs sorted by domain name (recipe, base, imports, extras).
     pub inputs: Vec<StagedInput>,
     pub(crate) root_reference: String,
+    /// The image `root_reference` names ([`InstanceConfig::root_image`]).
+    pub(crate) root_image: crate::runtime::Image,
     pub(crate) network: network::NetworkPolicy,
     pub(crate) execution: crate::ExecutionOptions,
     pub(crate) declaration: crate::needs::Declaration,
@@ -221,19 +223,20 @@ pub fn prepare_invocation(
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(input.mode))?;
     }
-    let (root_reference, contract) = match ginux {
+    let (root_reference, root_image, contract) = match ginux {
         Some((config, config_text, contract)) => {
             std::fs::write(staging.path().join(CONFIG_FILE), &config_text)?;
             reject_host_leak(&config_text, &env, staging.path(), &discovered.host_dirs)?;
-            (config.root_reference().to_owned(), Some(contract))
+            (config.root_reference().to_owned(), config.root_image(), Some(contract))
         }
-        None => (String::new(), None),
+        None => (String::new(), crate::runtime::Image::Full, None),
     };
 
     Ok(PreparedInvocation {
         invocation_id,
         inputs: discovered.inputs,
         root_reference,
+        root_image,
         network,
         execution,
         declaration,
