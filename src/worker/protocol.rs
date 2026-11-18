@@ -204,6 +204,8 @@ pub fn restored_state_budget(options: &InvocationOptions) -> Result<usize, Proto
             .collect(),
         restored_states: Default::default(),
         host: None,
+        // A host run reserves its own cache path with its host description.
+        cache: Some(crate::domain::OFFLINE_CACHE.to_owned()),
     };
     let payload = serde_json::to_vec(&request)
         .map_err(|e| ProtocolError::PayloadInvalid(format!("measure request: {e}")))?;
@@ -248,6 +250,11 @@ pub struct RequestPayload {
     /// a Ginux worker, whose frames are unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<HostRun>,
+    /// The offline cache directory the worker reads (`crate::offline_cache`),
+    /// read-only: a host path in a host run,
+    /// [`crate::domain::OFFLINE_CACHE`] in a Ginux run that has it bound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<String>,
 }
 
 /// What a host-mode worker needs that a Ginux domain would have provided.
@@ -261,9 +268,6 @@ pub struct HostRun {
     pub network: std::collections::BTreeMap<String, Vec<String>>,
     /// The run's network byte cap (`crate::needs::Needs::network_budget`).
     pub network_max_bytes: u64,
-    /// The offline cache directory (`crate::offline_cache`), read-only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache: Option<String>,
 }
 
 /// Longest host root a request carries.
@@ -280,12 +284,6 @@ fn check_host(host: &HostRun) -> Result<(), ProtocolError> {
             .values()
             .any(|pins| pins.is_empty() || pins.len() > crate::domain::MAX_NETWORK_ENDPOINTS)
         || host.network_max_bytes == 0
-        || host.cache.as_ref().is_some_and(|cache| {
-            !cache.starts_with('/')
-                || cache.len() > MAX_HOST_ROOT
-                || cache.contains('\0')
-                || cache.split('/').any(|part| part == "." || part == "..")
-        })
     {
         return Err(ProtocolError::PayloadInvalid(
             "invalid host run description".into(),
@@ -824,6 +822,17 @@ fn check_request(p: &RequestPayload) -> Result<(), ProtocolError> {
     }
     if let Some(host) = &p.host {
         check_host(host)?;
+    }
+    if p.cache.as_ref().is_some_and(|cache| {
+        !cache.starts_with('/')
+            || cache.len() > MAX_HOST_ROOT
+            || cache.contains('\0')
+            || cache.split('/').any(|part| part == "." || part == "..")
+            || p.host.is_none() && cache != crate::domain::OFFLINE_CACHE
+    }) {
+        return Err(ProtocolError::PayloadInvalid(
+            "invalid offline cache directory".into(),
+        ));
     }
     if p.recipe_name.is_empty()
         || p.recipe_name.len() > crate::domain::MAX_INPUT_NAME

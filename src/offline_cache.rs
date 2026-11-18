@@ -7,8 +7,14 @@
 //! else `/usr/share/recipe/cache` when that directory exists (an install medium
 //! carries it). It is read-only to Recipe: nothing is ever added to it.
 //!
-//! The coordinator chooses the directory and hands it to a host-run worker in
-//! its request. A Ginux run does not see it.
+//! The coordinator chooses the directory and names it in the worker's request.
+//! A host-run worker reads it where it is. For a Ginux run the coordinator
+//! binds its `sha256` folder read-only at `crate::domain::OFFLINE_CACHE`, in
+//! the launcher's own mount namespace, as it binds a live system root
+//! (`crate::launch`); that needs root with `CAP_SYS_ADMIN`, and without it the
+//! run does not see the cache. Either way the worker runs as an unprivileged
+//! identity, so it can use only the files everyone may read. The cache is
+//! never an input and enters no identity: a run's results do not depend on it.
 use anyhow::{Result, ensure};
 use std::fs::File;
 use std::os::unix::fs::OpenOptionsExt;

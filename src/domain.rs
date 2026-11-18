@@ -24,6 +24,11 @@ macro_rules! input_modes_name {
         ".recipe-input-modes.json"
     };
 }
+macro_rules! offline_cache_name {
+    () => {
+        ".recipe-offline-cache"
+    };
+}
 
 /// Read-only root holding every staged input.
 pub const INPUTS: &str = inputs_root!();
@@ -40,6 +45,11 @@ pub const WORKER: &str = concat!(inputs_root!(), "/", worker_name!());
 pub const INPUT_MODES_NAME: &str = input_modes_name!();
 /// Domain path of the input permission manifest.
 pub const INPUT_MODES: &str = concat!(inputs_root!(), "/", input_modes_name!());
+/// Folder under [`INPUTS`] where a Ginux run sees the offline cache
+/// (`crate::offline_cache`): its `sha256` folder is bound read-only there.
+pub const OFFLINE_CACHE_NAME: &str = offline_cache_name!();
+/// Domain path of the offline cache in a Ginux run.
+pub const OFFLINE_CACHE: &str = concat!(inputs_root!(), "/", offline_cache_name!());
 /// Input holding each dependency's published outputs, as `DEP/OUTPUT`. The
 /// coordinator stages it; a recipe may not declare it in `NEEDS.inputs`.
 pub const DEPENDENCY_INPUT: &str = "recipe-dependencies";
@@ -47,7 +57,7 @@ pub const DEPENDENCY_INPUT: &str = "recipe-dependencies";
 /// [`DEPENDENCY_INPUT`] and seeded into [`TOOLS`].
 pub const DEPENDENCY_TOOLS: &str = "recipe-tools";
 /// Input names the coordinator writes itself; nothing else may stage them.
-pub const RESERVED_INPUT_NAMES: [&str; 2] = [WORKER_NAME, INPUT_MODES_NAME];
+pub const RESERVED_INPUT_NAMES: [&str; 3] = [WORKER_NAME, INPUT_MODES_NAME, OFFLINE_CACHE_NAME];
 
 /// Logical input name → permission bits, written into [`INPUT_MODES`].
 pub type InputModes = std::collections::BTreeMap<String, u32>;

@@ -274,8 +274,11 @@ A read-only directory of pinned payloads, `CACHE/sha256/<hex>`, each named by th
 SHA-256 of its bytes: `RECIPE_CACHE_DIR` (absolute; empty turns it off), else
 `/usr/share/recipe/cache` when it exists (an install medium carries it).
 `download` and `download_exact` take a payload whose pin they find there from it,
-with no network; a cached file whose bytes do not match is ignored. Host runs use
-it; Ginux runs do not see it. With a cache present, a `NEEDS.network` host that
+with no network; a cached file whose bytes do not match is ignored. Host runs read
+it in place; a Ginux run sees its `sha256` folder bound read-only (that needs root
+with `CAP_SYS_ADMIN`; otherwise the run goes without it). Both run as an
+unprivileged identity, so only files everyone may read are used. The cache is
+not an input and changes no saved-state identity. With a cache present, a `NEEDS.network` host that
 cannot be resolved is left out with a warning rather than failing the run.
 
 A download that fails the way a network does (a name lookup, a refused, reset or

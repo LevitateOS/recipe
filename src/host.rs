@@ -280,8 +280,8 @@ fn run_inner(
                 .to_owned(),
             network: prepared.network.host_grants(),
             network_max_bytes: prepared.execution.network_max_bytes,
-            cache: offline_cache_text().map_err(startup)?,
         }),
+        cache: offline_cache_text().map_err(startup)?,
     };
     let mut progress = options.execution.progress_file.as_deref().map(|path| {
         crate::progress_file::ProgressFile::start(

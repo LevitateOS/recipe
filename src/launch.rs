@@ -537,6 +537,9 @@ fn run_domain_inner(
         // and with nothing else.
         restored_states,
         host: None,
+        // Bound read-only into the domain where the coordinator can bind it
+        // (`crate::inputs::prepare_root`).
+        cache: domain_root.offline_cache(),
     };
     let mut progress = options.execution.progress_file.as_deref().map(|path| {
         crate::progress_file::ProgressFile::start(

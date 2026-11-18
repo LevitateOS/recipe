@@ -187,6 +187,12 @@ pub fn run_worker() -> Result<()> {
         let failure = request_failure(format!("cannot enter host mode: {error:#}"));
         return send_result(&mut tx, &mut output, Err(failure));
     }
+    if let Some(cache) = &request.cache
+        && let Err(error) = crate::offline_cache::set_worker(PathBuf::from(cache))
+    {
+        let failure = request_failure(format!("cannot select the offline cache: {error:#}"));
+        return send_result(&mut tx, &mut output, Err(failure));
+    }
 
     let channel = Arc::new(Mutex::new(WorkerChannel {
         sender: tx,
@@ -251,9 +257,6 @@ fn enter_host_mode(host: &crate::worker::protocol::HostRun) -> Result<()> {
     }
     crate::domain::set_host_root(root)?;
     crate::helpers::acquire::net::install(&host.network, host.network_max_bytes)?;
-    if let Some(cache) = &host.cache {
-        crate::offline_cache::set_worker(PathBuf::from(cache))?;
-    }
     forbid_programs()
 }
 

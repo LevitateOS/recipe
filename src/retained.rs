@@ -231,9 +231,11 @@ impl Retained {
                 root: host_root.to_string_lossy().into_owned(),
                 network: prepared.network.host_grants(),
                 network_max_bytes: options.execution.network_max_bytes,
-                cache: crate::host::offline_cache_text()?,
             };
-            let reserve = serde_json::to_vec(&host)?.len() + r#","host":"#.len();
+            let cache = crate::host::offline_cache_text()?;
+            let reserve = serde_json::to_vec(&host)?.len()
+                + r#","host":"#.len()
+                + serde_json::to_vec(&cache)?.len();
             state_budget = state_budget.saturating_sub(reserve);
         }
         let inputs = prepared

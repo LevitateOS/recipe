@@ -136,6 +136,8 @@ pub(crate) struct PreparedRoot {
     /// before it starts ([`super::InputKind::Bind`]): (host folder, empty
     /// folder under this root's `inputs`).
     binds: Vec<(CString, CString)>,
+    /// Whether the offline cache is bound at [`crate::domain::OFFLINE_CACHE`].
+    offline_cache: bool,
 }
 
 impl PreparedRoot {
@@ -147,6 +149,12 @@ impl PreparedRoot {
     }
     pub(crate) fn binds(&self) -> &[(CString, CString)] {
         &self.binds
+    }
+    /// The offline cache directory the worker reads, a domain path, when this
+    /// root has it.
+    pub(crate) fn offline_cache(&self) -> Option<String> {
+        self.offline_cache
+            .then(|| crate::domain::OFFLINE_CACHE.to_owned())
     }
 }
 
@@ -161,12 +169,14 @@ pub(crate) fn prepare_root(
         worker_digest: String::new(),
         directory: crate::temporary::TemporaryDirectory::new()?,
         binds: Vec::new(),
+        offline_cache: false,
     };
     // A clone of the verified image's cached tree where the filesystem can
     // clone; otherwise the image unpacked here and verified as it unpacks
     // (see image_cache).
     let kind = invocation.root_image;
-    let unpacked = !super::image_cache::populate(&invocation.root_reference, kind, image, root.path())?;
+    let unpacked =
+        !super::image_cache::populate(&invocation.root_reference, kind, image, root.path())?;
     if unpacked {
         // Verified bytes already at hand (the cache's build made them) are
         // unpacked as they are; otherwise the image is hashed as it unpacks.
@@ -194,6 +204,31 @@ pub(crate) fn prepare_root(
         .binds()
         .map(|(host, name)| Ok((path(host)?, path(&inputs.join(name))?)))
         .collect::<Result<_>>()?;
+    // The offline cache's `sha256` folder, bound read-only like a live root's
+    // folders: the domain reads the payloads in place, and nothing of the
+    // cache is copied or linked into this root. A file is still used only
+    // when its bytes match the pin (`crate::helpers::acquire::download`).
+    // It is not an input, so it enters no identity: a run's results never
+    // depend on it.
+    if let Some(cache) = crate::offline_cache::dir()?
+        && cache.join("sha256").is_dir()
+    {
+        let payloads = cache.join("sha256");
+        if super::can_bind() {
+            let folder = inputs.join(crate::domain::OFFLINE_CACHE_NAME);
+            std::fs::create_dir(&folder)?;
+            std::fs::create_dir(folder.join("sha256"))?;
+            root.binds
+                .push((path(&payloads)?, path(&folder.join("sha256"))?));
+            root.offline_cache = true;
+        } else {
+            crate::diagnostics::diag!(
+                "recipe: the offline cache {} is not given to this Ginux run: binding it \
+                 read-only needs root with CAP_SYS_ADMIN and a / that is a mount (not a chroot)",
+                cache.display()
+            );
+        }
+    }
     let worker_path = worker_binary()?;
     let mut worker = crate::fsx::open_regular(&worker_path)
         .with_context(|| format!("cannot open worker {}", worker_path.display()))?;

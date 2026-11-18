@@ -111,7 +111,7 @@ Runs the matching package command inside the domain; requires its binary, assign
 Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used.
 .TP
 \fBdownload(url, dest, sha256[, resume:bool]) -> String\fR
-Required SHA256; staged verified replacement; failure preserves valid destination. In a host run a payload the offline cache holds (RECIPE_CACHE_DIR, else /usr/share/recipe/cache: CACHE/sha256/HEX) is copied from there, with no network. A transient network failure (name lookup, refused, reset or timed-out connection, cut-off body, HTTP 408, 425, 429, 500, 502, 503, 504) is retried up to 4 attempts in all, after 1, 3 and 9 seconds; a 404, a checksum mismatch, a refused host or a size limit fails at once.
+Required SHA256; staged verified replacement; failure preserves valid destination. A payload the offline cache holds (RECIPE_CACHE_DIR, else /usr/share/recipe/cache: CACHE/sha256/HEX) is copied from there, with no network. A transient network failure (name lookup, refused, reset or timed-out connection, cut-off body, HTTP 408, 425, 429, 500, 502, 503, 504) is retried up to 4 attempts in all, after 1, 3 and 9 seconds; a 404, a checksum mismatch, a refused host or a size limit fails at once.
 .TP
 \fBenable_service(tree, unit, service) -> ()\fR
 On an rpm tree (PACKAGE_FORMAT) creates the links systemctl enable makes for the
