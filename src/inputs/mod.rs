@@ -227,7 +227,11 @@ pub fn prepare_invocation(
         Some((config, config_text, contract)) => {
             std::fs::write(staging.path().join(CONFIG_FILE), &config_text)?;
             reject_host_leak(&config_text, &env, staging.path(), &discovered.host_dirs)?;
-            (config.root_reference().to_owned(), config.root_image(), Some(contract))
+            (
+                config.root_reference().to_owned(),
+                config.root_image(),
+                Some(contract),
+            )
         }
         None => (String::new(), crate::runtime::Image::Full, None),
     };

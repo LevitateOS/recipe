@@ -177,7 +177,10 @@ fn build(
     let directory = partial.0.as_ref().expect("partial cache").path().to_owned();
     let tree = directory.join(TREE);
     fs::create_dir(&tree)?;
-    super::root::unpack_image(super::root::verified_snapshot(image, reference, kind)?, &tree)?;
+    super::root::unpack_image(
+        super::root::verified_snapshot(image, reference, kind)?,
+        &tree,
+    )?;
     fs::write(directory.join(READY), boot)?;
     lock.lock_exclusive()
         .context("cannot lock the image cache")?;
