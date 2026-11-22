@@ -1,31 +1,37 @@
-//! Worker entry point: run the engine behind the coordinator protocol
-//! ([`crate::worker::protocol`]).
+//! Worker entry point: run the engine behind the coordinator records
+//! ([`crate::worker::records`]).
 //!
 //! The worker is the same `recipe` binary entered with a private argv marker (see
-//! the dispatch in `src/bin/`). It reads exactly one request frame from
-//! stdin, runs the requested operation, reporting each recovery point as a
-//! checkpoint instead of rewriting recipe sources, then terminates the stream
-//! with exactly one result frame on stdout and exits 0.
+//! the dispatch in `src/bin/`). It reads the request file
+//! ([`crate::domain::REQUEST`]), runs the requested operation, then writes
+//! exactly one result file ([`crate::domain::RESULT`]) and exits 0.
 //!
-//! Transport discipline (matches `docs/ginux-recipe-interfaces.md` §2/§4):
+//! Transport discipline:
 //!
-//! - stdin carries request/ack frames. Stdout carries serialized diagnostic,
-//!   checkpoint and result frames. Child bytes and engine narration use the
-//!   installed diagnostic sink; startup/audit details stay on stderr. No
-//!   recipe text or child bytes are written as raw protocol output.
-//! - Every checkpoint blocks for its `ack`, at most for the invocation's
-//!   execution deadline. The host owns the `{seq → generation}` association;
-//!   the worker only waits for it and logs the generation to stderr.
+//! - Standard input is unused. Standard output carries line records only
+//!   ([`LineRecord`]: diagnostics and progress). Child bytes and engine
+//!   narration go through the installed diagnostic sink, which writes them
+//!   as diagnostic lines; startup/audit details stay on stderr.
+//! - The result is written to [`crate::domain::RESULT_STAGING`] and renamed
+//!   to [`crate::domain::RESULT`], after a stale result (one a restored
+//!   archive brought back) is removed at start. The staging file is created
+//!   and allocated ([`crate::domain::RESULT_RESERVE_BYTES`]) before any
+//!   recipe code runs, so a run that fills its storage quota still records
+//!   its failure. When even the request is
+//!   unusable, the worker still writes a failed result, so the coordinator
+//!   learns why.
 //! - A failed result says what failed ([`FailureKind`]): a phase (with its
 //!   name), the recipe operation outside a phase, or the request itself.
 //!
-//! The coordinator prepares immutable inputs and restores the matching filesystem.
-//! The worker builds the run's constants anew, restores only the saved state
-//! (`crate::core::saved`), and reports it at each `checkpoint(name)`. Its
-//! result names every output at the path the engine placed it at. It never
-//! rewrites recipe sources.
+//! The coordinator prepares immutable inputs and restores the kept files the
+//! run starts from (kept downloads, or a seeded target). The worker builds the
+//! run's constants anew; an interrupted step starts again from its beginning.
+//! Its result names every output at the path the engine placed it at. It
+//! never rewrites recipe sources.
 
-use std::io::{Read, Write};
+use std::io::Write;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -33,34 +39,38 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 
 use crate::core::executor::{EngineError, Load};
-use crate::worker::protocol::{
-    CheckpointPayload, Direction, FailureInfo, FailureKind, FramePayload, FrameReceiver,
-    FrameSender, Operation, ProgressPayload, RequestPayload, ResultPayload, SavedState,
+use crate::worker::records::{
+    FailureInfo, FailureKind, LineRecord, Operation, ProgressRecord, RECORDS_VERSION,
+    WorkerRequest, WorkerResult,
 };
 
-/// What a finished operation reports in its result frame.
+/// What a finished operation reports in its result.
 #[derive(Default)]
 struct Outcome {
     /// Build and install: each declared output to its engine-placed domain path.
     outputs: std::collections::BTreeMap<String, String>,
     /// The steps the worker worked on, with their status.
     steps: Vec<crate::core::events::StepReport>,
-    /// The saved state at the end.
-    saved: SavedState,
     /// Latest: the version `latest()` returned.
     latest: Option<String>,
 }
 
+/// The worker's standard output, shared by the diagnostic and progress
+/// sinks: one whole line per write, never interleaved.
 struct WorkerChannel {
-    sender: FrameSender,
-    budget: crate::worker::protocol::DiagnosticBudget,
-    /// Checkpoint acks are bounded by the invocation's execution deadline:
-    /// the host never takes longer than that to answer or to stop the run.
-    ack_timeout: Duration,
+    budget: crate::worker::records::DiagnosticBudget,
     failed: bool,
     terminal: bool,
 }
 type SharedChannel = Arc<Mutex<WorkerChannel>>;
+
+/// Write one line record to standard output and flush it.
+fn write_line(record: &LineRecord) -> std::io::Result<()> {
+    let line = record.encode().map_err(std::io::Error::other)?;
+    let mut output = std::io::stdout().lock();
+    output.write_all(&line)?;
+    output.flush()
+}
 
 fn install_diagnostics(channel: &SharedChannel) -> Result<()> {
     let channel = Arc::clone(channel);
@@ -71,19 +81,11 @@ fn install_diagnostics(channel: &SharedChannel) -> Result<()> {
         if state.failed || state.terminal {
             return Err(std::io::Error::other("worker channel is closed"));
         }
-        let mut output = std::io::stdout();
         while !bytes.is_empty() {
-            let Some(payload) = state.budget.next(stream.into(), &mut bytes) else {
+            let Some(record) = state.budget.next(stream.into(), &mut bytes) else {
                 break;
             };
-            if let Err(error) = state
-                .sender
-                .send(&mut output, &FramePayload::Diagnostic(payload))
-            {
-                state.failed = true;
-                return Err(std::io::Error::other(error));
-            }
-            if let Err(error) = output.flush() {
+            if let Err(error) = write_line(&LineRecord::diagnostic(record)) {
                 state.failed = true;
                 return Err(error);
             }
@@ -101,17 +103,16 @@ fn install_progress(channel: &SharedChannel) {
         if state.failed || state.terminal {
             return;
         }
-        let payload = FramePayload::Progress(ProgressPayload {
+        let record = LineRecord::progress(ProgressRecord {
             recipe: report.recipe.clone(),
             phase: report.phase.clone(),
             what: report.what.clone(),
             done: report.done,
             total: report.total,
         });
-        let mut output = std::io::stdout();
         // Progress is best effort: a failed write is left for the next
         // diagnostic or the result to report.
-        if state.sender.send(&mut output, &payload).is_err() || output.flush().is_err() {
+        if write_line(&record).is_err() {
             state.failed = true;
         }
     }));
@@ -142,38 +143,41 @@ fn engine_failure(error: EngineError) -> FailureInfo {
 
 /// Worker endpoint for the private coordinator-supplied binary command.
 ///
-/// Reads one request frame, runs the engine, sends `failure` (on error) and
-/// exactly one `result`, and returns `Ok` on the protocol path (binary exits
-/// 0). Transport collapse (unwritable stdout) returns `Err` (binary exits
-/// nonzero; the host sees a worker exit without `result`).
+/// Reads the request file, runs the engine, writes exactly one result file
+/// (a failed one on error) and returns `Ok` (binary exits 0). When the result
+/// cannot be written, or standard output broke, it returns `Err` (binary exits
+/// nonzero; the coordinator sees a worker exit without a result).
 pub fn run_worker() -> Result<()> {
     let (invocation_id, host_entry) = ensure_internal_entry()?;
+    // A result an earlier run left (a restored archive holds its `work`) is
+    // never this run's. Best effort: the coordinator refuses a result that
+    // names another invocation anyway, and a staging name left behind makes
+    // the final write fail loudly.
+    for stale in [crate::domain::RESULT, crate::domain::RESULT_STAGING] {
+        let _ = std::fs::remove_file(crate::domain::local(stale));
+    }
+    // The result's space is taken now, while the run's storage is still
+    // free: a recipe that later fills the quota can still report that.
+    let result_file = reserve_result()?;
 
-    let mut input = std::io::stdin().lock();
-    let stdout = std::io::stdout();
-    let mut output = stdout;
-    let mut rx = FrameReceiver::new();
-    let mut tx = FrameSender::new();
-
-    // (1) One request frame. When the request itself is unusable, still try to
-    // terminate the stream so the host does not hang on a silent worker.
-    let request = match recv_request(&mut rx, &mut input) {
+    // (1) The request file. When the request itself is unusable, still write
+    // a failed result so the coordinator learns why.
+    let request = match read_request() {
         Ok(req) => req,
         Err(err) => {
             let failure = request_failure(format!("bad request: {err:#}"));
-            return send_result(&mut tx, &mut output, Err(failure));
+            return write_result(result_file, &invocation_id, Err(failure));
         }
     };
     if request.invocation_id != invocation_id || request.host.is_some() != host_entry {
         let failure =
             request_failure("request invocation id or mode does not match worker bootstrap".into());
-        return send_result(&mut tx, &mut output, Err(failure));
+        return write_result(result_file, &invocation_id, Err(failure));
     }
     crate::diagnostics::trace(&format!(
-        "worker: invocation={} operation={} persist_state={} recipe={} ({})",
+        "worker: invocation={} operation={} recipe={} ({})",
         request.invocation_id,
         request.operation,
-        request.persist_state,
         request.recipe_name,
         crate::domain::MAIN_RECIPE
     ));
@@ -185,19 +189,17 @@ pub fn run_worker() -> Result<()> {
         && let Err(error) = enter_host_mode(host)
     {
         let failure = request_failure(format!("cannot enter host mode: {error:#}"));
-        return send_result(&mut tx, &mut output, Err(failure));
+        return write_result(result_file, &invocation_id, Err(failure));
     }
     if let Some(cache) = &request.cache
         && let Err(error) = crate::offline_cache::set_worker(PathBuf::from(cache))
     {
         let failure = request_failure(format!("cannot select the offline cache: {error:#}"));
-        return send_result(&mut tx, &mut output, Err(failure));
+        return write_result(result_file, &invocation_id, Err(failure));
     }
 
     let channel = Arc::new(Mutex::new(WorkerChannel {
-        sender: tx,
         budget: Default::default(),
-        ack_timeout: Duration::from_secs(request.options.execution.timeout_secs),
         failed: false,
         terminal: false,
     }));
@@ -206,22 +208,23 @@ pub fn run_worker() -> Result<()> {
     crate::core::output::set_machine_events(request.options.execution.machine_events);
     crate::helpers::acquire::net::set_limit(request.options.execution.network_max_bytes);
     crate::diagnostics::line("recipe: managed worker started");
-    let outcome = run_operation(&request, rx, input, &channel);
+    let outcome = run_operation(&request);
     crate::core::output::flush_progress();
     let mut channel = channel
         .lock()
         .map_err(|_| anyhow!("worker channel poisoned"))?;
     channel.terminal = true;
     if channel.failed {
-        bail!("worker diagnostic transport failed");
+        bail!("worker diagnostic output failed");
     }
-    let tx = &mut channel.sender;
-    send_result(tx, &mut output, outcome)
+    write_result(result_file, &invocation_id, outcome)
 }
 
 /// Require the private argv entry, the coordinator's bootstrap flag, and an
 /// invocation id. Public backend selection never uses these environment values.
-/// Also says whether the coordinator started a host-mode worker.
+/// Also says whether the coordinator started a host-mode worker, and selects
+/// its host root ([`crate::domain::ENV_HOST_ROOT`]) so the request file can
+/// be read below it.
 fn ensure_internal_entry() -> Result<(String, bool)> {
     let args = || std::env::args_os().skip(1);
     let host = args().eq(crate::domain::WORKER_HOST_ARGS.map(std::ffi::OsString::from));
@@ -236,13 +239,25 @@ fn ensure_internal_entry() -> Result<(String, bool)> {
     if !crate::domain::valid_name(&id) {
         bail!("private worker entry has an invalid invocation id");
     }
+    match (host, std::env::var(crate::domain::ENV_HOST_ROOT)) {
+        (true, Ok(root)) if crate::domain::valid_host_path(&root) => {
+            crate::domain::set_host_root(PathBuf::from(root))?;
+        }
+        (false, Err(std::env::VarError::NotPresent)) => {}
+        _ => bail!(
+            "private worker entry requires {} exactly for a host-mode worker, as an absolute path",
+            crate::domain::ENV_HOST_ROOT
+        ),
+    }
     Ok((id, host))
 }
 
 /// Take the host run's directories and network grant, then forbid `execve`.
-fn enter_host_mode(host: &crate::worker::protocol::HostRun) -> Result<()> {
+fn enter_host_mode(host: &crate::worker::records::HostRun) -> Result<()> {
     shed_privileges()?;
-    let root = PathBuf::from(&host.root);
+    let root = crate::domain::host_root()
+        .context("a host-mode worker has no host root")?
+        .to_path_buf();
     for directory in [
         crate::domain::INPUTS,
         crate::domain::BUILD,
@@ -255,7 +270,6 @@ fn enter_host_mode(host: &crate::worker::protocol::HostRun) -> Result<()> {
             path.display()
         );
     }
-    crate::domain::set_host_root(root)?;
     crate::helpers::acquire::net::install(&host.network, host.network_max_bytes)?;
     forbid_programs()
 }
@@ -392,29 +406,19 @@ fn forbid_programs() -> Result<()> {
     Ok(())
 }
 
-/// Read and validate the single request frame (host→worker direction).
-fn recv_request(rx: &mut FrameReceiver, input: &mut impl Read) -> Result<RequestPayload> {
-    let frame = rx.recv(input).map_err(|e| anyhow!("read request: {e}"))?;
-    frame
-        .check_direction(Direction::HostToWorker)
-        .map_err(|e| anyhow!("{e}"))?;
-    match frame.payload {
-        FramePayload::Request(req) => Ok(*req),
-        other => bail!("expected a request frame, got {}", other.op().name()),
-    }
+/// Read and validate the request file.
+fn read_request() -> Result<WorkerRequest> {
+    let path = crate::domain::local(crate::domain::REQUEST);
+    let file = crate::fsx::open_regular(&path)
+        .with_context(|| format!("cannot open {}", path.display()))?;
+    let bytes = crate::worker::records::read_bounded(file, crate::domain::MAX_REQUEST_BYTES)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    Ok(WorkerRequest::decode(&bytes)?)
 }
 
-/// Run the requested operation, reporting every checkpoint and waiting for
-/// its ack. Returns what the result frame reports; engine, request and ack
-/// problems become a [`FailureInfo`]. The checkpoint sink owns the request
-/// stream (`rx`, `input`): the `checkpoint(name)` helper reaches it through
-/// the run's session (`crate::core::saved`).
-fn run_operation(
-    req: &RequestPayload,
-    mut rx: FrameReceiver,
-    mut input: std::io::StdinLock<'static>,
-    tx: &SharedChannel,
-) -> std::result::Result<Outcome, FailureInfo> {
+/// Run the requested operation. Returns what the result reports;
+/// engine and request problems become a [`FailureInfo`].
+fn run_operation(req: &WorkerRequest) -> std::result::Result<Outcome, FailureInfo> {
     let recipe = crate::domain::local(crate::domain::MAIN_RECIPE);
     let build_dir = crate::domain::local(crate::domain::BUILD);
     let search_path = crate::domain::local(crate::domain::INPUTS);
@@ -425,31 +429,6 @@ fn run_operation(
             build_dir.display()
         )));
     }
-    // Saved states are keyed by domain path; this run has one recipe.
-    let restored = req
-        .restored_states
-        .get(crate::domain::MAIN_RECIPE)
-        .map(SavedState::from_value)
-        .transpose()
-        .map_err(|err| request_failure(format!("restoring saved state: {err}")))?;
-    let channel = Arc::clone(tx);
-    let mut checkpoint_no: u64 = 0;
-    let sink = Box::new(
-        move |recipe: &Path, state: &serde_json::Value| -> Result<()> {
-            report_checkpoint(
-                &channel,
-                &mut std::io::stdout(),
-                &mut rx,
-                &mut input,
-                &mut checkpoint_no,
-                recipe,
-                state,
-            )
-            .map(drop)
-            .map_err(|err| anyhow!("checkpoint #{checkpoint_no}: {err:#}"))
-        },
-    );
-    let _session = crate::core::saved::begin(recipe.clone(), restored, sink);
     let programs = req.host.is_none();
     let make_engine = || build_engine(&search_path, programs);
     let load = Load {
@@ -478,7 +457,6 @@ fn run_operation(
             outcome.latest = Some(engine_ops::latest(&recipe, &load).map_err(engine_failure)?);
         }
     }
-    outcome.saved = crate::core::saved::current();
     Ok(outcome)
 }
 
@@ -537,127 +515,62 @@ fn build_engine(search_path: &Path, programs: bool) -> rhai::Engine {
     engine
 }
 
-/// Send one checkpoint and block for its ack.
-fn report_checkpoint(
-    tx: &SharedChannel,
-    output: &mut impl Write,
-    rx: &mut FrameReceiver,
-    input: &mut impl Read,
-    checkpoint_no: &mut u64,
-    recipe: &Path,
-    state: &serde_json::Value,
-) -> Result<Option<u64>> {
-    // The files a checkpoint snapshots include every manifest a package
-    // helper deferred.
-    crate::target::flush_pending()?;
-    *checkpoint_no += 1;
-    let seq = *checkpoint_no;
-    let mut channel = tx.lock().map_err(|_| anyhow!("worker channel poisoned"))?;
-    if channel.failed {
-        bail!("worker diagnostic transport failed");
-    }
-    channel
-        .sender
-        .send(
-            output,
-            &FramePayload::Checkpoint(CheckpointPayload {
-                seq,
-                recipe: crate::domain::domain_path(recipe)
-                    .context("recipe identity is not UTF-8 or outside the run")?,
-                state: state.clone(),
-            }),
+/// The result's staging file, created and allocated before any recipe code
+/// runs ([`reserve_result`]); [`write_result`] fills it.
+struct ResultFile(std::fs::File);
+
+/// Create [`crate::domain::RESULT_STAGING`] and allocate
+/// [`crate::domain::RESULT_RESERVE_BYTES`] for it: `fallocate`, or written
+/// zeros on a filesystem without it. `create_new` with no-follow: a name a
+/// program planted fails the run instead of redirecting the result.
+fn reserve_result() -> Result<ResultFile> {
+    let staging = crate::domain::local(crate::domain::RESULT_STAGING);
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .mode(0o644)
+        .open(&staging)
+        .with_context(|| format!("cannot create {}", staging.display()))?;
+    let size = crate::domain::RESULT_RESERVE_BYTES;
+    let allocated = unsafe { libc::fallocate(file.as_raw_fd(), 0, 0, size as libc::off_t) };
+    let error = (allocated != 0).then(std::io::Error::last_os_error);
+    let unsupported = error.as_ref().is_some_and(|error| {
+        matches!(
+            error.raw_os_error(),
+            Some(libc::EOPNOTSUPP | libc::ENOSYS | libc::EINVAL)
         )
-        .map_err(|e| {
-            channel.failed = true;
-            anyhow!("send checkpoint #{seq}: {e}")
-        })?;
-    // Flush before waiting: the host cannot ack a checkpoint it has not seen.
-    output.flush().map_err(|e| {
-        channel.failed = true;
-        anyhow!("flush checkpoint: {e}")
-    })?;
-    let ack_timeout = channel.ack_timeout;
-    drop(channel);
-    let generation = wait_ack(rx, input, seq, ack_timeout)?;
-    crate::diagnostics::trace(&format!(
-        "worker: checkpoint #{seq} acked (generation {generation:?})"
-    ));
-    Ok(generation)
-}
-
-/// Wait up to `timeout` for the ack of checkpoint `seq`, then validate it is
-/// a host→worker ack for exactly this checkpoint.
-fn wait_ack(
-    rx: &mut FrameReceiver,
-    input: &mut impl Read,
-    checkpoint_no: u64,
-    timeout: Duration,
-) -> Result<Option<u64>> {
-    wait_readable(timeout)
-        .with_context(|| format!("wait for ack of checkpoint #{checkpoint_no}"))?;
-    let frame = rx
-        .recv(input)
-        .map_err(|e| anyhow!("ack for checkpoint #{checkpoint_no}: {e}"))?;
-    frame
-        .check_direction(Direction::HostToWorker)
-        .map_err(|e| anyhow!("ack for checkpoint #{checkpoint_no}: {e}"))?;
-    match frame.payload {
-        FramePayload::Ack(ack) if ack.seq == checkpoint_no => Ok(ack.generation),
-        FramePayload::Ack(ack) => bail!(
-            "ack seq mismatch for checkpoint #{checkpoint_no}: host acked {}",
-            ack.seq
-        ),
-        other => bail!(
-            "expected ack for checkpoint #{checkpoint_no}, got {}",
-            other.op().name()
-        ),
-    }
-}
-
-/// Bounded readability wait on stdin (fd 0), the host→worker stream.
-/// Retries on `EINTR`; anything else that is not data is an explicit error —
-/// a worker that blocks forever on a dead host is a hang, not a result.
-fn wait_readable(timeout: Duration) -> Result<()> {
-    let mut pfd = libc::pollfd {
-        fd: 0,
-        events: libc::POLLIN,
-        revents: 0,
+    });
+    let error = match error {
+        Some(_) if unsupported => file.write_all_at(&vec![0u8; size as usize], 0).err(),
+        error => error,
     };
-    // Ginux refuses (EPERM) a single poll longer than about 300 s; longer
-    // waits are a series of bounded polls.
-    const MAX_POLL: Duration = Duration::from_secs(300);
-    let mut remaining = timeout;
-    loop {
-        let slice = remaining.min(MAX_POLL);
-        let timeout_ms = slice.as_millis() as libc::c_int;
-        // Single-threaded stdin wait; EINTR retries.
-        let ready = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
-        if ready < 0 {
-            let err = std::io::Error::last_os_error();
-            if err.kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            bail!("poll stdin: {err}");
-        }
-        if ready == 0 {
-            remaining = remaining.saturating_sub(slice);
-            if remaining.is_zero() {
-                bail!("timed out after {}s", timeout.as_secs());
-            }
-            continue;
-        }
-        if pfd.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
-            bail!("stdin not readable (revents {:#x})", pfd.revents);
-        }
-        // POLLIN or POLLHUP: recv() takes pending data or reports
-        // Closed/Truncated explicitly.
-        return Ok(());
+    if let Some(error) = error {
+        let full = matches!(error.raw_os_error(), Some(libc::ENOSPC | libc::EDQUOT));
+        return Err(error).with_context(|| {
+            format!(
+                "cannot reserve {size} B for the result file {}{}",
+                staging.display(),
+                if full {
+                    " before the recipe started: the run's storage is already full \
+                     (raise its storage limit)"
+                } else {
+                    ""
+                }
+            )
+        });
     }
+    Ok(ResultFile(file))
 }
 
-fn send_result(
-    tx: &mut FrameSender,
-    output: &mut impl Write,
+/// Write the result into its reserved staging file, then rename it into
+/// place, so the coordinator finds a whole result or none. The record is
+/// written over the reserved bytes and the file then cut to its length, so
+/// no new space is needed; a record larger than the reserve is replaced by
+/// a failed result that says so.
+fn write_result(
+    result_file: ResultFile,
+    invocation_id: &str,
     outcome: std::result::Result<Outcome, FailureInfo>,
 ) -> Result<()> {
     // The outputs are read from disk: write deferred manifests first.
@@ -669,28 +582,51 @@ fn send_result(
             message: format!("cannot write the target metadata: {error:#}"),
         })),
     };
-    let payload = match outcome {
-        Ok(outcome) => ResultPayload {
-            ok: true,
-            failure: None,
-            outputs: outcome.outputs,
-            steps: outcome.steps,
-            saved: outcome.saved.to_value(),
-            latest: outcome.latest,
-            network_usage: crate::helpers::acquire::net::usage(),
-        },
-        Err(failure) => ResultPayload {
-            ok: false,
-            failure: Some(failure),
-            outputs: Default::default(),
-            steps: Vec::new(),
-            saved: SavedState::default().to_value(),
-            latest: None,
-            network_usage: crate::helpers::acquire::net::usage(),
-        },
+    let (ok, failure, outcome) = match outcome {
+        Ok(outcome) => (true, None, outcome),
+        Err(failure) => (false, Some(failure), Outcome::default()),
     };
-    tx.send(output, &FramePayload::Result(payload))
-        .map_err(|e| anyhow!("send result: {e}"))?;
-    output.flush().context("flush result")?;
+    let mut result = WorkerResult {
+        version: RECORDS_VERSION,
+        invocation_id: invocation_id.to_owned(),
+        ok,
+        failure,
+        outputs: outcome.outputs,
+        steps: outcome.steps,
+        latest: outcome.latest,
+        network_usage: crate::helpers::acquire::net::usage(),
+    };
+    let mut bytes = result.encode().map_err(|e| anyhow!("encode result: {e}"))?;
+    let reserve = crate::domain::RESULT_RESERVE_BYTES;
+    if bytes.len() as u64 > reserve {
+        result.ok = false;
+        result.failure = Some(FailureInfo {
+            kind: FailureKind::Recipe,
+            phase: None,
+            message: format!(
+                "the result record is {} B, more than the {reserve} B reserved for it \
+                 (too many outputs or steps, or names too long)",
+                bytes.len()
+            ),
+        });
+        result.outputs.clear();
+        result.steps.clear();
+        result.latest = None;
+        bytes = result.encode().map_err(|e| anyhow!("encode result: {e}"))?;
+        anyhow::ensure!(
+            bytes.len() as u64 <= reserve,
+            "even the failed result exceeds the {reserve} B reserved for it"
+        );
+    }
+    let staging = crate::domain::local(crate::domain::RESULT_STAGING);
+    let path = crate::domain::local(crate::domain::RESULT);
+    let file = result_file.0;
+    file.write_all_at(&bytes, 0)
+        .and_then(|()| file.set_len(bytes.len() as u64))
+        .and_then(|()| file.sync_all())
+        .with_context(|| format!("cannot write {}", staging.display()))?;
+    drop(file);
+    std::fs::rename(&staging, &path)
+        .with_context(|| format!("cannot rename the result to {}", path.display()))?;
     Ok(())
 }

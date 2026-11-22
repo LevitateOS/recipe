@@ -75,7 +75,7 @@ fn build(src, out) { write_file(out, "built"); }
     );
     assert_eq!(
         state["on_disk"],
-        serde_json::json!({"downloads": 0, "build": 0, "unfinished": 0})
+        serde_json::json!({"downloads": 0, "build": 0})
     );
 }
 

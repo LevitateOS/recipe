@@ -1,11 +1,8 @@
-//! The Ginux launcher's wire formats, as the coordinator reads and writes them:
-//! the result record (`docs/ginux-recipe-interfaces.md` §2) and the snapshot
-//! control exchange used to pair a checkpoint with a filesystem generation.
+//! The Ginux launcher's wire format, as the coordinator reads it: the result
+//! record (`docs/ginux-recipe-interfaces.md` §2).
 
 use crate::failure::Category;
-use anyhow::{Context, Result, bail};
-use std::io::{Read, Write};
-use std::os::unix::ffi::OsStrExt;
+use anyhow::Result;
 use std::path::Path;
 
 /// How the supervised workload ended, per the result record.
@@ -135,42 +132,4 @@ fn json_value_kind(value: &serde_json::Value) -> &'static str {
         serde_json::Value::Array(_) => "an array",
         serde_json::Value::Object(_) => "an object",
     }
-}
-
-/// Longest snapshot destination path the launcher accepts.
-const MAX_SNAPSHOT_PATH: usize = 512;
-
-/// Ask the supervisor to snapshot the domain filesystem as `generation` into
-/// `destination`, and wait for its acknowledgement.
-///
-/// Request: `GXS1`, generation (u64 LE), path length (u16 LE), path.
-/// Acknowledgement: `GXA1`, the same generation (u64 LE), 8 zero bytes.
-pub(crate) fn request_snapshot(
-    control: &mut (impl Read + Write),
-    generation: u64,
-    destination: &Path,
-) -> Result<()> {
-    let path = destination.as_os_str().as_bytes();
-    if path.len() > MAX_SNAPSHOT_PATH {
-        bail!("state snapshot destination exceeds launcher path bound");
-    }
-    let mut request = Vec::with_capacity(14 + path.len());
-    request.extend_from_slice(b"GXS1");
-    request.extend_from_slice(&generation.to_le_bytes());
-    request.extend_from_slice(&(path.len() as u16).to_le_bytes());
-    request.extend_from_slice(path);
-    control
-        .write_all(&request)
-        .context("cannot request filesystem snapshot")?;
-    let mut response = [0u8; 20];
-    control
-        .read_exact(&mut response)
-        .context("filesystem snapshot was not acknowledged")?;
-    if &response[..4] != b"GXA1"
-        || response[4..12] != generation.to_le_bytes()
-        || response[12..].iter().any(|byte| *byte != 0)
-    {
-        bail!("invalid filesystem snapshot acknowledgement");
-    }
-    Ok(())
 }

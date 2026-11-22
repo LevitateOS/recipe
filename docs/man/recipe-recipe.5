@@ -150,20 +150,17 @@ output (a map from output name to path for a dependency with several outputs).
 .TP
 .B WORK
 A private folder for build material, deleted after a successful run unless kept.
-.SH STEPS, STATES AND SAVED VALUES
+.SH STEPS AND STATES
 Four steps: download, build, install and cleanup (see recipe(1)). install does
 every missing step, then cleanup unless the keep option is on. The state of a
 program (none, downloaded, built, installed) is Recipe's own record; no recipe code
 runs to decide it. After a successful install the downloads, the unpacked
-sources, WORK and the saved state are deleted.
+sources, WORK and the kept results are deleted.
 .PP
-A recipe that must remember a value across an interruption calls save(name,
-value), saved(name), checkpoint(name) and reached(name) (see recipe-helpers(7)).
-A value is saved only together with the files of its checkpoint, a saved value
-never proves that work is done, and Recipe keeps one checkpoint at most.
-checkpoint works only inside build and configure. An interrupted build resumes from
-the newest checkpoint: Recipe restores it and calls build(src, out) again from
-the top; the recipe skips what reached(name) says is done.
+An interrupted step starts again from its beginning; a step that finished keeps
+its result. Recipe has no save, saved, checkpoint or reached. A very long build
+can be split into recipes that depend on one another (deps, build_deps): each
+finished recipe keeps its result.
 .SH SYSTEM OUTPUTS
 A system output is a root-relative tree that recipe \-\-system writes into a root
 with a receipt. Recipe finishes it after configure or build: it removes the folders

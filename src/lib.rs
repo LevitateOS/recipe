@@ -20,9 +20,8 @@
 //! to `/work/tools`. A named `target` input seeds the one output on fresh
 //! state. Recipe code never sees coordinator host paths.
 //!
-//! Only the saved values (`save`, `checkpoint`) and their matching filesystem
-//! snapshot are kept for an interrupted run; a saved value never proves that
-//! work is done.
+//! Nothing is kept for an interrupted run: the interrupted step starts again
+//! from its beginning; finished steps keep their results.
 //!
 //! See README.md, WRITING_RECIPES.md and HELPERS_AUDIT.md for the current CLI,
 //! helper signatures, input/output contracts, resource limits and recovery.
@@ -99,7 +98,7 @@ pub mod bin_support {
     pub use crate::domain::WORKER_ENTRY_ARG;
     pub use crate::helpers::internal::hash::{FileHashes, compute_all_hashes};
     pub use crate::invocation_log::retained as retained_invocation;
-    pub use crate::worker::protocol::{MAX_DIAGNOSTIC_BYTES, MAX_DIAGNOSTIC_FRAMES};
+    pub use crate::worker::records::{MAX_DIAGNOSTIC_BYTES, MAX_DIAGNOSTIC_RECORDS};
     pub use crate::worker::run_worker;
 
     /// The last event of a change, for a front end (`--machine-events`):
@@ -295,7 +294,7 @@ impl RecipeEngine {
             activate,
         };
         self.invoke_with(
-            worker::protocol::Operation::Install,
+            worker::records::Operation::Install,
             recipe_path,
             Some(&finish),
         )
@@ -306,19 +305,19 @@ impl RecipeEngine {
     /// identity exists. The result is kept, not published (`outputs` is
     /// empty).
     pub fn build(&self, recipe_path: &Path) -> Result<serde_json::Value> {
-        self.invoke(worker::protocol::Operation::Build, recipe_path)
+        self.invoke(worker::records::Operation::Build, recipe_path)
     }
 
     /// The download step only, unless Recipe keeps the downloads already.
     pub fn download(&self, recipe_path: &Path) -> Result<serde_json::Value> {
-        self.invoke(worker::protocol::Operation::Download, recipe_path)
+        self.invoke(worker::records::Operation::Download, recipe_path)
     }
 
     /// Run the recipe's own `cleanup("manual")` on fresh work folders. The
     /// material `recipe cleanup` deletes is deleted by the caller first
     /// ([`state::cleanup`]).
     pub fn cleanup(&self, recipe_path: &Path) -> Result<serde_json::Value> {
-        self.invoke(worker::protocol::Operation::Cleanup, recipe_path)
+        self.invoke(worker::records::Operation::Cleanup, recipe_path)
     }
 
     /// The destination: where this engine keeps its lock and saved-state scope.
@@ -332,7 +331,7 @@ impl RecipeEngine {
     /// latest() sees none. `recipe updates --upstream` calls this for a
     /// recipe that defines latest().
     pub fn latest(&self, recipe_path: &Path) -> Result<String> {
-        let result = self.invoke(worker::protocol::Operation::Latest, recipe_path)?;
+        let result = self.invoke(worker::records::Operation::Latest, recipe_path)?;
         result["latest"]
             .as_str()
             .map(str::to_owned)
@@ -341,7 +340,7 @@ impl RecipeEngine {
 
     fn invoke(
         &self,
-        operation: worker::protocol::Operation,
+        operation: worker::records::Operation,
         recipe: &Path,
     ) -> Result<serde_json::Value> {
         self.invoke_with(operation, recipe, None)
@@ -349,7 +348,7 @@ impl RecipeEngine {
 
     fn invoke_with(
         &self,
-        operation: worker::protocol::Operation,
+        operation: worker::records::Operation,
         recipe: &Path,
         finish: Option<&launch::Finish<'_>>,
     ) -> Result<serde_json::Value> {
@@ -362,11 +361,11 @@ impl RecipeEngine {
                 recipe,
                 search_path: self.recipes_path.as_deref(),
                 persist_state: self.persist_state,
-                options: worker::protocol::InvocationOptions {
+                options: worker::records::InvocationOptions {
                     defines: self.defines.clone(),
                     execution: self.execution.clone(),
                 },
-                inputs: if operation == worker::protocol::Operation::Latest {
+                inputs: if operation == worker::records::Operation::Latest {
                     &no_inputs
                 } else {
                     &self.inputs

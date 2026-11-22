@@ -39,7 +39,7 @@ away. All of them are collected, numbered, at the end.
 - Recipe only tells that upstream has a newer version. It never changes a
   recipe and never installs a version the recipe does not name.
 - After a successful install Recipe deletes the downloads, the unpacked
-  source, the build material and the saved state, unless the user chose to
+  source, the build material and the kept results, unless the user chose to
   keep them. Files are moved into place, not copied, where both places are on
   the same disk.
 - Nothing is hidden in storage reporting. Every step can be run alone. One
@@ -854,9 +854,6 @@ place of `ctx`:
 | `tree_text(tree, path)` | the text of a packaged file; fails naming the file when the packages no longer ship it |
 | `enable_service(tree, unit, service)` | on an `rpm` tree the links `systemctl enable` makes for the systemd `unit`, with its `Alias=` names; on an `apk` tree the OpenRC `service` in the default runlevel; an empty name skips that system |
 
-New, for saved values and resuming (section 7): `save`, `saved`,
-`checkpoint`, `reached`.
-
 **Decided (2026-11-16, owner away):** the four tree helpers move into the engine under these
 names. `system-files.rhai` and `installed-system.rhai` drop
 their own `put` and `link` for them. Why: the plan moves the copied group code
@@ -877,7 +874,7 @@ the man page for nothing, and `root-effects` defines its own function named
 | download | fetches `SOURCES` and the pins for this system into the download store |
 | build | unpacks the sources, unpacks the packages, places `FILES`, runs `build` or `configure`, finishes a `system` tree, runs `verify`, and keeps the result |
 | install | activates a `package` output, writes a `system` output into the root, or publishes a producer's outputs |
-| cleanup | deletes the program's downloads, unpacked sources, build material and saved state |
+| cleanup | deletes the program's downloads, unpacked sources, build material and kept results |
 
 `install` does every step still missing, in order, and then cleanup, unless
 the user chose to keep the material. Each step can also be run alone.
@@ -908,7 +905,7 @@ root image and the engine's behaviour versions.
 
 Beside the state, Recipe reports what the program holds on disk: its
 downloads, its build material (unpacked sources, `WORK`, a result not
-installed) and an unfinished run's saved state. An installed program with
+installed). An installed program with
 the keep option on holds material too.
 
 ### 6.3 Commands
@@ -922,7 +919,7 @@ the keep option on holds material too.
 | `recipe remove NAME` | removes the installed files by the receipt, then whatever is left of its downloads and build material |
 | `recipe cleanup NAME` | deletes the program's downloads and build material; the installed program stays |
 | `recipe cleanup NAME --downloads` | its downloads only |
-| `recipe cleanup NAME --build` | its build material only (unfinished run included) |
+| `recipe cleanup NAME --build` | its build material only (kept results) |
 | `recipe cleanup` | the downloads and build material of every program |
 | `recipe cleanup --logs` | the diagnostic logs |
 | `recipe state NAME` | prints the program's state (section 8.5) |
@@ -974,7 +971,7 @@ everything" honest.
 
 ### 6.5 Disk rules
 
-- Downloads, unpacked sources, `WORK` and saved state exist only between
+- Downloads, unpacked sources, `WORK` and kept results exist only between
   steps. After a successful install they are deleted, unless kept.
 - A result moves into the package store, and a placed file moves from the
   unpacked source, wherever both are on the same disk.
@@ -984,19 +981,20 @@ everything" honest.
     source and a `git` checkout are the downloads themselves and are copied
     (section 2.5).
   - A host run moves its outputs from the run's directory into publication
-    where that directory and the state root share a disk. With saved state
+    where that directory and the state root share a disk. With kept records
     (the default) it first archives the run's `work` and `out` as the kept
     result, so the result's bytes are on disk twice until cleanup deletes
-    the kept result after the install; without saved state nothing is
+    the kept result after the install; without kept records nothing is
     archived.
   - A Ginux run hands back one archive of its `/work` and `/out`, and its
     outputs are unpacked from that archive: Ginux keeps the run's files in
     its memory storage and has no other way out. Until cleanup deletes the
-    kept result (or, without saved state, until the run ends) the result's
+    kept result (or, without kept records, until the run ends) the result's
     bytes are on disk twice, in the archive and unpacked. The same holds
     when an install publishes a result kept by an earlier `build`.
-- Saved state exists only while a run is unfinished, one copy at most, and
-  is deleted when the install succeeds.
+- An interrupted step keeps nothing: its step starts again from its
+  beginning. Only finished steps (downloads, a finished result) leave
+  records, and they are deleted when the install succeeds.
 - A download two programs name is deleted only when neither still needs it.
 - `recipe remove` frees the program's space at once: there are no earlier
   versions.
@@ -1015,47 +1013,33 @@ Update) and Remove. Behind "One step at a time" it shows download, build,
 install and cleanup, each with its button and what it holds on disk, taken
 from `steps` in `recipe list --json` and from `recipe state`.
 
-## 7. Saved values and resuming
+## 7. Interruption and restarting
 
-`ctx.state` is gone. A recipe that must remember a value across an
-interruption saves it:
+A step that is interrupted (the user cancels, the deadline passes, the
+machine stops) keeps nothing of its own. The next run of that step starts it
+again from its beginning, with the kept downloads if the download step
+finished, otherwise from nothing. A step that finished keeps its result, so
+`install` after an interruption does only the steps still missing (section
+6.1). Top-level code runs again each time, so current facts stay current.
 
-| Helper | Does |
-|---|---|
-| `save(name, value)` | keeps a JSON-compatible value (map, array, string, boolean, `()`, finite number) under `name` |
-| `saved(name)` | the value saved under `name`, or `()` |
-| `checkpoint(name)` | records the work folders, the sources, the output and every saved value as one checkpoint |
-| `reached(name)` | `true` when this run was restored from checkpoint `name` or a later one |
+There is no `save`, `saved`, `checkpoint` or `reached`: a recipe cannot keep a
+value across an interruption, and `build` is always called from its top. What
+`--no-persist-state` turns off is the kept downloads and results, not
+managed execution or publication. `--restore-file` is a Ginux launcher
+option Recipe uses to seed a run with kept downloads or the target view; it
+restores no checkpoint.
 
-Rules, as for `ctx.state` today: a value is saved only together with the
-files of its checkpoint; a saved value never proves that work is done; Recipe
-keeps one checkpoint at most and deletes it when the install succeeds.
-`--no-persist-state` turns checkpoints off.
+A build that is long enough to be worth restarting in parts is written as
+several recipes that depend on one another (`deps`, `build_deps`): each finished recipe
+keeps its result, and only the interrupted one starts again. The kernel does
+this in `distro/builder` (`linux-source`, `linux-compile`, `linux`).
 
-An interrupted `build` resumes from the newest checkpoint: Recipe restores it
-and calls `build(src, out)` again from the top.
-
-```rhai
-fn build(src, out) {
-    let dir = src.source;
-    if !reached("configured") {
-        exec_checked("./configure", ["--prefix=" + PREFIX], #{ cwd: dir });
-        checkpoint("configured");
-    }
-    exec_checked("make", ["-j" + JOBS], #{ cwd: dir });
-    // ...
-}
-```
-
-**Decided (2026-11-16, owner away):** a resumed `build` skips what it did with the
-function `reached(name)` above. Why: the note names `save`, `saved` and
-`checkpoint` but not how a restarted `build` knows where it stopped, and
-`saved` alone cannot order several checkpoints.
-
-Who uses saved values today: `bun-toolchain`, `tui-binary` and
-`prebuilt-fetch`, each to carry a checksum from one hook to the next. In one
-`build` function those become local variables; after the rewrite no recipe
-needs `save` or `checkpoint`. They stay for long builds.
+**Decided (2026-11-22):** checkpoints, `save`, `saved` and `reached` are
+removed, with the coordinator's control channel and the acknowledgement frames
+they needed. The kernel recipe was split into the three recipes above instead.
+The record format of the kept state changed with it (`RECORD_VERSION` 3: no
+saved values; `recipe state --json` `on_disk` has `downloads` and `build`
+only).
 
 ## 8. JSON
 
@@ -1127,7 +1111,7 @@ Each package:
 | `installed_on` | seconds since 1970 |
 | `size_bytes` | its installed files |
 | `keep` | the keep option |
-| `on_disk` | `{"downloads": BYTES, "build": BYTES, "unfinished": BYTES}`: material it holds beside the installed files |
+| `on_disk` | `{"downloads": BYTES, "build": BYTES}`: material it holds beside the installed files |
 | `update` | `null`, or `{"to": VERSION, "reason": "version" or "recipe", "source": NAME}`: the recipe as last fetched names another version or is another file. Nothing is fetched to know it. |
 
 Gone: `held`, `kept`, earlier versions. "Newer upstream" is not here: it is
@@ -1139,7 +1123,7 @@ known only when the user asks (section 8.3).
   {"name": "bat", "version": "0.26.0", "recipe": "/home/u/.local/share/recipe/sources/levitate/bat.rhai",
    "source": "levitate", "commit": "4c1e9a0", "sha256": "9f2b...", "needs": {"outputs": {"package": "directory"}},
    "installed_on": 1795300000, "size_bytes": 6291456, "keep": false,
-   "on_disk": {"downloads": 0, "build": 0, "unfinished": 0},
+   "on_disk": {"downloads": 0, "build": 0},
    "update": {"to": "0.26.1", "reason": "version", "source": "levitate"}}]}
 ```
 
@@ -1194,7 +1178,7 @@ two kinds), `path` (for `build_image` and `logs`, else `null`).
 | `downloaded` | downloads of programs not installed | `recipe cleanup NAME --downloads` |
 | `built` | build material and results of programs not installed | `recipe cleanup NAME --build` |
 | `kept` | material of installed programs with the keep option | `recipe cleanup NAME` |
-| `unfinished` | saved state of interrupted runs | `recipe cleanup NAME --build` |
+| `unfinished` | published outputs no command took (left by an interrupted run, or a producer's outputs its caller did not take) | `recipe cleanup NAME --build` |
 | `build_image` | the cached compiler image (about 1.3 GB) | `recipe runtime remove`; `removable` is false for an image installed with the system |
 | `logs` | diagnostic logs | `recipe cleanup --logs` |
 
@@ -1222,7 +1206,7 @@ way to remove each kind, and neither exists today.
 ```json
 {"schema_version": 1, "name": "gh", "version": "2.103.3", "state": "downloaded", "installed_version": null,
  "keep": false, "steps": ["download", "install", "cleanup"],
- "on_disk": {"downloads": 8312345, "build": 0, "unfinished": 0}}
+ "on_disk": {"downloads": 8312345, "build": 0}}
 ```
 
 `version` is the recipe's; `installed_version` the installed one or `null`.
@@ -1582,7 +1566,7 @@ Also found:
   today's engine (section 1); `steam` and the `xlibre` group look broken by it.
 - The builder reads `ctx.kernel_version` from the kernel result; it can use
   its own pin (8.6).
-- No recipe uses `save`, `saved` or `checkpoint` after the rewrite (7).
+- No recipe uses `save`, `saved` or `checkpoint` after the rewrite; they were removed on 2026-11-22 (7).
 - Seven OS recipes compute `PACKAGE` fields; one computes its name (2.3).
 
 ## 11. Decisions taken while the owner was away
@@ -1662,7 +1646,8 @@ it follows the plan's answer 12.
     Why: the builder relies on its own stamps and published outputs only.
 24. **A resumed `build` skips finished work with `reached(name)`.** Why:
     `save`, `saved` and `checkpoint` alone cannot say where a restarted build
-    stopped.
+    stopped. *Superseded 2026-11-22: `reached`, `save`, `saved` and
+    `checkpoint` are removed; an interrupted step starts again (section 7).*
 25. **`installed --json` carries the "Update" mark,** the offline one;
     "Newer upstream" only from `updates --upstream`. Why: one call for the
     Installed page, and asking upstream stays a separate request.
@@ -1717,8 +1702,7 @@ of the format.
   else `install`; `auto.install.*` appears only for recipes without `build`.
 - With a single output, `out` is placed at `/out/NAME` and the `target` input
   seeds that folder; `target` with other output shapes is refused.
-- `checkpoint` works only inside `build` and `configure`; `save` and `saved`
-  anywhere. `latest` runs as a worker operation on the host. `verify`'s
+- `latest` runs as a worker operation on the host. `verify`'s
   read-only rule is not enforced by the engine.
 - Visibility of the engine's constants is a variable resolver, not a module
   (Rhai's optimizer would inline module variables over same-named parameters).
@@ -1730,7 +1714,7 @@ of the format.
   --upstream` takes recipe names as plain arguments.
 - State and disk figures for programs not installed come from the computer's
   store; a person's own store may differ. A kept program's material counts under
-  `kept`; an unfinished run's only under `unfinished`.
+  `kept`.
 - The `--system` scope has `state` only; it has no `download`, `build` or
   `cleanup`.
 - A cleanup result (8.6) carries `outputs: {}`. The builder passes the same
@@ -1747,9 +1731,9 @@ of the format.
   between programs. `recipe download` keeps them in the program's download slot,
   named by its state key (not by the full identity of a build, which also names
   the dependencies' outputs), so a build or install of the same key starts from
-  them. They are kept beside a build's unfinished run or result: `recipe cleanup
-  NAME --downloads` removes only the downloads, `--build` only the unfinished run
-  and the result; the cleanup after an install and `recipe remove` remove both.
+  them. They are kept beside a build's result: `recipe cleanup
+  NAME --downloads` removes only the downloads, `--build` only the result; the
+  cleanup after an install and `recipe remove` remove both.
 - The state key and the identity of a build name `HOST_LIBC`. A receipt records
   the state key it was built with; `recipe install` of an installed program finds
   nothing missing only when the recipe file, the version and the state key are
@@ -1757,7 +1741,7 @@ of the format.
 - A `FILES` file or folder entry beside a folder entry of the same source
   renames it: it is not also at its old place inside the folder. Only a path two
   entries name exactly is copied for the later one.
-- A `RERUN` recipe's successful run leaves no checkpoint to be resumed.
+- A `RERUN` recipe's successful run leaves no kept result.
 - `latest()` runs without inputs; an input or a define without a default that it
   is not given is `()` there.
 - A producer's (`--no-activate`) run result says `installed`: its outputs are

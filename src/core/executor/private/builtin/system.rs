@@ -33,14 +33,12 @@ const NOT_OWNED: [&str; 12] = [
 /// pinned package into the one output tree, natively, without running its
 /// scripts, in pin order: first the packages whose `var/` is not kept, then
 /// `var/` is deleted, then the packages whose `var/` is kept as state seeds.
-/// On a run restored from a checkpoint the restored tree has them already.
 pub(crate) fn unpack_packages(
     declared: &Declared,
     fetched: &Fetched,
     outputs: &Outputs,
-    resumed: bool,
 ) -> Result<()> {
-    if declared.packages.is_none() || declared.functions.contains(&"build") || resumed {
+    if declared.packages.is_none() || declared.functions.contains(&"build") {
         return Ok(());
     }
     let [(_, PathKind::Directory, tree)] = outputs.as_slice() else {

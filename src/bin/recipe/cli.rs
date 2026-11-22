@@ -258,7 +258,7 @@ pub(crate) enum Commands {
 
     /// Show everything Recipe holds on disk, by kind, and what removes each
     #[command(
-        after_help = "Examples:\n  recipe storage\n  recipe storage --json\n\nSeven kinds, each byte counted once: installed (the package store), downloaded,\nbuilt, kept (material of installed programs with --keep), unfinished (saved\nstate of interrupted runs, and published outputs no command took),\nbuild_image (the cached compiler image; 'recipe runtime remove') and logs\n('recipe cleanup --logs'). Nothing is changed."
+        after_help = "Examples:\n  recipe storage\n  recipe storage --json\n\nSeven kinds, each byte counted once: installed (the package store), downloaded,\nbuilt, kept (material of installed programs with --keep), unfinished\n(published outputs no command took),\nbuild_image (the cached compiler image; 'recipe runtime remove') and logs\n('recipe cleanup --logs'). Nothing is changed."
     )]
     Storage,
 
@@ -276,7 +276,7 @@ pub(crate) enum Commands {
 
     /// Delete downloads and build material; installed programs stay
     #[command(
-        after_help = "Examples:\n  recipe cleanup kitty\n  recipe cleanup kitty --downloads\n  recipe cleanup kitty --build\n  recipe cleanup\n  recipe cleanup --logs\n\nWith a name: that program's downloads, kept results and unfinished runs (and\nthose of the dependency runs made for it); then the recipe's own\ncleanup(\"manual\") runs when it defines one. Without a name: the same for every\nprogram, and the published outputs no running invocation holds. Material kept\nwith --keep is deleted too; the keep option stays on. The installed programs\nstay. --logs deletes the diagnostic logs instead."
+        after_help = "Examples:\n  recipe cleanup kitty\n  recipe cleanup kitty --downloads\n  recipe cleanup kitty --build\n  recipe cleanup\n  recipe cleanup --logs\n\nWith a name: that program's downloads and kept results (and\nthose of the dependency runs made for it); then the recipe's own\ncleanup(\"manual\") runs when it defines one. Without a name: the same for every\nprogram, and the published outputs no running invocation holds. Material kept\nwith --keep is deleted too; the keep option stays on. The installed programs\nstay. --logs deletes the diagnostic logs instead."
     )]
     Cleanup {
         /// Recipe path or recipe name; without it, every program. Name lookup follows the same rules as `recipe install`.
@@ -284,7 +284,7 @@ pub(crate) enum Commands {
         /// Only the downloads.
         #[arg(long, conflicts_with = "build")]
         downloads: bool,
-        /// Only the build material: kept results and unfinished runs.
+        /// Only the build material: kept results.
         #[arg(long)]
         build: bool,
         /// The diagnostic logs of finished runs, instead of any program's material.

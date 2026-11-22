@@ -37,10 +37,11 @@ fn default_help_footer() -> String {
 }
 
 fn run() -> Result<()> {
-    // Private worker command: same binary, protocol-driven; environment
-    // variables alone never change public CLI dispatch. The worker reads one
-    // request frame from stdin, runs the existing engine in-process under the
-    // worker execution context, and terminates stdout with exactly one result frame.
+    // Private worker command: same binary, driven by its request file; environment
+    // variables alone never change public CLI dispatch. The worker reads the
+    // request file, runs the existing engine in-process under the worker
+    // execution context, writes line records on stdout and exactly one result
+    // file.
     // Private dispatch precedes public CLI parsing; the recipe path follows
     // the coordinator-supplied marker.
     if std::env::args_os().nth(1).as_deref()

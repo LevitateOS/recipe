@@ -116,7 +116,7 @@ fn managed_state_keeps_one_result_and_publishes_it_again_without_building() {
 
 fn wait_for_log(child: &mut std::process::Child, path: &Path, marker: &str) {
     // Image preparation precedes the marker; this is a bootstrap allowance,
-    // not a change to execution deadlines or the checkpoint interruption point.
+    // not a change to execution deadlines or the interruption point.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
     loop {
         let text = std::fs::read_to_string(path).unwrap_or_default();
@@ -138,68 +138,66 @@ fn wait_for_log(child: &mut std::process::Child, path: &Path, marker: &str) {
 }
 
 #[test]
-fn managed_state_recovers_before_and_after_checkpoint_acknowledgement() {
-    for pause in ["before", "after"] {
-        let (dir, recipes) = create_test_env();
-        let source = r#"
+fn managed_state_interrupted_build_restarts_its_step() {
+    let (dir, recipes) = create_test_env();
+    // The first run is killed after the first half of its build. Nothing of
+    // it is kept: the next run, the same command (same recipe, defines and
+    // inputs, so the same identity), does the whole step again. Only the
+    // kill differs: the second run is left to finish its pause.
+    let source = r#"
 const RECIPE_API = 1;
 const NEEDS = #{ outputs: #{ product: "file" } };
-const PAUSE = "PAUSE_AT";
 fn build(src, out) {
     let built = join_path(WORK, "built");
-    if !reached("built") {
-        if exists(built) { throw "unacknowledged bytes survived recovery"; }
-        print("BUILD-RAN");
-        write_file(built, "built");
-        save("nested", #{array: [1, true, "value"], child: #{number: 1.25}});
-        if PAUSE == "before" { print("BEFORE-CHECKPOINT"); exec_checked("/usr/bin/sleep", ["3"]); }
-        checkpoint("built");
-        if PAUSE == "after" { print("AFTER-CHECKPOINT"); exec_checked("/usr/bin/sleep", ["3"]); }
-    } else {
-        let nested = saved("nested");
-        if nested.array[2] != "value" || nested.child.number != 1.25 { throw "saved values did not restore"; }
-        if read_file(built) != "built" { throw "files did not restore"; }
-    }
+    if exists(built) { throw "an interrupted build's bytes survived"; }
+    print("BUILD-RAN");
+    write_file(built, "built");
+    print("BUILD-HALF");
+    exec_checked("/usr/bin/sleep", ["10"]);
     write_file(out, read_file(built));
 }
-"#
-        .replace("PAUSE_AT", pause);
-        write_recipe(&recipes, "check", &source);
-        let log = dir.path().join("interrupted.log");
-        let mut child = retained_command(&recipes, "install")
-            .stdout(Stdio::null())
-            .stderr(std::fs::File::create(&log).unwrap())
-            .spawn()
-            .unwrap();
-        wait_for_log(
-            &mut child,
-            &log,
-            if pause == "before" {
-                "BEFORE-CHECKPOINT"
-            } else {
-                "AFTER-CHECKPOINT"
-            },
-        );
-        child.kill().unwrap();
-        assert!(!child.wait().unwrap().success());
-        let output = retained_command(&recipes, "install").output().unwrap();
-        assert_success(&output);
-        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(
-            String::from_utf8_lossy(&output.stderr).contains("BUILD-RAN"),
-            pause == "before"
-        );
-        assert_eq!(product(&result), "built");
-        assert_eq!(
-            std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
-            source
-        );
-        // The install finished: the saved state is deleted with the rest.
-        assert!(
-            pointers(&dir.path().join("state")).is_empty(),
-            "a finished install left its saved state"
-        );
-    }
+"#;
+    write_recipe(&recipes, "check", source);
+    let log = dir.path().join("interrupted.log");
+    let mut child = retained_command(&recipes, "install")
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    wait_for_log(&mut child, &log, "BUILD-HALF");
+    child.kill().unwrap();
+    assert!(!child.wait().unwrap().success());
+    // The run's state root exists (its log was opened before the worker
+    // started), so the checks below look at the real place.
+    let state = dir.path().join("state");
+    assert!(
+        state.join("logs").is_dir(),
+        "no state root at {}",
+        state.display()
+    );
+    assert!(
+        pointers(&state).is_empty(),
+        "an interrupted build kept a generation"
+    );
+    let published = state.join("exports");
+    assert!(
+        !published.exists() || std::fs::read_dir(&published).unwrap().next().is_none(),
+        "an interrupted build published something"
+    );
+    let output = retained_command(&recipes, "install").output().unwrap();
+    assert_success(&output);
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(String::from_utf8_lossy(&output.stderr).contains("BUILD-RAN"));
+    assert_eq!(product(&result), "built");
+    assert_eq!(
+        std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
+        source
+    );
+    // The install finished: nothing of its material is kept.
+    assert!(
+        pointers(&dir.path().join("state")).is_empty(),
+        "a finished install left its material"
+    );
 }
 
 #[test]
@@ -335,7 +333,6 @@ fn build(src, out) {
     assert_eq!(state["state"], "none");
     assert_eq!(state["on_disk"]["build"], 0);
     assert_eq!(state["on_disk"]["downloads"], 0);
-    assert_eq!(state["on_disk"]["unfinished"], 0);
     for (name, source) in [("helper", dependency), ("check", parent)] {
         assert_eq!(
             std::fs::read_to_string(recipes.join(format!("{name}.rhai"))).unwrap(),
@@ -356,7 +353,7 @@ fn managed_state_disable_and_current_api_requirement_are_explicit() {
         assert_success(&output);
         let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(product(&result), "alpha");
-        // Disabling recovery still retains diagnostics; no state/files pair is saved.
+        // Disabling persistence still retains diagnostics; nothing is kept.
         let entries = walkdir::WalkDir::new(dir.path().join("state"))
             .into_iter()
             .map(Result::unwrap)
@@ -448,30 +445,6 @@ fn managed_state_defaults_to_application_state_without_a_checkout() {
     assert_eq!(
         std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
         SOURCE
-    );
-}
-
-#[test]
-fn managed_state_rejects_nonserializable_values_with_the_field_path() {
-    let (_dir, recipes) = create_test_env();
-    let source = r#"
-const RECIPE_API = 1;
-const NEEDS = #{};
-fn helper() {}
-fn build(src, out) { save("child", #{callback: Fn("helper")}); }
-"#;
-    write_recipe(&recipes, "check", source);
-    let output = retained_command(&recipes, "install").output().unwrap();
-    assert!(!output.status.success());
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        error.contains("save(\"child\", ...)[\"callback\"]"),
-        "{error}"
-    );
-    assert!(error.contains("cannot be saved"), "{error}");
-    assert_eq!(
-        std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
-        source
     );
 }
 

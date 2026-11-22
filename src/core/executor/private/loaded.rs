@@ -25,7 +25,7 @@ impl From<anyhow::Error> for EngineError {
 
 /// A recipe compiled with this run's constants.
 pub(crate) struct Loaded<'e> {
-    /// Canonical identity (checkpoints and saved state are keyed by it).
+    /// Canonical identity.
     pub path: PathBuf,
     pub base_path: Option<PathBuf>,
     /// The recipe's name, its file name without `.rhai` (equal to

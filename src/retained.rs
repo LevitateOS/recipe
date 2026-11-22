@@ -2,17 +2,17 @@
 //!
 //! These records are how Recipe knows what is done (docs/recipe-format.md,
 //! section 6.2), never from recipe code. Per recipe and destination (a
-//! scope) and per build identity, each generation is one archive of the
-//! run's `work` and `out` with its record: the archive's SHA-256 and length,
-//! the saved values, how far the run got ([`Reached`]: an unfinished
-//! checkpoint, the downloads, or a finished result with its outputs) and
-//! the state key ([`crate::state::key`]). A generation counts only while its
-//! archive still has the recorded SHA-256 and length.
+//! scope) and per build identity, each generation is one archive of a
+//! finished run's `work` and `out` with its record: the archive's SHA-256
+//! and length, how far the run got ([`Reached`]: the downloads, or a
+//! finished result with its outputs) and the state key
+//! ([`crate::state::key`]). A generation counts only while its archive still
+//! has the recorded SHA-256 and length. An interrupted run keeps nothing: its
+//! step starts again.
 use crate::inputs::PreparedInvocation;
-use crate::worker::protocol::InvocationOptions;
+use crate::worker::records::InvocationOptions;
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, OpenOptions};
@@ -22,8 +22,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// A saved state is bounded by the request frame that carries it back.
-const MAX_STATE: u64 = crate::worker::protocol::MAX_FRAME_LEN as u64;
+/// Largest record Recipe reads.
+const MAX_STATE: u64 = 4 * 1024 * 1024;
 
 /// The state root: the selected directory, or the per-user application state.
 /// Everything the coordinator keeps (saved state, logs, default destinations)
@@ -87,9 +87,6 @@ pub(crate) fn lock_destination(destination: &Path, timeout: Duration) -> Result<
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Reached {
-    /// A `checkpoint(name)` inside `build` or `configure`: an unfinished
-    /// run, after its download step.
-    Checkpoint,
     /// `recipe download`: the download step finished.
     Downloaded,
     /// The build step finished: the kept result, with its outputs.
@@ -105,7 +102,6 @@ struct Record {
     archive: String,
     sha256: String,
     bytes: u64,
-    states: BTreeMap<String, Value>,
     reached: Reached,
     /// A finished result's outputs: each declared output to its domain
     /// path. Empty for the other generations.
@@ -141,7 +137,7 @@ impl Record {
         // Only a finished result names outputs; a recipe that declares none
         // keeps a finished result without them.
         let outputs_valid = (self.reached == Reached::Built || self.outputs.is_empty())
-            && self.outputs.len() <= crate::worker::protocol::MAX_OUTPUTS
+            && self.outputs.len() <= crate::worker::records::MAX_OUTPUTS
             && self.outputs.iter().all(|(name, path)| {
                 crate::domain::valid_name(name) && *path == crate::domain::output_path(name)
             });
@@ -163,7 +159,7 @@ impl Record {
 }
 
 /// The record format; another number is not read.
-const RECORD_VERSION: u32 = 2;
+const RECORD_VERSION: u32 = 3;
 
 // Saved-state layout under an identity directory.
 const CURRENT: &str = "current.json";
@@ -182,14 +178,12 @@ pub(crate) struct Retained {
     /// For a build or install: the download slot of the same state key
     /// (its directory and its current Downloaded record), if one is kept.
     download: Option<(PathBuf, Record)>,
-    allowed: HashSet<String>,
-    state_budget: usize,
     archive_bound: u64,
 }
-pub(crate) struct Pending {
+struct Pending {
     directory: tempfile::TempDir,
-    pub path: PathBuf,
-    pub generation: u64,
+    path: PathBuf,
+    generation: u64,
 }
 
 /// The SHA-256 of the file at `path`, in hex (the launcher's exact identity).
@@ -223,21 +217,6 @@ impl Retained {
         write_scope_about(&scope, &recipe, &destination)?;
         let mut defines = options.defines.clone();
         defines.sort();
-        // Saved state must fit the next invocation's request frame.
-        let mut state_budget = crate::worker::protocol::restored_state_budget(options)?;
-        // A host run's request also carries its directory and network pins.
-        if let Some(host_root) = host_root {
-            let host = crate::worker::protocol::HostRun {
-                root: host_root.to_string_lossy().into_owned(),
-                network: prepared.network.host_grants(),
-                network_max_bytes: options.execution.network_max_bytes,
-            };
-            let cache = crate::host::offline_cache_text()?;
-            let reserve = serde_json::to_vec(&host)?.len()
-                + r#","host":"#.len()
-                + serde_json::to_vec(&cache)?.len();
-            state_budget = state_budget.saturating_sub(reserve);
-        }
         let inputs = prepared
             .inputs
             .iter()
@@ -368,15 +347,10 @@ impl Retained {
         let identity = if downloads { key.to_owned() } else { identity };
         let directory = scope.join(&identity);
         crate::fsx::private_dir(&directory, false)?;
-        let allowed = prepared
-            .inputs
-            .iter()
-            .map(|input| crate::domain::input_path(&input.name))
-            .collect::<HashSet<_>>();
         let record_path = directory.join(CURRENT);
         let current = match crate::fsx::open_regular(&record_path) {
             Ok(mut file) => {
-                if file.metadata()?.len() > state_budget as u64 {
+                if file.metadata()?.len() > MAX_STATE {
                     bail!("saved state exceeds byte bound");
                 }
                 let mut bytes = Vec::new();
@@ -394,7 +368,6 @@ impl Retained {
                 {
                     bail!("saved generation directory is a symlink");
                 }
-                validate_states(&record.states, &allowed)?;
                 record
             }
             Err(error)
@@ -409,8 +382,7 @@ impl Retained {
                     archive: String::new(),
                     sha256: String::new(),
                     bytes: 0,
-                    states: BTreeMap::new(),
-                    reached: Reached::Checkpoint,
+                    reached: Reached::Downloaded,
                     outputs: BTreeMap::new(),
                     key: key.to_owned(),
                 }
@@ -422,7 +394,6 @@ impl Retained {
                 let record = owned_record(&download_slot.join(CURRENT), key)?;
                 (record.reached == Reached::Downloaded
                     && record.bytes <= options.execution.archive_bound()
-                    && validate_states(&record.states, &allowed).is_ok()
                     && fs::symlink_metadata(download_slot.join(record.folder()))
                         .is_ok_and(|metadata| metadata.is_dir()))
                 .then_some((download_slot, record))
@@ -434,19 +405,13 @@ impl Retained {
             current,
             downloads,
             download,
-            allowed,
-            state_budget,
             archive_bound: options.execution.archive_bound(),
         };
         // Other identities stay until this one keeps a generation of its own
-        // (`commit_as`): a run that fails before that leaves the saved state
+        // (`commit`): a run that fails before that leaves the saved state
         // it found.
         retained.prune_best_effort(false);
         Ok(retained)
-    }
-
-    pub fn states(&self) -> &BTreeMap<String, Value> {
-        &self.current.states
     }
 
     /// How far the current generation got; None when there is none.
@@ -503,14 +468,6 @@ impl Retained {
         self.download.is_some()
     }
 
-    /// The saved values of the kept downloads.
-    pub fn download_states(&self) -> BTreeMap<String, Value> {
-        self.download
-            .as_ref()
-            .map(|(_, record)| record.states.clone())
-            .unwrap_or_default()
-    }
-
     /// [`Self::restore_input`] from the download slot of this state key. The
     /// slot stays: the downloads are kept beside a build's generations until
     /// they are cleaned up (`recipe cleanup --downloads`, or after install).
@@ -523,36 +480,7 @@ impl Retained {
         }
     }
 
-    /// A `RERUN` recipe's successful run: its result is never kept, and an
-    /// unfinished run it checkpointed is finished, so nothing of this
-    /// identity stays to be resumed. The caller holds the destination lock.
-    pub fn discard(&mut self) -> Result<()> {
-        if self.current.generation == 0 {
-            return Ok(());
-        }
-        for entry in fs::read_dir(&self.directory)?.flatten() {
-            if entry.file_type().is_ok_and(|kind| kind.is_dir())
-                && entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(GENERATION_PREFIX)
-            {
-                remove_generation(&entry.path())?;
-            }
-        }
-        match fs::remove_file(self.directory.join(CURRENT)) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                return Err(error.into());
-            }
-            _ => {}
-        }
-        self.current.generation = 0;
-        self.current.states.clear();
-        self.current.outputs.clear();
-        Ok(())
-    }
-
-    pub fn begin(&self) -> Result<Pending> {
+    fn begin(&self) -> Result<Pending> {
         let generation = self
             .current
             .generation
@@ -569,25 +497,12 @@ impl Retained {
         })
     }
 
-    /// Keep a checkpoint: an unfinished run's files with its saved state.
-    pub fn commit(&mut self, pending: Pending, recipe: &str, state: Value) -> Result<u64> {
-        self.commit_as(pending, recipe, state, Reached::Checkpoint, BTreeMap::new())
-    }
-
-    fn commit_as(
+    fn commit(
         &mut self,
         pending: Pending,
-        recipe: &str,
-        state: Value,
         reached: Reached,
         outputs: BTreeMap<String, String>,
     ) -> Result<u64> {
-        if !self.allowed.contains(recipe) || !state.is_object() {
-            bail!("checkpoint names an unknown recipe or an invalid saved state");
-        }
-        let mut states = self.current.states.clone();
-        states.insert(recipe.to_owned(), state);
-        validate_states(&states, &self.allowed)?;
         let mut archive = crate::fsx::open_regular(&pending.path)?;
         let (bytes, sha256) =
             crate::fsx::copy_hashed(&mut archive, &mut std::io::sink(), self.archive_bound)?;
@@ -605,15 +520,14 @@ impl Retained {
             archive: format!("{folder}/{FILES}"),
             bytes,
             sha256,
-            states,
             reached,
             outputs,
             key: self.key.clone(),
         };
         record.validate(&self.current.identity)?;
         let data = serde_json::to_vec(&record)?;
-        if data.len() > self.state_budget {
-            bail!("runtime state exceeds byte bound");
+        if data.len() as u64 > MAX_STATE {
+            bail!("state record exceeds byte bound");
         }
         let record_path = pending.directory.path().join(RECORD);
         let mut history = OpenOptions::new()
@@ -635,7 +549,7 @@ impl Retained {
         ])?;
         crate::fsx::sync_directories(&[pending.directory.path()])?;
         // Preserve every complete previous generation, including if publishing
-        // the current pointer or delivering the worker acknowledgement fails.
+        // the current pointer fails.
         let _history_directory = pending.directory.keep();
         current.persist(self.directory.join(CURRENT))?;
         // Then the pointer, plus the identity and scope directories' own
@@ -659,7 +573,6 @@ impl Retained {
     pub fn finish(
         &mut self,
         export: &Path,
-        state: Value,
         reached: Reached,
         outputs: BTreeMap<String, String>,
     ) -> Result<u64> {
@@ -687,7 +600,7 @@ impl Retained {
         }
         // `commit` hashes the snapshot within the archive bound and makes it
         // durable with the rest of the generation.
-        self.commit_as(pending, crate::domain::MAIN_RECIPE, state, reached, outputs)
+        self.commit(pending, reached, outputs)
     }
 }
 
@@ -728,16 +641,6 @@ fn restore_record(directory: &Path, record: &Record, path: &Path, bound: u64) ->
     }
 }
 
-fn validate_states(states: &BTreeMap<String, Value>, allowed: &HashSet<String>) -> Result<()> {
-    if states.len() > crate::worker::protocol::MAX_RESTORED_STATES
-        || states
-            .iter()
-            .any(|(name, value)| !allowed.contains(name) || !value.is_object())
-    {
-        bail!("saved runtime state names unknown recipes or invalid state objects");
-    }
-    Ok(())
-}
 fn durable_directory(path: &Path) -> Result<()> {
     let path = if path.is_absolute() {
         path.to_owned()
@@ -752,8 +655,8 @@ fn durable_directory(path: &Path) -> Result<()> {
     crate::fsx::private_dir(&path, true)
 }
 
-// Saved state is one copy at most (docs/recipe-format.md, sections 6.5 and
-// 7): per scope (recipe and destination) only the current generation of the
+// Saved state is one copy at most (docs/recipe-format.md, section 6.5):
+// per scope (recipe and destination) only the current generation of the
 // identity that ran last is kept, and beside it the downloads of the state
 // key last downloaded (the download slot). The caller holds the destination
 // lock throughout pruning.

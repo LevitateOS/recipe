@@ -8,6 +8,31 @@ fn events_of(stderr: &str) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// A failed run kept nothing: no saved generation anywhere under the
+/// fixture `root`, and no publication in the state root's `exports`. The
+/// state root (`XDG_STATE_HOME/recipe`, where `run_recipe` runs keep their
+/// logs and publish) must exist, so the checks cannot pass for a wrong path.
+fn assert_nothing_kept(root: &Path) {
+    let state = root.join("state/recipe");
+    assert!(
+        state.join("logs").is_dir(),
+        "no state root at {}",
+        state.display()
+    );
+    let kept = walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name() == "current.json" || entry.file_name() == "files.tar")
+        .map(|entry| entry.path().to_owned())
+        .collect::<Vec<_>>();
+    assert!(kept.is_empty(), "the failed run kept {kept:?}");
+    let published = state.join("exports");
+    assert!(
+        !published.exists() || std::fs::read_dir(&published).unwrap().next().is_none(),
+        "the failed run published something"
+    );
+}
+
 #[test]
 fn managed_step_failures_run_cleanup_without_publishing_or_continuing() {
     let (dir, recipes) = create_test_env();
@@ -56,39 +81,43 @@ const NEEDS = #{{ outputs: #{{ product: "directory" }} }};
             "events carry `step`, not `hook`: {error}"
         );
     }
-    assert!(!dir.path().join("state/recipe/exports").exists());
+    assert_nothing_kept(dir.path());
 }
 
 #[test]
-fn managed_failed_build_resumes_from_its_checkpoint() {
-    let (_dir, recipes) = create_test_env();
+fn managed_failed_build_restarts_its_step() {
+    let (dir, recipes) = create_test_env();
+    // The build fails after its first half; nothing of it is kept or
+    // published, and the next run does the whole step again from an empty
+    // WORK. The first run fails on its deadline (`--timeout-secs`), which is
+    // not part of the saved-state identity: both runs have the same recipe,
+    // defines and inputs, so a kept result or WORK would be found by the
+    // second. (Cleanup on a thrown failure is covered above.)
     let source = r#"const RECIPE_API = 1;
 const NEEDS = #{ outputs: #{ product: "file" } };
 fn build(src, out) {
     let source = join_path(WORK, "source");
-    if !reached("sourced") {
-        write_file(source, "payload");
-        append_file(join_path(WORK, "sourced-count"), "x");
-        save("sourced", true);
-        checkpoint("sourced");
-    }
-    if saved("blocked") == () {
-        save("blocked", true);
-        checkpoint("blocked");
-        throw "BUILD_BLOCKED_FOR_RETRY";
-    }
+    if is_file(source) { throw "WORK_KEPT_FROM_THE_FAILED_RUN"; }
+    write_file(source, "payload");
+    append_file(join_path(WORK, "sourced-count"), "x");
+    print("BUILD-HALF");
+    exec_checked("/usr/bin/sleep", ["10"]);
     write_file(out, read_file(source) + ":" + read_file(join_path(WORK, "sourced-count")));
 }
-fn cleanup(reason) { log("CLEANED " + reason); }
 "#;
     write_recipe(&recipes, "retry", source);
-    let first = run_recipe(&["install", "retry"], &recipes);
+    let first = run_recipe(&["install", "retry", "--timeout-secs", "4"], &recipes);
     assert!(!first.status.success());
     let error = String::from_utf8_lossy(&first.stderr);
-    assert!(error.contains("BUILD_BLOCKED_FOR_RETRY"), "{error}");
-    assert!(error.contains("CLEANED auto.build.failure"), "{error}");
+    assert!(error.contains("BUILD-HALF"), "{error}");
+    assert!(
+        error.contains("supervised execution deadline expired"),
+        "{error}"
+    );
+    assert_nothing_kept(dir.path());
     let second = run_recipe(&["install", "retry"], &recipes);
     assert_success(&second);
+    assert!(String::from_utf8_lossy(&second.stderr).contains("BUILD-HALF"));
     let result: serde_json::Value = serde_json::from_slice(&second.stdout).unwrap();
     assert_eq!(
         std::fs::read_to_string(result["outputs"]["product"].as_str().unwrap()).unwrap(),

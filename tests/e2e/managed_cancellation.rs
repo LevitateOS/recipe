@@ -25,7 +25,7 @@ fn logs(root: &Path) -> Vec<std::path::PathBuf> {
         .collect()
 }
 #[test]
-fn managed_deadline_allows_silent_work_beyond_frame_timeout_and_keeps_logs() {
+fn managed_deadline_allows_silent_work_beyond_output_timeout_and_keeps_logs() {
     let (dir, recipes) = create_test_env();
     write_recipe(
         &recipes,
@@ -40,7 +40,7 @@ fn build(src, out) {
 "#,
     );
     let output = command(&recipes, "install")
-        .env("RECIPE_FRAME_TIMEOUT_SECS", "1")
+        .env("RECIPE_OUTPUT_TIMEOUT_SECS", "1")
         .args(["--timeout-secs", "15"])
         .output()
         .unwrap();
@@ -90,7 +90,7 @@ fn build(src, out) { print("deadline work started"); exec_checked("/usr/bin/slee
     );
 }
 #[test]
-fn managed_interrupt_reaps_descendants_keeps_checkpoint_and_reports_cancelled() {
+fn managed_interrupt_reaps_descendants_keeps_nothing_and_reports_cancelled() {
     let (dir, recipes) = create_test_env();
     write_recipe(
         &recipes,
@@ -99,8 +99,7 @@ fn managed_interrupt_reaps_descendants_keeps_checkpoint_and_reports_cancelled() 
 const RECIPE_API = 1;
 const NEEDS = #{};
 fn build(src, out) {
-    write_file(join_path(WORK, "checkpoint-product"), "last complete build");
-    checkpoint("built");
+    write_file(join_path(WORK, "half-product"), "half of a build");
     print("interrupt-point");
     exec_checked("/usr/bin/sleep", ["60"]);
 }
@@ -182,23 +181,20 @@ fn build(src, out) {
             .unwrap()
             .contains("interrupt-point")
     );
-    let checkpoint = walkdir::WalkDir::new(dir.path().join("retained"))
+    // An interrupted step keeps nothing: no generation and no publication;
+    // the next run starts the step again.
+    let kept = walkdir::WalkDir::new(dir.path().join("retained"))
         .into_iter()
         .filter_map(Result::ok)
-        .find(|entry| entry.file_name() == "current.json")
-        .expect("last complete checkpoint was lost");
-    let record: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(checkpoint.path()).unwrap()).unwrap();
-    assert_eq!(
-        record["states"]["/inputs/main.rhai"]["reached"],
-        serde_json::json!(["built"])
+        .filter(|entry| entry.file_name() == "current.json" || entry.file_name() == "files.tar")
+        .map(|entry| entry.path().to_owned())
+        .collect::<Vec<_>>();
+    assert!(kept.is_empty(), "the interrupted build kept {kept:?}");
+    let published = dir.path().join("retained/exports");
+    assert!(
+        !published.exists() || std::fs::read_dir(&published).unwrap().next().is_none(),
+        "the interrupted build published something"
     );
-    let snapshot = checkpoint
-        .path()
-        .parent()
-        .unwrap()
-        .join(record["archive"].as_str().unwrap());
-    assert!(snapshot.is_file());
 }
 
 #[test]

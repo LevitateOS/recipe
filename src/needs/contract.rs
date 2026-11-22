@@ -6,38 +6,88 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-pub const CATALOG: u32 = 1002;
-// The build-base digests Ginux must report for the derived contract, with and
-// without an outbound grant. Reviewed after upstream cfebfdab: configured
-// rt_sigpending and sigaltstack affect only the calling thread. Reviewed again
-// for LevitateOS/ginux e5c781d7: tkill and tgkill reach only threads of the
-// caller's own process (others: the kill subset). Reviewed again for
-// LevitateOS/ginux 7cc8133e: preadv, readahead, fadvise64, sendfile,
-// copy_file_range and the xattr calls add no authority beyond read, write and
-// stat on the same descriptor or path. Reviewed again for
-// LevitateOS/ginux 8afe55a6 (upstream Gates 18 and 19 merged): getpgid and
-// getsid report the virtual process group and session. Reviewed again for
-// LevitateOS/ginux d777b0ad (upstream Gates 20 to 22 merged): getrandom,
-// sysinfo, pidfd and waitid changes alter results, not the catalog; digests
-// unchanged. Reviewed again for LevitateOS/ginux abcc3337 (upstream Gates 23
-// and 24 merged): sysinfo memory and reaped-sender credentials alter results,
-// not the catalog; digests unchanged. Reviewed again for LevitateOS/ginux
-// e3be44ce: a restarted task creation is settled apart from a signal
-// handler's calls; supervision only, digests unchanged. Reviewed again for
-// LevitateOS/ginux f9bef00a (upstream #273-#289, Gates 25 and 26 merged):
-// the operator CLI, native clone policy, console descriptor mediation and
-// native descriptor tables leave the instance schema and the configured
-// catalog as they were; digests unchanged. Reviewed again for
-// LevitateOS/ginux e3b71ac0 (upstream #291-#306, Gates 31-46 merged): the
-// catalog grows from 215 to 216 operations with `sync`; `sync` and `syncfs`
-// are now explicit EPERM contract denials (base-profile denials
-// `syscall.sync` and `syscall.syncfs`, formerly unserved ENOSYS) and add no
-// authority; both digests change. Fixed exclusions remain.
-// Both are part of `crate::identity::Declared`.
-pub(crate) const BASE_DIGEST_NETWORK: &str =
-    "6fd467426ff939e7892af3bd55f2b3eb2845b0bb88a8ddefaf3af689df7bd7f3";
-pub(crate) const BASE_DIGEST_OFFLINE: &str =
-    "32f20da74ff995f4cb15990d1b57c7f8a07cba293be459fce2841f37ff78ec00";
+/// The Ginux runtime Recipe runs its workers on. Each kind has its own pins
+/// ([`Pins`]); [`RUNTIME`] is the one in use. Today that is the fork's
+/// configured `ginux launch`; the move to upstream's public lifecycle adds a
+/// kind here and edits this table, nothing else
+/// (`docs/ginux-public-lifecycle-migration.md`, section 6, Stage 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeKind {
+    /// `ginux launch CONFIG ROOT ...` (`crate::launch`).
+    ConfiguredLaunch,
+}
+
+/// The runtime kind Recipe uses.
+pub const RUNTIME: RuntimeKind = RuntimeKind::ConfiguredLaunch;
+
+/// What Recipe pins about a runtime: the catalog it must select and the
+/// build-base digests it must report for the derived contract, with and
+/// without an outbound grant. All three are part of
+/// `crate::identity::Declared`.
+#[derive(Debug)]
+pub struct Pins {
+    pub catalog: u32,
+    pub base_digest_network: &'static str,
+    pub base_digest_offline: &'static str,
+}
+
+impl Pins {
+    /// The build-base digest for a contract with (`network`) or without an
+    /// outbound grant.
+    pub fn base_digest(&self, network: bool) -> &'static str {
+        if network {
+            self.base_digest_network
+        } else {
+            self.base_digest_offline
+        }
+    }
+}
+
+impl RuntimeKind {
+    /// The pins table: one row per runtime kind, the only place the values
+    /// are written. Every reader goes through it.
+    pub const fn pins(self) -> &'static Pins {
+        match self {
+            // The build-base digests Ginux must report for the derived contract, with and
+            // without an outbound grant. Reviewed after upstream cfebfdab: configured
+            // rt_sigpending and sigaltstack affect only the calling thread. Reviewed again
+            // for LevitateOS/ginux e5c781d7: tkill and tgkill reach only threads of the
+            // caller's own process (others: the kill subset). Reviewed again for
+            // LevitateOS/ginux 7cc8133e: preadv, readahead, fadvise64, sendfile,
+            // copy_file_range and the xattr calls add no authority beyond read, write and
+            // stat on the same descriptor or path. Reviewed again for
+            // LevitateOS/ginux 8afe55a6 (upstream Gates 18 and 19 merged): getpgid and
+            // getsid report the virtual process group and session. Reviewed again for
+            // LevitateOS/ginux d777b0ad (upstream Gates 20 to 22 merged): getrandom,
+            // sysinfo, pidfd and waitid changes alter results, not the catalog; digests
+            // unchanged. Reviewed again for LevitateOS/ginux abcc3337 (upstream Gates 23
+            // and 24 merged): sysinfo memory and reaped-sender credentials alter results,
+            // not the catalog; digests unchanged. Reviewed again for LevitateOS/ginux
+            // e3be44ce: a restarted task creation is settled apart from a signal
+            // handler's calls; supervision only, digests unchanged. Reviewed again for
+            // LevitateOS/ginux f9bef00a (upstream #273-#289, Gates 25 and 26 merged):
+            // the operator CLI, native clone policy, console descriptor mediation and
+            // native descriptor tables leave the instance schema and the configured
+            // catalog as they were; digests unchanged. Reviewed again for
+            // LevitateOS/ginux e3b71ac0 (upstream #291-#306, Gates 31-46 merged): the
+            // catalog grows from 215 to 216 operations with `sync`; `sync` and `syncfs`
+            // are now explicit EPERM contract denials (base-profile denials
+            // `syscall.sync` and `syscall.syncfs`, formerly unserved ENOSYS) and add no
+            // authority; both digests change. Fixed exclusions remain.
+            RuntimeKind::ConfiguredLaunch => &Pins {
+                catalog: 1002,
+                base_digest_network: "6fd467426ff939e7892af3bd55f2b3eb2845b0bb88a8ddefaf3af689df7bd7f3",
+                base_digest_offline: "32f20da74ff995f4cb15990d1b57c7f8a07cba293be459fce2841f37ff78ec00",
+            },
+        }
+    }
+}
+
+/// The pins of the runtime in use ([`RUNTIME`]).
+pub const fn pins() -> &'static Pins {
+    RUNTIME.pins()
+}
+
 /// The Ginux operation a `NEEDS.network` endpoint grants.
 pub(crate) const TCP_CONNECT: &str = "network.inet.tcp.connect";
 
@@ -107,7 +157,7 @@ impl Contract {
             ]);
         }
         Self {
-            catalog: CATALOG,
+            catalog: pins().catalog,
             allow: allow.into_iter().map(str::to_owned).collect(),
             deny: deny.into_iter().map(str::to_owned).collect(),
         }
@@ -335,9 +385,11 @@ pub(crate) fn validate(
     let catalog: u32 = value("catalog=")
         .context("Ginux omitted selected catalog")?
         .parse()?;
+    let pins = pins();
     ensure!(
-        catalog == CATALOG,
-        "Ginux selected catalog {catalog}, expected {CATALOG}"
+        catalog == pins.catalog,
+        "Ginux selected catalog {catalog}, expected {}",
+        pins.catalog
     );
     let digest = value("digest=")
         .context("Ginux omitted contract digest")?
@@ -346,14 +398,11 @@ pub(crate) fn validate(
         digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
         "invalid Ginux contract digest"
     );
-    let expected = if network {
-        BASE_DIGEST_NETWORK
-    } else {
-        BASE_DIGEST_OFFLINE
-    };
+    let expected = pins.base_digest(network);
     ensure!(
         digest == expected,
-        "Ginux catalog-{CATALOG} build-base digest changed: expected {expected}, got {digest}; review the catalog and derived grants explicitly"
+        "Ginux catalog-{} build-base digest changed: expected {expected}, got {digest}; review the catalog and derived grants explicitly",
+        pins.catalog
     );
     Ok(Receipt {
         catalog,

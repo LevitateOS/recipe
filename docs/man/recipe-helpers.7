@@ -7,8 +7,8 @@ cleanup; see recipe-recipe(5)). A recipe that can reach a helper that starts a
 program runs in the configured Ginux domain; any other recipe runs on the host,
 where the program helpers are not registered and every file helper is confined
 to the run's own directories. Network access requires NEEDS.network grants.
-Native errors fail the run. Only values saved with save() are restored between
-invocations. The registered list is src/helpers/mod.rs; there are no ready or
+Native errors fail the run. An interrupted step starts again from its beginning;
+there is no save, saved, checkpoint or reached. The registered list is src/helpers/mod.rs; there are no ready or
 needs_work helpers, because there are no readiness checks.
 .SH HELPERS
 .TP
@@ -41,12 +41,6 @@ appends exact line once
 .TP
 \fBcheck_disk_space(path, required_bytes) -> ()\fR
 `df -k` based
-.TP
-\fBcheckpoint(name) -> ()\fR
-Records the work folders, the sources, the output and every saved value as one
-checkpoint named name. Only inside build and configure. Recipe keeps one
-checkpoint at most and deletes it when the install succeeds; \-\-no\-persist\-state
-turns checkpoints off.
 .TP
 \fBchmod(path, mode) -> ()\fR
 unix mode
@@ -204,7 +198,7 @@ rename
 strips v/release-/version-
 .TP
 \fBprint(value) -> ()\fR
-stderr; keeps JSON/protocol stdout intact
+a diagnostic line (stderr of recipe); keeps the final JSON on stdout intact
 .TP
 \fBprogress(done, total[, what]) -> ()\fR
 Report how far a long step is: done of total (0 when unknown) what is counted,
@@ -217,10 +211,6 @@ recorded in the target metadata.
 .TP
 \fBput_link(tree, path, target) -> ()\fR
 A symbolic link at path in tree pointing to target.
-.TP
-\fBreached(name) -> bool\fR
-True when this run was restored from checkpoint name or a later one; how a
-resumed build skips finished work.
 .TP
 \fBread_file(path) -> String\fR
 
@@ -242,14 +232,6 @@ Runs the matching package command inside the domain; requires its binary, assign
 .TP
 \fBrpm_version(name) -> String\fR
 Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used.
-.TP
-\fBsave(name, value) -> ()\fR
-Keeps a JSON-compatible value (map, array, string, boolean, (), finite number)
-under name. Kept only together with the files of its checkpoint; it never proves
-that work is done. Allowed anywhere in a recipe function.
-.TP
-\fBsaved(name) -> Dynamic\fR
-The value saved under name, or ().
 .TP
 \fBshell(cmd) -> ()\fR
 uses `sh -c`

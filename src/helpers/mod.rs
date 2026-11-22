@@ -117,11 +117,6 @@ macro_rules! helper {
 /// arguments go through [`confine`], which in a host run resolves them
 /// beneath the run's directories and in a Ginux run passes them on unchanged.
 pub fn register_all(engine: &mut Engine, programs: bool) {
-    // Saved values and resuming (docs/recipe-format.md, section 7).
-    engine.register_fn("save", crate::core::saved::save);
-    engine.register_fn("saved", crate::core::saved::saved);
-    engine.register_fn("checkpoint", crate::core::saved::checkpoint);
-    engine.register_fn("reached", crate::core::saved::reached);
     // ========================================================================
     // Pure helpers - all functions take explicit inputs, return explicit outputs
     // ========================================================================

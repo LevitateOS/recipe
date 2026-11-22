@@ -3,29 +3,75 @@ use sha2::{Digest, Sha256};
 
 pub(super) fn copy_kernel_recipes(recipes: &Path) {
     let source = production_recipes();
-    for name in ["linux.rhai", "linux-prebuilt.rhai", "linux-deps.rhai"] {
+    for name in [
+        "linux.rhai",
+        "linux-source.rhai",
+        "linux-compile.rhai",
+        "linux-prebuilt.rhai",
+        "linux-deps.rhai",
+    ] {
         std::fs::copy(source.join(name), recipes.join(name)).unwrap();
     }
     std::fs::create_dir_all(recipes.join("kernel")).unwrap();
-    std::fs::copy(
-        source.join("kernel/metadata.rhai"),
-        recipes.join("kernel/metadata.rhai"),
-    )
-    .unwrap();
+    for name in ["kernel/metadata.rhai", "kernel/make.rhai"] {
+        std::fs::copy(source.join(name), recipes.join(name)).unwrap();
+    }
 }
 
 /// The kernel.release a variant's pin in `kernel/metadata.rhai` builds
 /// (`<version>-<target>`), read from the copied recipe so the tests follow a
 /// kernel bump.
 pub(super) fn kernel_release(recipes: &Path, target: &str) -> String {
+    format!("{}-{target}", kernel_version(recipes, target))
+}
+
+fn kernel_version(recipes: &Path, target: &str) -> String {
     let text = std::fs::read_to_string(recipes.join("kernel/metadata.rhai")).unwrap();
     let pin = text
         .find(&format!("{target}: #{{"))
         .unwrap_or_else(|| panic!("no pin for {target}"));
     let marker = "version: \"";
     let start = pin + text[pin..].find(marker).expect("pin version") + marker.len();
-    let version = &text[start..start + text[start..].find('"').unwrap()];
-    format!("{version}-{target}")
+    text[start..start + text[start..].find('"').unwrap()].to_owned()
+}
+
+/// A disposable kernel source archive (`linux-<version>/Makefile`, no kernel
+/// in it) for linux-source's `kernel_archive` input; the copied pin of
+/// `target` in `kernel/metadata.rhai` is changed to its digest, so the
+/// source step runs offline and any `make` on it fails.
+fn write_source_archive_fixture(root: &Path, recipes: &Path, target: &str) -> std::path::PathBuf {
+    let version = kernel_version(recipes, target);
+    let encoder = xz2::write::XzEncoder::new(Vec::new(), 1);
+    let mut archive = tar::Builder::new(encoder);
+    let makefile = "# disposable kernel source fixture: no kernel to build\n";
+    let mut header = tar::Header::new_gnu();
+    header.set_size(makefile.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+    archive
+        .append_data(
+            &mut header,
+            format!("linux-{version}/Makefile"),
+            makefile.as_bytes(),
+        )
+        .unwrap();
+    let bytes = archive.into_inner().unwrap().finish().unwrap();
+    let path = root.join(format!("linux-{version}.tar.xz"));
+    std::fs::write(&path, &bytes).unwrap();
+
+    let metadata = recipes.join("kernel/metadata.rhai");
+    let mut text = std::fs::read_to_string(&metadata).unwrap();
+    let pin = text.find(&format!("{target}: #{{")).expect("kernel pin");
+    let marker = "sha256: \"";
+    let digest = pin + text[pin..].find(marker).expect("pin digest") + marker.len();
+    assert!(
+        text[digest..digest + 64]
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit())
+    );
+    text.replace_range(digest..digest + 64, &hex::encode(Sha256::digest(&bytes)));
+    std::fs::write(&metadata, text).unwrap();
+    path
 }
 
 // The kernel recipe's build dependency, as a disposable fixture: these cases
@@ -56,10 +102,16 @@ fn kernel_command_for_target(recipes: &Path, action: &str, recipe: &str, target:
     if !kconfig.exists() {
         std::fs::write(&kconfig, "CONFIG_LOCALVERSION=\"fixture\"\n").unwrap();
     }
+    // The source build's kconfig is its dependency linux-compile's input.
+    let kconfig_input = if recipe == "linux" {
+        "linux-compile::kconfig"
+    } else {
+        "kconfig"
+    };
     let mut command = recipe_command(recipes);
     command
         .args([action, recipe])
-        .args(["--input", &format!("kconfig={}", kconfig.display())])
+        .args(["--input", &format!("{kconfig_input}={}", kconfig.display())])
         .args(["--define", &format!("KERNEL_TARGET={target}")])
         .arg("--recipes-path")
         .arg(recipes)
@@ -149,11 +201,25 @@ fn cli_kernel_install_keeps_a_matching_bundle_and_rejects_others_offline() {
                 command
                     .args(["--no-persist-state", "--no-network"])
                     .args(["--input", &format!("target={}", artifacts.display())]);
+                if recipe == "linux" {
+                    // The source build: linux-source unpacks a fixture
+                    // archive, and the previous bundle seeds linux-compile too.
+                    let archive = write_source_archive_fixture(dir.path(), &recipes, target);
+                    command
+                        .args([
+                            "--input",
+                            &format!("linux-source::kernel_archive={}", archive.display()),
+                        ])
+                        .args([
+                            "--input",
+                            &format!("linux-compile::target={}", artifacts.display()),
+                        ]);
+                }
                 let (output, result) = invoke_kernel(command, dir.path());
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 if fault == "none" {
                     // The imported bundle already is the pinned kernel: nothing
-                    // is built or downloaded, and it is published.
+                    // is compiled or downloaded, and it is published.
                     assert_success(&output);
                     assert_eq!(
                         stderr.contains("KERNEL_PREREQUISITE_INSTALL"),
@@ -170,7 +236,8 @@ fn cli_kernel_install_keeps_a_matching_bundle_and_rejects_others_offline() {
                     assert_ne!(published, artifacts);
                 } else {
                     // Another release or missing modules means the kernel is
-                    // fetched, which the run may not do.
+                    // fetched (prebuilt), which the run may not do, or made
+                    // from the fixture source (linux), which has no kernel.
                     assert!(
                         !output.status.success(),
                         "{recipe} accepted a bundle with {fault}: {stderr}"

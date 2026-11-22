@@ -2,8 +2,8 @@
 //! sections 3 and 6.1): the download step, then the step that builds the
 //! outputs, then `cleanup(reason)`. What is done already is decided by the
 //! coordinator from Recipe's own records before the worker starts: a kept
-//! result is published without a worker, and a worker starts only from an
-//! unfinished generation (downloads, a checkpoint) or from nothing. Keeping
+//! result is published without a worker, and a worker starts from the kept
+//! downloads or from nothing; an interrupted step starts again. Keeping
 //! the result and activating or publishing the outputs (the rest of install)
 //! is the coordinator's, after the worker has returned them.
 
@@ -177,27 +177,24 @@ fn build_outputs(
     let outputs = place_outputs(&recipe.declaration.needs)?;
     let out = out_argument(&outputs)?;
 
-    // A run restored from a checkpoint has all of this in its restored work
-    // folders and output already.
-    let resumed = crate::core::saved::resumed();
-    let unpacked = builtin::unpack_sources(fetched, resumed)?;
-    builtin::unpack_packages(&declared, fetched, &outputs, resumed)?;
-    builtin::place_files(&declared, &unpacked, &outputs, resumed)?;
+    let unpacked = builtin::unpack_sources(fetched)?;
+    builtin::unpack_packages(&declared, fetched, &outputs)?;
+    builtin::place_files(&declared, &unpacked, &outputs)?;
     let src = builtin::src_map(&declared, fetched, &unpacked)?;
     if recipe.runtime.has_fn("build", 2) {
-        crate::core::saved::with_checkpoints(|| {
-            recipe
-                .runtime
-                .call("build", vec![src.clone().into(), out.clone()])
-        })
-        .map_err(|error| anyhow!("build(src, out) failed: {error}"))
-        .map(drop)?;
+        recipe
+            .runtime
+            .call("build", vec![src.clone().into(), out.clone()])
+            .map_err(|error| anyhow!("build(src, out) failed: {error}"))
+            .map(drop)?;
     } else if recipe.runtime.has_fn("configure", 1) || recipe.runtime.has_fn("configure", 2) {
         let mut args = vec![out.clone()];
         if recipe.runtime.has_fn("configure", 2) {
             args.push(builtin::configure_sources(&src).into());
         }
-        crate::core::saved::with_checkpoints(|| recipe.runtime.call("configure", args))
+        recipe
+            .runtime
+            .call("configure", args)
             .map_err(|error| anyhow!("configure failed: {error}"))
             .map(drop)?;
     }

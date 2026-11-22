@@ -39,7 +39,7 @@ use serde::Serialize;
 /// A change that produces the same files, metadata and state, only faster or
 /// with different diagnostics (such as a faster extractor with the same
 /// result), does not bump it. The coordinator/worker transport version is
-/// named separately (`PROTOCOL_VERSION`).
+/// named separately (`RECORDS_VERSION`).
 // 2: API 1 (docs/recipe-format.md): the engine's constants, engine-placed
 // outputs at /out/NAME, the target input seeding that output, saved values.
 // 3: what is done comes from Recipe's records (a finished generation is the
@@ -84,7 +84,7 @@ pub const EXACT_ENV: &str = "RECIPE_EXACT_IDENTITY";
 pub struct Declared {
     pub engine: u32,
     pub ginux: u32,
-    /// The coordinator/worker transport version.
+    /// The coordinator/worker record version (`RECORDS_VERSION`).
     pub transport: u32,
     /// The Ginux catalog and the build-base contract digests Recipe pins and
     /// checks against what the launcher reports.
@@ -98,10 +98,10 @@ impl Declared {
         Self {
             engine: ENGINE_BEHAVIOUR,
             ginux: GINUX_BEHAVIOUR,
-            transport: crate::worker::protocol::PROTOCOL_VERSION,
-            catalog: crate::needs::contract::CATALOG,
-            base_digest_offline: crate::needs::contract::BASE_DIGEST_OFFLINE,
-            base_digest_network: crate::needs::contract::BASE_DIGEST_NETWORK,
+            transport: crate::worker::records::RECORDS_VERSION,
+            catalog: crate::needs::contract::pins().catalog,
+            base_digest_offline: crate::needs::contract::pins().base_digest_offline,
+            base_digest_network: crate::needs::contract::pins().base_digest_network,
         }
     }
 }

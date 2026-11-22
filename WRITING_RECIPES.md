@@ -421,14 +421,14 @@ fn verify(out) {
 A check that must run a program (`tool --version`) belongs in `build`. There is
 no helper that reads a link's target, so `verify` cannot check one.
 
-## Steps, states and saved values
+## Steps and states
 
 Recipe has four steps. `download` fetches `SOURCES` and the pins into the
 download store. `build` unpacks the sources and packages, places `FILES`, runs
 `build` or `configure`, finishes a `system` tree, runs `verify` and keeps the
 result. `install` activates a `package` output, writes a `system` output into
 the root or publishes a producer's outputs. `cleanup` deletes the program's
-downloads, unpacked sources, build material and saved state. `install` does
+downloads, unpacked sources, build material and kept results. `install` does
 every step still missing, in order, then cleanup unless you chose `--keep`; each
 step can be run alone. A recipe without `SOURCES` and `PACKAGES` has no
 download step of its own; a recipe without `build` shows no build step.
@@ -437,35 +437,16 @@ The state of a program is `none`, `downloaded`, `built` or `installed`. Recipe
 decides it from its own records (a download by its SHA-256, a result by its
 identity and recorded checksums, an installed program by its receipt); no recipe
 code runs to decide it, and `recipe state NAME` prints it. After a successful
-install the downloads, unpacked source, `WORK` and saved state are deleted;
+install the downloads, unpacked source, `WORK` and kept results are deleted;
 files are moved into place, not copied, where both places are on one disk.
 
-An interrupted `build` resumes from the newest checkpoint: Recipe restores it
-and calls `build(src, out)` again from the top. Four helpers:
-
-| Helper | Does |
-| --- | --- |
-| `save(name, value)` | keeps a JSON-compatible value (map, array, string, boolean, `()`, finite number) under `name` |
-| `saved(name)` | the value saved under `name`, or `()` |
-| `checkpoint(name)` | records the work folders, the sources, the output and every saved value as one checkpoint; only inside `build` and `configure` |
-| `reached(name)` | `true` when this run was restored from checkpoint `name` or a later one |
-
-```rhai
-fn build(src, out) {
-    let dir = src.source;
-    if !reached("configured") {
-        exec_checked("./configure", ["--prefix=" + PREFIX], #{ cwd: dir });
-        checkpoint("configured");
-    }
-    exec_checked("make", ["-j" + JOBS], #{ cwd: dir });
-}
-```
-
-A value is saved only together with the files of its checkpoint, a saved value
-never proves work is done (inspect the real files), and Recipe keeps one
-checkpoint at most, deleting it when the install succeeds. `--no-persist-state`
-turns checkpoints off. Most recipes need none of this: in one `build` function
-what used to cross hooks is a local variable. They are for long builds.
+An interrupted step (download, build, install, cleanup) starts again from its
+beginning: nothing of it is kept, and top-level code runs again. A step that
+finished keeps its result, so `install` after an interruption skips the steps
+already done. Recipe has no `save`, `saved`, `checkpoint` or `reached`. To make
+a very long build restartable in parts, split it into recipes that depend on one
+another (`deps`): each finished recipe keeps its result. `--no-persist-state`
+turns the kept downloads and results off.
 
 A long step can report how far it is with `progress(done, total, what)` (or
 `progress(done, total)`; `total` 0 means unknown). It is cheap in a loop and
@@ -646,7 +627,7 @@ neither; groups have neither (their versions follow the locks).
 ## cleanup(reason)
 
 An optional function for something of the recipe's own to delete. Recipe
-already deletes downloads, unpacked sources, `WORK` and saved state after a
+already deletes downloads, unpacked sources, `WORK` and kept results after a
 successful install, so most recipes need none. It receives `reason`: `manual`
 (what `recipe cleanup` passes) or `auto.<phase>.success` and
 `auto.<phase>.failure`, where `<phase>` is the step that just ended: `download`,

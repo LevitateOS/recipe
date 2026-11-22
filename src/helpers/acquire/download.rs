@@ -99,7 +99,7 @@ fn from_cache(dest: &Path, sha256: &str) -> Result<bool, Box<EvalAltResult>> {
         return Ok(false);
     }
     // No flush: the cache still holds the bytes, and a run's files are made
-    // durable by its checkpoints.
+    // durable when Recipe keeps them.
     file.persist(dest)
         .map_err(|e| format!("cannot publish download to {}: {}", dest.display(), e))?;
     remember_digest(dest, sha256);

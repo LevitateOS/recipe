@@ -40,9 +40,9 @@ boundary; its implementation checkpoint records exact tested revisions and gaps.
   [the recipe format](docs/recipe-format.md#1-a-recipe-at-a-glance) and taught in
   the [author guide](WRITING_RECIPES.md). No other form is accepted.
 - Recipe decides what is done from its own records, never from recipe code; see
-  [states](docs/recipe-format.md#62-the-states-of-a-program). A saved value
-  never proves that work is done; see
-  [saved values](docs/recipe-format.md#7-saved-values-and-resuming).
+  [states](docs/recipe-format.md#62-the-states-of-a-program). An interrupted
+  step starts again from its beginning and finished steps keep their results; see
+  [interruption and restarting](docs/recipe-format.md#7-interruption-and-restarting).
 - Errors and malformed values fail execution. A required step that did not
   produce its result fails clearly.
 - Optional `cleanup(reason)` runs at the end of a run and on `recipe cleanup`;
@@ -65,7 +65,7 @@ boundary; its implementation checkpoint records exact tested revisions and gaps.
   owned target. Compiler-image files cannot satisfy selected-target readiness.
 - Input identity includes bytes, modes and links. Confined source links and
   rootfs/target symlink bytes are preserved without following host paths.
-  Hardlinks preserve shared owned identity through copy/checkpoint/publication.
+  Hardlinks preserve shared owned identity through copy/archive/publication.
 - Consumers validate required output names/kinds and use returned publication
   paths, never sibling-path guesses, stale JSON or unrequested host-built
   outputs.
@@ -76,7 +76,7 @@ boundary; its implementation checkpoint records exact tested revisions and gaps.
   `--no-activate`). Putting a package output into a profile is the CLI's job,
   below.
 - After a successful install Recipe deletes the downloads, unpacked sources,
-  build material and saved state, unless the user chose `--keep`; see
+  build material and kept results, unless the user chose `--keep`; see
   [disk rules](docs/recipe-format.md#65-disk-rules).
 
 ## Installed software
@@ -124,8 +124,9 @@ boundary; its implementation checkpoint records exact tested revisions and gaps.
 
 ## Recovery and diagnostics
 
-- Destination locking covers competing recipe/input versions. Checkpoint acks
-  require matching durable state/files records; unacknowledged work is discarded.
+- Destination locking covers competing recipe/input versions. A kept download or
+  result counts only while its record and archive match and are durable; an
+  interrupted step keeps nothing and starts again.
 - Changed recipe/input/image/worker identity starts fresh state. A corrupt current
   record/snapshot fails before startup rather than silently pretending a fresh
   installation. An explicit new state directory starts fresh recovery state.
@@ -133,13 +134,14 @@ boundary; its implementation checkpoint records exact tested revisions and gaps.
   Diagnostic/scratch leases protect active invocations. Pruning recognizes only
   owned layouts and never treats published products as expendable snapshots.
 - Diagnostics and machine outcomes survive invocation scratch cleanup and are
-  bounded. Human logs are never parsed as success/protocol results. Retained declaration/
+  bounded. Human logs are never parsed as success results; the worker's result is
+  a file the coordinator reads as untrusted input and that must name the run. Retained declaration/
   contract receipts and bounded audit observations support explanation; missing
   observations stay unknown. Complete endpoint summaries support unused-grant
   warnings without affecting authorization.
 - Cancellation and execution/transport deadlines terminate descendants, preserve
-  the last complete checkpoint and never publish failed work. Silent execution
-  is distinct from a stalled partial protocol frame.
+  nothing of the interrupted step and never publish failed work. Silent
+  execution is distinct from a worker output line that stalls half written.
 
 ## Metadata
 

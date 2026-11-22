@@ -17,8 +17,8 @@ There are no readiness checks, no `ctx` and no `RUNTIME`: `ready` and
 `needs_work` are gone. A native helper error fails the run unless the recipe
 handles it. A recipe reads the engine's constants (`PREFIX`, `JOBS`,
 `HOST_LIBC`, `PACKAGE_FORMAT`, `INPUTS`, `DEFINES`, `DEPS`, `WORK`) for paths and
-facts, and the only values restored after an interruption are those it saved
-with `save` and a `checkpoint`.
+facts. An interrupted step starts again from its beginning; there is no `save`,
+`saved`, `checkpoint` or `reached`.
 
 ## Registered helpers
 
@@ -34,7 +34,6 @@ with `save` and a `checkpoint`.
 | `append_line_if_missing` | ``helpers/install/io.rs`` | `append_line_if_missing(path, line) -> bool` | appends exact line once |
 | `basename` | ``helpers/util/paths.rs`` | `basename(path) -> String` |  |
 | `check_disk_space` | ``helpers/install/disk.rs`` | `check_disk_space(path, required_bytes) -> ()` | `df -k` based |
-| `checkpoint` | `core/saved.rs` | `checkpoint(name) -> ()` | Record the work folders, sources, output and every saved value as one checkpoint; only inside `build` and `configure`; one checkpoint at most, deleted when the install succeeds. |
 | `chmod` | ``helpers/install/filesystem.rs`` | `chmod(path, mode) -> ()` | unix mode |
 | `command_exists` | `helpers/util/process.rs` | `command_exists(name) -> bool` | Probe current domain PATH. |
 | `carry_libraries` | `helpers/install/carry.rs` | `carry_libraries(package, prefix, search:Array) -> Array` | Experimental. Copies into `package/lib/` the loader and every shared library that the programs in `package/bin/`, and the programs and plug-ins the recipe put under `package/lib/`, load, from `search` then the build image (the C library whole from the first folder holding its loader), and writes into each file its loader and library folder under `prefix` (`PREFIX`): into the room `carry_link_flags()` reserved, or by rewriting a file linked elsewhere with a new loadable segment and `$ORIGIN`-relative folders; then checks that every program and file under `lib/` finds all it needs, with its symbol versions, inside the package. |
@@ -79,11 +78,10 @@ with `save` and a `checkpoint`.
 | `mkdir` | ``helpers/install/filesystem.rs`` | `mkdir(path) -> ()` | side-effecting |
 | `mv` | ``helpers/install/filesystem.rs`` | `mv(src, dst) -> ()` | rename |
 | `parse_version` | ``helpers/acquire/http.rs`` | `parse_version(s) -> String` | strips v/release-/version- |
-| `print` | `Rhai built-in; callback in `helpers/mod.rs`` | `print(value) -> ()` | stderr; keeps JSON/protocol stdout intact |
+| `print` | `Rhai built-in; callback in `helpers/mod.rs`` | `print(value) -> ()` | a diagnostic line (stderr of `recipe`); keeps the final JSON on stdout intact |
 | `progress` | ``helpers/util/log.rs`` | `progress(done, total[, what]) -> ()` | reports to the coordinator's `--progress-file`; `total` 0 is unknown |
 | `put` | `helpers/tree.rs` | `put(tree, path, text, mode) -> ()` | Write `text` at `path` (relative, inside `tree`), replacing what is there, with `mode` in the target metadata. |
 | `put_link` | `helpers/tree.rs` | `put_link(tree, path, target) -> ()` | A symbolic link at `path` in `tree` to `target`. |
-| `reached` | `core/saved.rs` | `reached(name) -> bool` | True when this run was restored from checkpoint `name` or a later one. |
 | `read_file` | ``helpers/install/io.rs`` | `read_file(path) -> String` |  |
 | `read_file_or_empty` | ``helpers/install/io.rs`` | `read_file_or_empty(path) -> String` |  |
 | `replace` | ``helpers/util/string.rs`` | `replace(s, from, to) -> String` |  |
@@ -91,8 +89,6 @@ with `save` and a `checkpoint`.
 | `rm` | ``helpers/install/filesystem.rs`` | `rm(pattern) -> ()` | glob delete |
 | `rpm_installed` | ``helpers/util/process.rs`` | `rpm_installed(name) -> bool` | Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used. |
 | `rpm_version` | ``helpers/util/process.rs`` | `rpm_version(name) -> String` | Runs the matching package command inside the domain; requires its binary, assigned stores and explicit network grants where used. |
-| `save` | `core/saved.rs` | `save(name, value) -> ()` | Keep a JSON-compatible value under `name`, together with its checkpoint's files; never proof that work is done. |
-| `saved` | `core/saved.rs` | `saved(name) -> Dynamic` | The value saved under `name`, or `()`. |
 | `shell` | ``helpers/util/shell.rs`` | `shell(cmd) -> ()` | uses `sh -c` |
 | `shell_in` | ``helpers/util/shell.rs`` | `shell_in(dir, cmd) -> ()` | run in directory |
 | `shell_output` | ``helpers/util/shell.rs`` | `shell_output(cmd) -> String` | captures stdout |
@@ -144,7 +140,7 @@ for an actual binary/archive must be demonstrated with the selected image.
 the latter returns captured stdout. Each accepts an argument array and optional
 `#{cwd: "/work/build", env: #{KEY: "value"}}` with child-only scope. Shell
 variants use a shell string and need quoting for variable data. All command,
-recipe and helper diagnostics go to stderr; stdout remains final JSON/protocol.
+recipe and helper diagnostics go to stderr; stdout remains final JSON.
 
 ## Paths and products
 

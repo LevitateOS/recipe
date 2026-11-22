@@ -5,25 +5,28 @@
 //!
 //! - `ROOT/{inputs,work/{build,tools,tmp},out}` in the scratch pool. `ROOT`
 //!   is the same path on every run for a destination (`invocation-host-…`),
-//!   so absolute paths a recipe keeps with `save` stay valid on resume.
-//!   Inputs are staged and digest-checked exactly as for a domain root.
+//!   so absolute paths in the kept files stay valid when a run starts from
+//!   them. Inputs are staged and digest-checked exactly as for a domain root.
 //! - The worker is the same `recipe` binary, started directly as a child: its
 //!   own process group, killed with the coordinator (PDEATHSIG), its address
 //!   space bounded by `memory_mib` (RLIMIT_AS), its working directory `work`,
-//!   and the worker environment with host paths. It speaks the same frame
-//!   protocol; the request's `host` field tells it where its directories are
-//!   and what it may reach. It installs the path rule
+//!   and the worker environment with host paths. It reads the same request
+//!   file (staged with the inputs), writes the same line records and the same
+//!   result file (`crate::worker::records`); `RECIPE_HOST_ROOT`
+//!   (`crate::domain::ENV_HOST_ROOT`) tells it where its directories are and
+//!   the request's `host` field what it may reach. It installs the path rule
 //!   (`crate::helpers::confine`), the network rule
 //!   (`crate::helpers::acquire::net`) and a seccomp filter that refuses
 //!   `execve`, and it has no program helpers.
-//! - A checkpoint arrives while the worker waits for its ack, so nothing
-//!   writes: the coordinator archives `work` and `out` in the snapshot format
-//!   a Ginux snapshot uses (members `work/…`, `out/…`), and `crate::retained`
-//!   keeps it with the state, as for Ginux. Restore unpacks that archive (or
-//!   the seeded target) before the worker starts.
-//! - Storage bounds are checked when an archive is made: at every checkpoint
-//!   and at the end, over everything in `work` and `out` (coarse: a run may
-//!   exceed them between checkpoints).
+//! - Once the worker has exited, the coordinator reads its result file from
+//!   `work` by descriptor (`crate::launch::worker_io::result_from_tree`). At
+//!   the end the coordinator archives `work` and `out` in the format a
+//!   Ginux export uses (members `work/…`, `out/…`), and `crate::retained`
+//!   keeps it, as for Ginux. Restore unpacks a kept archive (or the seeded
+//!   target) before the worker starts.
+//! - Storage bounds are checked when the final archive is made, over
+//!   everything in `work` and `out` (coarse: a run may exceed them while it
+//!   runs).
 //! - The outputs are validated and moved into publication from the run's
 //!   directory where it shares a filesystem with the state root
 //!   (`crate::publication::prepare_tree`); elsewhere the final archive is the
@@ -32,7 +35,7 @@
 //! - The deadline and cancellation kill the worker's process group.
 //! - Identity: the worker never keeps privilege; a root run's worker has a
 //!   uid and gid of its own and only it reaches the run's directories
-//!   (`identity`). Snapshots, restores and exports walk by descriptor
+//!   (`identity`). Restores and exports walk by descriptor
 //!   (`snapshot`).
 //! - Resource limits on the worker: `memory_mib` (RLIMIT_AS), no core files,
 //!   1024 descriptors, and files no larger than `NEEDS.storage_max_bytes`
@@ -43,8 +46,8 @@ mod identity;
 mod snapshot;
 
 pub(crate) use identity::clear_capabilities;
-use identity::{Gate, Limits, Stopped};
-use snapshot::{check_storage, unpack_snapshot, write_snapshot, write_snapshot_of};
+use identity::{Gate, Limits};
+use snapshot::{check_storage, unpack_snapshot, write_snapshot_of};
 
 use std::fs::{self, File};
 use std::os::unix::fs::PermissionsExt;
@@ -81,7 +84,6 @@ fn run_inner(
         ref options,
         destination,
         state_dir,
-        dependencies,
         key,
         ..
     } = *invocation;
@@ -90,8 +92,8 @@ fn run_inner(
         .network
         .check_host_reachable()
         .map_err(|error| Category::Startup.wrap(error, "refused network endpoint"))?;
-    let timeout = crate::launch::frame_timeout()
-        .map_err(|error| Category::Startup.wrap(error, "invalid frame timeout"))?;
+    let timeout = crate::launch::worker_io::output_timeout()
+        .map_err(|error| Category::Startup.wrap(error, "invalid output timeout"))?;
     let _destination_lock = crate::retained::lock_destination(destination, timeout)
         .map_err(|error| Category::Storage.wrap(error, "cannot lock the destination"))?;
 
@@ -133,7 +135,21 @@ fn run_inner(
     if prepared.binds().next().is_some() {
         return Err(startup(anyhow::anyhow!("a host run cannot bind an input")));
     }
-    crate::inputs::stage_inputs(prepared, &inputs).map_err(startup)?;
+    // The worker learns its root from the environment (`ENV_HOST_ROOT`),
+    // which it reads as UTF-8.
+    root.to_str()
+        .context("the host run directory is not UTF-8")
+        .map_err(startup)?;
+    let request = crate::launch::request(
+        prepared,
+        invocation,
+        Some(crate::worker::records::HostRun {
+            network: prepared.network.host_grants(),
+            network_max_bytes: prepared.execution.network_max_bytes,
+        }),
+        offline_cache_text().map_err(startup)?,
+    );
+    crate::inputs::stage_inputs(prepared, &inputs, &request).map_err(startup)?;
     for path in crate::domain::WRITABLE_DIRS {
         let directory = root.join(path.trim_start_matches('/'));
         fs::create_dir(&directory).map_err(|e| startup(e.into()))?;
@@ -160,7 +176,7 @@ fn run_inner(
                 None,
                 options,
                 Some(&root),
-                operation == crate::worker::protocol::Operation::Download,
+                operation == crate::worker::records::Operation::Download,
             )
             .map_err(|error| Category::Storage.wrap(error, "cannot open saved state"))?,
         )
@@ -172,8 +188,7 @@ fn run_inner(
     let restore_path = run_dir.path().join("restore.tar");
     let export_path = run_dir.path().join("export.tar");
     // What is done already, from Recipe's records: nothing to run, or a run
-    // that starts from an unfinished generation, or from nothing.
-    let restored_states;
+    // that starts from the kept downloads, or from nothing.
     let mut restore =
         match crate::launch::start(retained.as_ref(), invocation, prepared, &restore_path)? {
             crate::launch::Start::Done { publish } => {
@@ -186,10 +201,7 @@ fn run_inner(
                     invocation,
                 );
             }
-            crate::launch::Start::Run { restore, states } => {
-                restored_states = states;
-                restore
-            }
+            crate::launch::Start::Run { restore } => restore,
         };
     if !restore {
         restore = crate::inputs::seed_target(prepared, &root, &restore_path).map_err(|error| {
@@ -219,7 +231,7 @@ fn run_inner(
         .envs(environment(&root, &invocation_id))
         .current_dir(root.join(crate::domain::WORK.trim_start_matches('/')))
         .process_group(0)
-        .stdin(Stdio::piped())
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let parent = unsafe { libc::getpid() };
@@ -255,99 +267,74 @@ fn run_inner(
     // Whatever way this function leaves, a worker it did not reap is killed
     // with its process group, and a root run's uid is swept.
     let mut teardown = identity::Teardown::new(worker_pid, identity);
-    let stdin = child.stdin.take().context("worker stdin was not piped")?;
     let stdout = child.stdout.take().context("worker stdout was not piped")?;
     let stderr = child.stderr.take().context("worker stderr was not piped")?;
-    let drain = crate::launch::spawn_stderr_drain(
+    let drain = crate::launch::worker_io::spawn_stderr_drain(
         stderr,
         diagnostics.file(crate::invocation_log::SUPERVISOR_LOG),
     );
 
-    let request = crate::worker::protocol::RequestPayload {
-        invocation_id: invocation_id.clone(),
-        recipe_name: prepared.declaration.name().to_owned(),
+    let mut progress = crate::launch::worker_io::progress_file(
+        &options.execution,
+        &invocation_id,
+        recipe,
         operation,
-        persist_state,
-        options: options.clone(),
-        dependencies: dependencies.clone(),
-        // The saved values go with the files of the generation restored,
-        // and with nothing else.
-        restored_states,
-        host: Some(crate::worker::protocol::HostRun {
-            root: root
-                .to_str()
-                .context("the host run directory is not UTF-8")?
-                .to_owned(),
-            network: prepared.network.host_grants(),
-            network_max_bytes: prepared.execution.network_max_bytes,
-        }),
-        cache: offline_cache_text().map_err(startup)?,
-    };
-    let mut progress = options.execution.progress_file.as_deref().map(|path| {
-        crate::progress_file::ProgressFile::start(
-            path,
-            &invocation_id,
-            recipe
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or_default(),
-            &operation.to_string(),
-        )
-    });
+    );
     let mut worker_started = false;
     let started = Instant::now();
     timing("inputs staged, worker starting", run_started);
-    let pump = {
-        // A checkpoint: the worker waits for the ack, so nothing writes while
-        // work and out are archived.
-        let execution = &options.execution;
-        let root = &root;
-        let mut capture = |point: &crate::worker::protocol::CheckpointPayload,
-                           _deadline: Instant|
-         -> Result<Option<u64>> {
-            timing("checkpoint (a phase ended)", started);
-            // A root run reads the worker's files only while it is stopped.
-            let _stopped = if unprivileged {
-                Some(Stopped::stop(worker_pid)?)
-            } else {
-                None
-            };
-            let Some(state) = retained.as_mut() else {
-                // Without persistence the bounds are still checked.
-                check_storage(root, execution)?;
-                return Ok(None);
-            };
-            let pending = state.begin()?;
-            write_snapshot(root, &pending.path, execution)?;
-            state
-                .commit(pending, &point.recipe, point.state.clone())
-                .map(Some)
-                .context("cannot persist checkpoint state/files pair")
+    let pump = crate::launch::worker_io::pump_lines(
+        &invocation_id,
+        &mut child,
+        stdout,
+        &mut worker_diagnostics,
+        &mut worker_started,
+        timeout,
+        std::time::Duration::from_secs(options.execution.timeout_secs),
+        &mut progress,
+    );
+    // The stream error stays the error, with its category; the worker's exit
+    // and log tail follow it.
+    let with_detail = |error: anyhow::Error, exit: Option<i32>, tail: &str| {
+        let hint = if tail.contains("private worker entry requires") {
+            format!(
+                " ({} predates host runs; point RECIPE_WORKER_BIN at this recipe, or unset it)",
+                worker.display()
+            )
+        } else {
+            String::new()
         };
-        crate::launch::pump_protocol(
-            request,
-            (stdin, stdout),
-            &mut capture,
-            &mut worker_diagnostics,
-            &mut worker_started,
-            timeout,
-            &mut progress,
-        )
+        let detail = format!(
+            "; host run of invocation {invocation_id}: worker exit {}; log tail: {}{hint}",
+            crate::launch::worker_io::exit_message(exit),
+            tail.trim_end()
+        );
+        let text = format!("{error:#}");
+        match Category::of(&error) {
+            Some(category) => {
+                let message = text
+                    .strip_prefix(category.prefix())
+                    .and_then(|rest| rest.strip_prefix(": "))
+                    .unwrap_or(&text);
+                category.error(format!("{message}{detail}")).into()
+            }
+            None => anyhow::anyhow!("{text}{detail}"),
+        }
     };
-    if let Some(progress) = progress.as_mut() {
-        progress.finish(pump.as_ref().is_ok_and(|stream| stream.result.ok));
-    }
-    let stream = match pump {
-        Ok(stream) => stream,
+    let execution_deadline = match pump {
+        Ok(deadline) => deadline,
         Err(error) => {
+            if let Some(progress) = progress.as_mut() {
+                progress.finish(false);
+            }
             // The worker may be blocked inside a helper and will not stop by
             // itself: end its process group now.
             unsafe {
                 libc::kill(-(child.id() as i32), libc::SIGKILL);
             }
-            let exit = crate::launch::reap_launcher(
+            let exit = crate::launch::worker_io::reap_launcher(
                 &mut child,
-                Instant::now() + crate::launch::SHUTDOWN_GRACE,
+                Instant::now() + crate::launch::worker_io::SHUTDOWN_GRACE,
             )
             .unwrap_or_else(|error| {
                 crate::diagnostics::diag!("recipe: warning: {error:#}");
@@ -356,44 +343,26 @@ fn run_inner(
             if exit.is_some() {
                 teardown.reaped();
             }
-            let drained = crate::launch::join_drain(drain);
+            let drained = crate::launch::worker_io::join_drain(drain);
             teardown.sweep()?;
             if let Some(gate) = gate {
                 gate.close()?;
             }
-            // The stream error stays the error, with its category; the
-            // worker's exit and log tail follow it.
-            let hint = if drained.tail.contains("private worker entry requires") {
-                format!(
-                    " ({} predates host runs; point RECIPE_WORKER_BIN at this recipe, or unset it)",
-                    worker.display()
-                )
-            } else {
-                String::new()
-            };
-            let detail = format!(
-                "; host run of invocation {invocation_id}: worker exit {}; log tail: {}{hint}",
-                crate::launch::exit_message(exit),
-                drained.tail.trim_end()
-            );
-            let text = format!("{error:#}");
-            return Err(match Category::of(&error) {
-                Some(category) => {
-                    let message = text
-                        .strip_prefix(category.prefix())
-                        .and_then(|rest| rest.strip_prefix(": "))
-                        .unwrap_or(&text);
-                    category.error(format!("{message}{detail}")).into()
-                }
-                None => anyhow::anyhow!("{text}{detail}"),
-            });
+            return Err(with_detail(error, exit, &drained.tail));
         }
     };
-    drop(stream.stdin);
-    let reaped = crate::launch::reap_launcher(&mut child, stream.execution_deadline);
-    let drained = crate::launch::join_drain(drain);
+    let reaped = crate::launch::worker_io::reap_launcher(&mut child, execution_deadline);
+    let drained = crate::launch::worker_io::join_drain(drain);
     drop(worker_diagnostics);
-    let exit = reaped?;
+    let exit = match reaped {
+        Ok(exit) => exit,
+        Err(error) => {
+            if let Some(progress) = progress.as_mut() {
+                progress.finish(false);
+            }
+            return Err(error);
+        }
+    };
     teardown.reaped();
     // The worker has exited (reaped): end anything else still running as the
     // run's uid, then close its directory before reading it.
@@ -401,21 +370,31 @@ fn run_inner(
     if let Some(gate) = gate {
         gate.close()?;
     }
-    if stream.result.ok && exit != Some(0) {
+    let result = crate::launch::worker_io::result_from_tree(&root, &invocation_id);
+    if let Some(progress) = progress.as_mut() {
+        progress.finish(result.as_ref().is_ok_and(|result| result.ok));
+    }
+    let result = result.map_err(|reason| {
+        with_detail(
+            crate::launch::worker_io::missing_result(&invocation_id, &reason),
+            exit,
+            &drained.tail,
+        )
+    })?;
+    if result.ok && exit != Some(0) {
         bail!(Category::Protocol.error(format!(
             "invocation {invocation_id} worker reported success but exited with {} (refusing publication)",
-            crate::launch::exit_message(exit)
+            crate::launch::worker_io::exit_message(exit)
         )));
     }
     timing("worker finished", started);
     let mut summary = None;
-    if stream.result.ok {
+    if result.ok {
         // Publication keeps only the named outputs: when they all lie in
         // `out` and no saved state keeps the export, `work` (downloads,
         // build trees) is not archived at all.
         let in_out = retained.is_none()
-            && stream
-                .result
+            && result
                 .outputs
                 .values()
                 .all(|path| path.starts_with(&format!("{}/", crate::domain::OUT)));
@@ -425,8 +404,8 @@ fn run_inner(
         // result is moved, never copied twice (docs/recipe-format.md,
         // section 6.5). Saved state still keeps the run's archive as the
         // kept result, made before the move; without saved state nothing is
-        // archived (bounds checked by the same walk as a checkpoint's).
-        let tree = crate::publication::can_move(&root, &stream.result.outputs, state_dir)
+        // archived (bounds checked by the same walk the archive makes).
+        let tree = crate::publication::can_move(&root, &result.outputs, state_dir)
             .then_some(root.as_path());
         if tree.is_some() && retained.is_none() {
             check_storage(&root, &options.execution).map_err(|error| {
@@ -442,7 +421,7 @@ fn run_inner(
                 Category::Storage.wrap(error, "cannot archive the run's outputs")
             })?;
         }
-        let usage = match &stream.result.network_usage {
+        let usage = match &result.network_usage {
             Some(usage) => {
                 crate::needs::report::host_network_usage(&prepared.network.host_endpoints, usage)
             }
@@ -451,7 +430,7 @@ fn run_inner(
         };
         timing("outputs archived", started);
         summary = Some(crate::launch::finish_outputs(
-            &stream.result,
+            &result,
             &export_path,
             tree,
             &mut retained,
@@ -463,10 +442,8 @@ fn run_inner(
     }
     timing("outputs published", started);
     Ok(LaunchReport {
-        result: stream.result,
+        result,
         summary,
-        checkpoints_acked: stream.checkpoints,
-        generations: stream.generations,
         launcher_code: exit,
         result_outcome: if exit.is_some() {
             crate::ginux::Outcome::Exited
@@ -524,6 +501,10 @@ fn environment(root: &Path, invocation_id: &str) -> Vec<(String, String)> {
             crate::domain::ENV_WORKER_VALUE.into(),
         ),
         (crate::domain::ENV_INVOCATION.into(), invocation_id.into()),
+        (
+            crate::domain::ENV_HOST_ROOT.into(),
+            root.to_string_lossy().into_owned(),
+        ),
         (
             crate::domain::ENV_COORDINATOR.into(),
             std::process::id().to_string(),

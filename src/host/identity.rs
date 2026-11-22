@@ -16,9 +16,7 @@
 //! read-only, and `work` and `out` are handed to the run's uid after a
 //! restore ([`hand_over`]). Root's own walks of those trees are
 //! descriptor-based (`super::snapshot`, `crate::fsx::make_removable`), so they
-//! never depend on the worker keeping still; at a checkpoint the worker is
-//! stopped anyway ([`Stopped`]) so the archive is consistent. Once the worker
-//! has been reaped, anything still running as the run's uid is killed
+//! never depend on the worker keeping still. Once the worker has been reaped, anything still running as the run's uid is killed
 //! ([`kill_run_processes`]) before the directory is closed and read.
 
 use std::collections::BTreeSet;
@@ -626,48 +624,5 @@ impl Gate {
 impl Drop for Gate {
     fn drop(&mut self) {
         let _ = Self::shut(self.0.take());
-    }
-}
-
-/// The worker stopped (SIGSTOP, and waited for until every thread is
-/// stopped), continued again when dropped.
-pub(super) struct Stopped(libc::pid_t);
-
-impl Stopped {
-    pub(super) fn stop(pid: libc::pid_t) -> Result<Self> {
-        if unsafe { libc::kill(pid, libc::SIGSTOP) } != 0 {
-            return Err(last_error()).context("cannot stop the worker for a checkpoint");
-        }
-        let stopped = Self(pid);
-        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        loop {
-            let waited = unsafe {
-                libc::waitid(
-                    libc::P_PID,
-                    pid as libc::id_t,
-                    &mut info,
-                    libc::WSTOPPED | libc::WEXITED | libc::WNOWAIT,
-                )
-            };
-            if waited == 0 {
-                break;
-            }
-            let error = last_error();
-            if error.kind() != std::io::ErrorKind::Interrupted {
-                return Err(error).context("cannot wait for the worker to stop");
-            }
-        }
-        if info.si_code != libc::CLD_STOPPED {
-            bail!("the worker ended during a checkpoint");
-        }
-        Ok(stopped)
-    }
-}
-
-impl Drop for Stopped {
-    fn drop(&mut self) {
-        unsafe {
-            libc::kill(self.0, libc::SIGCONT);
-        }
     }
 }

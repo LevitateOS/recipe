@@ -1,18 +1,18 @@
 //! The coordinator's `--progress-file`: one JSON object, kept current while an
 //! invocation runs so a reader outside can see how far it is.
 //!
-//! The worker reports through `Progress` frames
-//! ([`crate::worker::protocol::ProgressPayload`]); only the coordinator writes
+//! The worker reports through progress lines
+//! ([`crate::worker::records::ProgressRecord`]); only the coordinator writes
 //! host files. The file is replaced atomically (temp file in the same
 //! directory, then rename), at most once a second, except for the first
 //! report, a change of phase and the end of the invocation, which are written
-//! at once. A report held back by the limit is written by the next frame or at
+//! at once. A report held back by the limit is written by the next report or at
 //! the end. A failed write is reported once and never fails the invocation.
 
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use crate::worker::protocol::ProgressPayload;
+use crate::worker::records::ProgressRecord;
 
 const WRITE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -52,7 +52,7 @@ impl ProgressFile {
     }
 
     /// Take one report from the worker.
-    pub(crate) fn report(&mut self, report: &ProgressPayload) {
+    pub(crate) fn report(&mut self, report: &ProgressRecord) {
         let first = !self.reported;
         let phase_changed = report.phase != self.phase;
         self.reported = true;

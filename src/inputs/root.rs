@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -158,9 +158,13 @@ impl PreparedRoot {
     }
 }
 
+/// Make the private Ginux root of one invocation. `request` is the worker's
+/// request record: its offline cache is set here (this root decides whether
+/// the cache is bound), then it is staged with the other inputs.
 pub(crate) fn prepare_root(
     invocation: &PreparedInvocation,
     image: &mut Option<VerifiedImage>,
+    request: &mut crate::worker::records::WorkerRequest,
 ) -> Result<PreparedRoot> {
     if std::env::consts::OS != "linux" || std::env::consts::ARCH != "x86_64" {
         bail!("Ginux execution currently requires Linux x86_64");
@@ -197,29 +201,18 @@ pub(crate) fn prepare_root(
     let inputs = root
         .path()
         .join(crate::domain::INPUTS.trim_start_matches('/'));
-    stage_inputs(invocation, &inputs)?;
-    use std::os::unix::ffi::OsStrExt;
-    let path = |path: &Path| CString::new(path.as_os_str().as_bytes()).map_err(anyhow::Error::from);
-    root.binds = invocation
-        .binds()
-        .map(|(host, name)| Ok((path(host)?, path(&inputs.join(name))?)))
-        .collect::<Result<_>>()?;
     // The offline cache's `sha256` folder, bound read-only like a live root's
     // folders: the domain reads the payloads in place, and nothing of the
     // cache is copied or linked into this root. A file is still used only
     // when its bytes match the pin (`crate::helpers::acquire::download`).
     // It is not an input, so it enters no identity: a run's results never
-    // depend on it.
+    // depend on it. Decided before staging, because the request names it.
+    let mut cache_payloads = None;
     if let Some(cache) = crate::offline_cache::dir()?
         && cache.join("sha256").is_dir()
     {
-        let payloads = cache.join("sha256");
         if super::can_bind() {
-            let folder = inputs.join(crate::domain::OFFLINE_CACHE_NAME);
-            std::fs::create_dir(&folder)?;
-            std::fs::create_dir(folder.join("sha256"))?;
-            root.binds
-                .push((path(&payloads)?, path(&folder.join("sha256"))?));
+            cache_payloads = Some(cache.join("sha256"));
             root.offline_cache = true;
         } else {
             crate::diagnostics::diag!(
@@ -228,6 +221,21 @@ pub(crate) fn prepare_root(
                 cache.display()
             );
         }
+    }
+    request.cache = root.offline_cache();
+    stage_inputs(invocation, &inputs, request)?;
+    use std::os::unix::ffi::OsStrExt;
+    let path = |path: &Path| CString::new(path.as_os_str().as_bytes()).map_err(anyhow::Error::from);
+    root.binds = invocation
+        .binds()
+        .map(|(host, name)| Ok((path(host)?, path(&inputs.join(name))?)))
+        .collect::<Result<_>>()?;
+    if let Some(payloads) = cache_payloads {
+        let folder = inputs.join(crate::domain::OFFLINE_CACHE_NAME);
+        std::fs::create_dir(&folder)?;
+        std::fs::create_dir(folder.join("sha256"))?;
+        root.binds
+            .push((path(&payloads)?, path(&folder.join("sha256"))?));
     }
     let worker_path = worker_binary()?;
     let mut worker = crate::fsx::open_regular(&worker_path)
@@ -279,10 +287,15 @@ pub(crate) fn prepare_root(
 /// Put the staged inputs into `inputs` (created here): each file by hard link
 /// to its private staged copy where both share a filesystem, else as a copy;
 /// either way every byte is read back and checked against its discovery
-/// digest. Then write the input permission manifest.
+/// digest. Then write the input permission manifest and the worker's request
+/// file ([`crate::domain::REQUEST_NAME`]).
 /// [`seal_inputs`] then makes them read-only. Shared by the Ginux root and
 /// the host run.
-pub(crate) fn stage_inputs(invocation: &PreparedInvocation, inputs: &Path) -> Result<()> {
+pub(crate) fn stage_inputs(
+    invocation: &PreparedInvocation,
+    inputs: &Path,
+    request: &crate::worker::records::WorkerRequest,
+) -> Result<()> {
     let inputs = inputs.to_path_buf();
     std::fs::create_dir(&inputs)?;
     for (index, input) in invocation.inputs.iter().enumerate() {
@@ -385,6 +398,17 @@ pub(crate) fn stage_inputs(invocation: &PreparedInvocation, inputs: &Path) -> Re
     }
     std::fs::write(&manifest, modes)?;
     std::fs::set_permissions(manifest, std::fs::Permissions::from_mode(0o444))?;
+    // The request: checked and bounded by its encoder
+    // (`crate::domain::MAX_REQUEST_BYTES`), written once, read-only.
+    let request = request.encode()?;
+    let path = inputs.join(crate::domain::REQUEST_NAME);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .with_context(|| format!("cannot write the request {}", path.display()))?;
+    file.write_all(&request)?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o444))?;
     Ok(())
 }
 

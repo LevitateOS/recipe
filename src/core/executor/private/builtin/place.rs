@@ -22,15 +22,13 @@ use crate::needs::PathKind;
 use anyhow::{Context, Result, bail, ensure};
 use std::path::{Path, PathBuf};
 
-/// Place every `FILES` entry into the output. On a run restored from a
-/// checkpoint the restored output holds them already.
+/// Place every `FILES` entry into the output.
 pub(crate) fn place_files(
     declared: &Declared,
     unpacked: &Unpacked,
     outputs: &Outputs,
-    resumed: bool,
 ) -> Result<()> {
-    if declared.files.is_empty() || resumed {
+    if declared.files.is_empty() {
         return Ok(());
     }
     let [(output, kind, out)] = outputs.as_slice() else {

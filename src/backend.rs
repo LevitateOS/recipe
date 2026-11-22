@@ -75,15 +75,15 @@ impl Runner<'_> {
         crate::core::output::set_machine_events(invocation.options.execution.machine_events);
         let all = crate::needs::declarations(invocation.recipe, invocation.search_path)?;
         let operation = invocation.operation;
-        if operation == crate::worker::protocol::Operation::Latest {
+        if operation == crate::worker::records::Operation::Latest {
             crate::needs::check_declared_defines(&all, &invocation.options.defines)?;
         } else {
             crate::needs::check_defines(&all, &invocation.options.defines)?;
         }
-        let install = operation == crate::worker::protocol::Operation::Install;
+        let install = operation == crate::worker::records::Operation::Install;
         let builds = operation.builds();
         if invocation.options.execution.machine_events
-            && (builds || operation == crate::worker::protocol::Operation::Download)
+            && (builds || operation == crate::worker::records::Operation::Download)
         {
             // For a front end: every recipe of this run in the order they run,
             // each with the steps it has (`plan` with `recipe` repeats them
@@ -105,7 +105,7 @@ impl Runner<'_> {
             invocation.inputs,
             invocation.search_path,
             // latest() sees no inputs, so it needs none.
-            operation != crate::worker::protocol::Operation::Latest,
+            operation != crate::worker::records::Operation::Latest,
         )?;
         // Resolve all declarations and contracts before the first dependency can
         // execute. Parent restrictions never become dependency grants.
@@ -126,7 +126,7 @@ impl Runner<'_> {
         let mut executions = Vec::with_capacity(graph.len());
         let mut placements = Vec::with_capacity(graph.len());
         for node in &graph {
-            let placement = if operation == crate::worker::protocol::Operation::Latest {
+            let placement = if operation == crate::worker::records::Operation::Latest {
                 // latest() runs alone on the host and may not start programs:
                 // a host worker has no program helpers and cannot exec.
                 crate::execution::Placement {
@@ -306,10 +306,10 @@ impl Runner<'_> {
                 operation: if main {
                     operation
                 } else {
-                    crate::worker::protocol::Operation::Install
+                    crate::worker::records::Operation::Install
                 },
                 key: &keys[&node.recipe],
-                options: crate::worker::protocol::InvocationOptions {
+                options: crate::worker::records::InvocationOptions {
                     defines: invocation.options.defines.clone(),
                     execution,
                 },
@@ -326,8 +326,8 @@ impl Runner<'_> {
                 persist_state: invocation.persist_state
                     && !matches!(
                         operation,
-                        crate::worker::protocol::Operation::Latest
-                            | crate::worker::protocol::Operation::Cleanup
+                        crate::worker::records::Operation::Latest
+                            | crate::worker::records::Operation::Cleanup
                     )
                     && !bindings[&node.recipe].iter().any(|input| input.live),
                 ..*invocation
@@ -464,7 +464,7 @@ impl Runner<'_> {
             &invocation.options.execution,
             launcher.as_deref(),
             dependency_inputs,
-            operation != crate::worker::protocol::Operation::Latest,
+            operation != crate::worker::records::Operation::Latest,
         )
         .map_err(|err| {
             anyhow::Error::new(crate::failure::Category::Startup.error(format!(
@@ -480,7 +480,7 @@ impl Runner<'_> {
             expected.recipe.display()
         );
         let invocation = crate::launch::Invocation {
-            options: crate::worker::protocol::InvocationOptions {
+            options: crate::worker::records::InvocationOptions {
                 defines: invocation.options.defines.clone(),
                 execution: prepared.execution.clone(),
             },
@@ -491,16 +491,9 @@ impl Runner<'_> {
             None => crate::host::run_host(&prepared, &invocation)?,
         };
         crate::diagnostics::diag!(
-            "recipe: invocation {} finished {place}: ok={} ({} checkpoint{} \
-                 acked; {} exit {}; result {})",
+            "recipe: invocation {} finished {place}: ok={} ({} exit {}; result {})",
             prepared.invocation_id,
             report.result.ok,
-            report.checkpoints_acked,
-            if report.checkpoints_acked == 1 {
-                ""
-            } else {
-                "s"
-            },
             if host { "worker" } else { "launcher" },
             report
                 .launcher_code
@@ -509,12 +502,12 @@ impl Runner<'_> {
             report.result_outcome,
         );
         if !report.result.ok {
-            // The protocol guarantees a failure record on every non-ok result.
+            // A valid result carries a failure record whenever it is not ok.
             let failure = report
                 .result
                 .failure
                 .clone()
-                .expect("protocol: a failed result carries its failure");
+                .expect("a failed result carries its failure");
             let diagnostics = crate::invocation_log::retained(
                 invocation.state_dir,
                 Path::new(&prepared.invocation_id),
@@ -626,7 +619,7 @@ fn is_executable(meta: &std::fs::Metadata) -> bool {
 /// The worker's account of a failed workload, kept typed.
 #[derive(Debug)]
 pub(crate) struct WorkloadFailure(
-    pub crate::worker::protocol::FailureInfo,
+    pub crate::worker::records::FailureInfo,
     /// The retained diagnostics directory of the failed invocation, if there is one.
     pub Option<PathBuf>,
 );

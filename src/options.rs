@@ -16,7 +16,7 @@ pub struct ExecutionOptions {
     /// `progress()` reports. Coordinator only: never sent to the worker.
     #[serde(skip)]
     pub progress_file: Option<std::path::PathBuf>,
-    /// Maximum supervised execution time, separate from frame transport stalls.
+    /// Maximum supervised execution time, separate from worker output stalls.
     pub(crate) timeout_secs: u64,
     /// Domain memory and writable filesystem bounds.
     pub(crate) memory_mib: u64,

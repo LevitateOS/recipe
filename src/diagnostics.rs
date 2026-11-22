@@ -5,7 +5,8 @@
 //!
 //! - **The diagnostic stream** ([`write`], [`line`], [`diag!`]). The
 //!   coordinator writes it to its stderr. The worker installs a [`Sink`] that
-//!   frames it to the coordinator, which shows it and keeps it in `worker.log`.
+//!   writes it as diagnostic lines on its stdout to the coordinator, which
+//!   shows it and keeps it in `worker.log`.
 //! - **Out-of-band stderr** ([`out_of_band`], [`trace`], [`progress_target`]).
 //!   This is the process's own stderr, for progress redraws and worker traces
 //!   that must not enter the diagnostic budget. In the worker it reaches only

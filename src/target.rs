@@ -224,7 +224,7 @@ impl<'a> Resolver<'a> {
 /// hundreds of packages into one tree would otherwise parse and write a
 /// growing manifest once per package. It is written before anything else
 /// reads it (`load`), when a different tree is extracted into, and by the
-/// worker before every checkpoint and its result (`flush_pending`).
+/// worker before its result (`flush_pending`).
 static PENDING: std::sync::Mutex<Option<(PathBuf, Manifest)>> = std::sync::Mutex::new(None);
 
 fn pending() -> std::sync::MutexGuard<'static, Option<(PathBuf, Manifest)>> {
@@ -356,7 +356,7 @@ pub fn save(root: &Path, manifest: &Manifest) -> Result<()> {
         bytes.len() as u64 <= MAX_MANIFEST,
         "target metadata exceeds bound"
     );
-    // This file is ordinary data and survives Ginux's checkpoint/export rules.
+    // This file is ordinary data and survives Ginux's export rules.
     let path = root.join(MANIFEST);
     ensure!(
         !fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()),

@@ -724,22 +724,22 @@ fn build(src, out) {
 }
 
 #[test]
-fn managed_diagnostic_frame_limit_preserves_the_result() {
-    use levitate_recipe::bin_support::MAX_DIAGNOSTIC_FRAMES;
+fn managed_diagnostic_record_limit_preserves_the_result() {
+    use levitate_recipe::bin_support::MAX_DIAGNOSTIC_RECORDS;
     let (_dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 1;
 const NEEDS = #{ outputs: #{ report: "file" } };
 fn build(src, out) {
-    print("before-frame-cap");
-    for index in 0..DIAGNOSTIC_COUNT { print("frame-data"); }
+    print("before-record-cap");
+    for index in 0..DIAGNOSTIC_COUNT { print("record-data"); }
     write_file(out, "logged");
-    print("after-frame-cap");
+    print("after-record-cap");
 }
 "#
     .replace(
         "DIAGNOSTIC_COUNT",
-        &(MAX_DIAGNOSTIC_FRAMES + 1024).to_string(),
+        &(MAX_DIAGNOSTIC_RECORDS + 1024).to_string(),
     );
     write_recipe(&recipes, "check", &source);
     let output = managed_command(&recipes, "install").output().unwrap();
@@ -750,8 +750,8 @@ fn build(src, out) {
         "logged"
     );
     let diagnostics = String::from_utf8_lossy(&output.stderr);
-    assert!(diagnostics.contains("before-frame-cap"));
-    assert!(!diagnostics.contains("after-frame-cap"));
+    assert!(diagnostics.contains("before-record-cap"));
+    assert!(!diagnostics.contains("after-record-cap"));
     assert_eq!(diagnostics.matches("diagnostic limit reached").count(), 1);
     assert!(diagnostics.contains("launcher exit 0; result exited"));
     assert_eq!(
@@ -1099,7 +1099,7 @@ fn build(src, out) {
 }
 
 #[test]
-fn cli_partial_launcher_frame_times_out_and_reaps_pipe_holders() {
+fn cli_partial_launcher_line_times_out_and_reaps_pipe_holders() {
     use std::os::unix::fs::PermissionsExt;
     let (dir, recipes) = create_test_env();
     let sentinel = dir.path().join("host-effect");
@@ -1113,9 +1113,9 @@ fn cli_partial_launcher_frame_times_out_and_reaps_pipe_holders() {
 import os, sys, time
 if sys.argv[1].startswith('instance-'):
     os.execv(os.environ['RECIPE_TEST_REAL_GINUX'], [os.environ['RECIPE_TEST_REAL_GINUX'], *sys.argv[1:]])
-with open(os.environ['RECIPE_TEST_PARTIAL_FRAME_START'], 'w') as marker:
+with open(os.environ['RECIPE_TEST_PARTIAL_LINE_START'], 'w') as marker:
     marker.write(str(time.monotonic_ns()))
-os.write(1, b'\x00')
+os.write(1, b'{"version":')
 child = os.fork()
 if child == 0:
     time.sleep(60)
@@ -1125,22 +1125,22 @@ else:
     )
     .unwrap();
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let frame_start = dir.path().join("partial-frame-start");
+    let line_start = dir.path().join("partial-line-start");
     let output = image_command(&recipes, &archive, &digest)
-        .env("RECIPE_TEST_PARTIAL_FRAME_START", &frame_start)
+        .env("RECIPE_TEST_PARTIAL_LINE_START", &line_start)
         .env(
             "RECIPE_TEST_REAL_GINUX",
             std::env::var_os("GINUX_BIN").unwrap(),
         )
         .env("GINUX_BIN", &launcher)
-        .env("RECIPE_FRAME_TIMEOUT_SECS", "1")
+        .env("RECIPE_OUTPUT_TIMEOUT_SECS", "1")
         .output()
         .unwrap();
     assert!(!output.status.success() && output.stdout.is_empty());
-    // Time from the actual partial frame, excluding input/image preparation.
+    // Time from the actual partial line, excluding input/image preparation.
     // Both launcher and child hold the pipe, so waiting for either 60s sleep
     // instead of reaping it would still violate the unchanged 20s bound.
-    let frame_start: u64 = std::fs::read_to_string(frame_start)
+    let line_start: u64 = std::fs::read_to_string(line_start)
         .unwrap()
         .parse()
         .unwrap();
@@ -1151,14 +1151,14 @@ else:
     );
     let completed = unsafe { completed.assume_init() };
     let completed = completed.tv_sec as u64 * 1_000_000_000 + completed.tv_nsec as u64;
-    let elapsed = std::time::Duration::from_nanos(completed - frame_start);
+    let elapsed = std::time::Duration::from_nanos(completed - line_start);
     assert!(
         elapsed < std::time::Duration::from_secs(20),
-        "partial-frame teardown took {elapsed:?}"
+        "partial-line teardown took {elapsed:?}"
     );
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(
-        error.contains("complete worker frame deadline expired"),
+        error.contains("complete worker output line deadline expired"),
         "{error}"
     );
     assert!(!sentinel.exists());

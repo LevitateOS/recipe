@@ -461,24 +461,22 @@ fn build(src, out) { write_file(out, "unreachable"); }
         &wrapper,
         format!(
             r#"#!/usr/bin/python3
-import os, struct, subprocess, sys
+import json, os, sys
 launcher={launcher:?}
 if sys.argv[1] != 'launch': os.execv(launcher,[launcher]+sys.argv[1:])
-def read_exact(count):
- data=bytearray()
- while len(data)<count:
-  chunk=sys.stdin.buffer.read(count-len(data))
-  if not chunk: raise RuntimeError('incomplete real coordinator request')
-  data.extend(chunk)
- return data
-header=read_exact(4)
-length=struct.unpack('>I',header)[0]
-assert 14<=length<=4*1024*1024
-request=header+read_exact(length-4)
-request[4:8]=struct.pack('>I',8)
-child=subprocess.Popen([launcher]+sys.argv[1:],stdin=subprocess.PIPE,close_fds=False)
-child.communicate(request,timeout=30)
-sys.exit(child.returncode)
+# The request the real coordinator staged, rewritten to an old version
+# before the real launcher starts the worker.
+inputs=os.path.join(sys.argv[3],'inputs')
+path=os.path.join(inputs,'.recipe-request.json')
+with open(path) as file: request=json.load(file)
+assert request['version']>8
+request['version']=8
+os.chmod(inputs,0o755)
+os.chmod(path,0o644)
+with open(path,'w') as file: json.dump(request,file)
+os.chmod(path,0o444)
+os.chmod(inputs,0o555)
+os.execv(launcher,[launcher]+sys.argv[1:])
 "#
         ),
     )
@@ -498,7 +496,7 @@ sys.exit(child.returncode)
     assert!(!result.status.success());
     let error = String::from_utf8_lossy(&result.stderr);
     assert!(
-        error.contains("protocol version mismatch") && error.contains("got 8, want "),
+        error.contains("bad request") && error.contains("request version 8, want "),
         "{error}"
     );
     assert!(!error.contains("WORKER_SETUP_EXECUTED"), "{error}");

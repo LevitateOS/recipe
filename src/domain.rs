@@ -29,13 +29,28 @@ macro_rules! offline_cache_name {
         ".recipe-offline-cache"
     };
 }
+macro_rules! request_name {
+    () => {
+        ".recipe-request.json"
+    };
+}
+macro_rules! work_root {
+    () => {
+        "/work"
+    };
+}
+macro_rules! result_name {
+    () => {
+        ".recipe-result.json"
+    };
+}
 
 /// Read-only root holding every staged input.
 pub const INPUTS: &str = inputs_root!();
 /// Staged name of the invoked recipe. It is not the recipe's name: the worker
-/// gets that from the request (`crate::worker::protocol::RequestPayload::recipe_name`).
+/// gets that from the request (`crate::worker::records::WorkerRequest::recipe_name`).
 pub const MAIN_RECIPE_NAME: &str = main_recipe_name!();
-/// Domain path of the invoked recipe; also the identity of its saved state.
+/// Domain path of the invoked recipe.
 pub const MAIN_RECIPE: &str = concat!(inputs_root!(), "/", main_recipe_name!());
 /// Staged name of the worker executable.
 pub const WORKER_NAME: &str = worker_name!();
@@ -56,8 +71,20 @@ pub const DEPENDENCY_INPUT: &str = "recipe-dependencies";
 /// Input holding the dependencies' merged `tools` outputs; staged like
 /// [`DEPENDENCY_INPUT`] and seeded into [`TOOLS`].
 pub const DEPENDENCY_TOOLS: &str = "recipe-tools";
+/// Staged name of the request file (`crate::worker::records::WorkerRequest`):
+/// the coordinator writes it with the other inputs, the worker reads it once.
+pub const REQUEST_NAME: &str = request_name!();
+/// Domain path of the request file.
+pub const REQUEST: &str = concat!(inputs_root!(), "/", request_name!());
+/// Upper bound on the request file.
+pub const MAX_REQUEST_BYTES: u64 = 4 * 1024 * 1024;
 /// Input names the coordinator writes itself; nothing else may stage them.
-pub const RESERVED_INPUT_NAMES: [&str; 3] = [WORKER_NAME, INPUT_MODES_NAME, OFFLINE_CACHE_NAME];
+pub const RESERVED_INPUT_NAMES: [&str; 4] = [
+    WORKER_NAME,
+    INPUT_MODES_NAME,
+    OFFLINE_CACHE_NAME,
+    REQUEST_NAME,
+];
 
 /// Logical input name → permission bits, written into [`INPUT_MODES`].
 pub type InputModes = std::collections::BTreeMap<String, u32>;
@@ -65,7 +92,7 @@ pub type InputModes = std::collections::BTreeMap<String, u32>;
 pub const MAX_INPUT_MODES_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Writable scratch filesystem root.
-pub const WORK: &str = "/work";
+pub const WORK: &str = work_root!();
 /// The user id domain processes run as (and own the files they write).
 pub const UID: u64 = 1000;
 /// The main recipe's build directory, `WORK` to a recipe.
@@ -91,6 +118,27 @@ pub const OUT: &str = "/out";
 pub const WRITABLE_DIRS: [&str; 5] = [WORK, BUILD, TOOLS, TMP, OUT];
 /// Top-level names of the writable trees, as they appear in the export archive.
 pub const WRITABLE_ROOTS: [&str; 2] = ["work", "out"];
+/// Domain path of the result file (`crate::worker::records::WorkerResult`).
+/// It is in [`WORK`], a writable tree the coordinator reads back after the
+/// run (the export archive of a Ginux run, the run directory of a host run),
+/// and never an output: outputs are `/out/NAME`, and a name with a `.` is
+/// not a valid output name ([`valid_name`]).
+pub const RESULT: &str = concat!(work_root!(), "/", result_name!());
+/// The result file's name in [`WORK`].
+pub const RESULT_NAME: &str = result_name!();
+/// Where the worker writes the result before renaming it to [`RESULT`] (the
+/// same directory, so the rename is atomic).
+pub const RESULT_STAGING: &str = concat!(work_root!(), "/", result_name!(), ".partial");
+/// The result file as a member of the export archive (relative to the
+/// domain root, below one of [`WRITABLE_ROOTS`]).
+pub const RESULT_MEMBER: &str = concat!("work/", result_name!());
+/// Upper bound on the result file.
+pub const MAX_RESULT_BYTES: u64 = 4 * 1024 * 1024;
+/// Space the worker reserves for the result file before any recipe code
+/// runs ([`RESULT_STAGING`], allocated up front), so a run that fills its
+/// storage quota can still record its failure. A result larger than this is
+/// replaced by a failed result that says so.
+pub const RESULT_RESERVE_BYTES: u64 = 64 * 1024;
 /// Top-level names a root image may not provide.
 pub const RESERVED_ROOTS: [&str; 3] = ["inputs", "work", "out"];
 
@@ -114,6 +162,22 @@ pub const ENV_INVOCATION: &str = "RECIPE_INVOCATION";
 /// The pid of the coordinator that started a host-mode worker: the worker
 /// ends as soon as that is no longer its parent (`crate::worker`).
 pub const ENV_COORDINATOR: &str = "RECIPE_COORDINATOR_PID";
+/// The host directory standing in for the domain root of a host-mode worker
+/// ([`set_host_root`]): it holds `inputs`, `work/{build,tools,tmp}` and
+/// `out`. Set only for a host-mode worker; the request file is below it
+/// ([`REQUEST`] through [`local`]), so it cannot come from the request.
+pub const ENV_HOST_ROOT: &str = "RECIPE_HOST_ROOT";
+/// Longest host path a worker is given (its host root, the offline cache).
+pub const MAX_HOST_PATH: usize = 4096;
+
+/// The rule for a host path given to a worker: absolute, bounded, no NUL and
+/// no `.` or `..` component.
+pub fn valid_host_path(path: &str) -> bool {
+    path.starts_with('/')
+        && path.len() <= MAX_HOST_PATH
+        && !path.contains('\0')
+        && !path.split('/').any(|part| part == "." || part == "..")
+}
 /// The value of [`ENV_WORKER`] in a coordinator-started worker.
 pub const ENV_WORKER_VALUE: &str = "1";
 
@@ -134,7 +198,7 @@ pub fn valid_name(name: &str) -> bool {
 pub const MAX_NETWORK_ENDPOINTS: usize = 8;
 /// Concurrent mediated connections a domain gets.
 pub const MAX_NETWORK_CONNECTIONS: usize = 16;
-/// Longest execution or frame-stall deadline, in seconds.
+/// Longest execution or output-stall deadline, in seconds.
 pub const MAX_TIMEOUT_SECS: u64 = 86_400;
 
 /// Domain path of the declared output `name`: `/out/NAME`. The engine chooses
@@ -146,11 +210,6 @@ pub fn output_path(name: &str) -> String {
 /// Domain path of a staged input.
 pub fn input_path(name: &str) -> String {
     format!("{INPUTS}/{name}")
-}
-
-/// Staged input name of a domain path under [`INPUTS`].
-pub fn input_name(path: &str) -> Option<&str> {
-    path.strip_prefix(INPUTS)?.strip_prefix('/')
 }
 
 /// Tool executable directories as absolute domain paths, in PATH order.
@@ -206,7 +265,8 @@ pub fn validate_export_path(path: &str) -> anyhow::Result<()> {
 }
 
 /// The host directory standing in for the domain root in a host-mode worker
-/// (`crate::execution`), set once from the request before recipe code runs.
+/// (`crate::execution`), set once from [`ENV_HOST_ROOT`] before the request
+/// is read.
 /// Unset in a Ginux worker, where the domain paths above are real.
 static HOST_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
@@ -234,17 +294,5 @@ pub fn local(path: &str) -> std::path::PathBuf {
     match host_root() {
         Some(root) => root.join(path.trim_start_matches('/')),
         None => std::path::PathBuf::from(path),
-    }
-}
-
-/// The domain path of a worker path, the inverse of [`local`]. None for a path
-/// outside the host root on the host.
-pub fn domain_path(path: &std::path::Path) -> Option<String> {
-    match host_root() {
-        Some(root) => {
-            let relative = path.strip_prefix(root).ok()?;
-            Some(format!("/{}", relative.to_str()?))
-        }
-        None => path.to_str().map(str::to_owned),
     }
 }

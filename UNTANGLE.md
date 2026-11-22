@@ -4,6 +4,8 @@ This is a historical record, written before the API 1 rewrite of 2026-11-16. It 
 
 Note (2026-11-16): `llm/`, `core/autofix/` and `--autofix` were removed; entries below that mention them describe code that no longer exists.
 
+Note (2026-11-22): the checkpoints (`save`, `saved`, `checkpoint`, `reached`, `src/core/saved.rs`, the Checkpoint and Ack wire operations, `--control-fd`, the snapshot control channel with its `GXS1`/`GXA1` exchange) and the stdio frame protocol (`src/worker/protocol.rs`, `RECIPE_FRAME_TIMEOUT_SECS`) were removed, and `src/launch.rs` became `src/launch/` (`mod.rs`, `configured.rs`, `worker_io.rs`). Entries below that describe them, including fix 5 ("Typed coordinator/worker contract"), describe code that no longer exists. Now the request is a staged input file, the result a file in `/work`, diagnostics and progress are JSON lines on the worker's stdout (`src/worker/records.rs`), and an interrupted step starts again from its beginning (`docs/recipe-format.md`, section 7).
+
 ## Scope
 
 - Target: the `levitate-recipe` crate in `tools/recipe` only (`src/`, `tests/`, bin targets, and the crate's own docs/examples/scripts). Callers in the LevitateOS superproject (xtask, distro-builder, distro-builder/recipes) are out of scope; links to them are recorded only as cross-boundary notes.
@@ -785,6 +787,8 @@ One `fsx` module holds the primitives each copied today: open regular file witho
 - **J27** [surplus] `src/helpers/install/filesystem.rs:70,294`: `ensure_parent_dir` runs twice per file in `copy_tree_contents`, though WalkDir already created the parents.
 
 ### 5. X3: Typed coordinator/worker contract
+
+*Since then (2026-11-22): the single owner of the contract is now `src/worker/records.rs`; the frames, the checkpoint state channel and the ack timeout below are gone.*
 
 Make `worker::protocol` the single owner of what crosses the process boundary, with types instead of strings:
 - `Operation` enum (`Install`, `Remove`, `Cleanup{reason}`, `Check(Phase)`), with aliases parsed once at the CLI edge.

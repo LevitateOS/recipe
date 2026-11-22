@@ -5,11 +5,11 @@ A recipe mostly declares what a program is and where it comes from; Recipe
 downloads, checks, unpacks, places files, installs, removes and cleans up. Code
 a recipe does contain, if it can start a program, runs inside a configured Ginux
 domain; if it cannot, as a confined host process (see "Execution modes"). Either
-way the coordinator imports explicit immutable inputs, keeps checkpoints of what
-the recipe saved and publishes the recipe's named outputs, and no recipe code runs
-unconfined. After a successful install Recipe deletes the downloads, the
-unpacked source, the build material and the saved state, unless you chose
-`--keep`.
+way the coordinator imports explicit immutable inputs, keeps the downloads and
+finished results it records and publishes the recipe's named outputs, and no
+recipe code runs unconfined. After a successful install Recipe deletes the
+downloads, the unpacked source, the build material and the kept results, unless
+you chose `--keep`.
 
 ## One engine, two consumers
 
@@ -226,7 +226,7 @@ rm -rf /mnt/var/tmp/recipe-install
 ```
 
 so scratch, producer state, logs and published outputs land on the target disk and
-no saved copy is kept (the published outputs are deleted once written anyway).
+nothing is kept (the published outputs are deleted once written anyway).
 The offline cache is found at `/usr/share/recipe/cache` on the medium without a
 flag (`RECIPE_CACHE_DIR` names another). Nothing else in the environment is needed:
 the target root decides what the recipes see of "this system" (below).
@@ -353,7 +353,7 @@ Downloads two programs name are deleted only when neither needs them, and a plac
 file is moved from the unpacked source rather than copied where both are on one
 disk. Nothing is hidden: `recipe storage` lists seven kinds (installed,
 downloaded, built, kept, unfinished, build_image, logs), each with the command
-that removes it.
+that removes it (`unfinished` is published outputs no command took).
 
 Packages publish regular `bin/COMMAND` and `share/PATH` files, with a name and
 version. The coordinator copies them into an owned profile generation and commits
@@ -379,7 +379,7 @@ For a front end, all read-only and without Ginux: `recipe installed --json`
 adds to each package what its recipe was allowed to use when it was installed
 (`needs`), when (`installed_on`) and the length of its files (`size_bytes`).
 `recipe installed --json` also gives each package its `keep` option, what it
-holds on disk beside its files (`on_disk`: downloads, build, unfinished) and an
+holds on disk beside its files (`on_disk`: downloads, build) and an
 `update` mark (`null`, or the version and why, known offline). `recipe updates` says which installed
 packages `recipe update` would change, from the receipts, the collection and
 the sources as last fetched, and lists under `changes` every NEEDS field in
@@ -476,9 +476,9 @@ recipe: cmake: runs in Ginux (calls exec_checked at cmake.rhai:8873)
 `--execution auto` (the default) applies this rule. `--execution ginux` keeps
 every recipe in Ginux. `--execution host` requires the host and refuses a
 recipe that is not eligible, naming the call that keeps it in Ginux. A host
-run checkpoints, restores, publishes and enforces its deadline like a Ginux
-run; its storage bounds are checked at each checkpoint and at the end. Its
-saved state has an identity of its own.
+run restores kept downloads, publishes and enforces its deadline like a Ginux
+run; its storage bounds are checked at the end of the run. Its kept records
+have an identity of their own.
 
 ## Build and prepare the environment
 
@@ -618,12 +618,12 @@ existing prepared artifacts.
   (`PREFIX`, `JOBS`, `HOST_LIBC`, `PACKAGE_FORMAT`, `INPUTS`, `DEFINES`, `DEPS`,
   `WORK`). There are no hooks, readiness checks or `ctx`.
 - Recipe decides what is done from its own records (downloads by checksum, results
-  by identity, installed programs by receipt). The only values restored after an
-  interruption are those saved with `save`, with a `checkpoint`; a resumed
-  `build` skips finished work with `reached`. Setup (top-level code) runs again
-  and current facts remain current.
+  by identity, installed programs by receipt). An interrupted step (download,
+  build, install, cleanup) starts again from its beginning; the steps that
+  finished keep their results. Setup (top-level code) runs again and current
+  facts remain current.
 - The output is the folder or file Recipe hands to `build`. Successful
-  execution, validated archive data and acknowledged matching checkpoints are
+  execution, a validated result file and validated archive data are
   required for publication. Failed work cannot replace earlier publications.
 - Dependencies run in separate instances with their own NEEDS. Declared products
   are snapshotted into the consumer (`DEPS`); a directory output named `tools`
@@ -755,19 +755,19 @@ staging, how inputs and outputs are materialized, the rendered Ginux config, a
 Rhai or archive-crate upgrade that changes results; not for a pure speed-up),
 `GINUX_BEHAVIOUR` (bumped when a Ginux change can alter what a workload observes:
 syscall results, VFS behaviour, credentials, clocks, signals, the snapshot or
-export format), the coordinator/worker transport version, and the Ginux catalog
+export format), the coordinator/worker records version, and the Ginux catalog
 and build-base contract digests Recipe pins and checks. `--exact-identity` (or
 `RECIPE_EXACT_IDENTITY=1`) also names the worker's and the launcher's bytes, so
 only byte-identical tools reuse saved state; release builds use it. Exact and
-default identities never share saved state. Checkpoints become recoverable only after both files and saved values are
-durable together. Interrupted, unacknowledged work is discarded. Recipe keeps one
-checkpoint at most per program and deletes it when the install succeeds. A
+default identities never share saved state. A kept download or result becomes
+recoverable only after its archive and its record are durable together; an
+interrupted step keeps nothing and starts again from its beginning. A
 `cleanup(reason)` function runs once at the end of a run, after Recipe's own
 clean-up; its diagnostics preserve the original failure.
 A corrupt current record/snapshot fails before workload startup; retain it for
 diagnosis and choose a new state directory to start explicitly fresh.
 
-`--no-persist-state` turns checkpoints off; it does not disable managed
+`--no-persist-state` turns the kept downloads and results off; it does not disable managed
 execution or publication. Published products are not saved state.
 
 Diagnostics live in `<state-root>/logs/<invocation-id>/`, outside invocation
@@ -792,13 +792,13 @@ tree of copy-on-write clones of it; the cache itself is never given to a
 domain. Elsewhere every root is unpacked from the verified image.
 
 SIGINT/SIGTERM cancel execution and await descendant teardown. Cancellation and
-deadline failure preserve the last complete checkpoint and do not publish failed
+deadline failure keep nothing of the interrupted step and do not publish failed
 work. `NEEDS.timeout_secs` bounds each recipe instance, including legitimate silent
-commands (default 3600, range 1–86400); `--timeout-secs` can only lower it. Transport partial-frame waits are bounded
-separately by `RECIPE_FRAME_TIMEOUT_SECS` (default 300, range 1–86400). A
-checkpoint snapshot may take longer while the launcher keeps writing it: the
-wait ends that long after its last visible write (plus time to flush what it
-wrote), and never after the execution deadline.
+commands (default 3600, range 1–86400); `--timeout-secs` can only lower it. A
+worker that prints nothing is bounded separately by `RECIPE_OUTPUT_TIMEOUT_SECS`
+(default 300, range 1–86400): before its first output line, and for a line it
+has started but not finished, it has that long; a silent phase after the first
+line runs until the execution deadline.
 
 Where the Ginux launcher accepts `[storage] archive_import` (asked once per
 launcher digest with `instance-validate`), each invocation's config enables
@@ -837,7 +837,7 @@ Run `recipe --help` and `recipe install --help` for the complete current syntax.
 | `--json-output FILE` | Final context result, separate from stderr diagnostics. |
 | `--progress-file PATH` | Keep PATH current with the recipe's `progress(done, total, what)` reports: one JSON object (`version`, `invocation`, `recipe`, `phase`, `what`, `done`, `total`, `started`, `updated`, `state` = `running`/`finished`/`failed`), replaced atomically at most once a second. |
 
-Storage accounts hardlink data once. Inputs, restored snapshots and publications
+Storage accounts hardlink data once. Inputs, restored kept files and publications
 are bounded and validated; increasing a bound does not add a missing syscall or
 compiler capability. Network grants resolve/pin numeric TCP endpoints before
 launch, install the corresponding hostname map and mediate readiness/teardown.
@@ -910,7 +910,7 @@ RECIPE_TEST_BIN=/absolute/path/to/recipe cargo test --offline \
 The checkout's workspace and configured launch privileges are required. See the
 superproject implementation checkpoint for exact tested revisions and remaining
 production/VM evidence. Real tool lifecycle, custom-rootfs, selected-target,
-checkpoint/link preservation and mediated acquisition are separately exercised;
+link preservation and mediated acquisition are separately exercised;
 none implies general Linux syscall or every distro package support.
 
 For a release, set the version in source before verification, and retain

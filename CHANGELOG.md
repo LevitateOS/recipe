@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Downloads (`download`, `download_exact`, the metadata fetches, and the built-in fetch of `SOURCES` and pinned packages) are tried again after a transient network failure: name lookup, refused/reset/timed-out connection, cut-off body, HTTP 408, 425, 429, 500, 502, 503, 504. Up to 4 attempts, after 1, 3 and 9 s, each retry printed with host, path and reason; the final error says how many attempts were made. A 404, a checksum mismatch, a refused host or a size limit still fails at once.
+- The stdio frame protocol between coordinator and worker is gone. The coordinator stages the request as the reserved input `.recipe-request.json`; the worker writes its result as the file `/work/.recipe-result.json` (written atomically, naming its version and invocation id); diagnostics and progress are JSON lines on the worker's stdout, and a line that is not such a record is kept as plain log text. A host-mode worker learns its root from `RECIPE_HOST_ROOT`. The records version is 14. `RECIPE_FRAME_TIMEOUT_SECS` is renamed `RECIPE_OUTPUT_TIMEOUT_SECS` (same default 300 s and range): the limit is now how long the worker may go without a complete output line. Internally `src/launch.rs` is `src/launch/` (`configured::run` is the one entry point of the configured `ginux launch`), and `src/needs/contract.rs` holds the runtime pins in one table.
+
+### Removed
+
+- Checkpoints: the recipe helpers `save`, `saved`, `checkpoint` and `reached`, the coordinator's snapshot control channel (`--control-fd`) and the checkpoint and acknowledgement operations of the worker protocol. An interrupted step (download, build, install, cleanup) starts again from its beginning; finished steps keep their results as before (`docs/recipe-format.md`, section 7). The kept-state record format is now version 3 (no saved values; earlier records are not read), `recipe state --json` `on_disk` no longer has `unfinished`, and the `unfinished` storage kind now means only published outputs no command took. `--restore-file` stays as the way to seed kept downloads and the target view into a run; it restores no checkpoint. The kernel recipe `linux` (distro/builder) is split into `linux-source`, `linux-compile` and `linux` so a long compile is kept as a finished result.
 
 ## [0.2.0] - 2026-11-17
 

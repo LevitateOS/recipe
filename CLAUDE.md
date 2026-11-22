@@ -10,7 +10,7 @@ Read these instead of copies here; each fact has one home:
 | For | Read |
 | --- | --- |
 | Running recipes, environment (`GINUX_BIN`, `GINUX_ROOTFS`, `GINUX_ROOT`, `RECIPE_WORKER_BIN`), options, state and logs | `README.md`, `docs/man/recipe.1` |
-| Writing recipes: API 1 declarations, functions, constants, steps and states, saved values, `deps`/`build_deps`, `extends` | `WRITING_RECIPES.md`, `docs/man/recipe-recipe.5`; the full contract is `docs/recipe-format.md` |
+| Writing recipes: API 1 declarations, functions, constants, steps and states, interruption and restarting, `deps`/`build_deps`, `extends` | `WRITING_RECIPES.md`, `docs/man/recipe-recipe.5`; the full contract is `docs/recipe-format.md` |
 | Helper catalog | `HELPERS_AUDIT.md`, `docs/man/recipe-helpers.7` (registration: `src/helpers/mod.rs`) |
 | Compiler images | `bootstrap/README.md`, `src/bin/recipe-image.rs` |
 | Why the code is shaped as it is | `UNTANGLE.md` |
@@ -42,20 +42,21 @@ Read these instead of copies here; each fact has one home:
   (`build`, `configure`, `verify`, `latest`, `cleanup`); there are no hooks and
   no readiness checks. Every step (download, build, install, cleanup) can be run
   alone, and `install` does the missing ones.
-- Recipes never rewrite their own source. A value that must survive an
-  interruption is `save`d and kept with a `checkpoint` (coordinator snapshot of
-  the files and the values together); `saved` reads it, `reached` says where a
-  resumed `build` stopped. A saved value never proves work is done; one
-  checkpoint at most, deleted when the install succeeds (`src/core/saved.rs`).
+- Recipes never rewrite their own source. An interrupted step (download, build,
+  install, cleanup) starts again from its beginning; finished steps keep their
+  results. There are no checkpoints and no `save`, `saved` or `reached`
+  (removed 2026-11-22); `--restore-file` only seeds a run with kept downloads
+  and the target view.
 - Disk rules: after a successful install the downloads, unpacked sources, `WORK`
-  and saved state are deleted unless the keep option is on (`--keep`, remembered
+  and kept results are deleted unless the keep option is on (`--keep`, remembered
   per program, `--no-keep` undoes it); files are moved into place, not copied,
   where both places are on one disk; a download two programs name goes only when
   neither needs it; `remove` frees everything at once; nothing is hidden in
   `storage`. There are no earlier versions and no go-back.
 - The domain layout (`/inputs`, `/work`, `/out`) is defined
-  once in `src/domain.rs`; the coordinator/worker wire contract in
-  `src/worker/protocol.rs`; failure categories in `src/failure.rs`.
+  once in `src/domain.rs`; the coordinator/worker records (the request file, the
+  result file, the diagnostic and progress lines) in `src/worker/records.rs`;
+  failure categories in `src/failure.rs`.
 - Commands run through `src/process.rs`; human output goes through
   `src/diagnostics.rs` (stdout carries only the final JSON).
 
@@ -66,7 +67,7 @@ src/
 ├── bin/recipe.rs, bin/recipe/     CLI (and the private worker entry); system_route.rs is `--system` scope
 ├── bin/recipe-image.rs            compiler-image producer
 ├── lib.rs                         RecipeEngine (library API)
-├── backend.rs, launch.rs, host.rs  coordinator: invocation → Ginux or host run
+├── backend.rs, launch/, host.rs   coordinator: invocation → Ginux or host run (launch/configured.rs is `ginux launch`)
 ├── execution.rs                   where each recipe runs (host or Ginux)
 ├── inputs/                        input discovery, staging, domain config, root
 ├── declarations.rs                the literal declarations (API line, ABOUT, PACKAGE, SOURCES, FILES, PACKAGES, ACCOUNTS, UPSTREAM, RERUN, functions, imports)
@@ -74,9 +75,8 @@ src/
 ├── needs.rs, needs/               NEEDS declarations, derived Ginux contract, authority reports
 ├── target.rs                      target metadata manifest (helpers in helpers/target.rs)
 ├── retained.rs, invocation_log.rs, temporary.rs, publication.rs   coordinator stores
-├── worker/                        protocol + in-domain worker
+├── worker/                        records (request, result, lines) + in-domain worker
 ├── core/                          engine: invocation, lifecycle, deps, events, output
-│   ├── saved.rs                   save, saved, checkpoint, reached
 │   └── executor/private/builtin/  the steps Recipe does itself: fetch.rs, place.rs, system.rs
 ├── helpers/                       Rhai-facing helpers (tree.rs: put, put_link, tree_text, enable_service)
 └── domain.rs, failure.rs, diagnostics.rs, process.rs, fsx.rs, image.rs   shared leaves

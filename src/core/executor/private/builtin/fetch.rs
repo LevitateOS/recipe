@@ -196,24 +196,21 @@ pub(crate) struct Unpacked {
 }
 
 /// Unpack every archive source into its own folder and say where each
-/// source is. On a run restored from a checkpoint the restored work folders
-/// hold the unpacked sources already (`crate::core::saved::resumed`).
-pub(crate) fn unpack_sources(fetched: &Fetched, resumed: bool) -> Result<Unpacked> {
+/// source is.
+pub(crate) fn unpack_sources(fetched: &Fetched) -> Result<Unpacked> {
     let mut unpacked = Unpacked::default();
     for fetched in &fetched.sources {
         let held = match &fetched.source.format {
             Some(format) => {
                 let dir = crate::domain::local(crate::domain::SOURCES).join(&fetched.name);
-                if !resumed {
-                    unpack(
-                        &fetched.path,
-                        &dir,
-                        format,
-                        fetched.source.strip,
-                        &fetched.name,
-                    )
-                    .with_context(|| format!("unpacking SOURCES.{}", fetched.name))?;
-                }
+                unpack(
+                    &fetched.path,
+                    &dir,
+                    format,
+                    fetched.source.strip,
+                    &fetched.name,
+                )
+                .with_context(|| format!("unpacking SOURCES.{}", fetched.name))?;
                 (dir, Held::Unpacked)
             }
             None => (fetched.path.clone(), Held::Stored),

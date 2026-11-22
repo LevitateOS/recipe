@@ -1,4 +1,4 @@
-//! Retention through actual CLI checkpoints, identities and OS-held log leases.
+//! Retention through actual CLI runs, identities and OS-held log leases.
 use super::*;
 use fs2::FileExt;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};

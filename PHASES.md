@@ -8,13 +8,13 @@ by its receipt), never by running recipe code. `recipe state NAME` prints the
 result: `none`, `downloaded`, `built` or `installed`.
 
 After a successful install Recipe deletes the downloads, the unpacked source,
-the build material and the saved state, unless you chose `--keep`. Failed or
+the build material and the kept results, unless you chose `--keep`. Failed or
 interrupted work never replaces a valid earlier result, and nothing is
 published unless the run succeeded and the output validated.
 
 Where to read more:
 
-- [Steps, states and saved values](WRITING_RECIPES.md#steps-states-and-saved-values)
+- [Steps and states](WRITING_RECIPES.md#steps-and-states)
   in the author guide.
 - [Steps, states and commands](docs/recipe-format.md#6-steps-states-and-commands)
   in the specification, with the disk rules and the keep option.

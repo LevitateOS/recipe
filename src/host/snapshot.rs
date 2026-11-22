@@ -34,23 +34,14 @@ pub(super) fn check_storage(root: &Path, options: &crate::ExecutionOptions) -> R
     )
 }
 
-/// Archive `work` and `out` into `destination`, in the snapshot and export
-/// format: members `work/…` and `out/…`, regular files, directories, symbolic
-/// links and hard links, refusing anything else and anything over the
-/// storage bounds. Modes keep their permission bits only: a host run makes
-/// no setuid, setgid or sticky entries (the target manifest carries such
-/// modes as data).
-pub(super) fn write_snapshot(
-    root: &Path,
-    destination: &Path,
-    options: &crate::ExecutionOptions,
-) -> Result<()> {
-    write_snapshot_of(root, destination, options, &crate::domain::WRITABLE_ROOTS)
-}
-
-/// `write_snapshot` of only the tops `tops` (`work`, `out`): the final export
-/// of a run whose named outputs all lie in `out` leaves `work` out, since
-/// publication would discard it.
+/// Archive the tops `tops` (`work`, `out`) into `destination`, in the
+/// snapshot and export format: members `work/…` and `out/…`, regular files,
+/// directories, symbolic links and hard links, refusing anything else and
+/// anything over the storage bounds. Modes keep their permission bits only:
+/// a host run makes no setuid, setgid or sticky entries (the target manifest
+/// carries such modes as data). The final export of a run whose named
+/// outputs all lie in `out` leaves `work` out, since publication would
+/// discard it.
 pub(super) fn write_snapshot_of(
     root: &Path,
     destination: &Path,

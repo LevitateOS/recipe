@@ -4,7 +4,7 @@ A rootfs producer builds readable, writable staging files in Ginux. Staging
 ownership and access grants are execution details: they must never become the
 installed system's metadata. Target metadata travels as ordinary data in
 `.recipe-target-metadata.json` at the root of each published tree. Publication,
-checkpoint recovery and explicit input import preserve the manifest without
+recovery of kept results and explicit input import preserve the manifest without
 performing privileged operations on the coordinator's filesystem.
 
 Manifest versions 1 and 2 map canonical relative paths (the empty path means the
@@ -158,7 +158,7 @@ not reconstruct distro package policy or interpret the manifest.
 
 The integration case
 `target_metadata::cli_target_metadata_survives_publication_reimport_and_erofs_production`
-uses real Ginux execution, checkpoint recovery, publication, reimport,
+uses real Ginux execution, publication, reimport,
 composition and EROFS packing. It checks non-root ownership,
 setuid/sticky modes, absolute symlinks, hardlinks, raw file capabilities and
 rejection of a changed privileged payload. Run it with the documented Ginux

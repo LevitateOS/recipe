@@ -19,9 +19,10 @@ On 2026-11-22 Greg Kurtzer (gmkurtzer/ginux) answered issue #294:
   workflow it affects.
 
 Findings, in one paragraph. Recipe uses `ginux launch` as a **one-shot,
-foreground, caller-owned run** with a binary stdio protocol, a private
-disposable root, memory-owned storage, a result file, an export archive and
-mid-run snapshots. Upstream's public workflow is a **named, persistent,
+foreground, caller-owned run** with a request file, a result file and JSON
+line records on the worker's stdout (the stdio frame protocol and mid-run
+snapshots were removed in Stage 2, section 6), a private disposable root,
+memory-owned storage, an export archive and a restore file. Upstream's public workflow is a **named, persistent,
 detached instance** on the root-owned `/var/lib/ginux`, with a PTY console, a
 host-directory root and no delete, no wait, no exit status in `status` and no
 way to read files out. Of Recipe's nineteen needs (section 3), four are
@@ -39,24 +40,25 @@ here adds an agent, and the upstream drafts do not mention it.
 
 ## 1. Where Recipe uses configured launch
 
-Everything below is in `tools/recipe` at `a7b378f`. Line numbers are of that
-commit. "Fork-only" means the feature is not in upstream `b729915b`
+Everything below is in `tools/recipe`, as it was at `a7b378f` and as the
+Stage 2 working tree of 2026-11-22 changed it (section 6); places are named by
+module and function, not by line. "Fork-only" means the feature is not in upstream `b729915b`
 (checked with `git show b729915b:<path>` in `tools/ginux`).
 
 ### 1.1 The launch call itself
 
 | Place | What it does | Depends on |
 | --- | --- | --- |
-| `src/launch.rs:478-491` | Spawns `GINUX_BIN launch CONFIG ROOT --result-file F --export-file E [--control-fd N] [--restore-file R]` with piped stdin/stdout/stderr. | `launch` (private upstream: only `CONFIG ROOT --result-file`); `--export-file`, `--control-fd`, `--restore-file` are **fork-only**. |
-| `src/launch.rs:361-377, 624-626, 1771-1841` | Run lock, run directory, result file read as the authority, agreement with the worker's result frame, launcher exit check. | Result record `version 1` (`src/ginux.rs:51-113`). Upstream `launch --result-file` writes the same record; the public lifecycle has no counterpart. |
-| `src/launch.rs:1139-1280` | `pump_protocol`: one `request` frame in, `checkpoint`/`ack` pairs, exactly one `result` frame out, over the launcher's stdin/stdout. | Binary-safe stdio pipes to the workload. The public console is a PTY (see 2.2). |
-| `src/launch.rs:1280-1308`, `src/ginux.rs:140-176` | Checkpoint: Recipe asks the supervisor over `--control-fd` (`GXS1`/`GXA1`) to snapshot the owned storage into a file, pairs it with the saved values, and only then acks. | **Fork-only** control channel and snapshot export. |
-| `src/launch.rs:430-437` (calls `seed_target`) | Restore: an earlier snapshot is handed back with `--restore-file`. | **Fork-only** (`storage_restore.rs`). |
-| `src/launch.rs:616-657`, `src/publication.rs:248` | After the worker result, the supervisor exports the owned `work/…` and `out/…` trees as a tar; Recipe validates and unpacks it as the published output and as the kept result. | **Fork-only** export (`storage_export.rs`). |
-| `src/launch.rs:462-477` | `pre_exec`: lease descriptors kept open across exec, `PDEATHSIG=SIGKILL`, own process group, so killing the coordinator tears the run down (Ginux `PTRACE_O_EXITKILL`). | Foreground child whose lifetime is the caller's. |
-| `src/launch.rs:281-335`, `src/inputs/mod.rs:92-96, 249+` | `bind_read_only`: in the launcher's own mount namespace, bind host folders read-only under `/inputs` (the `--system` scope, `InputKind::Bind`). | Launcher inherits the namespace; the root is a host directory Recipe built. |
-| `src/launch.rs:229-279` | `ensure_open_file_limit`: raises `RLIMIT_NOFILE` for the fork's one-descriptor-per-storage-object reservation. | **Fork-only** (`launch_storage.rs`). |
-| `src/launch.rs:1613-1660, 1674-1770` | Reaping the launcher; draining its stderr (which carries `ginux:` audit and summary lines) to a capped log. | Launcher stderr stream. |
+| `src/launch/configured.rs`, `run` (the module's one entry point) | Spawns `GINUX_BIN launch CONFIG ROOT --result-file F --export-file E [--restore-file R]` with stdin `/dev/null` and piped stdout and stderr. | `launch` (private upstream: only `CONFIG ROOT --result-file`); `--export-file` and `--restore-file` are **fork-only**. |
+| `src/launch/mod.rs` (`run_domain`, destination lock), `configured::run`, `check_agreement`, `check_launcher_exit`, `src/ginux.rs` (`ResultRecord::read`) | Run lock, run directory, the launcher's result file read as the authority, agreement with the worker's result file, launcher exit check. | Result record `version 1` (`src/ginux.rs`). Upstream `launch --result-file` writes the same record; the public lifecycle has no counterpart. |
+| `src/launch/worker_io.rs`, `pump_lines` | Reads the worker's line records (diagnostics and progress) from the launcher's stdout until it ends, relays them live, and keeps a line that is not a record as plain log text. Replaces `pump_protocol` (request frame in, checkpoint/ack pairs, result frame out). | The workload's stdout as a live stream. The public console is a PTY that merges the streams and adds echo (see 2.2); a non-record line is plain log text, so it does not break the reader. |
+| `src/domain.rs` (`REQUEST_NAME`, `RESULT`), `src/inputs/root.rs` (`prepare_root`), `worker_io::result_from_archive`, `result_from_tree` | The request goes in as the reserved input `.recipe-request.json`; the result is `/work/.recipe-result.json`, read after the run from the export archive (Ginux) or the run directory (host) as untrusted input that must name the invocation. | Staging an input file (N12) and the export (N14) below. |
+| `src/launch/configured.rs` (calls `seed_target`) | Restore: `--restore-file` hands the run its kept downloads and the seeded target view (the `target` input and the dependencies' tools). No checkpoint is restored any more: the checkpoint request over `--control-fd` (`GXS1`/`GXA1`) and its snapshot export are gone. Under the files form the restore tar becomes a staged input. | **Fork-only** (`storage_restore.rs`). |
+| `src/launch/mod.rs` (`finish_outputs`), `src/publication.rs` | After the worker's run, the supervisor exports the owned `work/…` and `out/…` trees as a tar; Recipe validates and unpacks it as the published output and as the kept result. | **Fork-only** export (`storage_export.rs`). |
+| `src/launch/configured.rs`, `run` (the `pre_exec` hook) | `pre_exec`: lease descriptors kept open across exec, `PDEATHSIG=SIGKILL`, own process group, so killing the coordinator tears the run down (Ginux `PTRACE_O_EXITKILL`). | Foreground child whose lifetime is the caller's. |
+| `src/launch/configured.rs` (`bind_read_only`), `src/inputs/mod.rs` | `bind_read_only`: in the launcher's own mount namespace, bind host folders read-only under `/inputs` (the `--system` scope, `InputKind::Bind`). | Launcher inherits the namespace; the root is a host directory Recipe built. |
+| `src/launch/configured.rs` (`ensure_open_file_limit`) | `ensure_open_file_limit`: raises `RLIMIT_NOFILE` for the fork's one-descriptor-per-storage-object reservation. | **Fork-only** (`launch_storage.rs`). |
+| `src/launch/worker_io.rs` (`reap_launcher`, `spawn_stderr_drain`, `join_drain`) | Reaping the launcher; draining its stderr (which carries `ginux:` audit and summary lines) to a capped log. | Launcher stderr stream. |
 
 ### 1.2 The instance configuration Recipe writes
 
@@ -217,7 +219,7 @@ exists but not the behaviour Recipe needs; **missing** = nothing upstream.
 | N12 | Read-only inputs, including bound host folders, under `/inputs` | copied into the root; folders bound read-only in the launcher's mount namespace | `volumes` parsed, not served; or write into the instance root directory (private state) | **missing** | 31 | U7 |
 | N13 | Writable `/work`, `/out` with object and byte limits, no writable host path | `memory:` storage, `max_objects`, `max_bytes` | `root-overlay` on a host directory; no limit | **missing** | 31 | U9 |
 | N14 | Published results taken out through one validated stream | export tar from the supervisor | nothing; reading `instances/NAME/root` is private state owned by `65534` | **missing** | 25, 31 | U6 |
-| N15 | Mid-run checkpoint of owned files paired with saved values, and restore | `--control-fd`, `--restore-file` | nothing | **dropped** (D1: `checkpoint` is retired) | – | – (U10 deleted) |
+| N15 | Mid-run checkpoint of owned files paired with saved values, and restore | `--control-fd` (gone), `--restore-file` | nothing | **dropped** (D1: `checkpoint` is retired; `--restore-file` remains only to seed kept downloads and the target view, which becomes a staged input under the files form) | – | – (U10 deleted) |
 | N16 | Numeric `IP:port` network grants, connection and byte caps, bounded usage and denial summaries | `network.endpoints`, caps, `ginux: network-summary` | `contract.network` protocol/port lists, shared host network | **missing** | 29 | U11 |
 | N17 | Stable machine-readable `validate`/`explain` and audit lines for `recipe inspect` and run reports | `instance-validate` fields, `Rule:` line, `ginux: audit …` | text, no schema | partial | 25 | U8 |
 | N18 | Run on the hosts Recipe supports (Fedora 44, Ubuntu 24.04 for the standalone release; the OS builders) with a private state root and no sudo wrapper losing descriptors | launcher binary copied next to Recipe, AppArmor profile | Rocky 10 RPM only (Gate 26 non-goals); global `/var/lib/ginux` through `sudo` | partial | 26 | question Q1 |
@@ -236,7 +238,8 @@ assumption.
 
 - **Replace the stdio protocol with files (N10 partly).** The request goes in
   as an input file, the result is a file under `/out`, progress is log lines.
-  Recipe owns `src/worker/protocol.rs`, has no users, and may change it.
+  Recipe owned `src/worker/protocol.rs` (now `src/worker/records.rs`), has no
+  users, and could change it.
   This removes the need for a structured live channel everywhere except
   checkpoints (N15). DECIDED 2026-11-22 (D6): files. With `checkpoint` retired
   (D1) no live exchange is left. The request still has to get in (N12, U7 or
@@ -245,8 +248,9 @@ assumption.
   operations (`download`, `build`, `install`, `cleanup`) with kept results
   between them (CLAUDE.md, "Recipe decides what is done from its own
   records"). Only a `checkpoint` inside one `build` needs a live snapshot.
-  Without it, N15 and the `--control-fd`/`--restore-file` code disappear, and
-  an interrupted build restarts that step. This is a change to the recipe
+  Without it, N15 and the `--control-fd` code disappear (`--restore-file`
+  stays, to seed kept downloads and the target view), and an interrupted build
+  restarts that step. This is a change to the recipe
   format. The owner decided to retire it; `save`, `saved`, `reached` have no
   purpose without it and go with it (Stage 2). One recipe uses it for real:
   the kernel build, `distro/builder/os-recipes/linux.rhai` (checkpoints
@@ -262,20 +266,22 @@ archive as untrusted), host-mode runs, the offline cache and download store.
 
 Changes, if all requirements land:
 
-- `src/launch.rs` splits. The lifecycle-independent half (start decision,
-  `finish_outputs`, `publish`, `complete`, log recording) stays; the
-  command-building half (`run_domain_inner`, `bind_read_only`,
-  `ensure_open_file_limit`, `pump_protocol`, `capture_checkpoint`) is replaced
-  by a lifecycle adapter: create instance, stage inputs, start and wait, read
-  outcome, export, delete.
+- `src/launch/` is split (done in Stage 2, section 6). The lifecycle-independent
+  half (`mod.rs`: start decision, `finish_outputs`, `complete`, log recording,
+  and `worker_io.rs`: line records, result file, reaping) stays; the
+  command-building half, `configured.rs` (`run`, `bind_read_only`,
+  `ensure_open_file_limit`), is replaced by a lifecycle adapter with one entry
+  point: create instance, stage inputs, start and wait, read outcome, export,
+  delete. `pump_protocol` and `capture_checkpoint` no longer exist.
 - `src/inputs/config.rs`: no `memory:`, no `endpoints`, no `archive_import`;
   adds `volumes` and the storage limit from U7/U9.
 - `src/needs/contract.rs`: `CATALOG` and both digests re-derived for upstream
   catalog 2 and the upstream `validate` output; the two `configured-*-audit`
   checks and both probes (`archive_import`, `random_devices`) are deleted.
   `RECIPE_ARCHIVE_IMPORT` and `RECIPE_RANDOM_DEVICES` go with them.
-- `src/ginux.rs` (`GXS1` snapshot) and `src/target.rs` archive-import ioctl:
-  deleted.
+- `src/ginux.rs` (the result record reader; the `GXS1` snapshot exchange is
+  already gone) and `src/target.rs` archive-import ioctl: deleted with the
+  launcher.
 - `src/backend.rs`, `src/runtime.rs`, `src/bin/recipe/runtime.rs`: the
   resolved thing is the `ginux` CLI (and its helper), not a launcher file;
   `GINUX_BIN` is renamed or removed, `recipe runtime stage` stops copying a
@@ -443,8 +449,9 @@ in section 6.
 The owner retired mid-run `checkpoint` on 2026-11-22, so Recipe no longer needs
 a consistent snapshot of a running instance or a start from one. This
 requirement is not filed and is kept here only so the numbering of U1-U11
-stays stable. Fork `checkpoint_control.rs` and `storage_restore.rs` have no
-consumer in Recipe after Stage 2.
+stays stable. Fork `checkpoint_control.rs` has no consumer in Recipe after
+Stage 2; `storage_restore.rs` still has one, `--restore-file`, which seeds kept
+downloads and the target view into a run.
 
 ### U11. Destination-level network grants and bounded usage — Gate 29 / network lane
 
@@ -475,6 +482,34 @@ consumer in Recipe after Stage 2.
 
 ## 6. Staged plan
 
+**Stage 2 status (2026-11-22).** Written in the working tree of
+`tools/recipe` (and `distro/builder`) and not committed; unverified: nothing
+has been built or run, and verification is Stage 4. Done:
+
+- `checkpoint`, `save`, `saved` and `reached` are removed from the format, the
+  helpers, the worker and the coordinator, with the `Checkpoint`/`Ack`
+  operations, `--control-fd`, the snapshot control channel and `src/core/saved.rs`;
+  an interrupted step restarts from its beginning. The kept-state record is
+  version 3 and `recipe state` `on_disk` lost `unfinished`.
+- The stdio frame protocol (`src/worker/protocol.rs`) is gone: the request is
+  the staged input `.recipe-request.json`, the result is the file
+  `/work/.recipe-result.json`, diagnostics and progress are JSON lines on the
+  worker's stdout (`src/worker/records.rs`, version 14), and a host-mode worker
+  learns its root from `RECIPE_HOST_ROOT`. `RECIPE_FRAME_TIMEOUT_SECS` is now
+  `RECIPE_OUTPUT_TIMEOUT_SECS`.
+- `src/launch.rs` is split into `src/launch/{mod,configured,worker_io}.rs`;
+  `configured::run` is the single entry point of the configured launch.
+- The pins (catalog and both digests) are one table, `RuntimeKind::pins()` in
+  `src/needs/contract.rs`.
+- The kernel recipe `linux` in `distro/builder/os-recipes` is split into
+  `linux-source`, `linux-compile` and `linux` (D5).
+- `--restore-file` was kept: it still seeds kept downloads and the target view
+  (the plan above had listed it for removal).
+
+Still open from Stage 2: the image identity of D2 (the image producer writing an
+OCI layout and the build identity using its manifest digest), which waits for
+U1's answer. Nothing else.
+
 Verification follows the repository rule: write everything first, then
 verify all of it together. No build or run is part of any stage until the
 cutover is complete.
@@ -503,23 +538,23 @@ needs the owner's go.
 **Stage 2 — Recipe-side preparation, independent of upstream.** All of it
 changes Recipe only and keeps `ginux launch` working until the cutover:
 
-- Split `src/launch.rs` as described in section 4 so the part that decides
+- (Done, see the status above.) Split `src/launch.rs` as described in section 4 so the part that decides
   and publishes is separate from the part that runs `ginux`. The adapter
   becomes one module with one entry point.
-- D6 chose files: change `src/worker/protocol.rs` and
+- (Done.) D6 chose files: change `src/worker/protocol.rs` and
   `src/worker/run.rs` from stdio frames to request/result files, and update
   `host.rs` in the same step (it shares the protocol).
-- D1 retires `checkpoint`, one step with no dual form: remove `checkpoint`,
+- (Done, except as noted.) D1 retires `checkpoint`, one step with no dual form: remove `checkpoint`,
   `save`, `saved` and `reached` from the format (`src/core/saved.rs`,
   `src/helpers/mod.rs`, `docs/recipe-format.md`, `WRITING_RECIPES.md`, the man
   pages, README, CLAUDE.md, HELPERS_AUDIT.md); the checkpoint snapshot parts of
   `retained.rs`, `state.rs`, `launch.rs`, `ginux.rs`, `host.rs`,
   `worker/protocol.rs` (`Checkpoint`/`Ack` ops) and `worker/run.rs`; the
-  `--control-fd` and `--restore-file` code; the callers: `linux.rhai`, split into source, compile and install recipes (D5, decided), and
+  `--control-fd` code (`--restore-file` stays, see the status above); the callers: `linux.rhai`, split into source, compile and install recipes (D5, decided), and
   the e2e scenarios `failures.rs`, `managed_cancellation.rs`,
   `managed_state.rs`, `managed_storage.rs`, which are rewritten to the step
   boundary form in the same change.
-- Move the digest and catalog pins into a table keyed by runtime kind so the
+- (Done.) Move the digest and catalog pins into a table keyed by runtime kind so the
   cutover edits one place.
 
 **Stage 3 — interim fork support (D3 allows it, 2026-11-22).** While upstream
@@ -554,7 +589,7 @@ means it only shrinks.
 
 ### What stays on the fork's configured launch until then
 
-Everything in section 1: `ginux launch` with `--export-file`, `--control-fd`,
+Everything in section 1: `ginux launch` with `--export-file`,
 `--restore-file`, owned `memory:` storage and its limits, archive import,
 catalog 1002 with the two digest pins, the `configured-*-audit` fields, the
 launcher-copy in `recipe runtime stage` and the builder's launcher build. No
@@ -591,8 +626,8 @@ the public lifecycle.
   step with a retained output, or accept that an interrupted build restarts.
   Recommendation: split, because the compile takes hours and steps are exactly
   the resumability Recipe already has. Stage 2 does it in the same change as
-  the removal. Not done yet: this document is the only change so far, and the
-  new recipes' names and output split are for the Stage 2 brief.
+  the removal. Done in the working tree (see the Stage 2 status in section 6):
+  `linux-source`, `linux-compile` and `linux`.
 - **D6. Replace the stdio frame protocol with files (section 3.1)?** DECIDED
   2026-11-22 by the owner: files. With `checkpoint` gone the protocol is one
   request in and one result out; files remove U5 and the PTY problem.
@@ -617,5 +652,14 @@ the public lifecycle.
   build part. Measure once, at the end, not per change.
 - Digest pins re-derived for catalog 2 will change every saved-state identity,
   as every earlier pin move has.
+- The result file now lives in the writable `/work`, so a program the recipe
+  starts as the same uid could in principle write a forged result. Mitigations
+  in the code: the worker writes the result last, after the recipe's programs
+  have finished, replacing whatever is there; the result must name the run's
+  invocation id (a result left by an earlier run is refused);
+  and the coordinator validates every output it names against the recipe's
+  declarations before publishing. The Ginux runtime also exports `work` and
+  `out` only after a clean root exit, so a result exists only if the worker
+  exited 0.
 - Ginux upstream marks the system research software without a production
   claim; the plan does not change what Recipe claims about the sandbox.

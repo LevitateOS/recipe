@@ -3,8 +3,7 @@
 //! own records, never from recipe code:
 //!
 //! - downloaded: a kept generation holds the run's downloads (`recipe
-//!   download` left them, or an unfinished build that got past its download
-//!   step), and its archive still has the SHA-256 Recipe recorded. The
+//!   download` left them), and its archive still has the SHA-256 Recipe recorded. The
 //!   sources' and the pins' SHA-256 are part of the recipe text and the pins
 //!   file, which the state key names;
 //! - built: a kept finished result whose state key is the current one and
@@ -56,12 +55,11 @@ impl State {
 }
 
 /// What a program holds on disk beside its installed files (section 8.2,
-/// `on_disk`): kept downloads, kept results, unfinished runs.
+/// `on_disk`): kept downloads and kept results.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct OnDisk {
     pub downloads: u64,
     pub build: u64,
-    pub unfinished: u64,
 }
 
 /// What Recipe's records say of a program (not its receipt).
@@ -79,16 +77,16 @@ pub enum Material {
     All,
     /// `--downloads`.
     Downloads,
-    /// `--build`: kept results and unfinished runs.
+    /// `--build`: kept results.
     Build,
 }
 
 impl Material {
     pub(crate) fn kinds(self) -> &'static [Reached] {
         match self {
-            Self::All => &[Reached::Downloaded, Reached::Checkpoint, Reached::Built],
+            Self::All => &[Reached::Downloaded, Reached::Built],
             Self::Downloads => &[Reached::Downloaded],
-            Self::Build => &[Reached::Checkpoint, Reached::Built],
+            Self::Build => &[Reached::Built],
         }
     }
 }
@@ -201,7 +199,6 @@ pub fn on_disk(
             match generation.reached() {
                 Reached::Downloaded => on_disk.downloads += bytes,
                 Reached::Built => on_disk.build += bytes,
-                Reached::Checkpoint => on_disk.unfinished += bytes,
             }
         }
     }
@@ -226,8 +223,7 @@ pub fn recorded(
         Some(scope) => match scope.reached(&key(graph, defines, prefix, host_libc)?)? {
             None => State::None,
             Some(Reached::Built) => State::Built,
-            // A checkpoint is taken inside build, after the download step.
-            Some(Reached::Downloaded | Reached::Checkpoint) => State::Downloaded,
+            Some(Reached::Downloaded) => State::Downloaded,
         },
     };
     Ok(Recorded { state, on_disk })
@@ -466,8 +462,6 @@ pub fn storage(state_dir: Option<&Path>, store: &crate::packages::PackageStore) 
         let keeps = installed_names.contains(&name) && keeping.contains(&name);
         for generation in scope.generations()? {
             let into = match generation.reached() {
-                // An unfinished run's material counts only as unfinished.
-                Reached::Checkpoint => &mut unfinished,
                 _ if keeps => &mut kept,
                 Reached::Downloaded => &mut downloaded,
                 Reached::Built => &mut built,

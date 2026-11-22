@@ -546,7 +546,7 @@ fn run(cli: Cli) -> Result<()> {
                         engine.destination(),
                         &graph,
                     )?;
-                    held = on_disk.downloads + on_disk.build + on_disk.unfinished > 0;
+                    held = on_disk.downloads + on_disk.build > 0;
                 } else {
                     let material = levitate_recipe::state::cleanup(
                         engine_options.state_dir,
@@ -916,7 +916,7 @@ fn print_storage(storage: &levitate_recipe::state::Storage) {
             "downloaded" => "Downloads of programs not installed",
             "built" => "Build material and results not installed",
             "kept" => "Material kept by choice (--keep)",
-            "unfinished" => "Unfinished runs",
+            "unfinished" => "Published outputs no command took",
             "build_image" => "Build image",
             _ => "Diagnostic logs",
         };

@@ -1,4 +1,4 @@
-//! Real source-tree copy, checkpoint/restart and named artifact publication.
+//! Real source-tree copy, kept-result restart and named artifact publication.
 use super::*;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
