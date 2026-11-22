@@ -557,7 +557,7 @@ changes Recipe only and keeps `ginux launch` working until the cutover:
 - (Done.) Move the digest and catalog pins into a table keyed by runtime kind so the
   cutover edits one place.
 
-**Stage 3 — interim fork support (D3 allows it, 2026-11-22).** While upstream
+**Stage 3 — interim fork support (D3 allows it, 2026-11-22; written 2026-11-23, see status below).** While upstream
 decides, the fork (`LevitateOS/ginux:main`, not upstream) carries additive
 public-lifecycle commands for what a lifecycle run needs first: `start --wait`
 with an outcome (U4), result export (U6), `delete` and private per-run state
@@ -568,6 +568,44 @@ runs Recipe on the public lifecycle with downstream copies of the missing
 pieces, and each copy is dropped when upstream's lands. Nothing is posted
 upstream by this stage (AGENTS.md: no upstream PRs or comments without the
 owner's go).
+
+**Stage 3 status.** Written and committed in the fork `tools/ginux` as four
+commits on top of `e3b71ac0`: `9f903efc` (`ginux-image export-tree` and
+`import-layout`), `002e2e8b` (runtime `native ... configured --result-file`),
+`f358cb84` (helper: `start --wait`, `status --format json`, `delete`,
+`extract`, `import-image`, private `--state-root`/`--run-root`, per-instance
+lock, reflink base roots) and `3e3e81f3` (CLI forms, docs, Make targets, CI).
+They sit on a detached HEAD and are NOT pushed. The full design is
+`docs/ginux-interim-lifecycle-design.md` (names: `extract`, `import-image`,
+`--state-root`, `--run-root`; the outcome record is the version-1
+`launch --result-file` shape). Mapping to the drafts: U4 = `start --wait` +
+`status --format json` + the runtime result file; U6 = `extract`; U2 = `delete`
+and reflink base roots; U3 = `--state-root`/`--run-root`; U1 = `import-image`.
+U7, U9 and U11 are not implemented. The open questions Q1-Q12 of the design
+were taken at their recommended answers, in particular Q3 (reflink base roots,
+which sit in tension with Gate 26's "no redundant assembled rootfs"; the owner
+may drop them) and Q4 (a small additive change in upstream's `ginux-init`).
+Verified: Rust unit tests (`ginux-cli` 29, `ginux-oci` 32), clippy
+`-D warnings`, `cargo fmt --check`, both inventory scripts,
+`scripts/test-cli.sh`, syntax checks, and two independent read-only reviews
+(security; cross-package consistency) whose confirmed findings were fixed. NOT
+run: `scripts/test-public-lifecycle.py` and `scripts/test-native-result.py`
+(they need root and a real host), so the helper, the walker under root, the
+runtime record and the whole lifecycle are untested end to end. Known open
+points: binary stdin/stdout through `sudo` (needed by `extract` and
+`import-image`) is unproven; under real sudo a relayed signal to `start --wait`
+ends the CLI after 1 s (sudo ignores signals from its own process group) and
+the helper tears down through its caller-death path, so callers read the
+outcome with `status --format json`; a process that can signal uid 65534 can
+stall an export that holds the instance lock; the end-to-end tests rely on
+fixture behaviour that was only read, not run.
+
+**A gap Stage 3 does not cover (Stage 4 prerequisite).** Nothing in the public
+lifecycle puts files INTO an instance. Recipe's worker binary, the request
+file and the staged inputs (`/inputs/...`) have to reach the instance root, but
+`volumes` are not served (N12/U7), the state root must be root-owned (so
+Recipe, running unprivileged, cannot write into `instances/NAME/root`), and no
+helper verb copies files in. This is decision D7 in section 7.
 
 **Stage 4 — the cutover (one change set).** When every need Recipe depends on
 is available through the public lifecycle, whether from upstream or from
@@ -641,6 +679,14 @@ the public lifecycle.
   depends on U3 (private per-caller state), since a global root-owned
   `/var/lib/ginux` reached through `sudo` is not what a standalone user
   install should need.
+- **D7. How do Recipe's worker, request file and staged inputs get into an
+  instance?** OPEN (found 2026-11-23, Stage 4 prerequisite). The public
+  lifecycle has no way to put files into an instance (see the gap in section
+  6). Options: (a) an interim fork verb that injects a tar of inputs into a
+  created instance, the mirror of `extract`; (b) wrap the inputs as an extra
+  layer of the imported image layout (works with `import-image`, but copies the
+  inputs on every run); (c) wait for U7 (volumes). No recommendation beyond
+  that (a) is the smallest and mirrors `extract`.
 
 ## 8. Risks
 
