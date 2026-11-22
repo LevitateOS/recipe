@@ -27,12 +27,17 @@ pub const CATALOG: u32 = 1002;
 // LevitateOS/ginux f9bef00a (upstream #273-#289, Gates 25 and 26 merged):
 // the operator CLI, native clone policy, console descriptor mediation and
 // native descriptor tables leave the instance schema and the configured
-// catalog as they were; digests unchanged. Fixed exclusions remain.
+// catalog as they were; digests unchanged. Reviewed again for
+// LevitateOS/ginux e3b71ac0 (upstream #291-#306, Gates 31-46 merged): the
+// catalog grows from 215 to 216 operations with `sync`; `sync` and `syncfs`
+// are now explicit EPERM contract denials (base-profile denials
+// `syscall.sync` and `syscall.syncfs`, formerly unserved ENOSYS) and add no
+// authority; both digests change. Fixed exclusions remain.
 // Both are part of `crate::identity::Declared`.
 pub(crate) const BASE_DIGEST_NETWORK: &str =
-    "47900868bf6c28509a7ce6169eddbfecab6a229835e0f788f19545e3251c2f24";
+    "6fd467426ff939e7892af3bd55f2b3eb2845b0bb88a8ddefaf3af689df7bd7f3";
 pub(crate) const BASE_DIGEST_OFFLINE: &str =
-    "803489101bfced3b3f4e6d223301acd7415da3ed7a0e9e039af6fceec6bd3d9f";
+    "32f20da74ff995f4cb15990d1b57c7f8a07cba293be459fce2841f37ff78ec00";
 /// The Ginux operation a `NEEDS.network` endpoint grants.
 pub(crate) const TCP_CONNECT: &str = "network.inet.tcp.connect";
 
