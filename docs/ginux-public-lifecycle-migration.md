@@ -475,10 +475,11 @@ Verification follows the repository rule: write everything first, then
 verify all of it together. No build or run is part of any stage until the
 cutover is complete.
 
-**Stage 0 — decisions (now).** D1 is decided (retire `checkpoint`; U10 is
-deleted). The owner still answers D2-D6 of section 7. They fix whether U5 is
-filed, where the image comes from, how the kernel build resumes, and whether
-interim fork patches are allowed.
+**Stage 0 — decisions (now).** D1 (retire `checkpoint`; U10 is
+deleted) and D5 (split `linux.rhai`) are decided. The owner still answers D2,
+D3, D4 and D6 of section 7. They fix where the image comes from, whether
+interim fork patches are allowed, whether Recipe ships Ginux for other
+distributions, and whether U5 is filed.
 
 **Stage 1 — file the requirements (upstream, one at a time, owner releases
 each).** Order, with the reason:
@@ -510,7 +511,7 @@ changes Recipe only and keeps `ginux launch` working until the cutover:
   pages, README, CLAUDE.md, HELPERS_AUDIT.md); the checkpoint snapshot parts of
   `retained.rs`, `state.rs`, `launch.rs`, `ginux.rs`, `host.rs`,
   `worker/protocol.rs` (`Checkpoint`/`Ack` ops) and `worker/run.rs`; the
-  `--control-fd` and `--restore-file` code; the callers: `linux.rhai` (D5) and
+  `--control-fd` and `--restore-file` code; the callers: `linux.rhai`, split into source, compile and install recipes (D5, decided), and
   the e2e scenarios `failures.rs`, `managed_cancellation.rs`,
   `managed_state.rs`, `managed_storage.rs`, which are rewritten to the step
   boundary form in the same change.
@@ -568,14 +569,17 @@ the public lifecycle.
   Recipe a path before upstream decides, at the cost of fork-only commands
   to retire later. It matches "keep Recipe-required changes available in our
   repository while upstream takes its own direction" (AGENTS.md).
-- **D5. How does the kernel build resume without `checkpoint`?** (follows from
-  D1.) `distro/builder/os-recipes/linux.rhai` checkpoints after the source fetch
+- **D5. How does the kernel build resume without `checkpoint`?** DECIDED
+  2026-11-22 by the owner: split `linux.rhai` into dependent recipes (source,
+  compile, install); the split lands in Stage 2 with the removal of
+  `checkpoint`. (Follows from D1.) `distro/builder/os-recipes/linux.rhai` checkpoints after the source fetch
   and after the compile, so an interrupted kernel build skips what is done.
   Options: split it into dependent recipes (source, compile, install), each a
   step with a retained output, or accept that an interrupted build restarts.
   Recommendation: split, because the compile takes hours and steps are exactly
   the resumability Recipe already has. Stage 2 does it in the same change as
-  the removal.
+  the removal. Not done yet: this document is the only change so far, and the
+  new recipes' names and output split are for the Stage 2 brief.
 - **D6. Replace the stdio frame protocol with files (section 3.1)?** With
   `checkpoint` gone the protocol is one request in and one result out. Files
   remove U5 and the PTY problem. Recommendation: files.
