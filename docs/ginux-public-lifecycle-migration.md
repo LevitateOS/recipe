@@ -25,10 +25,10 @@ mid-run snapshots. Upstream's public workflow is a **named, persistent,
 detached instance** on the root-owned `/var/lib/ginux`, with a PTY console, a
 host-directory root and no delete, no wait, no exit status in `status` and no
 way to read files out. Of Recipe's nineteen needs (section 3), four are
-covered today, five are partly covered, eight have no upstream feature, and
-two are dropped (N15 by the owner's decision D1 of 2026-11-22, N19 as not
-needed).
-The eight are the reason a migration cannot start with a code change: they
+covered today, five are partly covered, seven have no upstream feature, and
+three are dropped (N15 by the owner's decision D1 and N10 by D6, both of
+2026-11-22, N19 as not needed).
+The seven are the reason a migration cannot start with a code change: they
 need requirements upstream first (section 5). Until then Recipe stays on the
 fork's `launch`, unchanged (section 6).
 
@@ -212,7 +212,7 @@ exists but not the behaviour Recipe needs; **missing** = nothing upstream.
 | N7 | A fresh private root per run, cheap to make and to remove, many in parallel | tar clone into a temp dir, deleted after | full expansion per `create`; no `delete`; names global | **missing** | 25, 26 | U2, U3 |
 | N8 | Foreground run whose lifetime is the caller's (kill on cancel, deadline, coordinator death) | child process, `PDEATHSIG`, process group | detached supervisor; `stop` is 60 s of `RTMIN+4`; a dead caller leaves a running instance | **missing** | 25 | U4 |
 | N9 | The run's outcome (`exited`+code, `signaled`+signal, `supervisor-error`) as a value | result file, version 1 | `exit.status` in a private run directory, deleted at next start; not in `status` | partial | 25 | U4 |
-| N10 | Structured two-way channel to the workload (request, checkpoint acks, result) | stdin/stdout pipes | PTY console (echo, line discipline, merged streams); input by FIFO | **missing** | 25 | U5 |
+| N10 | Structured two-way channel to the workload (request, checkpoint acks, result) | stdin/stdout pipes | PTY console (echo, line discipline, merged streams); input by FIFO | **dropped** (D6: request and result become files; the need moves to N7, N12, N14) | – | – (U5 not filed) |
 | N11 | Stdout/stderr and supervisor diagnostics kept apart, bounded | separate pipes, capped drain | `console.log` and `audit.log` per instance, unbounded files | partial | 25 | U4 |
 | N12 | Read-only inputs, including bound host folders, under `/inputs` | copied into the root; folders bound read-only in the launcher's mount namespace | `volumes` parsed, not served; or write into the instance root directory (private state) | **missing** | 31 | U7 |
 | N13 | Writable `/work`, `/out` with object and byte limits, no writable host path | `memory:` storage, `max_objects`, `max_bytes` | `root-overlay` on a host directory; no limit | **missing** | 31 | U9 |
@@ -224,10 +224,10 @@ exists but not the behaviour Recipe needs; **missing** = nothing upstream.
 | N19 | Fast whole-tree unpack (archive import) and per-object descriptor reservation | `archive_import`, `RLIMIT_NOFILE` raise | none | not needed: Recipe already falls back (`ENOTTY`), the reservation disappears with `memory:` | – | – |
 
 Reading the table: N1, N2, N4, N5 are covered and carry over unchanged. N3,
-N9, N11, N17, N18 are partial. Eight needs (N6, N7, N8, N10, N12, N13, N14,
-N16) have no upstream feature. N15 is dropped by decision D1 and N19 as not
-needed. The covered four are lines of configuration, so the missing eight
-decide the schedule.
+N9, N11, N17, N18 are partial. Seven needs (N6, N7, N8, N12, N13, N14, N16)
+have no upstream feature. N15 is dropped by decision D1, N10 by D6 and N19
+as not needed. The covered four are lines of configuration, so the missing
+seven decide the schedule.
 
 ### 3.1 Two alternatives that remove needs without upstream help
 
@@ -238,7 +238,9 @@ assumption.
   as an input file, the result is a file under `/out`, progress is log lines.
   Recipe owns `src/worker/protocol.rs`, has no users, and may change it.
   This removes the need for a structured live channel everywhere except
-  checkpoints (N15).
+  checkpoints (N15). DECIDED 2026-11-22 (D6): files. With `checkpoint` retired
+  (D1) no live exchange is left. The request still has to get in (N12, U7 or
+  writing it into the instance root, U2/U3) and the result out (N14, U6).
 - **Retire mid-run `checkpoint` (N15) — DECIDED 2026-11-22 (D1).** Steps are already separate
   operations (`download`, `build`, `install`, `cleanup`) with kept results
   between them (CLAUDE.md, "Recipe decides what is done from its own
@@ -359,8 +361,9 @@ in section 6.
 
 ### U5. A non-terminal channel to the workload — Gate 25 workflow (`start`, `attach`)
 
-- **Need.** Conditional (decision D6; D1 already removed the checkpoint
-  acknowledgements): a bidirectional, binary-safe,
+- **Need.** None (decision D6, 2026-11-22: Recipe uses files; D1 removed the
+  checkpoint acknowledgements). Kept for numbering, not filed. What it asked
+  for was a bidirectional, binary-safe,
   framed-or-raw byte channel between the caller and the workload, separate
   from the console, plus separate stdout and stderr streams.
 - **Observed.** The workload gets a PTY from `script(1)`; stdout and stderr
@@ -370,9 +373,8 @@ in section 6.
   workload's descriptors 0-2 to caller-supplied pipes or a per-instance
   endpoint, with no terminal. Reading it needs no new authority for the
   workload.
-- **Not needed if** Recipe moves to files (section 3.1, decision D6). `checkpoint`
-  is already retired (D1), so the files form leaves no live exchange at all;
-  then this is not filed.
+- **Not filed.** Recipe moves to files (section 3.1, D6) and `checkpoint` is
+  retired (D1), so no live exchange is left.
 
 ### U6. Explicit result export — Gate 25 workflow (new command) with Gate 31 dependency
 
@@ -476,10 +478,10 @@ verify all of it together. No build or run is part of any stage until the
 cutover is complete.
 
 **Stage 0 — decisions (now).** D1 (retire `checkpoint`; U10 is
-deleted) and D5 (split `linux.rhai`) are decided. The owner still answers D2,
-D3, D4 and D6 of section 7. They fix where the image comes from, whether
-interim fork patches are allowed, whether Recipe ships Ginux for other
-distributions, and whether U5 is filed.
+deleted), D5 (split `linux.rhai`) and D6 (files; U5 is not filed) are decided.
+The owner still answers D2, D3 and D4 of section 7. They fix where the image
+comes from, whether interim fork patches are allowed, and whether Recipe ships
+Ginux for other distributions.
 
 **Stage 1 — file the requirements (upstream, one at a time, owner releases
 each).** Order, with the reason:
@@ -490,7 +492,7 @@ each).** Order, with the reason:
 3. U1, because it decides where the compiler image comes from.
 4. U8, small, independent, and it lets the digest pins be re-derived.
 5. U7 and U9 when Gate 31's volume stage is reachable; U11 after Gates 29 and
-   46 are accepted; U5 only if the owner declines the files form (D6).
+   46 are accepted; U5 and U10 are not filed (D6, D1).
 
 Each is filed as its own issue or gate request against the named workflow, not
 as one umbrella, with the fork's tests offered as source material. Posting
@@ -502,7 +504,7 @@ changes Recipe only and keeps `ginux launch` working until the cutover:
 - Split `src/launch.rs` as described in section 4 so the part that decides
   and publishes is separate from the part that runs `ginux`. The adapter
   becomes one module with one entry point.
-- If D6 chooses files: change `src/worker/protocol.rs` and
+- D6 chose files: change `src/worker/protocol.rs` and
   `src/worker/run.rs` from stdio frames to request/result files, and update
   `host.rs` in the same step (it shares the protocol).
 - D1 retires `checkpoint`, one step with no dual form: remove `checkpoint`,
@@ -580,9 +582,9 @@ the public lifecycle.
   the resumability Recipe already has. Stage 2 does it in the same change as
   the removal. Not done yet: this document is the only change so far, and the
   new recipes' names and output split are for the Stage 2 brief.
-- **D6. Replace the stdio frame protocol with files (section 3.1)?** With
-  `checkpoint` gone the protocol is one request in and one result out. Files
-  remove U5 and the PTY problem. Recommendation: files.
+- **D6. Replace the stdio frame protocol with files (section 3.1)?** DECIDED
+  2026-11-22 by the owner: files. With `checkpoint` gone the protocol is one
+  request in and one result out; files remove U5 and the PTY problem.
 - **D4. Does Recipe ship Ginux for other distributions (Q1)?** If upstream
   will not package them, either the standalone release gets a Rocky-only
   runtime, or downstream packaging of the upstream binaries is its own work.
