@@ -479,8 +479,8 @@ cutover is complete.
 
 **Stage 0 — decisions (now).** D1 (retire `checkpoint`; U10 is
 deleted), D2 (offline import, U1), D5 (split `linux.rhai`) and D6 (files; U5 is
-not filed) are decided. The owner still answers D3 and D4 of section 7: whether
-interim fork patches are allowed, and whether Recipe ships Ginux for other
+not filed) are decided. D3 (interim fork commands, Stage 3) is decided too. The owner
+still answers D4 of section 7: whether Recipe ships Ginux for other
 distributions.
 
 **Stage 1 — file the requirements (upstream, one at a time, owner releases
@@ -521,12 +521,17 @@ changes Recipe only and keeps `ginux launch` working until the cutover:
 - Move the digest and catalog pins into a table keyed by runtime kind so the
   cutover edits one place.
 
-**Stage 3 — interim fork support (only if D3 allows).** While upstream decides,
-the fork may carry additive public-lifecycle commands (`delete`, `start --wait`,
-result export) shaped exactly like the drafts. The fork then runs Recipe on
-the public lifecycle with downstream copies of the missing pieces, and each
-copy is replaced by upstream's when it lands. If D3 says no, Recipe stays on
-`launch` until upstream ships them.
+**Stage 3 — interim fork support (D3 allows it, 2026-11-22).** While upstream
+decides, the fork (`LevitateOS/ginux:main`, not upstream) carries additive
+public-lifecycle commands for what a lifecycle run needs first: `start --wait`
+with an outcome (U4), result export (U6), `delete` and private per-run state
+(U2, U3), and offline image import (U1). Each is shaped exactly like its draft,
+so upstream's version can replace it without a change in Recipe. U7, U9 and U11
+are added only if the cutover needs them before upstream answers. The fork then
+runs Recipe on the public lifecycle with downstream copies of the missing
+pieces, and each copy is dropped when upstream's lands. Nothing is posted
+upstream by this stage (AGENTS.md: no upstream PRs or comments without the
+owner's go).
 
 **Stage 4 — the cutover (one change set).** When every need Recipe depends on
 is available through the public lifecycle, whether from upstream or from
@@ -571,7 +576,8 @@ the public lifecycle.
   OCI manifest, not of Recipe's tar, into the identity of every build.
   Recommendation: U1, because builds must run offline once the image is
   present.
-- **D3. May the fork carry interim public-lifecycle commands?** That gives
+- **D3. May the fork carry interim public-lifecycle commands?** DECIDED
+  2026-11-22 by the owner: yes (Stage 3). That gives
   Recipe a path before upstream decides, at the cost of fork-only commands
   to retire later. It matches "keep Recipe-required changes available in our
   repository while upstream takes its own direction" (AGENTS.md).
