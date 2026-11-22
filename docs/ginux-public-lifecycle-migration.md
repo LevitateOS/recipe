@@ -478,10 +478,10 @@ verify all of it together. No build or run is part of any stage until the
 cutover is complete.
 
 **Stage 0 — decisions (now).** D1 (retire `checkpoint`; U10 is
-deleted), D5 (split `linux.rhai`) and D6 (files; U5 is not filed) are decided.
-The owner still answers D2, D3 and D4 of section 7. They fix where the image
-comes from, whether interim fork patches are allowed, and whether Recipe ships
-Ginux for other distributions.
+deleted), D2 (offline import, U1), D5 (split `linux.rhai`) and D6 (files; U5 is
+not filed) are decided. The owner still answers D3 and D4 of section 7: whether
+interim fork patches are allowed, and whether Recipe ships Ginux for other
+distributions.
 
 **Stage 1 — file the requirements (upstream, one at a time, owner releases
 each).** Order, with the reason:
@@ -489,7 +489,8 @@ each).** Order, with the reason:
 1. U4 and U6, because without a wait with an outcome and an export there is
    no lifecycle run at all; Greg already named export.
 2. U2 and U3, because they decide how many instances exist and who cleans up.
-3. U1, because it decides where the compiler image comes from.
+3. U1, because it decides how the compiler image gets in (D2 chose offline
+   import).
 4. U8, small, independent, and it lets the digest pins be re-derived.
 5. U7 and U9 when Gate 31's volume stage is reachable; U11 after Gates 29 and
    46 are accepted; U5 and U10 are not filed (D6, D1).
@@ -561,7 +562,10 @@ the public lifecycle.
 - **D1. Keep mid-run `checkpoint`, or retire it?** DECIDED 2026-11-22 by the
   owner: retire it. N15, U10 and the control channel are gone; only a long single
   `build` loses, and the one such recipe is `linux.rhai` (D5).
-- **D2. Where does the compiler image come from?** Publish it as a proper OCI
+- **D2. Where does the compiler image come from?** DECIDED 2026-11-22 by the
+  owner: ask for U1 (offline import); no registry. Recipe's image producer
+  writes an OCI image layout and the build identity uses its manifest digest
+  (Stage 2, with U1's answer). Options as weighed: publish it as a proper OCI
   image to a registry and use upstream's fetch, or ask for U1 (offline
   import). A registry removes U1 but puts a network fetch and a digest of an
   OCI manifest, not of Recipe's tar, into the identity of every build.
