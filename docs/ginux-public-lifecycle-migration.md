@@ -279,7 +279,8 @@ Changes, if all requirements land:
 - `src/backend.rs`, `src/runtime.rs`, `src/bin/recipe/runtime.rs`: the
   resolved thing is the `ginux` CLI (and its helper), not a launcher file;
   `GINUX_BIN` is renamed or removed, `recipe runtime stage` stops copying a
-  launcher unless the owner decides Recipe ships Ginux (Q1).
+  launcher file; it ships the `ginux` CLI and its helper instead, because
+  Recipe ships Ginux (D4, decided).
 - `distro/builder` stops building the fork launcher for Recipe.
 - `GINUX_BEHAVIOUR` (`src/identity.rs:68`) is bumped at the cutover.
 
@@ -465,8 +466,9 @@ consumer in Recipe after Stage 2.
 - **Q1 (Gate 26).** Is non-Rocky-10 host support (Fedora, Ubuntu) a thing
   upstream will carry, or is it a downstream packaging matter? Recipe's
   standalone release installs on Fedora 44 and Ubuntu 24.04
-  (`docs/recipe-standalone-release.md`); the answer decides whether Recipe
-  ships the Ginux binaries it uses.
+  (`docs/recipe-standalone-release.md`). The owner decided (D4) that Recipe
+  ships the Ginux binaries it uses, so the answer no longer blocks the plan;
+  it only says whether upstream will one day carry that packaging.
 - **Q2 (Gate 11).** Is a run through the lifecycle with a non-init worker in
   scope for the 4% budget measurement? The owner wants the budget to hold
   inside Recipe too; today Gate 11 measures sysbench in instance modes only.
@@ -479,9 +481,8 @@ cutover is complete.
 
 **Stage 0 — decisions (now).** D1 (retire `checkpoint`; U10 is
 deleted), D2 (offline import, U1), D5 (split `linux.rhai`) and D6 (files; U5 is
-not filed) are decided. D3 (interim fork commands, Stage 3) is decided too. The owner
-still answers D4 of section 7: whether Recipe ships Ginux for other
-distributions.
+not filed) are decided. D3 (interim fork commands, Stage 3) and D4 (Recipe ships
+Ginux for Fedora and Ubuntu) are decided too. All of section 7 is answered.
 
 **Stage 1 — file the requirements (upstream, one at a time, owner releases
 each).** Order, with the reason:
@@ -543,7 +544,7 @@ Stage 3:
   review them against the catalog as the file's comment already requires.
 - Verify all together: the e2e suites (`tests/e2e/*`, which need a real Ginux),
   the recipe catalog installs, one OS part build, and the standalone install
-  on Fedora and Ubuntu if Q1 says Recipe ships Ginux.
+  on Fedora and Ubuntu (D4: Recipe ships Ginux).
 
 **Stage 5 — what is left on the fork.** After the cutover nothing in this
 repository calls `ginux launch`. The fork's configured launch then has no
@@ -595,9 +596,16 @@ the public lifecycle.
 - **D6. Replace the stdio frame protocol with files (section 3.1)?** DECIDED
   2026-11-22 by the owner: files. With `checkpoint` gone the protocol is one
   request in and one result out; files remove U5 and the PTY problem.
-- **D4. Does Recipe ship Ginux for other distributions (Q1)?** If upstream
-  will not package them, either the standalone release gets a Rocky-only
-  runtime, or downstream packaging of the upstream binaries is its own work.
+- **D4. Does Recipe ship Ginux for other distributions (Q1)?** DECIDED
+  2026-11-22 by the owner: yes, ship it. Upstream's RPM is Rocky 10 only, so
+  downstream packaging of the Ginux CLI and helper for Fedora 44 and Ubuntu
+  24.04 is Recipe's own work: `recipe runtime stage` and the standalone
+  installer carry them (with the host confinement profile each distribution
+  needs, as the AppArmor profile does today), built from the fork while it
+  carries the interim commands (Stage 3) and from upstream afterwards. It
+  depends on U3 (private per-caller state), since a global root-owned
+  `/var/lib/ginux` reached through `sudo` is not what a standalone user
+  install should need.
 
 ## 8. Risks
 
