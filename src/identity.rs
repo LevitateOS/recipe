@@ -5,12 +5,12 @@
 //! change what a recipe produces has changed. Its identity names by content
 //! the recipe closure, the inputs, the defines, the execution options and the
 //! root image. The two tools that execute the recipe, Recipe itself (as the
-//! coordinator and as the worker inside the root) and the Ginux launcher,
-//! change daily during development without changing what any recipe
+//! coordinator and as the worker inside the root) and Ginux (its CLI, helper,
+//! image tool and runtime), change daily during development without changing what any recipe
 //! produces. By default the identity therefore names them by the declared
 //! versions below. Exact identity (`--exact-identity`, [`EXACT_ENV`],
-//! `ExecutionOptions::exact_identity`) also names the worker's and the
-//! launcher's bytes, so only byte-identical tools reuse a state; release
+//! `ExecutionOptions::exact_identity`) also names the worker's bytes and
+//! those of the four Ginux files (`crate::ginux::Ginux::digest`), so only byte-identical tools reuse a state; release
 //! builds use it.
 //!
 //! The OS builder puts [`declared`] into its part keys for the same reason.
@@ -50,7 +50,7 @@ pub const ENGINE_BEHAVIOUR: u32 = 3;
 ///
 /// The catalog and the build-base contract digests Ginux reports are already
 /// part of every identity ([`declared`] and each state's contract), and Recipe
-/// refuses a launcher whose catalog or digest differs from its pins. This
+/// refuses a Ginux whose catalog or digest differs from its pins. This
 /// number covers what they do not. Bump it when a Ginux change (including
 /// moving the `tools/ginux` pin) can alter what a workload observes or what
 /// Recipe receives back:
@@ -59,13 +59,16 @@ pub const ENGINE_BEHAVIOUR: u32 = 3;
 ///   links, extended attributes, directory listing order, path resolution;
 /// - process, signal, clock, environment or resource-limit behaviour a
 ///   workload can see;
-/// - the filesystem snapshot, export or restore format Recipe consumes.
+/// - the filesystem snapshot, export, inject or extract format Recipe consumes.
 ///
-/// A change that only alters speed, diagnostics, audit text or the launcher's
+/// A change that only alters speed, diagnostics, audit text or Ginux's
 /// own robustness, with identical workload-visible results, does not bump it.
 /// Kept in Recipe, not in Ginux: Ginux is upstream-owned, and what counts as
 /// observable for cache reuse is this consumer's policy.
-pub const GINUX_BEHAVIOUR: u32 = 1;
+// 2: the public lifecycle (native configured runtime, catalog 2, virtual uid
+// from `[access]`, root-overlay host tree, inputs injected as copies without
+// hard links, `/etc/hosts` always present, shared network).
+pub const GINUX_BEHAVIOUR: u32 = 2;
 
 /// What a host run does differently from a Ginux run (`crate::execution`),
 /// beyond [`ENGINE_BEHAVIOUR`]: the host directories that stand in for the
@@ -87,7 +90,7 @@ pub struct Declared {
     /// The coordinator/worker record version (`RECORDS_VERSION`).
     pub transport: u32,
     /// The Ginux catalog and the build-base contract digests Recipe pins and
-    /// checks against what the launcher reports.
+    /// checks against what `ginux validate` reports.
     pub catalog: u32,
     pub base_digest_offline: &'static str,
     pub base_digest_network: &'static str,

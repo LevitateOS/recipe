@@ -1,7 +1,8 @@
 //! Public CLI flags/environment cannot select an unconfined in-process recipe
 //! executor. A recipe that starts no program runs in a host-mode worker
 //! (`--execution auto`), whose helpers refuse paths outside its directories;
-//! `--execution ginux` requires the launcher.
+//! `--execution ginux` requires the `ginux` CLI (`RECIPE_GINUX`).
+//! These cases start no instance: they need no privileges and no Ginux.
 use super::*;
 #[test]
 fn public_cli_worker_environment_never_selects_unconfined_execution() {
@@ -17,7 +18,7 @@ const NEEDS = #{{}}; write_file({:?},\"host effect\"); fn build(src, out) {{}}",
         let mut command = host_command(&recipes);
         command
             .env("RECIPE_WORKER", "1")
-            .env("GINUX_BIN", dir.path().join("missing-ginux"));
+            .env("RECIPE_GINUX", dir.path().join("missing-ginux"));
         if let Some(id) = invocation {
             command.env("RECIPE_INVOCATION", id);
         } else {
@@ -30,13 +31,18 @@ const NEEDS = #{{}}; write_file({:?},\"host effect\"); fn build(src, out) {{}}",
             .output()
             .unwrap();
         assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("backend startup failure"));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("backend startup failure"), "{stderr}");
+        assert!(
+            stderr.contains("RECIPE_GINUX"),
+            "the message names the variable: {stderr}"
+        );
         assert!(!sentinel.exists());
     }
     // The recipe starts no program, so it runs on the host, where the write
     // outside the run's directories is refused.
     let output = host_command(&recipes)
-        .env("GINUX_BIN", dir.path().join("missing-ginux"))
+        .env("RECIPE_GINUX", dir.path().join("missing-ginux"))
         .args(["install", "check", "--recipes-path"])
         .arg(&recipes)
         .output()
@@ -88,4 +94,43 @@ const NEEDS = #{{}}; write_file({:?},\"unexpected setup\"); fn build(src, out) {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("private worker entry requires"), "{stderr}");
     assert!(!sentinel.exists());
+}
+
+#[test]
+fn variables_of_the_replaced_runtime_are_refused_with_their_replacement() {
+    // A stale shell once cost a day: the old variables are not translated and
+    // not ignored. Recipe stops and names the variable to set instead.
+    let (dir, recipes) = create_test_env();
+    let sentinel = dir.path().join("host-effect");
+    write_recipe(
+        &recipes,
+        "check",
+        &format!(
+            "const RECIPE_API = 1;
+const NEEDS = #{{}}; write_file({:?},\"unexpected setup\"); fn build(src, out) {{}}",
+            sentinel.to_str().unwrap()
+        ),
+    );
+    for (old, new) in [
+        ("GINUX_BIN", "RECIPE_GINUX"),
+        ("GINUX_ROOT", "RECIPE_IMAGE"),
+        ("GINUX_ROOTFS", "RECIPE_IMAGE_LAYOUT"),
+        ("GINUX_MINIMAL_ROOT", "RECIPE_MINIMAL_IMAGE"),
+        ("GINUX_MINIMAL_ROOTFS", "RECIPE_MINIMAL_IMAGE_LAYOUT"),
+    ] {
+        let output = host_command(&recipes)
+            .env(old, "stale")
+            .env("RECIPE_GINUX", dir.path().join("missing-ginux"))
+            .args(["install", "check", "--execution", "ginux", "--recipes-path"])
+            .arg(&recipes)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&format!("{old} is gone")) && stderr.contains(new),
+            "{old}: {stderr}"
+        );
+        assert!(!sentinel.exists());
+    }
 }

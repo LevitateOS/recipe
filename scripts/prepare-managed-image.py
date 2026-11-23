@@ -95,11 +95,15 @@ if sha(inputs / manifest['base']['path']) != manifest['base']['sha256']:
     raise SystemExit('public OCI producer output does not match image manifest')
 subprocess.run([str(producer), '--manifest', str(manifest_path), '--input-root', str(inputs),
                 '--output', str(output)], check=True)
-produced = sha(output / 'rootfs.tar')
-if produced != spec['image_sha256']:
-    raise SystemExit('produced managed image digest ' + produced + ' differs from tracked CI pin '
-                     + repr(spec['image_sha256']) + ' in ' + str(spec_path))
+# The image is named by its manifest digest: the layout's manifest blob must
+# hash to the digest the provenance records, and that must be the tracked pin.
 provenance = json.loads((output / 'provenance.json').read_text())
-if provenance['sha256'] != spec['image_sha256']:
-    raise SystemExit('produced provenance differs from tracked CI pin')
-print('managed CI image verified: ' + spec['image_sha256'])
+produced = provenance['manifest_digest']
+if sha(output / 'blobs/sha256' / produced) != produced:
+    raise SystemExit('produced manifest blob does not match its recorded digest ' + produced)
+if not (output / 'image.oci.tar').is_file():
+    raise SystemExit('the producer wrote no image.oci.tar')
+if produced != spec['image_digest']:
+    raise SystemExit('produced managed image manifest digest ' + produced + ' differs from tracked CI pin '
+                     + repr(spec['image_digest']) + ' in ' + str(spec_path))
+print('managed CI image verified: ' + spec['image_digest'])

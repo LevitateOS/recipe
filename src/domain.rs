@@ -61,7 +61,8 @@ pub const INPUT_MODES_NAME: &str = input_modes_name!();
 /// Domain path of the input permission manifest.
 pub const INPUT_MODES: &str = concat!(inputs_root!(), "/", input_modes_name!());
 /// Folder under [`INPUTS`] where a Ginux run sees the offline cache
-/// (`crate::offline_cache`): its `sha256` folder is bound read-only there.
+/// (`crate::offline_cache`): `sha256/<hex>` copies of the cached files of the
+/// recipe's declared pins (`crate::inputs::inject_archive`).
 pub const OFFLINE_CACHE_NAME: &str = offline_cache_name!();
 /// Domain path of the offline cache in a Ginux run.
 pub const OFFLINE_CACHE: &str = concat!(inputs_root!(), "/", offline_cache_name!());
@@ -136,20 +137,20 @@ pub const RESULT_MEMBER: &str = concat!("work/", result_name!());
 pub const MAX_RESULT_BYTES: u64 = 4 * 1024 * 1024;
 /// Space the worker reserves for the result file before any recipe code
 /// runs ([`RESULT_STAGING`], allocated up front), so a run that fills its
-/// storage quota can still record its failure. A result larger than this is
+/// disk can still record its failure. A result larger than this is
 /// replaced by a failed result that says so.
 pub const RESULT_RESERVE_BYTES: u64 = 64 * 1024;
 /// Top-level names a root image may not provide.
 pub const RESERVED_ROOTS: [&str; 3] = ["inputs", "work", "out"];
 
-/// Longest domain path the launcher accepts (its path buffer minus the NUL).
+/// Longest domain path Recipe names (a path buffer of 256 bytes minus the NUL).
 pub const MAX_PATH: usize = 255;
 /// Longest staged input name, so `/inputs/NAME` fits [`MAX_PATH`].
 pub const MAX_INPUT_NAME: usize = MAX_PATH - INPUTS.len() - 1;
 
 /// Private argv marker the coordinator passes to the staged worker.
 pub const WORKER_ENTRY_ARG: &str = "--__recipe-worker";
-/// Worker argv after argv[0] (the launcher supplies argv[0] from the init).
+/// Worker argv after argv[0] (Ginux supplies argv[0] from the init).
 pub const WORKER_ARGS: [&str; 2] = [WORKER_ENTRY_ARG, MAIN_RECIPE];
 /// Worker argv after argv[0] for a host-mode worker (`crate::execution`). A
 /// worker that predates host mode refuses it at its bootstrap check instead
@@ -194,10 +195,9 @@ pub fn valid_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// Network endpoints a domain may be granted (the Ginux `[network]` limit).
+/// Pinned addresses one run may be granted, over all its declared endpoints;
+/// also the most outbound ports its Ginux config lists.
 pub const MAX_NETWORK_ENDPOINTS: usize = 8;
-/// Concurrent mediated connections a domain gets.
-pub const MAX_NETWORK_CONNECTIONS: usize = 16;
 /// Longest execution or output-stall deadline, in seconds.
 pub const MAX_TIMEOUT_SECS: u64 = 86_400;
 
@@ -223,7 +223,7 @@ pub fn validate_input_name(name: &str) -> anyhow::Result<()> {
     if name.is_empty() || name.len() > MAX_INPUT_NAME {
         anyhow::bail!(
             "input preparation failure: input name {name:?} has {} B, want 1..={MAX_INPUT_NAME} B \
-             (so `/inputs/` + NAME fits the launcher path bound)",
+             (so `/inputs/` + NAME fits the domain path bound)",
             name.len(),
         );
     }

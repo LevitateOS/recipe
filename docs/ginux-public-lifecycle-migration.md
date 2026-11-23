@@ -643,13 +643,108 @@ Stage 3:
   the recipe catalog installs, one OS part build, and the standalone install
   on Fedora and Ubuntu (D4: Recipe ships Ginux).
 
+**Stage 4 status (written 2026-11-23; unverified, never run).** The cutover is
+written as one change set in the working trees of `tools/recipe`, `distro/builder`,
+`xtask`, `tools/recipe/scripts` and the fork helper, against the design
+[`ginux-cutover-design.md`](ginux-cutover-design.md) (a fixed record; its section 9
+names the work packages). Nothing has been built, run or checked beyond
+compilation: the first Recipe run on the public lifecycle is also the first real
+run of the fork's interim verbs (Stage 3 status above), and `ginux launch` has no
+caller left in this repository. The privilege model is the owner's option A (a
+sudoers rule for the administrators' group, `recipe runtime stage --sudoers
+GROUP`); the old user-namespace path and AppArmor profile are gone. **Hardening
+after review (decisions taken on 2026-11-23).** A review found that a rule naming
+`ginux-helper` gave every group member passwordless root through any helper verb
+(`prepare-root /`). The owner decided two things: (1) the rule names only a
+restricted root-owned Recipe guard, `/usr/libexec/recipe/recipe-ginux-guard`
+(shipped by `runtime stage --recipe-guard`, installed by the standalone installer,
+reported by `runtime status`), which allows only Recipe's instance verbs on
+instances named `recipe-<uid>-*`, sanitises the imported instance config
+(`--check-config`), clears the environment and then runs the helper; (2) instance
+directories are root-private (0700) and the helper streams the console output to
+the caller, so the adapter no longer reads files out of the instance. What
+remains is a passwordless sandbox for group members, not a passwordless root; the
+exposure left on a shared host is in `docs/runtime-limits.md`. Like the rest of
+this change set, the guard and the private instances are written, compiled and
+unrun; their e2e cases that need no root are in `tests/e2e/guard.rs`.
+**Review rounds of 2026-11-23 and the image allowlist.** Independent review
+rounds of the guard on 2026-11-23 led to these changes: the guard takes the
+caller only from `SUDO_UID`/`SUDO_GID`, reads the imported config with the
+caller's identity and re-renders it from validated fields, and for a caller
+other than root accepts an image only if its exact reference is in the
+root-owned allowlist `/usr/libexec/recipe/runtime-images` (written by `recipe
+runtime stage`, `sudo recipe runtime fetch` and the installer); `import-image`
+is not available through the guard (root imports with `sudo recipe runtime
+fetch`, which the installer runs), so a non-root run without an imported image
+stops and says to run it, and the e2e harness runs that command once per test
+process when it is not root. The reviews also showed what the guard cannot fix,
+because it sits in code the helper and the image tool run as root: **R13**
+`apply_whiteout`/`remove_path` in the fork's `ginux-oci` follow symlinks inside
+the image (a layer with `h -> /` and a whiteout under `h` deletes `/`); **R14**
+the helper's `prepare_root` follows symlinks inside the image; **R15** every
+user's workload runs as host uid 65534, so workloads of different users can
+signal each other's `inject-tree`/`export-tree` processes (stalling the instance
+lock), and a workload that defeats Ginux's mediation could reach other users'
+running workloads. R13 and R14 are bugs in upstream's code and are not fixed;
+the allowlist keeps untrusted images off the passwordless path, but root callers
+and the OS builder still pass images through that code. Next step: fix in the
+fork, report upstream. There are also no per-uid instance, disk or cache caps,
+and the byte, extract and free-space bounds are Recipe's, enforced in the
+client, so a member who calls the guard directly bypasses them. The catalog
+(2) and both build-base digests in `RuntimeKind::PublicLifecycle` are
+**placeholders** (`PLACEHOLDER-DERIVE-IN-VERIFICATION`): every Ginux validation
+fails by design until they are derived. What must happen in verification, in
+this order (design section 6, then the single pass):
+
+1. Derive the catalog and the two digests with a built fork binary (`cargo build
+   -p ginux-cli --release` at the pin; `recipe inspect --json` on one recipe
+   without and one with `NEEDS.network` reports the digest Ginux derived;
+   cross-check with `ginux validate`; review with `ginux inspect` and `ginux
+   explain` for every selector and for the seven operations catalog 2 lacks;
+   write the values and the review entry into the pins row). Never type a digest
+   by hand.
+2. Run the e2e suites (`tests/e2e/*`, `tests/library_backend.rs`,
+   `tests/image_producer.rs`) as root with a real Ginux, the five Ginux files
+   installed root-owned and the image layout imported (the preconditions are in
+   the header of `tests/e2e.rs`; the tests were adapted, not run).
+3. Run a recipe catalog install (for example ripgrep) end to end.
+4. Build one OS part (the builder's root-owned Ginux wrapper, `RECIPE_IMAGE[_LAYOUT]`).
+5. Install the standalone release on Fedora 44 and on Ubuntu 24.04, with the
+   sudoers rule, and run a recipe on each.
+
+Accepted regressions (decided; stated plainly in `docs/runtime-limits.md`, the
+README and the release notes): no storage limit inside a run (only the archive
+taken out is bounded, plus a free-space watchdog); network grants are per port
+on the shared host network (a program can reach any address on a granted port,
+with no connection or byte cap; only Recipe's own downloads are held to the
+declared `HOST:PORT` and the byte cap); live system roots and the offline cache
+are copied, not bound (the cache only by declared pin); no hard links through
+the instance; Ginux runs need root or the sudoers rule. Risks of the design
+(section 10), one line each: R1 the two safety regressions above ship until
+upstream U9/U11 exist; R2 catalog 2 lacks `lstat`, `readv`, `pipe`, `nanosleep`,
+`sendfile`, `link`, `rt_sigpending` and builds may break on them; R3 whether
+`[contract.filesystem]` and `[access]` are enforced for a non-systemd init is
+read from docs, not proven; R4 AcornOS needs GNU coreutils, util-linux, gawk,
+procps and sudo for the helper, against "small and strict"; R5 per-run cost on
+file systems without reflinks may dominate OS builds; R6 console readability
+depends on the fork change F2 (`chmod 0644` on the logs), without it a umask of
+077 yields no progress lines; R7 `console.log` and `audit.log` grow unbounded
+during a run; R8 offline builds lose the cache for downloads computed at run
+time; R9 SELinux on Fedora 44 and `sudo` `use_pty` with binary stdin/stdout are
+unproven; R10 `recipe runtime remove` cannot free the imported image or base
+roots; R11 the CLI and image tool are not yet known to build as static musl;
+R12 every verb of the interim lifecycle is unrun end to end; R13 `apply_whiteout`/`remove_path` follow symlinks in an image as root (a hostile image can delete host files); R14 the helper's `prepare_root` follows symlinks in an image as root; R15 all users' workloads share host uid 65534 (they can signal each other's `inject-tree`/`export-tree` processes, and a workload that defeats Ginux's mediation could reach others' workloads); R13 and R14 are unfixed bugs in upstream's code, next step: fix in the fork, report upstream.
+
 **Stage 5 — what is left on the fork.** After the cutover nothing in this
 repository calls `ginux launch`. The fork's configured launch then has no
 consumer here and is kept, or dropped, as the owner decides; upstream's
 direction (absorbing the abilities "step by step inside its own authorities")
 means it only shrinks.
 
-### What stays on the fork's configured launch until then
+### What stayed on the fork's configured launch until Stage 4
+
+(Historical: Stage 4 above replaced all of it in one change set; the list is
+what the cutover deleted from Recipe.)
 
 Everything in section 1: `ginux launch` with `--export-file`,
 `--restore-file`, owned `memory:` storage and its limits, archive import,

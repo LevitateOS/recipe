@@ -123,19 +123,19 @@ converted, it does that inside `build`.
 
 ### 2.1 `NEEDS`
 
-As today: what the recipe may use. Ginux and the host confinement enforce it;
-callers can only narrow it.
+As today: what the recipe may use. Ginux and the host confinement enforce it
+as far as each can (the limits below say how far); callers can only narrow it.
 
 | Field | Meaning |
 |---|---|
 | `inputs` | name to `"file"`, `"directory"`, `"file?"` or `"directory?"` |
 | `defines` | name to its default value (new, see below) |
 | `outputs` | name to `"file"` or `"directory"` |
-| `network` | `"host:port"` endpoints, redirect hosts included |
+| `network` | `"host:port"` endpoints, redirect hosts included. In Ginux the grant is the PORT of each endpoint (`tcp:PORT` on the shared host network), see below |
 | `network_max_bytes` | bytes the recipe downloads, default 8 GiB; Recipe adds an allowance (below) |
-| `memory_mib` | default 2048 |
-| `storage_max_objects` | default 16384 |
-| `storage_max_bytes` | default bounded by memory |
+| `memory_mib` | default 2048; the per-process address-space bound of the instance |
+| `storage_max_objects` | default 16384; bounds the members of the archive taken out of the run |
+| `storage_max_bytes` | default bounded by memory; bounds the bytes of the archive taken out of the run |
 | `timeout_secs` | default 3600, 1 to 86400 |
 | `runtime` | `"minimal"`, or left out: the image a Ginux run is unpacked from (below) |
 
@@ -144,8 +144,10 @@ it is given (a root's effects recipe): its Ginux root is unpacked from the
 minimal runtime image, a shell, GNU coreutils, findutils, sed and grep with
 their libraries and what the Recipe worker needs for itself and its downloads
 (about 9 MB), instead of the full compiler image (about 1.3 GB).
-Each run still gets a private copy of its image, verified against its digest.
-Where no minimal image is named (`GINUX_MINIMAL_ROOT`, or the
+Each run still gets a private root made from its imported image (the import,
+done as root by `sudo recipe runtime fetch`, verifies every blob and the
+manifest digest).
+Where no minimal image is named (`RECIPE_MINIMAL_IMAGE`, or the
 `minimal-reference` an install ships), the run uses the full image. A recipe
 that starts no program runs on the host either way.
 
@@ -177,6 +179,20 @@ what the recipe declares and pins: a run cannot pull unrelated gigabytes. A
 transfer stopped by the cap fails with "the run's network byte limit was
 reached", the cap in bytes and the fields that set it. `--network-max-bytes`
 narrows the cap.
+
+**What the public Ginux lifecycle does not enforce** (accepted regressions,
+[runtime-limits.md](runtime-limits.md)). The cap above is enforced by the
+worker on Recipe's own HTTP client (every download and fetch helper): it
+reaches only the declared `HOST:PORT` at the pinned addresses and counts the
+bodies it reads. Ginux itself grants only the PORTS of the declared endpoints
+on the shared host network and counts nothing: a program the recipe starts
+(`git`, `curl`, a build system) can connect to any address on a granted port,
+with no connection or byte cap, and `network_usage` does not include it.
+Likewise `storage_max_bytes` and `storage_max_objects` are not limits inside a
+run (a recipe can fill the host disk while it runs; a watchdog cancels the run
+when the free space of Ginux's state root falls below the larger of 2 GiB and
+5 %); they bound the archive taken out of it, and an output over them fails the
+run after the fact with the storage message.
 
 #### Defines (answer 2)
 
@@ -556,13 +572,13 @@ const RERUN = true;
 
 The recipe is run every time it is asked for; a result is never reused and
 it is never "built". Only `root-effects` needs it: it rebuilds a root's
-caches after every system change. Its input `root` is that root, given live
-(`--effects-root ROOT`): in a Ginux run as root, the root's top-level folders
-(but `var`, `boot`, `home`, `root`, `tmp`, `run`, `proc`, `sys`, `dev`, `mnt`,
-`media`, `srv`, `lost+found`) are bound read-only under `/inputs/root` for the
-run, not hashed or copied, its top-level links are kept and its top-level files
-left out; such a run keeps no state. Anywhere else the root is copied like any
-input (README, "Root effects").
+caches after every system change. Its input `root` is that root
+(`--effects-root ROOT`): the root's top-level folders (but `var`, `boot`,
+`home`, `root`, `tmp`, `run`, `proc`, `sys`, `dev`, `mnt`, `media`, `srv`,
+`lost+found`) are copied under `/inputs/root` like any input (the public Ginux
+lifecycle has no read-only bind), its top-level links are kept and its
+top-level files left out; such a run keeps its state like any other run
+(README, "Root effects").
 
 ### 2.11 `deps`, `build_deps`
 
@@ -976,22 +992,25 @@ everything" honest.
 - A result moves into the package store, and a placed file moves from the
   unpacked source, wherever both are on the same disk.
   - Placing `FILES` from an unpacked source is a rename in both kinds of run.
-    In Ginux, `/work` and `/out` are two assignments of one memory storage,
-    and a rename between them moves the name, not the bytes. A plain-file
-    source and a `git` checkout are the downloads themselves and are copied
-    (section 2.5).
+    In Ginux, `/work` and `/out` are two folders of one instance root, and a
+    rename between them moves the name, not the bytes. A plain-file source and
+    a `git` checkout are the downloads themselves and are copied (section 2.5).
   - A host run moves its outputs from the run's directory into publication
     where that directory and the state root share a disk. With kept records
     (the default) it first archives the run's `work` and `out` as the kept
     result, so the result's bytes are on disk twice until cleanup deletes
     the kept result after the install; without kept records nothing is
     archived.
-  - A Ginux run hands back one archive of its `/work` and `/out`, and its
-    outputs are unpacked from that archive: Ginux keeps the run's files in
-    its memory storage and has no other way out. Until cleanup deletes the
-    kept result (or, without kept records, until the run ends) the result's
-    bytes are on disk twice, in the archive and unpacked. The same holds
-    when an install publishes a result kept by an earlier `build`.
+  - A Ginux run hands back one archive of its `/work` and `/out`
+    (`ginux extract`, bounded by `storage_max_bytes` and `storage_max_objects`),
+    and its outputs are unpacked from that archive. While the run lives, its
+    files are on the host disk in the instance root; Recipe deletes the
+    instance when the run ends. Until cleanup deletes the kept result (or,
+    without kept records, until the run ends) the result's bytes are on disk
+    twice, in the archive and unpacked. The same holds when an install
+    publishes a result kept by an earlier `build`. Hard links do not survive
+    the trip (the archive and the injector carry only directories, regular
+    files and symlinks).
 - An interrupted step keeps nothing: its step starts again from its
   beginning. Only finished steps (downloads, a finished result) leave
   records, and they are deleted when the install succeeds.
@@ -1025,9 +1044,10 @@ finished, otherwise from nothing. A step that finished keeps its result, so
 There is no `save`, `saved`, `checkpoint` or `reached`: a recipe cannot keep a
 value across an interruption, and `build` is always called from its top. What
 `--no-persist-state` turns off is the kept downloads and results, not
-managed execution or publication. `--restore-file` is a Ginux launcher
-option Recipe uses to seed a run with kept downloads or the target view; it
-restores no checkpoint.
+managed execution or publication. `--restore-file` is
+an option Recipe uses to seed a run with kept downloads or the target view (the
+members are merged into the tar injected into the instance); it restores no
+checkpoint.
 
 A build that is long enough to be worth restarting in parts is written as
 several recipes that depend on one another (`deps`, `build_deps`): each finished recipe
@@ -1229,10 +1249,10 @@ returned `ctx`.
 | `kept` | whether the material was kept |
 | `freed_bytes` | bytes deleted by cleanup or remove in this run |
 | `dependencies` | per dependency that ran: `name`, `state`, `steps` |
-| `contract`, `network_usage` | the Ginux contract the run was checked against, as Recipe prints it: `catalog`, `digest` and the `contract` itself (`catalog`, `allow`, `deny`: a few short rule names); absent for a run on the host. And the bounded network summary |
+| `contract`, `network_usage` | the Ginux contract the run was checked against, as Recipe prints it: `catalog`, `digest` and the `contract` itself (`catalog`, `allow`, `deny`: a few short rule names); absent for a run on the host. And the network summary: what the worker counted for Recipe's own downloads (a program's connections are not counted) |
 
 A failed run exits nonzero and prints `{"failure": {...}}` as today
-(`libc_mismatch`, `system_mismatch`, a denied connection's `refused`). A
+(`libc_mismatch`, `system_mismatch`). A
 system change (`--system`) keeps today's result fields (`action`, `package`,
 `other_root`, `effects`, ...) and adds `state` and `freed_bytes`.
 
@@ -1243,7 +1263,7 @@ system change (`--system`) keeps today's result fields (`action`, `package`,
  "outputs": {"package": "/home/u/.local/share/recipe/store/ripgrep"},
  "activation": {"profile": "/home/u/.local/share/recipe/profile", "bin": "/home/u/.local/share/recipe/profile/bin"},
  "kept": false, "freed_bytes": 8925511, "dependencies": [],
- "contract": {"catalog": 1, "digest": "sha256:5d1c...", "contract": {"catalog": 1, "allow": ["syscall.*", "filesystem.path.read", "..."], "deny": ["..."]}},
+ "contract": {"catalog": 2, "digest": "sha256:5d1c...", "contract": {"catalog": 2, "allow": ["syscall.*", "filesystem.path.read", "..."], "deny": ["..."]}},
  "network_usage": {"complete": true, "bytes": 2179134}}
 ```
 
@@ -1262,8 +1282,9 @@ With `--machine-events`, one JSON object per line with an `event` field:
 - `fetch`: `recipe`, `source`, `bytes`, `total` (null when unknown).
 - `progress`: `recipe`, `phase`, `what`, `done`, `total`.
 - `done`: `recipe`; the last event of a run that succeeded.
-- `failed`: `recipe`, `step` (null when no step failed), `reason`, and
-  `refused` when Ginux denied a connection; the last event of a run that failed.
+- `failed`: `recipe`, `step` (null when no step failed) and `reason`; the last
+  event of a run that failed. (The `refused` field of the downstream launcher's
+  denied-connection log is gone: the native audit lines do not name the address.)
 
 The engine emits no `output` or `say` event, and there is no `agent` event.
 

@@ -1,12 +1,12 @@
 # Prepared compiler image
 
-`recipe-image` is an explicit bootstrap producer for the environment consumed by
-Recipe's Ginux launcher. It composes already acquired, pinned local artifacts;
+`recipe-image` is an explicit bootstrap producer for the root a Recipe run's Ginux
+instance is made from. It composes already acquired, pinned local artifacts;
 it does not download packages, interpret recipes, or run package installation
 scripts. Ordinary recipe execution consumes the resulting image.
 
 Image reproducibility does not by itself establish every distro/tool consumer.
-Use the exact launcher and matching worker from the supported source, observe
+Use the exact Ginux tools and matching worker from the supported source, observe
 [runtime boundaries](../docs/runtime-limits.md), and keep product/VM results
 bound to those identities. The maintained source pair and setup are documented in
 [Linux setup](../docs/setup-linux.md); this guide does not certify guest
@@ -17,8 +17,17 @@ and selected components. Input paths are relative to `--input-root`. All inputs
 are copied and verified against SHA-256 before use. RPM payloads are converted with the host's
 `rpm2archive`; their paths are never extracted onto the host. The producer merges
 `usr/` additions into the base archive, validates paths/links, normalizes timestamps
-and numeric owners, and publishes a fresh directory containing `rootfs.tar` and
-`provenance.json`. Existing outputs are never overwritten. The initial bootstrap
+and numeric owners, and writes the result as the single uncompressed layer of a
+one-layer OCI image. It publishes a fresh directory holding the OCI layout
+(`oci-layout`, `index.json`, `blobs/sha256/*`), the same layout as one
+uncompressed tar, `image.oci.tar` (what `ginux import-image` and `recipe runtime
+stage` take), and `provenance.json`. The layout's JSON documents are byte-stable
+(`levitate_recipe::image::write_layout`), so the same layer always gives the
+same manifest digest, and that digest is the image's identity:
+`provenance.json` records it as `manifest_digest`, beside `layer_sha256`.
+A layer may hold no whiteout (`.wh.`) member, no `etc/hosts` (Recipe injects one
+into every run, and Ginux never overwrites a path) and nothing under `inputs`,
+`work` or `out`. Existing outputs are never overwritten. The initial bootstrap
 uses native Rust tooling and already prepared artifacts so it does not depend on
 running Rhai outside Ginux.
 
@@ -33,10 +42,15 @@ target/debug/recipe-image \
   --output .artifacts/ginux-env/prepared-image
 ```
 
-Select `prepared-image/rootfs.tar` with `GINUX_ROOTFS`. Set `GINUX_ROOT` to
-`oci:compiler@sha256:<sha256 from provenance.json>`. The worker binary is staged
-separately by Recipe, so updating Recipe does not rebuild the compiler image.
-Build and run the Ginux launcher explicitly before executing recipes.
+Name the image with `RECIPE_IMAGE=local/recipe-compiler@sha256:<manifest_digest
+from provenance.json>` (a reference needs a registry component such as `local/`,
+and is named by the manifest digest) and its layout with
+`RECIPE_IMAGE_LAYOUT=.artifacts/ginux-env/prepared-image/image.oci.tar` (the layout
+tar; Ginux refuses the directory, which also holds `provenance.json`). The first run imports the layout into Ginux's cache under
+the state root (`ginux import-image`, which checks every blob; the manifest digest
+it prints must be the reference's); later runs need only the reference. The
+worker binary is injected separately by Recipe, so updating Recipe does not
+rebuild the compiler image.
 
 The image includes the Rust compiler, Cargo, standard library, GCC, Make, GNU
 Diffutils (including `cmp`) and pkgconf (including `pkg-config`).
@@ -83,7 +97,9 @@ Select the full acquisition image whenever the workload needs Rust or Cargo.
 `--spec bootstrap/product-ci.json` to `scripts/prepare-managed-image.py` for
 product builds; the default specification remains the smaller standalone
 acceptance image. The product image is pinned to the previously verified
-`4ec20be0f93bdd650ba42b0fd08b18d5ae61494f83c805a6a714e2f361042eff` output.
+`4ec20be0f93bdd650ba42b0fd08b18d5ae61494f83c805a6a714e2f361042eff` rootfs tar
+before the cutover to OCI layouts; its manifest digest (`image_digest`) is a
+placeholder of zeros until the image is produced again as a layout and pinned.
 
 ## Minimal runtime image
 
@@ -112,11 +128,11 @@ in `icon_cache_inputs` GNU `find`, `sort`, `sed`, `xargs`, `realpath`, `paste` a
 `sha256sum`. A tool added to such a recipe must be in this list; add it with the
 libraries its `DT_NEEDED` entries name (`readelf -d`).
 
-[`minimal-runtime.json`](minimal-runtime.json) pins its output as `image_sha256`, in
-the form of `product-ci.json`, with no downloaded inputs besides the Rocky base. The
-LevitateOS builder ships the pinned image with the installed Recipe
-(`usr/share/recipe/runtime/minimal.tar` and `minimal-reference`, through
-`recipe runtime stage --minimal-reference REF --minimal-image TAR`) and reads it from
+[`minimal-runtime.json`](minimal-runtime.json) pins its output's manifest digest as
+`image_digest`, in the form of `product-ci.json`, with no downloaded inputs besides the
+Rocky base. The LevitateOS builder ships the pinned image with the installed Recipe
+(`usr/share/recipe/runtime/minimal.oci.tar` and `minimal-reference`, through
+`recipe runtime stage --minimal-reference REF --minimal-image FILE`) and reads it from
 `.artifacts/ginux-env/prepared-image-minimal`. With the Rocky base already prepared
 under `.artifacts/ginux-env/oci-cache` (as for the compiler image; the producer checks
 its digest), produce it from the workspace root and pin the digest it records:
@@ -127,17 +143,19 @@ target/debug/recipe-image \
   --manifest tools/recipe/bootstrap/ginux-minimal-image.json \
   --input-root .artifacts/ginux-env \
   --output .artifacts/ginux-env/prepared-image-minimal
-jq -r .sha256 .artifacts/ginux-env/prepared-image-minimal/provenance.json
+jq -r .manifest_digest .artifacts/ginux-env/prepared-image-minimal/provenance.json
 ```
 
-That digest is pinned in `minimal-runtime.json` as `image_sha256`
-(`b748031a3080c9adacc43c947eff67da66ff5037663479b86afc42320abf3d09`); change the
+That digest is pinned in `minimal-runtime.json` as `image_digest` (a placeholder of
+zeros until the image is produced again as a layout; the last rootfs tar pin was
+`b748031a3080c9adacc43c947eff67da66ff5037663479b86afc42320abf3d09`); change the
 manifest, and the pin with it. `scripts/prepare-managed-image.py --spec
 bootstrap/minimal-runtime.json` reproduces it from public inputs as for the other
 images, and checks the pin (on a mismatch it names the digest it made).
 
-Select it with `GINUX_MINIMAL_ROOTFS` and
-`GINUX_MINIMAL_ROOT=oci:recipe-minimal@sha256:<sha256 from provenance.json>`.
+Select it with `RECIPE_MINIMAL_IMAGE=local/recipe-minimal@sha256:<manifest_digest from
+provenance.json>` and `RECIPE_MINIMAL_IMAGE_LAYOUT` (its `image.oci.tar`), set as a pair
+like the compiler image's.
 
 ## Acquisition and musl compiler image
 
@@ -232,15 +250,15 @@ target/debug/recipe-image \
   --manifest tools/recipe/bootstrap/ginux-acquisition-image.json \
   --input-root .artifacts/ginux-env \
   --output .artifacts/ginux-env/prepared-image-acquisition
-export GINUX_ROOTFS="$PWD/.artifacts/ginux-env/prepared-image-acquisition/rootfs.tar"
-export GINUX_ROOT="oci:recipe-compiler@sha256:$(jq -er '.sha256' .artifacts/ginux-env/prepared-image-acquisition/provenance.json)"
+export RECIPE_IMAGE_LAYOUT="$PWD/.artifacts/ginux-env/prepared-image-acquisition/image.oci.tar"
+export RECIPE_IMAGE="local/recipe-compiler@sha256:$(jq -er '.manifest_digest' .artifacts/ginux-env/prepared-image-acquisition/provenance.json)"
 ```
 
 The historical eight-RPM output SHA256 was
 `c089f95c462582cc0fcc2a8b2ba86c7d2d64c22c82efa499ce20e3704a7fe15e`.
 The current manifest adds four ISO-tool RPMs and the Diffutils/pkgconf packages,
-so that historical digest does not identify its output. Use the actual
-`provenance.json` digest as above; changing the image requires verification of
+so that historical digest does not identify its output (nor is a rootfs tar digest
+an image identity any more). Use the actual `provenance.json` `manifest_digest` as above; changing the image requires verification of
 that new combination. A fresh output directory is required.
 For musl builds pass `--target x86_64-unknown-linux-musl` to Cargo and set
 `RUSTFLAGS="-C linker=/usr/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld -C linker-flavor=ld.lld"`
@@ -259,7 +277,9 @@ rather than applying package ownership or special modes to the build host.
 To extend an already-produced pinned compiler image, an image manifest may omit
 `rust` and set `rust_components` to `[]`, selecting that image as `base` and
 listing the additional pinned RPMs. The same composer validates and records all
-inputs. Select the new output digest from `provenance.json` in `GINUX_ROOT`;
+inputs (the base is the earlier output's layer, `blobs/sha256/<layer_sha256>`, a
+plain rootfs tar). Select the new
+`manifest_digest` from `provenance.json` in `RECIPE_IMAGE`;
 previous compiler-image digest examples above do not identify the extended image.
 
 ## Managed CI inputs
@@ -270,8 +290,8 @@ key digest. The required hosted job builds its image rather than requiring an
 unpublished image URL or repository variables. `scripts/prepare-managed-image.py`
 verifies every downloaded/cached digest, checks all seventeen RPM signatures in a
 private disposable RPM database, invokes Ginux's existing verified OCI producer,
-and invokes `recipe-image`. The final tar and provenance must match the pinned
-image digest. Existing outputs and wrong cached inputs fail without replacement.
+and invokes `recipe-image`. The manifest digest in the provenance must match the
+pinned `image_digest`. Existing outputs and wrong cached inputs fail without replacement.
 `--offline` requires the same already-acquired artifacts and OCI blobs and still
 runs the actual producers and all digest/signature checks. Ordinary builds use
 public HTTPS and publisher inputs; no fixture CA or migration executable is used.

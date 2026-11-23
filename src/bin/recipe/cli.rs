@@ -125,7 +125,7 @@ pub(crate) struct Cli {
     #[arg(help_heading = "Recipe inputs")]
     pub(crate) inputs: Vec<String>,
 
-    /// Give the recipe the system root PATH as its read-only input `root`, bound read-only for the run instead of copied (as root, in Ginux; otherwise copied like --input root=PATH). `--system` passes it to the root's effects recipe.
+    /// Give the recipe the system root PATH as its read-only input `root`, copied into the run like --input root=PATH (top-level links kept, run-time folders and top-level files left out; the run keeps its state unless --no-persist-state is given). `--system` passes it to the root's effects recipe.
     #[arg(long, global = true, value_name = "PATH", conflicts_with = "system")]
     #[arg(help_heading = "Recipe inputs")]
     pub(crate) effects_root: Option<PathBuf>,
@@ -160,12 +160,12 @@ pub(crate) struct Cli {
 pub(crate) enum Commands {
     /// Check a recipe's declared inputs, dependencies and permissions without running it
     #[command(
-        after_help = "Examples:\n  recipe validate kitty\n  recipe validate ./recipes/kitty.rhai --input source=./source\n\nChecks declarations and required inputs without executing recipe code.\nRequires a compatible Ginux launcher. Use --json to see the full report."
+        after_help = "Examples:\n  recipe validate kitty\n  recipe validate ./recipes/kitty.rhai --input source=./source\n\nChecks declarations and required inputs without executing recipe code.\nRequires a compatible ginux CLI. Use --json to see the full report."
     )]
     Validate { recipe: PathBuf },
     /// Show a recipe's permissions and resource limits without running it
     #[command(
-        after_help = "Examples:\n  recipe inspect kitty\n  recipe inspect ./recipes/kitty.rhai --json\n\nShows declared inputs, outputs, network endpoints and effective resource limits.\nNo recipe code is executed. Requires a compatible Ginux launcher."
+        after_help = "Examples:\n  recipe inspect kitty\n  recipe inspect ./recipes/kitty.rhai --json\n\nShows declared inputs, outputs, network endpoints and effective resource limits.\nNo recipe code is executed. Requires a compatible ginux CLI."
     )]
     Inspect { recipe: PathBuf },
     /// Explain why an operation is allowed or denied for a recipe or past run
@@ -175,7 +175,7 @@ pub(crate) enum Commands {
     Explain { subject: PathBuf, operation: String },
     /// Compare the permissions and resource limits of two recipes
     #[command(
-        after_help = "Example:\n  recipe diff ./old/kitty.rhai ./new/kitty.rhai\n\nCompares declared inputs, outputs, network endpoints, dependencies and limits.\nNo recipe code is executed. Requires a compatible Ginux launcher."
+        after_help = "Example:\n  recipe diff ./old/kitty.rhai ./new/kitty.rhai\n\nCompares declared inputs, outputs, network endpoints, dependencies and limits.\nNo recipe code is executed. Requires a compatible ginux CLI."
     )]
     Diff { old: PathBuf, new: PathBuf },
     /// Do every step still missing (download, build, install) and activate the package output, if declared
@@ -303,7 +303,7 @@ pub(crate) enum Commands {
 
     /// List recipe declarations in the selected collection, not installed applications
     #[command(
-        after_help = "Examples:\n  recipe list\n  recipe list --recipes-path ./recipes\n  recipe list --json\n\n--json prints one entry per recipe for a front end: name, version, description,\nABOUT, NEEDS, dependency names, steps, functions, upstream, and the state on this\nsystem. Nothing is run and no Ginux launcher is needed. A recipe that cannot be read is reported under \"problems\"."
+        after_help = "Examples:\n  recipe list\n  recipe list --recipes-path ./recipes\n  recipe list --json\n\n--json prints one entry per recipe for a front end: name, version, description,\nABOUT, NEEDS, dependency names, steps, functions, upstream, and the state on this\nsystem. Nothing is run and no Ginux is needed. A recipe that cannot be read is reported under \"problems\"."
     )]
     List,
 
@@ -338,7 +338,7 @@ pub(crate) enum Commands {
 
     /// Show, fetch or stage the runtime Recipe runs recipes in (Ginux and its image)
     #[command(
-        after_help = "Examples:\n  recipe runtime status\n  recipe runtime fetch\n  recipe runtime stage --root ./pkg --launcher ./ginux --reference oci:NAME@sha256:DIGEST --catalog ./recipes\n\nRecipe has two runtime images: the full compiler image, and the minimal image a\nrecipe with NEEDS.runtime \"minimal\" runs in (without one named, it runs in the\nfull image). An image is downloaded on first use when it is not on this\ncomputer; 'fetch' does it now. RECIPE_RUNTIME_URL names another address ({digest}\nand {short} are replaced). GINUX_ROOTFS and GINUX_MINIMAL_ROOTFS select local\nimages; their SHA-256 must match GINUX_ROOT and GINUX_MINIMAL_ROOT."
+        after_help = "Examples:\n  recipe runtime status\n  recipe runtime fetch\n  recipe runtime stage --root ./pkg --ginux-cli ./ginux --ginux-helper ./ginux-helper \\\n      --ginux-image ./ginux-oci --ginux-runtime ./ginux-runtime \\\n      --ginux-allocator ./libginux_allocator.so \\\n      --recipe-guard ./recipe-ginux-guard \\\n      --reference local/recipe-compiler@sha256:MANIFEST --image ./image.oci.tar \\\n      --catalog ./recipes --sudoers wheel\n\nRecipe runs recipes that start programs in Ginux instances. The ginux CLI\n(RECIPE_GINUX, else the installed one) runs Recipe's guard, which runs Ginux's helper\nas root, through sudo, so Ginux runs need root or the sudoers rule\n/etc/sudoers.d/recipe-ginux (stage --sudoers GROUP writes it for the administrators'\ngroup; it names only the guard, which allows Recipe's instance verbs on instances\nnamed recipe-<uid>-*). Instances live under\nthe state root /var/lib/recipe/ginux (RECIPE_GINUX_STATE_ROOT; run root\n/run/recipe/ginux, RECIPE_GINUX_RUN_ROOT).\n\nRecipe has two runtime images, each an OCI image named by its manifest digest:\nthe full compiler image (RECIPE_IMAGE), and the minimal image a recipe with\nNEEDS.runtime \"minimal\" runs in (RECIPE_MINIMAL_IMAGE; without one named, it\nruns in the full image). An image is imported into Ginux once per computer, from\nits layout: RECIPE_IMAGE_LAYOUT (RECIPE_MINIMAL_IMAGE_LAYOUT), the layout\ninstalled with Recipe, or a download; 'fetch' does it now. RECIPE_RUNTIME_URL\nnames another download address ({digest} and {short} are replaced)."
     )]
     Runtime {
         #[command(subcommand)]
@@ -411,44 +411,65 @@ pub(crate) enum SourceCommands {
 
 #[derive(Subcommand)]
 pub(crate) enum RuntimeCommands {
-    /// Show the selected runtime images, the launcher and the shipped sources
+    /// Show the ginux CLI, the Ginux files, the state root, sudo, the selected runtime images and the shipped sources
     Status,
-    /// Download the selected runtime images now, unless they are already here
+    /// Import the selected runtime images into Ginux now, downloading their layouts when needed
     Fetch,
-    /// Delete the downloaded runtime image and its unpacked copies; it is downloaded again when a recipe needs it
+    /// Delete the downloaded runtime image layouts; images imported into Ginux stay
     Remove,
-    /// Write a runtime tree (launcher, reference, sources, profile snippet) into a staging root
-    Stage {
-        /// The staging root; it may already hold other files.
-        #[arg(long, value_name = "DIR")]
-        root: PathBuf,
-        /// Where the runtime lives under the root, as installed.
-        #[arg(long, default_value = "/usr", value_name = "PREFIX")]
-        prefix: PathBuf,
-        /// The Ginux launcher to ship.
-        #[arg(long, value_name = "FILE")]
-        launcher: PathBuf,
-        /// The runtime image reference, oci:NAME@sha256:DIGEST.
-        #[arg(long, value_name = "REF")]
-        reference: String,
-        /// The image tar to ship; without it packages download the image on first use.
-        #[arg(long, value_name = "FILE")]
-        image: Option<PathBuf>,
-        /// The minimal runtime image reference, oci:NAME@sha256:DIGEST, which a
-        /// recipe with NEEDS.runtime "minimal" runs in (a root's effects recipe).
-        #[arg(long, value_name = "REF")]
-        minimal_reference: Option<String>,
-        /// The minimal image tar to ship; without it packages download it on first use.
-        #[arg(long, value_name = "FILE", requires = "minimal_reference")]
-        minimal_image: Option<PathBuf>,
-        /// The official recipes folder, with its index.json.
-        #[arg(long, value_name = "DIR")]
-        catalog: PathBuf,
-        /// Also write etc/apparmor.d/recipe-ginux, which lets the launcher use
-        /// a user namespace on hosts that restrict them (Ubuntu 23.10 and later).
-        #[arg(long)]
-        apparmor: bool,
-    },
+    /// Write a runtime tree (ginux CLI, helper tools and Recipe's guard, image references and layouts, sources, profile snippet, sudoers rule) into a staging root
+    Stage(Box<StageArgs>),
+}
+
+/// The options of `recipe runtime stage`.
+#[derive(clap::Args)]
+pub(crate) struct StageArgs {
+    /// The staging root; it may already hold other files.
+    #[arg(long, value_name = "DIR")]
+    pub(crate) root: PathBuf,
+    /// Where the runtime lives under the root, as installed.
+    #[arg(long, default_value = "/usr", value_name = "PREFIX")]
+    pub(crate) prefix: PathBuf,
+    /// The ginux CLI to ship, as PREFIX/libexec/recipe/ginux.
+    #[arg(long, value_name = "FILE")]
+    pub(crate) ginux_cli: PathBuf,
+    /// Ginux's privileged helper, as /usr/libexec/ginux/ginux-helper.
+    #[arg(long, value_name = "FILE")]
+    pub(crate) ginux_helper: PathBuf,
+    /// Ginux's image tool (ginux-oci), as /usr/libexec/ginux/ginux-image.
+    #[arg(long, value_name = "FILE")]
+    pub(crate) ginux_image: PathBuf,
+    /// Ginux's runtime (ginux-init --bin ginux), as /usr/libexec/ginux/ginux-runtime.
+    #[arg(long, value_name = "FILE")]
+    pub(crate) ginux_runtime: PathBuf,
+    /// Ginux's allocator library, as /usr/lib64/ginux/libginux_allocator.so.
+    #[arg(long, value_name = "FILE")]
+    pub(crate) ginux_allocator: PathBuf,
+    /// Recipe's guard (recipe-ginux-guard, built next to recipe), as
+    /// /usr/libexec/recipe/recipe-ginux-guard: the only program the sudoers rule names.
+    #[arg(long, value_name = "FILE")]
+    pub(crate) recipe_guard: PathBuf,
+    /// The runtime image reference, local/recipe-compiler@sha256:MANIFEST.
+    #[arg(long, value_name = "REF")]
+    pub(crate) reference: String,
+    /// The image layout tar (image.oci.tar) to ship; without it the image is downloaded on first use.
+    #[arg(long, value_name = "FILE")]
+    pub(crate) image: Option<PathBuf>,
+    /// The minimal runtime image reference, local/recipe-minimal@sha256:MANIFEST,
+    /// which a recipe with NEEDS.runtime "minimal" runs in (a root's effects recipe).
+    #[arg(long, value_name = "REF")]
+    pub(crate) minimal_reference: Option<String>,
+    /// The minimal image layout tar to ship; without it the image is downloaded on first use.
+    #[arg(long, value_name = "FILE", requires = "minimal_reference")]
+    pub(crate) minimal_image: Option<PathBuf>,
+    /// The official recipes folder, with its index.json.
+    #[arg(long, value_name = "DIR")]
+    pub(crate) catalog: PathBuf,
+    /// Also write etc/sudoers.d/recipe-ginux, which lets the members of GROUP
+    /// (the administrators: wheel, or sudo on Debian and Ubuntu) run Ginux's
+    /// guard on Recipe's roots without a password.
+    #[arg(long, value_name = "GROUP")]
+    pub(crate) sudoers: Option<String>,
 }
 
 /// The keep option of install, update and build (docs/recipe-format.md,

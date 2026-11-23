@@ -86,30 +86,66 @@ reports what each program holds on disk beside its installed files: downloads,
 build material (unpacked sources, work folder, a result not installed). These rules also apply to producer runs
 (--no-activate, the OS builder), with install meaning outputs published.
 .SH RUNTIME SELECTION
-Installed defaults are libexec/recipe/ginux,
-share/recipe/runtime/rootfs.tar with its root-reference file and
-share/recipe/runtime/minimal.tar with its minimal-reference file, under the
-prefix of the recipe binary (/usr for /usr/bin/recipe), else under /usr. A recipe
-with NEEDS.runtime "minimal" runs in the minimal image, selected with
-GINUX_MINIMAL_ROOT and GINUX_MINIMAL_ROOTFS as the full image is with GINUX_ROOT
-and GINUX_ROOTFS; where none is named it runs in the full image. Explicit
-environment selections override these defaults. When the image tar is neither
-installed nor in $XDG_CACHE_HOME/recipe/images, Recipe downloads it on first use
-and checks its SHA-256. RECIPE_RUNTIME_URL names another address; {digest} and
+Recipe runs a recipe that starts programs as an instance of Ginux on its public
+lifecycle (create, inject, start --wait, status, extract, delete), with the
+native configured runtime and contract catalog 2. Installed defaults are
+libexec/recipe/ginux (the ginux CLI),
+share/recipe/runtime/compiler.oci.tar with its root-reference file and
+share/recipe/runtime/minimal.oci.tar with its minimal-reference file (the two
+images as OCI image layouts), under the prefix of the recipe binary (/usr for
+/usr/bin/recipe), else under /usr. A recipe with NEEDS.runtime "minimal" runs in
+the minimal image, selected with RECIPE_MINIMAL_IMAGE and
+RECIPE_MINIMAL_IMAGE_LAYOUT as the full image is with RECIPE_IMAGE and
+RECIPE_IMAGE_LAYOUT; where none is named it runs in the full image. Explicit
+environment selections override these defaults. When the layout is neither
+installed nor in $XDG_CACHE_HOME/recipe/images, Recipe downloads image.oci.tar.zst
+on first use. Ginux imports the layout once per host into its state root and
+checks every blob; the manifest digest it prints must equal the digest in the
+image reference. RECIPE_RUNTIME_URL names another address; {digest} and
 {short} (the first 16 digits) are replaced.
-Set GINUX_BIN to the actual launcher executable, GINUX_ROOTFS to an assembled
-rootfs tar and GINUX_ROOT to oci:name@sha256:digest matching that tar. Set
-RECIPE_WORKER_BIN when the worker cannot be resolved from the current CLI/PATH.
-The launcher must support configured downstream catalog 1002 and configured-network-audit=1
-and configured-denial-audit=1.
-The current native launcher needs Linux x86_64 and chroot bootstrap privileges.
-Run the whole coordinator with those privileges and the explicit launcher,
-image and matching worker selections. Wrapping only the launcher in sudo loses
-required inherited channels. Select the compatible maintained source pair in
-docs/setup-linux.md. Later local consumer corrections require their recorded
-final source pair; the bootstrap baseline does not certify that final release.
-Build the image explicitly with recipe-image; ordinary execution consumes it.
-See bootstrap/README.md for the pinned manifest producer.
+.PP
+.B Environment.
+RECIPE_GINUX is the ginux CLI executable (default libexec/recipe/ginux).
+RECIPE_IMAGE is the compiler image reference, local/recipe-compiler@sha256:MANIFEST,
+and RECIPE_IMAGE_LAYOUT its OCI layout (the uncompressed layout tar,
+image.oci.tar; needed only while the image is not yet imported). RECIPE_MINIMAL_IMAGE and
+RECIPE_MINIMAL_IMAGE_LAYOUT name the minimal pair. Without RECIPE_IMAGE and an
+installed root-reference there is no default image. RECIPE_GINUX_STATE_ROOT
+(default /var/lib/recipe/ginux) and RECIPE_GINUX_RUN_ROOT (default
+/run/recipe/ginux) are Ginux's roots; every level must be a root-owned folder.
+GINUX_INSTANCE_HELPER, the CLI's own variable, is passed through unchanged (a
+root-owned wrapper around the helper). RECIPE_WORKER_BIN selects the worker when
+it cannot be resolved from the current CLI/PATH. GINUX_BIN, GINUX_ROOT,
+GINUX_ROOTFS, GINUX_MINIMAL_ROOT and GINUX_MINIMAL_ROOTFS belonged to the retired
+launcher: Recipe stops when one is set and names its replacement.
+.PP
+.B Privileges.
+Every privileged step is the Ginux helper (/usr/libexec/ginux/ginux-helper) run
+as root behind Recipe's guard, which is the only program sudo runs
+(/usr/libexec/recipe/recipe-ginux-guard). A recipe runs in Ginux only as root or
+as a member of the group named by the sudoers rule that "recipe runtime stage
+--sudoers GROUP" writes (etc/sudoers.d/recipe-ginux: %GROUP may run the guard
+without a password, for Recipe's state and run roots only). The guard allows only
+Recipe's verbs (import, inject, start, status, stop, delete, extract) on instances
+named recipe-<uid>-* (uid 0 may use any uid's), re-renders the instance config from
+validated fields, and clears the environment; for a caller other than root the
+image must be listed in the root-owned allowlist
+/usr/libexec/recipe/runtime-images (written by "recipe runtime stage", "sudo recipe
+runtime fetch" and the installer). import-image and every other helper verb are
+refused: images are imported as root by "sudo recipe runtime fetch", and a run by
+anyone else without an imported image stops and says to run it. Every member of the
+group can run Recipe-shaped sandbox instances from trusted images without a
+password; that is not a guarantee of harmlessness to the host: the code that
+unpacks a trusted image runs as root and follows symlinks in it, every user's
+workload runs as the same host uid, and there are no per-user caps
+(docs/runtime-limits.md, "What a shared host still exposes"). A user who is neither gets a message that says to
+run as root or to have an administrator install the rule; a recipe that starts no
+program still runs on the host. The Ginux files must be root-owned and not
+writable by anyone else. Supported: Rocky 10, Fedora 44, Ubuntu 24.04,
+LevitateOS and AcornOS (the last needs sudo, util-linux and GNU coreutils in its
+image). Build the image explicitly with recipe-image; ordinary execution
+consumes it. See bootstrap/README.md for the pinned manifest producer and
+docs/runtime-limits.md for what the public lifecycle does not provide.
 .SH EXECUTION MODES
 Before a run, Recipe compiles (never runs) each recipe of the graph, the base
 it extends and every module it imports. A recipe that can reach exec,
@@ -118,7 +154,7 @@ command_exists, rpm_installed, rpm_version, dnf_*, apk_*, carry_link_flags or
 carry_libraries, or that uses eval, Fn with a computed name or a dynamic import,
 runs in Ginux. Every other recipe runs on the host as an ordinary process of the
 invoking user (run by root: under a uid and gid of its own from 1879048192 up,
-without groups or capabilities, in /var/lib/recipe/host-runs): no launcher, image or namespace is
+without groups or capabilities, in /var/lib/recipe/host-runs): no Ginux, image or sudo rule is
 needed. There Recipe's helpers resolve every path beneath the run's inputs
 (read-only), work and out and refuse paths using .., the HTTP client reaches
 only NEEDS.network at pinned addresses (a host name resolving to a loopback or
@@ -387,14 +423,28 @@ Compare typed inputs/outputs, endpoints, raised/lowered limits and digests.
 Compute SHA256, SHA512 and BLAKE3 for a local file.
 .TP
 .B runtime status | fetch | stage | remove
-status shows the selected runtime image, the launcher and the shipped sources
-(JSON when piped or with --json). fetch downloads the image now. stage writes a
-runtime tree into --root (--launcher, --reference, --catalog, optional --image
-and --prefix); packagers use it. --apparmor also writes etc/apparmor.d/recipe-ginux,
-which hosts that restrict unprivileged user namespaces (Ubuntu 23.10 and later)
-need before an ordinary user can run recipes; load it with apparmor_parser -r.
-remove deletes the cached build image (about 1.3 GB); it is fetched again when a
-recipe needs it. An image installed with the system is not removed.
+status shows the selected runtime image and its layout, the ginux CLI, Recipe's
+guard and the four Ginux files (present, root-owned, mode), the state root,
+whether the image is imported, whether the sudoers rule lets this user run the
+guard (sudo -n -l on the full form of a call), and the shipped
+sources (JSON when piped or with --json); the imported image and base roots are
+reported as system_bytes. fetch downloads the image layout now. stage writes a
+runtime tree into --root: --ginux-cli, --ginux-helper, --ginux-image,
+--ginux-runtime and --ginux-allocator (the five Ginux files, installed as
+libexec/recipe/ginux, usr/libexec/ginux/ginux-helper, ginux-image, ginux-runtime
+and usr/lib64/ginux/libginux_allocator.so), --recipe-guard (Recipe's guard,
+installed root-owned 0755 as usr/libexec/recipe/recipe-ginux-guard), --reference and --minimal-reference
+(image references, local/NAME@sha256:MANIFEST), --image and --minimal-image (the
+layout tars, image.oci.tar, checked by computing the manifest digest from the
+layout; without one the image is downloaded on first use), --catalog and
+--prefix; packagers use it. --sudoers GROUP also writes
+etc/sudoers.d/recipe-ginux (mode 0440): the rule that lets members of GROUP run
+the guard (not the helper) without a password, for Recipe's state and run roots
+(%wheel on Fedora, Rocky, LevitateOS and AcornOS; %sudo on Ubuntu). remove
+deletes the downloaded image layouts (about 1.3 GB); they are fetched again when
+a recipe needs them. An image installed with the system is not removed, and the
+imported image and base roots under the root-owned state root are not freed by
+any Recipe command (no public Ginux verb deletes an image).
 .SH OPTIONS
 .TP
 .B -r, --recipes-path DIR
@@ -451,13 +501,13 @@ for a dependency input; inputs are never implicitly inherited. A named target in
 /out on a fresh identity; retained state restores that target instead.
 .TP
 .B --effects-root PATH
-Give the recipe the system root PATH as its read-only input root, live: as root
-with CAP_SYS_ADMIN, in a Ginux run, outside a chroot, each top-level folder of
-PATH (but var, boot, home, root, tmp, run, proc, sys, dev, mnt, media, srv,
-lost+found) is bound read-only at /inputs/root in the launcher's own mount
-namespace for the run, instead of hashed and copied; top-level links are kept,
-top-level files left out, and the run keeps no state. Otherwise PATH is copied
-like --input root=PATH. --system passes it to the root's effects recipe.
+Give the recipe the system root PATH as its read-only input root: each
+top-level folder of PATH (but var, boot, home, root, tmp, run, proc, sys, dev,
+mnt, media, srv, lost+found) is copied into the run as for --input root=PATH
+(the public Ginux lifecycle has no read-only bind), top-level links are kept,
+top-level files left out. The run is an ordinary run (it keeps its state unless
+--no-persist-state is given). --system passes it to the
+root's effects recipe.
 .TP
 .B -d, --define KEY=VALUE
 Recipe-specific scope constant. A host path in a define grants no input access.
@@ -501,17 +551,22 @@ Lower NEEDS.memory_mib (default declaration 2048 MiB). Ginux bounds each
 process virtual address space, not aggregate tree RSS.
 .TP
 .B --storage-max-objects N
-Lower NEEDS.storage_max_objects (default declaration 16384).
+Lower NEEDS.storage_max_objects (default declaration 16384); it bounds the member
+count of the archive taken out of the instance.
 .TP
 .B --storage-max-bytes N
-Lower the declared writable data cap within effective memory. Hardlink data counts once.
+Lower the declared writable data cap within effective memory. There is no storage
+limit inside a run: the cap bounds the archive taken out of the instance (an
+output over it fails the run after the fact), and a watchdog cancels a run whose
+host disk drops below max(2 GiB, 5 percent) free.
 .TP
 .B --network-host HOST:PORT
 Select a subset of NEEDS.network; repeatable, at most eight. An absent network
-declaration grants no outbound TCP. --no-network selects an empty subset. Numeric endpoints are pinned before launch; redirects also need grants.
+declaration grants no outbound TCP. --no-network selects an empty subset. Numeric endpoints are pinned before launch; redirects also need grants. Ginux grants only the ports of the selected endpoints (tcp:PORT on the shared host network): a program a recipe starts can reach any address on a granted port, without a connection or byte cap; Recipe's own downloads are held to the declared HOST:PORT and to the byte cap.
 .TP
 .B --network-max-bytes N
-Lower NEEDS.network_max_bytes (default declaration 8 GiB).
+Lower NEEDS.network_max_bytes (default declaration 8 GiB); it counts Recipe's own
+downloads (the worker), not the traffic of programs the recipe starts.
 .PP
 Explicit limit and network restrictions apply across the dependency graph.
 Each dependency keeps the stricter limit and intersects its own endpoints with
@@ -527,7 +582,7 @@ requires the host and refuses a recipe that is not eligible, naming the call
 that keeps it in Ginux. See EXECUTION MODES.
 .TP
 .B --exact-identity
-Name the worker's and the Ginux launcher's bytes in the saved-state identity, on
+Name the worker's and the four Ginux files' bytes in the saved-state identity, on
 top of their declared behaviour versions, so only byte-identical tools reuse
 saved state. Release builds use it. RECIPE_EXACT_IDENTITY=1 selects it too
 (0 or empty does not; any other value is an error). Without it, Recipe and Ginux
@@ -557,9 +612,9 @@ step, status, msg; status is running, done, already, none, skipped or failed;
 the step is download, build, install or cleanup). fetch: how far a download is (recipe, source, bytes, total;
 total is null when the server did not say). progress: the recipe's progress()
 reports (recipe, phase, what, done, total). The last event of a run is done
-(recipe), or failed (recipe, step, reason; step is null when no step failed). A failed install
-whose Ginux log records a denied connection also has refused: endpoint, the
-numeric address the audit line names, and declared, the recipe's NEEDS.network.
+(recipe), or failed (recipe, step, reason; step is null when no step failed). The
+refused field of a failed install is gone: the native runtime's audit lines do
+not name the denied address.
 Build progress inside a step is not reported. There is no agent event.
 .SH FINISHED RUN
 download, build, install, update, remove and cleanup print one result at the end
@@ -571,9 +626,10 @@ outputs (output name to absolute published path for a run that built or
 published; empty otherwise), activation (profile and bin when a package was
 activated, else null), kept, freed_bytes (deleted by cleanup or remove in this
 run), dependencies (per dependency that ran: name, state, steps), contract
-(the compiled contract digest) and network_usage (the bounded network summary).
+(the compiled contract digest) and network_usage (what the worker counted for
+Recipe's own downloads; unobserved for programs).
 A failed run exits nonzero and prints {"failure": {...}} (libc_mismatch,
-system_mismatch, a denied connection's refused). A system change (--system) keeps
+system_mismatch). A system change (--system) keeps
 its own result fields (action, package, other_root, effects, ...) and adds state
 and freed_bytes. installed --json carries, for each package, keep, on_disk
 (downloads, build) and update (null, or to, reason and source, known
@@ -589,9 +645,14 @@ an explicit new state directory to start fresh.
 Published products are not saved state. Published paths retain coordinator ownership and
 private export permissions. Privileged producers need appropriately privileged
 consumers or explicit product installation; a selection symlink grants no access. Diagnostic files live in
-state-root/logs/invocation-id: worker.log, supervisor-stderr.log, authority.json
-and result.json. The receipt preserves the actual declaration, config, pinned
-endpoints and compiled contract digest; the result includes contract and bounded network_usage, and unused-grant warnings when observation is complete.
+state-root/logs/invocation-id: worker.log, supervisor-stderr.log (the instance's
+audit log: the worker's stderr and the runtime's audit lines), authority.json
+and result.json. The receipt preserves the actual declaration, config, instance
+name, pinned endpoints and compiled contract digest; the result includes contract
+and network_usage, and unused-grant warnings when observation is complete.
+A run's Ginux instance (recipe-UID-PID-RANDOM) is deleted when the run ends,
+however it ends; the next command that uses Ginux deletes the leftovers of dead
+runs of the same user (root: of every user).
 Up to 32 recent completed diagnostic directories remain; active leases protect
 in-flight logs/scratch. Later invocations reclaim recognized abandoned scratch.
 Scratch is a private directory on disk, ~/.cache/recipe/scratch; RECIPE_SCRATCH_DIR
@@ -613,18 +674,6 @@ SIGINT/SIGTERM cancel execution and await descendant teardown without publishing
 failed work. RECIPE_OUTPUT_TIMEOUT_SECS bounds how long the worker may go without
 a complete output line (before its first line, and for a line it has started),
 1 through 86400 seconds, default 300, independently of execution silence.
-.PP
-Where the Ginux launcher accepts it, each invocation's config enables
-[storage] archive_import, so target_unpack_tree hands a whole tree to Ginux
-as one stream; the launcher is asked once per launcher digest with
-instance-validate. RECIPE_ARCHIVE_IMPORT=0 leaves it off (1 or empty keeps the
-default; any other value is an error). Outputs are the same either way.
-.PP
-Where the launcher accepts the assignment names, each domain's [devices]
-assignments also hold random and urandom, giving the workload /dev/random and
-/dev/urandom next to /dev/null; probed once per launcher digest like archive
-import. RECIPE_RANDOM_DEVICES=0 leaves them off (1 or empty keeps the default;
-any other value is an error).
 .SH EXAMPLE
 .nf
 recipe install ./tool.rhai --input source=./offline-source \
@@ -636,16 +685,16 @@ recipe cleanup ./tool.rhai --input source=./offline-source \
 .fi
 .SH LIMITATIONS
 Prepared tools, image libraries and required runtime operations must be present.
-Network grants do not isolate virtual hosts sharing an allowed IP and port.
+Network grants are per port on the shared host network: they do not isolate
+addresses or virtual hosts, and a program a recipe starts is not capped in
+connections or bytes. There is no storage limit inside a run. Without sudo rights
+(root or the recipe-ginux rule) nothing runs in Ginux.
 A recipe that starts no program runs on the host, confined as described in
 EXECUTION MODES; there is no network fallback outside the declared endpoints.
 Package activation copies verified publications into an owned profile; the two
 roots of an A/B system belong to recab.
-Raw clocks expose host realtime/monotonic time and vDSO clocks remain observable.
-Configured sysinfo returns zeros, not resource accounting. CPU selection exposes
-real eligible IDs, not virtual topology. Memory limits bound per-process address
-space rather than aggregate process-tree RAM. Bounded poll/ppoll does not promise
-general signal interruption/restart semantics. Archive timestamps have whole-second
-precision. See docs/runtime-limits.md for supported variants and errors.
+CPU selection exposes real eligible IDs, not virtual topology. Memory limits
+bound per-process address space rather than aggregate process-tree RAM. Archive
+timestamps have whole-second precision. See docs/runtime-limits.md for supported variants and errors.
 .SH SEE ALSO
 recipe-recipe(5), recipe-helpers(7), README.md, WRITING_RECIPES.md

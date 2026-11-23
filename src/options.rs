@@ -26,9 +26,10 @@ pub struct ExecutionOptions {
     pub(crate) network_hosts: Vec<String>,
     /// Cumulative transmitted and received network bytes per invocation.
     pub(crate) network_max_bytes: u64,
-    /// Name the worker's and the Ginux launcher's bytes in the saved-state
-    /// identity, on top of the declared behaviour versions
-    /// (`crate::identity`), so only byte-identical tools reuse a state.
+    /// Name the worker's bytes and those of the Ginux files (CLI, helper,
+    /// image tool, runtime) in the retained-result identity, on top of the
+    /// declared behaviour versions (`crate::identity`), so only
+    /// byte-identical tools reuse a result.
     /// Release builds set it. Applies to dependencies too. Coordinator only:
     /// never sent to the worker.
     #[serde(skip)]

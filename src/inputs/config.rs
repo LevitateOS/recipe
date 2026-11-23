@@ -1,11 +1,18 @@
 //! Instance config rendering within the §2 hard limits.
 //!
-//! The text mirrors the `ginux-instance` normalized shape (`schema_version`,
-//! `[instance]`, `[resources]`, `[execution]`, `[contract]`, `[storage]`,
-//! `[devices]`, `[network]`, `[audit]`, `[failure]`) so the existing parser
-//! accepts it with no Ginux-side changes: `balanced`/`ptrace-native`,
-//! explicitly granted networking, `stderr` audit, `stop` failure policy. Every bound is
-//! enforced here with an explicit error; nothing is truncated.
+//! The text is the `ginux-instance` schema the public lifecycle imports
+//! (`ginux import NAME FILE`): `[instance]` (init, args, environment),
+//! `[resources]`, `[execution]` (`balanced`/`ptrace-native`), `[access]` (the
+//! workload's virtual uid and gid), `[contract]` (catalog, allow, deny) with
+//! its filesystem and network lists, `[storage]`, `[devices]`, `[network]`,
+//! `[audit]` and `[failure]` (`stop`). Every bound is enforced here with an
+//! explicit error; nothing is truncated.
+//!
+//! What the public lifecycle does not offer is not rendered: no storage
+//! limits (outputs are bounded when they are extracted, `crate::launch`), no
+//! per-address network endpoints, connection or byte caps (the shared network
+//! admits any address on a granted port; the worker holds Recipe's own
+//! downloads to the pins, `crate::helpers::acquire::net`).
 
 use anyhow::{Result, bail};
 
@@ -17,7 +24,7 @@ const MAX_ENV_ENTRY: usize = 256;
 const MAX_CONFIG: usize = 4096;
 
 /// Instance config for one invocation; [`InstanceConfig::render`] produces the
-/// parser-accepted text.
+/// text `ginux import` reads.
 #[derive(Debug, Clone)]
 pub struct InstanceConfig {
     id: String,
@@ -30,33 +37,24 @@ pub struct InstanceConfig {
     environment: Vec<String>,
     vcpus: u64,
     memory_mib: u64,
-    storage_max_objects: u64,
-    storage_max_bytes: Option<u64>,
-    network: super::network::NetworkPolicy,
+    /// The outbound grant (`[contract.network] outbound`, `[network]
+    /// backend`); no ports means no network at all.
+    outbound: crate::needs::contract::Outbound,
     contract: crate::needs::contract::Contract,
-    /// Offer Ginux archive import streams on owned storage
-    /// (`[storage] archive_import`); only for a launcher that accepts the field
-    /// ([`crate::needs::contract::archive_import`]).
-    archive_import: bool,
-    /// Assign `/dev/random` and `/dev/urandom` as well as `/dev/null`
-    /// (`[devices] assignments`); only for a launcher that accepts the names
-    /// ([`crate::needs::contract::random_devices`]).
-    random_devices: bool,
 }
 
 impl InstanceConfig {
     /// Build the invocation config: id/root/init/args/env plus fixed
     /// profile selections. `env` is the §5 allowlisted environment; the worker
     /// init and argv come from [`crate::domain`]; `image` is the runtime image
-    /// the recipe asks for (`NEEDS.runtime`).
+    /// the recipe asks for (`NEEDS.runtime`); `outbound` is the grant this
+    /// run's config carries ([`crate::inputs::network::NetworkPolicy::outbound`]).
     pub fn for_invocation(
         invocation_id: &str,
         env: &[(String, String)],
         options: &crate::ExecutionOptions,
         image: crate::runtime::Image,
-        network: super::network::NetworkPolicy,
-        archive_import: bool,
-        random_devices: bool,
+        outbound: crate::needs::contract::Outbound,
     ) -> Result<Self> {
         let (image, root) = crate::runtime::reference_for(image)?;
         if env.len() > MAX_ENV {
@@ -79,7 +77,6 @@ impl InstanceConfig {
             }
             environment.push(entry);
         }
-        let vcpus = u64::from(options.jobs);
         Ok(Self {
             id: invocation_id.to_string(),
             root,
@@ -87,14 +84,10 @@ impl InstanceConfig {
             init: crate::domain::WORKER.to_string(),
             args: crate::domain::WORKER_ARGS.map(str::to_string).to_vec(),
             environment,
-            vcpus,
+            vcpus: u64::from(options.jobs),
             memory_mib: options.memory_mib,
-            storage_max_objects: options.storage_max_objects,
-            storage_max_bytes: options.storage_max_bytes,
-            network,
-            contract: crate::needs::contract::Contract::of(options),
-            archive_import,
-            random_devices,
+            contract: outbound.contract(),
+            outbound,
         })
     }
 
@@ -102,28 +95,16 @@ impl InstanceConfig {
         &self.root
     }
 
-    /// Which image the root reference names, so its tar is selected by that
-    /// image's variable and shipped file.
+    /// Which image the root reference names, so its layout is selected by
+    /// that image's variable and shipped file.
     pub(crate) fn root_image(&self) -> crate::runtime::Image {
         self.image
     }
 
-    /// Render the parser-accepted config text (≤ 4096 B). Archive import and
-    /// the random devices are optional: a config that fits only without them is
-    /// rendered without archive import first (the workload extracts member by
-    /// member), then without the random devices too.
+    /// Render the config text (≤ 4096 B). The `id` is the invocation id; the
+    /// lifecycle names the instance itself and `ginux import` sets the id to
+    /// that name.
     pub fn render(&self) -> Result<String> {
-        let mut result = self.render_with(self.archive_import, self.random_devices);
-        if result.is_err() && self.archive_import {
-            result = self.render_with(false, self.random_devices);
-        }
-        if result.is_err() && self.random_devices {
-            result = self.render_with(false, false);
-        }
-        result
-    }
-
-    fn render_with(&self, archive_import: bool, random_devices: bool) -> Result<String> {
         let mut out = String::from("schema_version = 1\n\n[instance]\n");
         out.push_str(&format!("id = {}\n", quote(&self.id)?));
         out.push_str(&format!("root = {}\n", quote(&self.root)?));
@@ -140,43 +121,26 @@ impl InstanceConfig {
         out.push_str(&format!("vcpus = {}\n", self.vcpus));
         out.push_str(&format!("memory_mib = {}\n", self.memory_mib));
         out.push_str("\n[execution]\nprofile = \"balanced\"\nbackend = \"ptrace-native\"\n");
-        out.push_str(&self.contract.render());
-        // Only domain paths cross this interface. The launcher's memory backend
-        // owns these bytes; no writable host directory is assigned.
+        // The workload runs as the domain user, not as virtual root (the
+        // native runtime's default).
         out.push_str(&format!(
-            "\n[storage]\nassignments = [{}]\n",
-            crate::domain::WRITABLE_DIRS
-                .map(|dir| format!("\"memory:{dir}\""))
-                .join(", ")
+            "\n[access]\nuid = {uid}\ngid = {uid}\n",
+            uid = crate::domain::UID
         ));
-        out.push_str(&format!("max_objects = {}\n", self.storage_max_objects));
-        if let Some(bytes) = self.storage_max_bytes {
-            out.push_str(&format!("max_bytes = {bytes}\n"));
+        out.push_str(&self.contract.render());
+        if self.outbound.ports().len() > crate::domain::MAX_NETWORK_ENDPOINTS {
+            bail!(
+                "input preparation failure: NEEDS.network names {} ports, more than {}",
+                self.outbound.ports().len(),
+                crate::domain::MAX_NETWORK_ENDPOINTS
+            );
         }
-        if archive_import {
-            out.push_str("archive_import = true\n");
-        }
-        out.push_str(if random_devices {
-            "\n[devices]\nassignments = [\"null\", \"random\", \"urandom\"]\n"
-        } else {
-            "\n[devices]\nassignments = [\"null\"]\n"
-        });
-        if self.network.endpoints.is_empty() {
-            out.push_str("\n[network]\nbackend = \"none\"\n");
-        } else {
-            out.push_str("\n[network]\nbackend = \"mediated\"\n");
-            out.push_str(&format!(
-                "endpoints = {}\nmax_connections = {}\nmax_bytes = {}\n",
-                quote_list(
-                    &self.network.endpoints,
-                    crate::domain::MAX_NETWORK_ENDPOINTS,
-                    64,
-                    "network endpoints"
-                )?,
-                crate::domain::MAX_NETWORK_CONNECTIONS,
-                self.network.max_bytes
-            ));
-        }
+        out.push_str(&crate::needs::contract::Contract::render_lists(
+            self.outbound.ports(),
+        ));
+        out.push_str("\n[storage]\nassignments = []\n");
+        out.push_str("\n[devices]\nassignments = [\"null\", \"random\", \"urandom\"]\n");
+        out.push_str(&self.outbound.network_section());
         out.push_str("\n[audit]\nenabled = true\n");
         out.push_str("\n[failure]\npolicy = \"stop\"\n");
         if out.len() > MAX_CONFIG {

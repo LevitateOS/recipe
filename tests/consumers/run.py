@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Real CLI consumers; requires the documented configured-launch privileges.
+"""Real CLI consumers on the public Ginux lifecycle; requires root (or the sudoers rule
+of `recipe runtime stage --sudoers GROUP`) and RECIPE_GINUX, RECIPE_IMAGE, RECIPE_IMAGE_LAYOUT.
 
 No host compilation or workload fallback. Each invocation writes a receipt even
 on failure. Use a fresh output directory to preserve earlier failed evidence.
@@ -150,12 +151,21 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     work = args.output.resolve()
     recipe = Path(os.environ["RECIPE_TEST_BIN"]).resolve()
-    image = Path(os.environ["GINUX_ROOTFS"]).resolve()
-    identity = {name: {"path": str(path), "sha256": digest(path)} for name, path in
-                [("recipe", recipe), ("worker", Path(os.environ["RECIPE_WORKER_BIN"])),
-                 ("ginux", Path(os.environ["GINUX_BIN"])), ("image", image)]}
-    require(os.environ["GINUX_ROOT"].endswith("sha256:" + identity["image"]["sha256"]), "image reference mismatch")
-    receipt = dict(case=args.case, identities=identity, status="preparing", image_reference=os.environ["GINUX_ROOT"],
+    for old_name in ("GINUX_BIN", "GINUX_ROOT", "GINUX_ROOTFS"):
+        require(old_name not in os.environ, f"{old_name} is gone; see tests/consumers/README.md")
+    layout = Path(os.environ["RECIPE_IMAGE_LAYOUT"]).resolve()
+    reference = os.environ["RECIPE_IMAGE"]
+    # The image identity is the OCI manifest digest named by the reference; the
+    # layout (a directory or an uncompressed tar of one) is only how it is imported.
+    require(reference.startswith("local/") and "@sha256:" in reference, "RECIPE_IMAGE must be local/NAME@sha256:MANIFEST")
+    files = [("recipe", recipe), ("worker", Path(os.environ["RECIPE_WORKER_BIN"])),
+             ("ginux", Path(os.environ["RECIPE_GINUX"]))]
+    if os.environ.get("GINUX_INSTANCE_HELPER"):
+        files.append(("helper", Path(os.environ["GINUX_INSTANCE_HELPER"])))
+    identity = {name: {"path": str(path), "sha256": digest(path)} for name, path in files}
+    identity["image"] = ({"path": str(layout), "sha256": digest(layout)} if layout.is_file() else {"path": str(layout)})
+    identity["image"]["manifest"] = reference.rsplit("@sha256:", 1)[1]
+    receipt = dict(case=args.case, identities=identity, status="preparing", image_reference=reference,
                    runner_sha256=digest(__file__), fixture_files={p.name: digest(p) for p in HERE.iterdir() if p.is_file()})
     server = None
     command = [str(recipe), "install", "consumer", "--recipes-path", str(work / "recipes"),

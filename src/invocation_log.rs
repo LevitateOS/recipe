@@ -21,7 +21,8 @@ const RESULT: &str = "result.json";
 const RESULT_STAGING_PREFIX: &str = ".result.json.";
 /// Worker diagnostic stream, as the coordinator received it.
 pub(crate) const WORKER_LOG: &str = "worker.log";
-/// The launcher's own stderr, which carries Ginux's audit and summary lines.
+/// The instance's `audit.log` (the worker's standard error and the runtime's
+/// audit lines), kept after the run. The CLI's own stderr is `ginux-cli.log`.
 pub(crate) const SUPERVISOR_LOG: &str = "supervisor-stderr.log";
 /// The declaration, effective constraints and contract the invocation ran under.
 const AUTHORITY: &str = "authority.json";
@@ -33,8 +34,8 @@ const FILES: [&str; 5] = [LEASE, RESULT, WORKER_LOG, SUPERVISOR_LOG, AUTHORITY];
 const RETAINED_INVOCATIONS: usize = 32;
 /// Largest `result.json` or `authority.json`.
 const MAX_RESULT_BYTES: u64 = 4 * 1024 * 1024;
-/// Largest retained [`SUPERVISOR_LOG`]; the launcher's stderr beyond it is
-/// drained but not kept.
+/// Largest retained [`SUPERVISOR_LOG`]; the instance's audit log beyond it is
+/// not kept.
 pub(crate) const MAX_LOG_BYTES: u64 = 16 * 1024 * 1024;
 
 /// `result.json` status of an invocation.
@@ -64,7 +65,8 @@ impl Status {
 pub(crate) struct InvocationLog {
     directory: PathBuf,
     invocation: String,
-    lease: std::fs::File,
+    // Held (locked) while the invocation runs; pruning skips a leased directory.
+    _lease: std::fs::File,
 }
 
 impl InvocationLog {
@@ -92,7 +94,7 @@ impl InvocationLog {
         let log = Self {
             directory,
             invocation: invocation.to_owned(),
-            lease,
+            _lease: lease,
         };
         log.record(Status::Running, serde_json::json!({}))?;
         crate::diagnostics::diag!("recipe: diagnostics: {}", log.directory.display());
@@ -130,16 +132,6 @@ impl InvocationLog {
         Ok(())
     }
 
-    pub(crate) fn lease_fd(&self) -> std::os::fd::RawFd {
-        use std::os::fd::AsRawFd;
-        self.lease.as_raw_fd()
-    }
-
-    /// The retained launcher stderr of this invocation.
-    pub(crate) fn supervisor_log(&self) -> Result<Vec<u8>> {
-        read_bounded(&self.file(SUPERVISOR_LOG), MAX_LOG_BYTES)
-    }
-
     /// Atomically replace `result.json` with `status` plus `details` fields.
     pub fn record(&self, status: Status, details: serde_json::Value) -> Result<()> {
         use std::io::Write;
@@ -173,7 +165,7 @@ pub(crate) struct Recorded {
     pub authority: serde_json::Value,
     /// The last [`InvocationLog::record`].
     pub result: serde_json::Value,
-    /// The retained launcher stderr.
+    /// The retained instance `audit.log`.
     pub supervisor_log: Vec<u8>,
 }
 

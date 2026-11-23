@@ -1,3 +1,12 @@
+//! Real inputs, publication and coordinator-boundary cases on the public Ginux
+//! lifecycle. Preconditions: see the header of `tests/e2e.rs` (a real Ginux,
+//! privileges, the imported compiler image). The image cases below also create
+//! small throwaway state roots under `/var/lib/recipe-e2e/` and import layouts
+//! the test wrote there, so they need root (the guard allows no `import-image`
+//! and only allowlisted images, and its sudoers rule pins other roots); a case that
+//! forges a console line (the partial-line deadline) needs root to append to
+//! the instance's root-owned `console.log`.
+
 use super::*;
 use sha2::{Digest, Sha256};
 
@@ -17,14 +26,39 @@ fn scratch_directories(parent: &Path) -> Vec<std::path::PathBuf> {
         .collect()
 }
 
-fn image_command(recipes: &Path, archive: &Path, digest: &str) -> Command {
+/// A state root of its own for one test, so the image it names is imported
+/// fresh and cannot be found in a cache (the shared root caches the real
+/// compiler image).
+fn private_state(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let name: String = dir
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    (
+        Path::new("/var/lib/recipe-e2e").join(&name),
+        Path::new("/run/recipe-e2e").join(&name),
+    )
+}
+
+/// `install check` against an image the test chose: `layout` is an OCI layout
+/// directory, `manifest` the hex digest the reference names.
+fn image_command(recipes: &Path, layout: &Path, manifest: &str) -> Command {
+    let (state, run) = private_state(recipes.parent().unwrap());
     let mut command = recipe_command(recipes);
     command
         .env_remove("RECIPE_WORKER")
         .env_remove("RECIPE_INVOCATION")
         .env("TMPDIR", recipes.parent().unwrap())
-        .env("GINUX_ROOTFS", archive)
-        .env("GINUX_ROOT", format!("oci:cli-image@sha256:{digest}"))
+        .env(
+            "RECIPE_IMAGE",
+            format!("local/recipe-compiler@sha256:{manifest}"),
+        )
+        .env("RECIPE_IMAGE_LAYOUT", layout)
+        .env("RECIPE_GINUX_STATE_ROOT", state)
+        .env("RECIPE_GINUX_RUN_ROOT", run)
         .args(["install", "check", "--no-persist-state", "--recipes-path"])
         .arg(recipes);
     command
@@ -39,30 +73,66 @@ fn guarded_recipe(recipes: &Path, sentinel: &Path) -> String {
     source
 }
 
-fn image_tar(path: &Path, entries: &[(&str, tar::EntryType, &str)]) -> String {
-    let file = std::fs::File::create(path).unwrap();
-    let mut archive = tar::Builder::new(file);
-    for (name, kind, value) in entries {
-        let mut header = tar::Header::new_ustar();
-        // Construct hostile names literally: normal tar path setters reject
-        // traversal before the CLI under test gets to inspect the archive.
-        header.as_mut_bytes()[..name.len()].copy_from_slice(name.as_bytes());
-        header.set_entry_type(*kind);
-        header.set_mode(0o755);
-        if kind.is_symlink() || kind.is_hard_link() {
-            header.set_size(0);
-            // Let tar encode long link targets. Regular hostile names above
-            // remain literal so the CLI, not the fixture builder, rejects them.
-            archive.append_link(&mut header, name, value).unwrap();
-        } else {
-            header.set_size(value.len() as u64);
-            header.set_cksum();
-            archive.append(&header, value.as_bytes()).unwrap();
+/// Write an OCI image layout (the bytes `recipe-image` writes, interim
+/// lifecycle design 2.5) whose one uncompressed layer holds `entries`; return
+/// the manifest digest (hex). Names are written literally.
+fn write_layout(layout: &Path, entries: &[(&str, tar::EntryType, &str)]) -> String {
+    let blobs = layout.join("blobs/sha256");
+    std::fs::create_dir_all(&blobs).unwrap();
+    let mut layer = Vec::new();
+    {
+        let mut archive = tar::Builder::new(&mut layer);
+        for (name, kind, value) in entries {
+            let mut header = tar::Header::new_ustar();
+            header.as_mut_bytes()[..name.len()].copy_from_slice(name.as_bytes());
+            header.set_entry_type(*kind);
+            header.set_mode(0o755);
+            if kind.is_symlink() || kind.is_hard_link() {
+                header.set_size(0);
+                archive.append_link(&mut header, name, value).unwrap();
+            } else {
+                header.set_size(value.len() as u64);
+                header.set_cksum();
+                archive.append(&header, value.as_bytes()).unwrap();
+            }
         }
+        archive.finish().unwrap();
     }
-    archive.finish().unwrap();
-    drop(archive);
-    hex::encode(Sha256::digest(std::fs::read(path).unwrap()))
+    let put = |bytes: &[u8]| {
+        let digest = hex::encode(Sha256::digest(bytes));
+        std::fs::write(blobs.join(&digest), bytes).unwrap();
+        digest
+    };
+    let layer_digest = put(layer.as_slice());
+    let config = format!(
+        r#"{{"architecture":"amd64","os":"linux","rootfs":{{"type":"layers","diff_ids":["sha256:{layer_digest}"]}},"config":{{}}}}"#
+    );
+    let config_digest = put(config.as_bytes());
+    let manifest = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:{config_digest}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"sha256:{layer_digest}","size":{}}}]}}"#,
+        config.len(),
+        layer.len()
+    );
+    let manifest_digest = put(manifest.as_bytes());
+    std::fs::write(
+        layout.join("oci-layout"),
+        r#"{"imageLayoutVersion":"1.0.0"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        layout.join("index.json"),
+        format!(
+            r#"{{"schemaVersion":2,"manifests":[{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:{manifest_digest}","size":{},"platform":{{"architecture":"amd64","os":"linux"}}}}]}}"#,
+            manifest.len()
+        ),
+    )
+    .unwrap();
+    manifest_digest
+}
+
+fn mentions(text: &str, words: &[&str]) -> bool {
+    let text = text.to_lowercase();
+    words.iter().any(|word| text.contains(word))
 }
 
 #[test]
@@ -70,24 +140,31 @@ fn cli_missing_or_mismatched_root_image_fails_before_recipe_setup() {
     let (dir, recipes) = create_test_env();
     let sentinel = dir.path().join("host-effect");
     let source = guarded_recipe(&recipes, &sentinel);
-    let archive = dir.path().join("image.tar");
-    let missing = image_command(&recipes, &archive, &"0".repeat(64))
+    // No layout at all, and a reference that is not imported anywhere.
+    let layout = dir.path().join("layout");
+    let missing = image_command(&recipes, &layout, &"0".repeat(64))
         .output()
         .unwrap();
     assert!(!missing.status.success());
+    let error = String::from_utf8_lossy(&missing.stderr);
     assert!(
-        String::from_utf8_lossy(&missing.stderr).contains("cannot open the Ginux rootfs image")
+        error.contains("RECIPE_IMAGE_LAYOUT") || error.contains(layout.to_str().unwrap()),
+        "{error}"
     );
-    image_tar(
-        &archive,
+    // A layout that is not the one the reference names: the import prints its
+    // own manifest digest and Recipe refuses the difference.
+    write_layout(
+        &layout,
         &[("etc/fact", tar::EntryType::Regular, "image fact")],
     );
-    let mismatch = image_command(&recipes, &archive, &"0".repeat(64))
+    let mismatch = image_command(&recipes, &layout, &"0".repeat(64))
         .output()
         .unwrap();
     assert!(!mismatch.status.success());
-    assert!(String::from_utf8_lossy(&mismatch.stderr).contains("Ginux rootfs digest mismatch"));
+    let error = String::from_utf8_lossy(&mismatch.stderr);
+    assert!(mentions(&error, &["digest"]), "{error}");
     assert!(!sentinel.exists());
+    assert!(leaked_instances_in(&private_state(dir.path()).0).is_empty());
     assert_eq!(
         std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
         source
@@ -95,101 +172,50 @@ fn cli_missing_or_mismatched_root_image_fails_before_recipe_setup() {
 }
 
 #[test]
-fn cli_image_traversal_and_symlink_ancestors_preserve_host_files() {
+fn cli_image_cannot_replace_invocation_paths_or_the_hosts_file() {
+    // Recipe injects `inputs/`, `work/`, `out/` and `etc/hosts` itself and the
+    // injector never overwrites: an image that already has one of those paths
+    // fails the run at injection (exit 65, a conflict), before any recipe code.
     let (dir, recipes) = create_test_env();
-    let sentinel = dir.path().join("sentinel");
-    std::fs::write(&sentinel, "keep this host file").unwrap();
     let effect = dir.path().join("host-effect");
     guarded_recipe(&recipes, &effect);
-    let archive = dir.path().join("image.tar");
-    let outside = dir.path().to_string_lossy().into_owned();
-    for (entries, wanted) in [
-        (
-            vec![("../sentinel", tar::EntryType::Regular, "replaced")],
-            "unsafe rootfs image path",
-        ),
-        (
-            vec![
-                ("redirect", tar::EntryType::Symlink, outside.as_str()),
-                ("redirect/sentinel", tar::EntryType::Regular, "replaced"),
-            ],
-            "traverses a non-directory",
-        ),
-        (
-            vec![("alias", tar::EntryType::Link, "../sentinel")],
-            "unsafe rootfs image path",
-        ),
-    ] {
-        let digest = image_tar(&archive, &entries);
-        let output = image_command(&recipes, &archive, &digest).output().unwrap();
+    for (n, entry) in [
+        ("inputs/recipe-worker", "replacement"),
+        ("work/build", "replacement"),
+        ("etc/hosts", "127.0.0.1 image-owned"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let layout = dir.path().join(format!("layout-{n}"));
+        let manifest = write_layout(&layout, &[(entry.0, tar::EntryType::Regular, entry.1)]);
+        let output = image_command(&recipes, &layout, &manifest)
+            .output()
+            .unwrap();
         assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
         assert!(
-            String::from_utf8_lossy(&output.stderr).contains(wanted),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(
-            std::fs::read_to_string(&sentinel).unwrap(),
-            "keep this host file"
+            mentions(&error, &["inject", "conflict", "exists"]),
+            "{error}"
         );
         assert!(!effect.exists());
         assert!(scratch_directories(dir.path()).is_empty());
+        assert!(
+            leaked_instances_in(&private_state(dir.path()).0).is_empty(),
+            "a failed injection left an instance"
+        );
     }
 }
 
 #[test]
-fn cli_image_cannot_replace_invocation_paths_or_duplicate_files() {
+fn cli_invalid_worker_cleans_up_the_created_instance() {
     let (dir, recipes) = create_test_env();
     let effect = dir.path().join("host-effect");
     guarded_recipe(&recipes, &effect);
-    let archive = dir.path().join("image.tar");
-    for (entries, wanted) in [
-        (
-            vec![(
-                "inputs/recipe-worker",
-                tar::EntryType::Regular,
-                "replacement",
-            )],
-            "reserved invocation path",
-        ),
-        (
-            vec![("work/build", tar::EntryType::Regular, "replacement")],
-            "reserved invocation path",
-        ),
-        (
-            vec![
-                ("etc/fact", tar::EntryType::Regular, "one"),
-                ("etc/fact", tar::EntryType::Regular, "two"),
-            ],
-            "duplicate rootfs image path",
-        ),
-    ] {
-        let digest = image_tar(&archive, &entries);
-        let output = image_command(&recipes, &archive, &digest).output().unwrap();
-        assert!(!output.status.success());
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains(wanted),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(!effect.exists());
-        assert!(scratch_directories(dir.path()).is_empty());
-    }
-}
-
-#[test]
-fn cli_invalid_worker_cleans_up_a_prepared_readonly_image() {
-    let (dir, recipes) = create_test_env();
-    let effect = dir.path().join("host-effect");
-    guarded_recipe(&recipes, &effect);
-    let archive = dir.path().join("image.tar");
-    let digest = image_tar(
-        &archive,
-        &[("etc/fact", tar::EntryType::Regular, "immutable fact")],
-    );
     let worker = dir.path().join("bad-worker");
     std::fs::write(&worker, "this is not an ELF worker executable").unwrap();
-    let output = image_command(&recipes, &archive, &digest)
+    let output = managed_command(&recipes, "install")
+        .env("TMPDIR", dir.path())
         .env("RECIPE_WORKER_BIN", &worker)
         .output()
         .unwrap();
@@ -200,17 +226,15 @@ fn cli_invalid_worker_cleans_up_a_prepared_readonly_image() {
     );
     assert!(!effect.exists());
     assert!(scratch_directories(dir.path()).is_empty());
+    assert!(leaked_instances().is_empty());
 }
 
-// These cases require the real configured launcher and its prepared image.
-// Run with GINUX_BIN/GINUX_ROOTFS configured and the launcher's bootstrap
-// privilege available. Missing prerequisites are failures, never skipped tests.
+// These cases require a real Ginux and its imported compiler image (header of
+// tests/e2e.rs). Missing prerequisites are failures, never skipped tests.
 fn managed_command(recipes: &Path, operation: &str) -> Command {
-    let launcher = std::env::var_os("GINUX_BIN")
-        .expect("managed CLI checks require GINUX_BIN pointing to the real supervisor");
+    require_ginux();
     let mut command = recipe_command(recipes);
     command
-        .env("GINUX_BIN", launcher)
         .env_remove("RECIPE_WORKER")
         .env_remove("RECIPE_INVOCATION")
         .args([operation, "check", "--no-persist-state", "--recipes-path"])
@@ -457,7 +481,7 @@ fn build(src, out) {
         std::fs::read_to_string(result["outputs"]["report"].as_str().unwrap()).unwrap(),
         "constants ok"
     );
-    assert!(String::from_utf8_lossy(&output.stderr).contains("launcher exit 0; result exited"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains(START_EXIT_OK));
     assert_eq!(
         std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
         source
@@ -628,7 +652,7 @@ fn build(src, out) {
     write_recipe(&recipes, "check", source);
     let output = managed_command(&recipes, "install").output().unwrap();
     assert_success(&output);
-    assert!(String::from_utf8_lossy(&output.stderr).contains("launcher exit 0; result exited"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains(START_EXIT_OK));
     assert_eq!(
         std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
         source
@@ -674,13 +698,10 @@ fn build(src, out) {
         assert!(diagnostics.contains(message), "{diagnostics}");
     }
     assert!(
-        !diagnostics.contains("ginux: audit"),
+        !leaks_runtime_text(&diagnostics),
         "supervisor audit leaked into user diagnostics"
     );
-    assert!(
-        diagnostics.contains("launcher exit 0; result exited"),
-        "{diagnostics}"
-    );
+    assert!(diagnostics.contains(START_EXIT_OK), "{diagnostics}");
     assert!(!diagnostics.contains("panicked at"), "{diagnostics}");
     assert!(
         !diagnostics.contains("error retrieving current directory"),
@@ -716,7 +737,7 @@ fn build(src, out) {
     assert!(diagnostics.contains("before-diagnostic-cap"));
     assert!(!diagnostics.contains("after-diagnostic-cap"));
     assert_eq!(diagnostics.matches("diagnostic limit reached").count(), 1);
-    assert!(diagnostics.contains("launcher exit 0; result exited"));
+    assert!(diagnostics.contains(START_EXIT_OK));
     assert_eq!(
         std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
         source
@@ -753,7 +774,7 @@ fn build(src, out) {
     assert!(diagnostics.contains("before-record-cap"));
     assert!(!diagnostics.contains("after-record-cap"));
     assert_eq!(diagnostics.matches("diagnostic limit reached").count(), 1);
-    assert!(diagnostics.contains("launcher exit 0; result exited"));
+    assert!(diagnostics.contains(START_EXIT_OK));
     assert_eq!(
         std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
         source
@@ -789,13 +810,10 @@ fn build(src, out) {
         "captured stdout leaked to diagnostics"
     );
     assert!(
-        !diagnostics.contains("ginux: audit") && !diagnostics.contains("panicked at"),
+        !leaks_runtime_text(&diagnostics) && !diagnostics.contains("panicked at"),
         "{diagnostics}"
     );
-    assert!(
-        diagnostics.contains("launcher exit 0; result exited"),
-        "{diagnostics}"
-    );
+    assert!(diagnostics.contains(START_EXIT_OK), "{diagnostics}");
     assert_eq!(
         std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
         source
@@ -862,7 +880,7 @@ fn verify(out) {
         std::fs::read(result["outputs"]["proof"].as_str().unwrap()).unwrap(),
         vec![b'x'; 131072]
     );
-    assert!(String::from_utf8_lossy(&output.stderr).contains("launcher exit 0; result exited"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains(START_EXIT_OK));
     assert_eq!(
         std::fs::read_to_string(recipes.join("check.rhai")).unwrap(),
         source
@@ -910,12 +928,9 @@ fn verify(out) {
     );
     assert!(!published.join("staged").exists());
     let diagnostics = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostics.contains(START_EXIT_OK), "{diagnostics}");
     assert!(
-        diagnostics.contains("launcher exit 0; result exited"),
-        "{diagnostics}"
-    );
-    assert!(
-        !diagnostics.contains("panicked at") && !diagnostics.contains("ginux: audit"),
+        !diagnostics.contains("panicked at") && !leaks_runtime_text(&diagnostics),
         "{diagnostics}"
     );
     assert_eq!(
@@ -939,7 +954,15 @@ fn build(src, out) {
     let output = managed_command(&recipes, "install").output().unwrap();
     assert!(!output.status.success() && output.stdout.is_empty());
     let diagnostics = String::from_utf8_lossy(&output.stderr);
-    assert!(diagnostics.contains("os error 18"), "{diagnostics}");
+    // The staged source is not the workload's to replace: refused by the
+    // contract (EACCES/EPERM/EROFS) or, if the folders are separate mounts,
+    // by the rename itself (EXDEV).
+    assert!(
+        ["os error 18", "os error 13", "os error 1)", "os error 30"]
+            .iter()
+            .any(|code| diagnostics.contains(code)),
+        "{diagnostics}"
+    );
     assert!(
         !diagnostics.contains("panicked at") && !diagnostics.contains("backend protocol failure"),
         "{diagnostics}"
@@ -977,15 +1000,11 @@ fn build(src, out) {
         b"owned-elf-product"
     );
     let diagnostics = String::from_utf8_lossy(&output.stderr);
-    for message in [
-        "owned-elf-stdout",
-        "owned-elf-stderr",
-        "launcher exit 0; result exited",
-    ] {
+    for message in ["owned-elf-stdout", "owned-elf-stderr", START_EXIT_OK] {
         assert!(diagnostics.contains(message), "{diagnostics}");
     }
     assert!(
-        !diagnostics.contains("panicked at") && !diagnostics.contains("ginux: audit"),
+        !diagnostics.contains("panicked at") && !leaks_runtime_text(&diagnostics),
         "{diagnostics}"
     );
     assert_eq!(
@@ -1049,12 +1068,11 @@ fn build(src, out) {
     );
     let diagnostics = String::from_utf8_lossy(&output.stderr);
     assert!(
-        diagnostics.contains("script-stderr")
-            && diagnostics.contains("launcher exit 0; result exited"),
+        diagnostics.contains("script-stderr") && diagnostics.contains(START_EXIT_OK),
         "{diagnostics}"
     );
     assert!(
-        !diagnostics.contains("panicked at") && !diagnostics.contains("ginux: audit"),
+        !diagnostics.contains("panicked at") && !leaks_runtime_text(&diagnostics),
         "{diagnostics}"
     );
     assert_eq!(
@@ -1084,12 +1102,9 @@ fn build(src, out) {
     let output = managed_command(&recipes, "install").output().unwrap();
     assert_success(&output);
     let diagnostics = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostics.contains(START_EXIT_OK), "{diagnostics}");
     assert!(
-        diagnostics.contains("launcher exit 0; result exited"),
-        "{diagnostics}"
-    );
-    assert!(
-        !diagnostics.contains("panicked at") && !diagnostics.contains("ginux: audit"),
+        !diagnostics.contains("panicked at") && !leaks_runtime_text(&diagnostics),
         "{diagnostics}"
     );
     assert_eq!(
@@ -1099,73 +1114,91 @@ fn build(src, out) {
 }
 
 #[test]
-fn cli_partial_launcher_line_times_out_and_reaps_pipe_holders() {
-    use std::os::unix::fs::PermissionsExt;
-    let (dir, recipes) = create_test_env();
-    let sentinel = dir.path().join("host-effect");
-    guarded_recipe(&recipes, &sentinel);
-    let archive = dir.path().join("image.tar");
-    let digest = image_tar(&archive, &[("etc/fact", tar::EntryType::Regular, "image")]);
-    let launcher = dir.path().join("partial-launcher");
-    std::fs::write(
-        &launcher,
-        r#"#!/usr/bin/python3
-import os, sys, time
-if sys.argv[1].startswith('instance-'):
-    os.execv(os.environ['RECIPE_TEST_REAL_GINUX'], [os.environ['RECIPE_TEST_REAL_GINUX'], *sys.argv[1:]])
-with open(os.environ['RECIPE_TEST_PARTIAL_LINE_START'], 'w') as marker:
-    marker.write(str(time.monotonic_ns()))
-os.write(1, b'{"version":')
-child = os.fork()
-if child == 0:
-    time.sleep(60)
-else:
-    time.sleep(60)
-"#,
-    )
-    .unwrap();
-    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let line_start = dir.path().join("partial-line-start");
-    let output = image_command(&recipes, &archive, &digest)
-        .env("RECIPE_TEST_PARTIAL_LINE_START", &line_start)
-        .env(
-            "RECIPE_TEST_REAL_GINUX",
-            std::env::var_os("GINUX_BIN").unwrap(),
-        )
-        .env("GINUX_BIN", &launcher)
-        .env("RECIPE_OUTPUT_TIMEOUT_SECS", "1")
-        .output()
-        .unwrap();
-    assert!(!output.status.success() && output.stdout.is_empty());
-    // Time from the actual partial line, excluding input/image preparation.
-    // Both launcher and child hold the pipe, so waiting for either 60s sleep
-    // instead of reaping it would still violate the unchanged 20s bound.
-    let line_start: u64 = std::fs::read_to_string(line_start)
-        .unwrap()
-        .parse()
-        .unwrap();
-    let mut completed = std::mem::MaybeUninit::<libc::timespec>::uninit();
+fn cli_partial_console_line_times_out_and_tears_down_the_instance() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+    // The worker's line records reach Recipe over the instance's console file.
+    // A line that never ends must hit the complete-line deadline, and the run
+    // (CLI, helper, instance) must be torn down within the bound. Only root can
+    // write into the root-owned console.log; the case forges the partial line
+    // there after the worker has spoken, so the bytes are the real console's.
     assert_eq!(
-        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, completed.as_mut_ptr()) },
-        0
+        unsafe { libc::geteuid() },
+        0,
+        "this case appends to the root-owned console.log: run the suite as root"
     );
-    let completed = unsafe { completed.assume_init() };
-    let completed = completed.tv_sec as u64 * 1_000_000_000 + completed.tv_nsec as u64;
-    let elapsed = std::time::Duration::from_nanos(completed - line_start);
+    let (dir, recipes) = create_test_env();
+    write_recipe(
+        &recipes,
+        "check",
+        r#"
+const RECIPE_API = 1;
+const NEEDS = #{};
+fn build(src, out) {
+    print("console-partial-ready");
+    exec_checked("/usr/bin/sleep", ["60"]);
+}
+"#,
+    );
+    let mut child = managed_command(&recipes, "install")
+        .env("TMPDIR", dir.path())
+        .env("RECIPE_OUTPUT_TIMEOUT_SECS", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let stderr = child.stderr.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if line.contains("console-partial-ready") {
+                let _ = tx.send(());
+            }
+            text.push_str(&line);
+            text.push('\n');
+        }
+        text
+    });
+    if rx
+        .recv_timeout(std::time::Duration::from_secs(600))
+        .is_err()
+    {
+        child.kill().ok();
+        child.wait().ok();
+        panic!("worker never spoke: {}", reader.join().unwrap());
+    }
+    let instances = instances_of(pid);
+    assert_eq!(instances.len(), 1, "{instances:?}");
+    let console = ginux_state_root()
+        .join("instances")
+        .join(&instances[0])
+        .join("console.log");
+    let started = std::time::Instant::now();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&console)
+        .unwrap()
+        .write_all(b"{\"version\":")
+        .unwrap();
+    let status = child.wait().unwrap();
+    let elapsed = started.elapsed();
+    let error = reader.join().unwrap();
+    assert!(!status.success(), "{error}");
     assert!(
-        elapsed < std::time::Duration::from_secs(20),
+        elapsed < std::time::Duration::from_secs(30),
         "partial-line teardown took {elapsed:?}"
     );
-    let error = String::from_utf8_lossy(&output.stderr);
     assert!(
         error.contains("complete worker output line deadline expired"),
         "{error}"
     );
-    assert!(!sentinel.exists());
+    assert!(instances_of(pid).is_empty(), "the instance was not deleted");
 }
 
 #[test]
-fn managed_coordinator_death_terminates_launcher_and_worker() {
+fn managed_coordinator_death_tears_down_the_instance_and_the_next_run_sweeps_it() {
     use std::io::{BufRead, BufReader};
     use std::process::Stdio;
     let (dir, recipes) = create_test_env();
@@ -1203,32 +1236,40 @@ fn build(src, out) {
         }
         tail.into_iter().collect::<Vec<_>>().join("\n")
     });
-    // Image preparation precedes the worker marker. This is a bootstrap
-    // allowance, separate from the unchanged five-second death/reaping bound.
-    // Hold through concurrent preparation with supported short sleeps; Ginux
-    // bounds each individual sleep request to 300 seconds.
-    if let Err(error) = rx.recv_timeout(std::time::Duration::from_secs(300)) {
+    // Image import and expansion precede the worker marker. This is a
+    // bootstrap allowance, separate from the teardown bound below.
+    if let Err(error) = rx.recv_timeout(std::time::Duration::from_secs(600)) {
         child.kill().ok();
         child.wait().ok();
         let diagnostics = reader.join().unwrap();
         panic!("worker did not reach cancellation point: {error}\n{diagnostics}");
     }
-    fn children(pid: u32) -> Vec<u32> {
-        std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
-            .unwrap_or_default()
-            .split_whitespace()
-            .filter_map(|p| p.parse().ok())
-            .collect()
+    fn descendants(pid: u32, result: &mut Vec<u32>) {
+        let tasks = std::fs::read_dir(format!("/proc/{pid}/task"))
+            .into_iter()
+            .flatten();
+        for task in tasks.flatten() {
+            let children =
+                std::fs::read_to_string(task.path().join("children")).unwrap_or_default();
+            for child in children.split_whitespace().filter_map(|p| p.parse().ok()) {
+                if !result.contains(&child) {
+                    result.push(child);
+                    descendants(child, result);
+                }
+            }
+        }
     }
-    let launchers = children(pid);
-    assert_eq!(launchers.len(), 1);
-    let workers = children(launchers[0]);
-    assert!(!workers.is_empty());
+    // The ginux CLI, sudo, the helper, the supervisor and the workload all
+    // descend from the coordinator.
+    let mut tracked = Vec::new();
+    descendants(pid, &mut tracked);
+    assert!(tracked.len() >= 2, "{tracked:?}");
+    let instances = instances_of(pid);
+    assert_eq!(instances.len(), 1, "one instance per running invocation");
     let abandoned = scratch_directories(dir.path());
-    assert_eq!(
-        abandoned.len(),
-        3,
-        "coordinator must lease input, root and run directories"
+    assert!(
+        !abandoned.is_empty(),
+        "the coordinator must lease its run directory"
     );
     let pool = abandoned[0].parent().unwrap();
     let sentinel = pool.join("unrelated");
@@ -1238,6 +1279,8 @@ fn build(src, out) {
         "check",
         "const RECIPE_API = 1;\nconst NEEDS = #{};\nfn build(src, out) {}\n",
     );
+    // A concurrent invocation (and its sweep of leftovers) must neither remove
+    // the active scratch nor delete the live run's instance.
     let output = managed_command(&recipes, "install")
         .env("TMPDIR", dir.path())
         .output()
@@ -1247,6 +1290,11 @@ fn build(src, out) {
         abandoned.iter().all(|path| path.exists()),
         "concurrent invocation removed active scratch"
     );
+    assert_eq!(
+        instances_of(pid),
+        instances,
+        "a concurrent invocation swept a live run's instance"
+    );
     assert!(
         child.try_wait().unwrap().is_none(),
         "coordinator exited before the kill control"
@@ -1255,8 +1303,10 @@ fn build(src, out) {
         libc::kill(pid as i32, libc::SIGKILL);
     }
     assert!(!child.wait().unwrap().success());
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let tracked: Vec<_> = launchers.into_iter().chain(workers).collect();
+    // The CLI dies with the coordinator (PDEATHSIG); the helper notices within
+    // a fraction of a second and tears the instance down in at most about 7.5
+    // seconds, killing the workload (the runtime's EXITKILL covers the rest).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         let live = tracked.iter().any(|pid| {
             std::fs::read_to_string(format!("/proc/{pid}/stat"))
@@ -1277,6 +1327,7 @@ fn build(src, out) {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     reader.join().unwrap();
+    // The stopped instance stays until a later Recipe command sweeps it.
     let output = managed_command(&recipes, "install")
         .env("TMPDIR", dir.path())
         .output()
@@ -1285,6 +1336,10 @@ fn build(src, out) {
     assert!(
         scratch_directories(dir.path()).is_empty(),
         "next invocation did not reclaim abandoned scratch"
+    );
+    assert!(
+        instances_of(pid).is_empty(),
+        "next invocation did not sweep the dead run's instance"
     );
     assert_eq!(std::fs::read_to_string(sentinel).unwrap(), "preserve");
 }
@@ -1369,7 +1424,6 @@ fn build(src, out) {
 
 #[test]
 fn managed_publication_rejects_archive_traversal_and_link_redirects() {
-    use std::os::unix::fs::PermissionsExt;
     let (dir, recipes) = create_test_env();
     let source = r#"
 const RECIPE_API = 1;
@@ -1379,8 +1433,6 @@ fn build(src, out) { write_file(out, "valid"); }
     write_recipe(&recipes, "check", source);
     let sentinel = dir.path().join("sentinel");
     std::fs::write(&sentinel, b"keep").unwrap();
-    let launcher = std::env::var("GINUX_BIN").unwrap();
-    let wrapper = dir.path().join("corrupt-export");
     for kind in [
         "traversal",
         "symlink",
@@ -1390,23 +1442,36 @@ fn build(src, out) { write_file(out, "valid"); }
         "link-parent",
         "link-child",
     ] {
-        // Run the real supervisor and worker before injecting malformed export
-        // bytes at the coordinator boundary. This is not a protocol stub.
-        std::fs::write(
-            &wrapper,
-            format!(
-                r#"#!/usr/bin/python3
-import io, subprocess, sys, tarfile
-result = subprocess.run([{launcher:?}] + sys.argv[1:])
-if result.returncode or sys.argv[1] != "launch": sys.exit(result.returncode)
-path = sys.argv[sys.argv.index('--export-file')+1]
+        // Run the real instance and worker, let the real `extract` write its
+        // archive, then replace that archive with one that keeps the real
+        // `work/.recipe-result.json` member (so the coordinator reads the
+        // genuine result first) and adds the malformed entries after it. The
+        // run then reaches the publication check. This is not a protocol stub.
+        let wrapper = ginux_wrapper(
+            dir.path(),
+            "corrupt-export",
+            &format!(
+                r#"
+import io, tarfile
+if VERB != 'extract': passthrough()
+code = real()
+if code: sys.exit(code)
+path = option('--output')
+kind = {kind:?}
+with tarfile.open(path) as genuine:
+    result_info = genuine.getmember('work/.recipe-result.json')
+    result_bytes = genuine.extractfile(result_info).read()
 with tarfile.open(path, 'w') as archive:
-    entry = tarfile.TarInfo('out/../../sentinel' if {kind:?} == 'traversal' else 'out/product')
-    if {kind:?} in ('longname', 'longlink'):
-        entry.type = tarfile.GNUTYPE_LONGNAME if {kind:?} == 'longname' else tarfile.GNUTYPE_LONGLINK
+    archive.addfile(result_info, io.BytesIO(result_bytes))
+    entry = tarfile.TarInfo('out/../../sentinel' if kind == 'traversal' else 'out/product')
+    if kind in ('longname', 'longlink'):
+        entry.type = tarfile.GNUTYPE_LONGNAME if kind == 'longname' else tarfile.GNUTYPE_LONGLINK
         entry.size = 1024
         archive.addfile(entry, io.BytesIO(b'x'*1024))
-    elif {kind:?} in ('link-parent', 'link-child'):
+        # A long-name header needs a member after it, or reading the export
+        # fails before the publication check; the oversize name is rejected there.
+        archive.addfile(tarfile.TarInfo('out/product'))
+    elif kind in ('link-parent', 'link-child'):
         entry.type = tarfile.DIRTYPE
         archive.addfile(entry)
         link = tarfile.TarInfo('out/product/redirect')
@@ -1414,27 +1479,24 @@ with tarfile.open(path, 'w') as archive:
         link.linkname = {outside:?}
         child = tarfile.TarInfo('out/product/redirect/sentinel')
         child.size = 7
-        if {kind:?} == 'link-parent': archive.addfile(link)
+        if kind == 'link-parent': archive.addfile(link)
         archive.addfile(child, io.BytesIO(b'changed'))
-        if {kind:?} == 'link-child': archive.addfile(link)
-    elif {kind:?} == 'traversal':
+        if kind == 'link-child': archive.addfile(link)
+    elif kind == 'traversal':
         entry.size = 7
         archive.addfile(entry, io.BytesIO(b'changed'))
     else:
-        entry.type = tarfile.SYMTYPE if {kind:?} == 'symlink' else tarfile.LNKTYPE
+        entry.type = tarfile.SYMTYPE if kind == 'symlink' else tarfile.LNKTYPE
         entry.linkname = {sentinel:?}
         archive.addfile(entry)
 "#,
                 sentinel = sentinel.to_str().unwrap(),
                 outside = dir.path().to_str().unwrap()
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let output = managed_command(&recipes, "install")
-            .env("GINUX_BIN", &wrapper)
-            .output()
-            .unwrap();
+        );
+        let mut command = managed_command(&recipes, "install");
+        with_wrapper(&mut command, &wrapper);
+        let output = command.output().unwrap();
         assert!(!output.status.success(), "accepted {kind}");
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -1447,6 +1509,7 @@ with tarfile.open(path, 'w') as archive:
             !exports.exists() || std::fs::read_dir(&exports).unwrap().next().is_none(),
             "a failed publication left outputs behind"
         );
+        assert!(leaked_instances().is_empty());
     }
 }
 

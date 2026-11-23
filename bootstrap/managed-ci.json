@@ -1,9 +1,9 @@
 {
   "version": 1,
   "ginux_repository": "LevitateOS/ginux",
-  "ginux_revision": "e3b71ac05e83eb0b69f5035d7ff05b134bae1b0c",
+  "ginux_revision": "5d4f51ae963dbc1b644d7fc4634ad152d96ff0fc",
   "image_manifest": "ginux-e2e-image.json",
-  "image_sha256": "8bd12066024f731a796a6fc1734011837d02873d86ffb325999796712134da3d",
+  "image_digest": "0000000000000000000000000000000000000000000000000000000000000000",
   "rocky_signing_key": {
     "url": "https://download.rockylinux.org/pub/rocky/RPM-GPG-KEY-Rocky-10",
     "sha256": "be8c4f070b696e64d8ce40e59a95a57e8b5c776f0015c2fd64e14b896622bdb4",

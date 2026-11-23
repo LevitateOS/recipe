@@ -10,17 +10,19 @@
 //!
 //! The module split (`docs/ginux-public-lifecycle-migration.md`, section 4):
 //!
-//! - [`configured`]: builds and runs `ginux launch`; its one entry point,
-//!   [`configured::run`], is the only way into it. The move to upstream's
-//!   public lifecycle replaces that module and nothing else here.
+//! - [`lifecycle`]: one run in a Ginux instance through the public
+//!   lifecycle of the `ginux` CLI (create, inject, start and wait, outcome,
+//!   extract, delete); its one entry point, [`lifecycle::run`], is the only
+//!   way into it.
 //! - [`worker_io`]: the coordinator's side of a running worker that both
-//!   runtimes share: the line records on its standard output, its standard
-//!   error log, reaping, and reading its result file
-//!   ([`crate::worker::records`]).
+//!   runtimes share: its line records (a pipe on the host, the instance
+//!   console that `ginux start --wait --stream-console` passes to its
+//!   standard output in Ginux), its standard error log and the audit-log
+//!   tail, reaping, and reading its result file ([`crate::worker::records`]).
 //!
 //! No path here evaluates recipe code on the host.
 
-mod configured;
+mod lifecycle;
 pub(crate) mod worker_io;
 
 use std::path::Path;
@@ -75,34 +77,32 @@ pub(crate) struct LaunchReport {
     /// A successful run's result for the caller ([`finish_outputs`]); None
     /// for a failed one.
     pub summary: Option<serde_json::Value>,
-    /// Launcher exit code when it exited normally (`None` when killed or
-    /// signaled).
+    /// Exit code of `ginux start --wait` (or of the host worker) when it
+    /// exited normally (`None` when killed or signaled).
     pub launcher_code: Option<i32>,
     /// How the run ended (`exited`, `signaled`, or `supervisor-error`): the
     /// supervisor's record in Ginux, the worker's exit on the host.
     pub result_outcome: crate::ginux::Outcome,
     /// The workload's exit code when `exited`.
     pub result_code: Option<i64>,
-    /// Total launcher/worker stderr bytes observed (the retained portion is
+    /// Total supervisor/worker log bytes observed (the retained portion is
     /// capped at `crate::invocation_log::MAX_LOG_BYTES`).
     pub log_total_bytes: u64,
-    /// Launcher/worker stderr bytes retained beyond the cap (drained and
-    /// discarded).
+    /// Supervisor/worker log bytes beyond the cap (read and discarded).
     pub log_discarded_bytes: u64,
 }
 
-/// Run the prepared invocation in a Ginux domain ([`configured::run`]).
+/// Run the prepared invocation in a Ginux instance ([`lifecycle::run`]).
 ///
 /// Restore the kept files the run starts from. No path here evaluates recipe
 /// code on the host.
 pub(crate) fn run_domain(
     prepared: &PreparedInvocation,
     invocation: &Invocation<'_>,
-    launcher: &Path,
-    image: &mut Option<crate::inputs::VerifiedImage>,
+    ginux: &crate::ginux::Ginux,
 ) -> Result<LaunchReport> {
     recorded(prepared, invocation, |diagnostics| {
-        run_domain_inner(prepared, invocation, launcher, diagnostics, image)
+        run_domain_inner(prepared, invocation, ginux, diagnostics)
     })
 }
 
@@ -158,11 +158,7 @@ pub(crate) fn recorded(
                     &prepared.network.host_endpoints,
                     usage,
                 ),
-                None => crate::needs::report::network_usage(
-                    &prepared.network.host_endpoints,
-                    &diagnostics,
-                    report.log_discarded_bytes,
-                ),
+                None => crate::needs::report::network_usage(&prepared.network.host_endpoints),
             }),
         Err(_) => {
             serde_json::json!({"status":"unobserved","reason":"invocation failed before complete log accounting","warnings":[]})
@@ -175,9 +171,8 @@ pub(crate) fn recorded(
 fn run_domain_inner(
     prepared: &PreparedInvocation,
     invocation: &Invocation<'_>,
-    launcher: &Path,
+    ginux: &crate::ginux::Ginux,
     diagnostics: &crate::invocation_log::InvocationLog,
-    image: &mut Option<crate::inputs::VerifiedImage>,
 ) -> Result<LaunchReport> {
     let Invocation {
         operation,
@@ -198,13 +193,13 @@ fn run_domain_inner(
             crate::failure::Category::Storage.wrap(error, "cannot lock the destination")
         })?;
     let run_dir = crate::temporary::TemporaryDirectory::new()
-        .context(crate::failure::Category::Startup.error("cannot create ginux run directory"))?;
+        .context(crate::failure::Category::Startup.error("cannot create the run directory"))?;
     let export_path = run_dir.path().join("export.tar");
 
     // Recipe and Ginux enter the identity by their declared behaviour
-    // versions; with exact identity also by the worker's and the launcher's
-    // bytes (`crate::identity`). The worker copied into the root must be the
-    // file hashed here (checked once it is copied).
+    // versions; with exact identity also by the worker's and Ginux's bytes
+    // (`crate::identity`, `crate::ginux::Ginux::digest`). The worker injected
+    // must be the file hashed here (checked once it is staged).
     let worker_digest = if persist_state && options.execution.exact_identity {
         crate::retained::file_digest(&crate::inputs::worker_binary()?)?
     } else {
@@ -219,7 +214,7 @@ fn run_domain_inner(
                 invocation_key,
                 prepared,
                 &worker_digest,
-                Some(launcher),
+                Some(ginux),
                 options,
                 None,
                 operation == crate::worker::records::Operation::Download,
@@ -249,14 +244,13 @@ fn run_domain_inner(
     };
 
     let mut progress = worker_io::progress_file(&options.execution, &invocation, recipe, operation);
-    let outcome = configured::run(configured::LaunchSpec {
+    let outcome = lifecycle::run(lifecycle::LaunchSpec {
         prepared,
-        // The offline cache is filled in where the root is made, which
-        // decides whether it is bound (`crate::inputs::prepare_root`).
+        // The offline cache is filled in where the injected tar is made
+        // (`crate::inputs::inject_archive`).
         request: request(prepared, run, None, None),
-        launcher,
+        ginux,
         diagnostics,
-        image,
         worker_digest: &worker_digest,
         run_dir: &run_dir,
         restore,
@@ -271,11 +265,14 @@ fn run_domain_inner(
     let outcome = outcome?;
     let mut summary = None;
     if outcome.result.ok {
-        let usage = crate::needs::report::network_usage(
-            &prepared.network.host_endpoints,
-            diagnostics,
-            outcome.log.discarded_bytes,
-        );
+        // Recipe's own downloads are counted by the worker; nothing else
+        // in the domain is observed (no network audit on this path).
+        let usage = match &outcome.result.network_usage {
+            Some(usage) => {
+                crate::needs::report::host_network_usage(&prepared.network.host_endpoints, usage)
+            }
+            None => crate::needs::report::network_usage(&prepared.network.host_endpoints),
+        };
         summary = Some(finish_outputs(
             &outcome.result,
             &export_path,
@@ -301,7 +298,10 @@ fn run_domain_inner(
 
 /// The request record of one run (`crate::worker::records::WorkerRequest`),
 /// the same for both runtimes but for a host run's `host` and the offline
-/// cache each runtime knows.
+/// cache each runtime knows. The network grant (the resolved `HOST:PORT`s,
+/// their pinned addresses and the byte cap) goes to the worker in both
+/// whenever `NEEDS.network` declares an endpoint, even when none resolved:
+/// its own downloads reach only those.
 pub(crate) fn request(
     prepared: &PreparedInvocation,
     run: &Invocation<'_>,
@@ -317,6 +317,7 @@ pub(crate) fn request(
         dependencies: run.dependencies.clone(),
         host,
         cache,
+        network: prepared.network.grant(),
     }
 }
 

@@ -4,7 +4,7 @@
 The selected rg executable must come from a previously verified upstream recipe
 publication. Ginux imports it through a typed input; there is no host activation
 shortcut. All generated recipes, outputs and stores stay under a new artifact
-directory. Run with the configured launcher's whole-coordinator privileges.
+directory. Run as root (or with the sudoers rule of `recipe runtime stage --sudoers`).
 """
 import argparse
 import hashlib
@@ -46,8 +46,8 @@ def main():
     binary = args.binary.resolve(strict=True)
     program = args.program.resolve(strict=True)
     run = args.artifacts.absolute()
-    for key in ("GINUX_BIN", "GINUX_ROOTFS", "GINUX_ROOT"):
-        require(os.environ.get(key), f"{key} must select the configured runtime")
+    for key in ("RECIPE_GINUX", "RECIPE_IMAGE", "RECIPE_IMAGE_LAYOUT"):
+        require(os.environ.get(key), f"{key} must select the Ginux runtime")
     env = {**os.environ, "RECIPE_WORKER_BIN": str(binary)}
     run.mkdir(parents=True, exist_ok=False)
     version_output = subprocess.check_output([str(program), "--version"], text=True)

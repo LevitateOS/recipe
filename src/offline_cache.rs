@@ -9,10 +9,10 @@
 //!
 //! The coordinator chooses the directory and names it in the worker's request.
 //! A host-run worker reads it where it is. For a Ginux run the coordinator
-//! binds its `sha256` folder read-only at `crate::domain::OFFLINE_CACHE`, in
-//! the launcher's own mount namespace, as it binds a live system root
-//! (`crate::launch`); that needs root with `CAP_SYS_ADMIN`, and without it the
-//! run does not see the cache. Either way the worker runs as an unprivileged
+//! copies the files the recipe's pins name into the tar it injects into the
+//! instance (`crate::inputs::inject_archive`), under
+//! `crate::domain::OFFLINE_CACHE`, so the run needs no mount and no privilege
+//! beyond the lifecycle's own. Either way the worker runs as an unprivileged
 //! identity, so it can use only the files everyone may read. The cache is
 //! never an input and enters no identity: a run's results do not depend on it.
 use anyhow::{Result, ensure};

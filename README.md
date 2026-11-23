@@ -118,22 +118,18 @@ which package scripts would have rebuilt; the OS provides it. Its contract:
   passes it with `--effects-root ROOT`), without the root's top-level folders
   `var`, `boot`, `home`, `root`, `tmp`, `run`, `proc`, `sys`, `dev`, `mnt`,
   `media`, `srv` and `lost+found`, and runs where its helpers put it (in Ginux
-  when it runs the root's own programs). The root is not copied or hashed:
-  each other top-level folder (`usr`, `etc`, and `lib`, `bin`, `sbin` where
-  they are folders) is bound read-only (and nosuid, nodev) on its place under
-  `/inputs/root` by the Ginux launcher, in a mount namespace of the launcher's
-  own whose mounts do not propagate to the host, so the binds go with the
-  launcher however the run ends and no other process sees them; top-level
-  links (`lib -> usr/lib`) are kept as links and top-level files are left out.
-  A bind is not recursive: a file system mounted below one of those folders is
-  not in it. The recipe cannot write the root (read-only mounts) and runs as
-  Ginux's unprivileged host user, so files the root keeps from other users
-  (`etc/shadow`, host keys) cannot be read. The run keeps no state. Binding
-  needs root with `CAP_SYS_ADMIN`, a Ginux run and a `/` that is a mount (not
-  a chroot); otherwise Recipe says so in one line and copies the root into the
-  run as for any input (every file hashed and copied, without files the
-  secret-bearing guard refuses, such as key material and
-  `etc/pki/tls/cert.pem`, and with the top-level files);
+  when it runs the root's own programs). Every other top-level folder (`usr`,
+  `etc`, and `lib`, `bin`, `sbin` where they are folders) is copied into the
+  run as for any input (the public Ginux lifecycle has no read-only bind, so a
+  whole root costs its size in disk and time on every run, with every file
+  hashed, without files the secret-bearing guard refuses, such as key material
+  and `etc/pki/tls/cert.pem`, and with the top-level files); top-level links
+  (`lib -> usr/lib`) are kept as links. A file system mounted below one of
+  those folders is not in it. The recipe cannot change the root: it only ever
+  sees the copy, and runs as Ginux's unprivileged host user (uid 65534 on the
+  host), so files the root keeps from other users (`etc/shadow`, host keys)
+  cannot be read. The run is an ordinary run: it keeps its state unless
+  `--no-persist-state` is given;
 - it returns one `system` output (Recipe finishes the tree), holding only the
   cache files; it has no runtime `deps`; it declares `const RERUN = true;`;
 - it runs the root's own tools, so it declares `NEEDS.runtime: "minimal"`: its
@@ -275,9 +271,10 @@ SHA-256 of its bytes: `RECIPE_CACHE_DIR` (absolute; empty turns it off), else
 `/usr/share/recipe/cache` when it exists (an install medium carries it).
 `download` and `download_exact` take a payload whose pin they find there from it,
 with no network; a cached file whose bytes do not match is ignored. Host runs read
-it in place; a Ginux run sees its `sha256` folder bound read-only (that needs root
-with `CAP_SYS_ADMIN`; otherwise the run goes without it). Both run as an
-unprivileged identity, so only files everyone may read are used. The cache is
+it in place; a Ginux run gets copies of the payloads its recipe declares by pin
+(a `download` whose digest the recipe names; one it computes at run time does not
+find the cache). Both run as an unprivileged identity, so only files everyone may
+read are used. The cache is
 not an input and changes no saved-state identity. With a cache present, a `NEEDS.network` host that
 cannot be resolved is left out with a warning rather than failing the run.
 
@@ -340,7 +337,7 @@ recipe cleanup ripgrep      # delete its downloads and build material
 recipe cleanup              # the same for every program
 recipe cleanup --logs       # the diagnostic logs
 recipe remove ripgrep       # the program and all its material (--keep: only the program)
-recipe runtime remove       # the cached build image
+recipe runtime remove       # the downloaded image layouts (not the imported image)
 ```
 
 States are `none`, `downloaded` (all sources and pins for this system are in the
@@ -395,19 +392,26 @@ failure to write it is reported on stderr and does not undo the change. It keeps
 the newest entries (about 256 KiB when it passes 512 KiB). `--json` (and piped
 output) prints `{"schema_version": 1, "history": [...]}`.
 With `--machine-events`, a failed
-install carries `"refused": {"endpoint", "declared"}` when Ginux's log of that
-run records a denied connection: `endpoint` is the numeric address the audit
-line names, `declared` the recipe's NEEDS.network. The history command was run on a hand-made store; `refused` is compiled and not
-run, since it needs a failed install under Ginux. These were run on a hand-made store; the record of `needs` at
-install has compiled and not run, since an install needs Ginux.
+install used to carry `"refused": {"endpoint", "declared"}` when Ginux's log of
+that run recorded a denied connection. The public lifecycle's audit lines do
+not name the refused address, so `refused` is not reported any more. The
+history command was run on a hand-made store; the record of `needs` at install
+has compiled and not run, since an install needs Ginux.
 
-The OS builder packages the public catalog, `/usr/libexec/recipe/ginux`, and
-`/usr/share/recipe/runtime/{rootfs.tar,root-reference,minimal.tar,minimal-reference}`
-(the compiler image and the minimal image). These are runtime defaults;
-explicit `GINUX_*` selections still take precedence. The image is digest-verified
-before execution. Existing images must be rebuilt to carry these files; a source
-change alone does not update a running installation. Native Ginux still requires
-whole-coordinator bootstrap privileges, as described below.
+The OS builder packages the public catalog, the `ginux` CLI
+(`/usr/libexec/recipe/ginux`), the Ginux helper, image tool, runtime and
+allocator (`/usr/libexec/ginux/{ginux-helper,ginux-image,ginux-runtime}`,
+`/usr/lib64/ginux/libginux_allocator.so`), Recipe's guard
+(`/usr/libexec/recipe/recipe-ginux-guard`), the sudoers rule
+(`/etc/sudoers.d/recipe-ginux`, which names the guard), and
+`/usr/share/recipe/runtime/{compiler.oci.tar,root-reference,minimal.oci.tar,minimal-reference}`
+(the compiler image and the minimal image, as OCI image layouts). These are
+runtime defaults; explicit `RECIPE_*` selections still take precedence. The
+import into Ginux verifies every blob and the manifest digest must match the
+reference before anything runs. Existing images must be rebuilt to carry these
+files; a source change alone does not update a running installation. Running
+anything in Ginux needs root or the sudoers rule, as described under
+[Privileges](#privileges).
 
 ## Shared execution contract
 
@@ -419,22 +423,22 @@ Restrictions must first be valid lowerings/subsets for the named recipe. They
 also cover every dependency: limits take the stricter bound, and endpoint sets
 intersect each dependency's own declaration. Limits remain per instance.
 
-The launcher must support configured downstream catalog 1002,
-`configured-network-audit=1`, `configured-denial-audit=1`, configured `launch`,
-export, control and restore. Recipe uses upstream `[contract]` and
-`[contract.*]` sections; the former `[userspace.*]` format is rejected. Its
-pinned base preserves the admitted operation set. Explicitly excluded
-socket/listener calls return EPERM under the new rules; absent semantic grants
-still return ENOSYS. Runtime resource, descriptor, storage and endpoint limits
-are unchanged. Recipe validates the complete derived contract before launch;
-a generic `config` parse alone does not establish compatibility.
+Ginux runs each recipe as an instance on its public lifecycle (`create`,
+`inject`, `start --wait`, `status`, `extract`, `delete`) with upstream's native
+configured runtime and contract catalog 2. Recipe uses the upstream
+`[contract]` and `[contract.*]` sections and validates the complete derived
+contract (`ginux validate`, its digest checked against the pin) before the
+instance is created. What the public lifecycle does not give, compared with the
+retired downstream `launch`, is stated plainly in
+[supported runtime limits](docs/runtime-limits.md): **no storage limit inside
+a run** (only the size of the outputs taken out is bounded), **network grants
+are per port** on the shared host network (a program can reach any address on a
+granted port, and nothing caps its connections or bytes; only Recipe's own
+downloads are held to the declared `HOST:PORT` and the byte cap), and live
+system roots are copied, not bound.
 
-The historical maintained source baseline in [Linux setup](docs/setup-linux.md)
-uses the previous schema. The current migrated source pair and its validation
-are recorded in the superproject's
-`docs/ginux-contributions/upstream-integration-2026-11-09.md`; it is local until
-separately authorized for delivery. Do not substitute baseline receipts for
-that combination or claim complete product/security acceptance.
+The state of the migration (what is written, what has been run) is in
+[the migration plan](docs/ginux-public-lifecycle-migration.md), section 6.
 
 ## Execution modes
 
@@ -447,7 +451,7 @@ anything runs:
   Recipe runs as root, under a uid/gid of its own from 0x70000000 up, with no
   groups and no capabilities; its directories are then under
   `/var/lib/recipe/host-runs`). It needs
-  no Ginux launcher, no image, no user namespace and no particular kernel.
+  no Ginux, no image, no sudo rule and no particular kernel.
   Recipe confines it: every file helper resolves its path beneath the run's
   own directories (inputs read-only, work and out read-write; no `..`) and
   refuses anything else; the HTTP client reaches only the `NEEDS.network`
@@ -503,53 +507,115 @@ target/debug/recipe-image \
   --output .artifacts/ginux-env/prepared-image
 ```
 
-The output directory must be new. Configure the actual built Ginux launcher and
-verified image before executing recipes:
+The output directory must be new. It holds an OCI image layout
+(`oci-layout`, `index.json`, `blobs/sha256/…`), an uncompressed `image.oci.tar`
+of it and `provenance.json`, whose `manifest_digest` is the image's identity.
+Configure the built `ginux` CLI and the image before executing recipes:
 
 ```sh
-export GINUX_BIN=/absolute/path/to/ginux
-export GINUX_ROOTFS=/absolute/path/to/prepared-image/rootfs.tar
-export GINUX_ROOT=oci:compiler@sha256:IMAGE_SHA256_FROM_PROVENANCE
+export RECIPE_GINUX=/absolute/path/to/ginux
+export RECIPE_IMAGE_LAYOUT=/absolute/path/to/prepared-image/image.oci.tar
+export RECIPE_IMAGE=local/recipe-compiler@sha256:MANIFEST_DIGEST_FROM_PROVENANCE
 export RECIPE_WORKER_BIN=/absolute/path/to/recipe
 ```
 
-`GINUX_ROOTFS` must match the digest in `GINUX_ROOT`. Without `GINUX_ROOT`, the
-pinned bare Rocky base (no compiler) is selected.
+`RECIPE_IMAGE_LAYOUT` (the uncompressed layout tar, `image.oci.tar`) is
+needed only while the image is not yet imported into Ginux's state root; the
+import verifies every blob and its printed manifest digest must equal the one
+`RECIPE_IMAGE` names. Without `RECIPE_IMAGE` and without an installed
+`root-reference` there is no default image: Recipe stops with the way forward.
+The variables `GINUX_BIN`, `GINUX_ROOT`, `GINUX_ROOTFS`, `GINUX_MINIMAL_ROOT`
+and `GINUX_MINIMAL_ROOTFS` of the retired runtime are not translated: Recipe
+stops when one is set and names its replacement.
+
+| Variable | Meaning |
+| --- | --- |
+| `RECIPE_GINUX` | The `ginux` CLI. Default `<prefix>/libexec/recipe/ginux`, else `/usr/libexec/recipe/ginux`. |
+| `RECIPE_GINUX_STATE_ROOT` | Ginux's state root (images, base roots, instances). Default `/var/lib/recipe/ginux`; must be a root-owned folder chain. |
+| `RECIPE_GINUX_RUN_ROOT` | Ginux's run root. Default `/run/recipe/ginux`; same rule. |
+| `GINUX_INSTANCE_HELPER` | The CLI's own variable, passed through unchanged: a root-owned wrapper around the helper (the OS builder and the test fixtures use it; the default is `/usr/libexec/ginux/ginux-helper`). |
+| `RECIPE_IMAGE`, `RECIPE_IMAGE_LAYOUT` | The compiler image (`local/recipe-compiler@sha256:<manifest>`) and its layout. |
+| `RECIPE_MINIMAL_IMAGE`, `RECIPE_MINIMAL_IMAGE_LAYOUT` | The same for the minimal runtime image. |
+| `RECIPE_WORKER_BIN` | The worker, a `recipe` binary of the same build. |
+| `RECIPE_RUNTIME_URL` | Where `recipe runtime fetch` downloads `image.oci.tar.zst` (`{digest}`, `{short}`). |
+| `RECIPE_OUTPUT_TIMEOUT_SECS` | How long a worker may go without finishing an output line. |
 
 A recipe that declares `NEEDS.runtime: "minimal"` (one whose programs are the tools of
 a root it is given, such as a root's effects recipe) runs in the minimal runtime image
 instead: a few megabytes of the same Rocky base with a shell, GNU coreutils, findutils,
-sed and grep (`bootstrap/ginux-minimal-image.json`). `GINUX_MINIMAL_ROOT` and
-`GINUX_MINIMAL_ROOTFS` select it as the two variables above select the full image;
-without them Recipe reads the `minimal-reference` its install ships and uses
-`minimal.tar` beside it, else the download cache. Where no minimal image is named at
-all, such a recipe runs in the full image, which has every program the minimal one has,
-and Recipe says so in one line. If `GINUX_ROOTFS` is omitted, Recipe uses the
-tar its install ships (`<prefix>/share/recipe/runtime/rootfs.tar`, where the prefix is the
+sed and grep (`bootstrap/ginux-minimal-image.json`). `RECIPE_MINIMAL_IMAGE` and
+`RECIPE_MINIMAL_IMAGE_LAYOUT` select it as the two variables above select the full
+image; without them Recipe reads the `minimal-reference` its install ships and uses
+`minimal.oci.tar` beside it. Where no minimal image is named at all, such a recipe
+runs in the full image, which has every program the minimal one has, and Recipe says
+so in one line. If `RECIPE_IMAGE_LAYOUT` is omitted, Recipe uses the layout its install
+ships (`<prefix>/share/recipe/runtime/compiler.oci.tar`, where the prefix is the
 parent of the directory holding the `recipe` binary, for example `/usr`), else
-`$XDG_CACHE_HOME/recipe/images/<digest>.tar`. When neither exists, Recipe downloads the
-image on first use, checks its SHA-256 and stores it there. `recipe runtime fetch` does
-this now; `recipe runtime status` shows what is selected. `RECIPE_RUNTIME_URL` names
-another address (`{digest}` and `{short}`, the first 16 digits, are replaced); the default is a
-`recipe-runtime-{short}` release of `LevitateOS/prebuilt`. The launcher and the shipped sources
-are found the same way under the prefix, then under `/usr`. The worker is staged
-separately; changing Recipe does not require rebuilding an unchanged image.
-The native launcher requires Linux x86_64. It runs as root or as an ordinary
-user: an ordinary user's launch enters a private user namespace for its chroot
-(Ginux `7b9dec91` or later), so the host must allow unprivileged user
-namespaces; Ginux names the setting when it refuses. Ubuntu 23.10 and later
-allow them only to programs an AppArmor profile names: `recipe runtime stage
---apparmor` writes that profile for the launcher (`etc/apparmor.d/recipe-ginux`). To run as root, run the
-whole coordinator with root; a plain `sudo` wrapper around only the launcher
-closes required inherited channels. When using sudo, pass the declared
-image/worker selections to the whole coordinator command:
+`$XDG_CACHE_HOME/recipe/images/<manifest digest>.oci.tar`. When neither exists, Recipe
+downloads `image.oci.tar.zst` on first use and stores the decompressed layout there;
+the import checks it. `recipe runtime fetch` does this now; `recipe runtime status`
+shows what is selected. `RECIPE_RUNTIME_URL` names another address (`{digest}` and
+`{short}`, the first 16 digits, are replaced); the default is a
+`recipe-runtime-{short}` release of `LevitateOS/prebuilt`. The CLI and the shipped
+sources are found the same way under the prefix, then under `/usr`. The worker is
+staged separately; changing Recipe does not require rebuilding an unchanged image.
+
+### Privileges
+
+The native runtime requires Linux x86_64. Every privileged step of the public
+lifecycle is the Ginux helper run as root, and the only thing `sudo` runs is
+Recipe's guard
+(`sudo /usr/libexec/recipe/recipe-ginux-guard --protocol 1 --state-root … --run-root … VERB`),
+which runs the helper at `/usr/libexec/ginux/ginux-helper`. There is no longer an
+ordinary-user path: the user-namespace launch and its AppArmor profile are gone.
+What runs the guard:
+
+- **root** (the OS builder, CI, `sudo recipe …`): needs no rule, only a `sudo`
+  binary on the host;
+- **an administrator**, after `recipe runtime stage --sudoers GROUP`
+  (`%wheel` on Fedora, Rocky, LevitateOS and AcornOS, `%sudo` on Ubuntu) has
+  written `/etc/sudoers.d/recipe-ginux`: members of GROUP may run the guard
+  without a password, pinned to Recipe's state and run roots. The rule names the
+  guard, never the helper. The guard allows only Recipe's verbs (`import`,
+  `inject`, `start`, `status`, `stop`, `delete`, `extract`) on instances named
+  `recipe-<uid>-*` (the caller's own uid; uid 0 may use any uid's), takes the
+  caller only from `SUDO_UID`/`SUDO_GID`, clears the environment, and re-renders
+  the instance config Recipe imports from validated fields (the worker as init,
+  no forwards, no hooks, no unknown keys, an image named by `@sha256:`, the
+  unprivileged `[access]` identity). For a caller other than root the image's
+  exact reference must be listed in the root-owned allowlist
+  `/usr/libexec/recipe/runtime-images`, which `recipe runtime stage`,
+  `sudo recipe runtime fetch` and the installer write. `import-image`,
+  `prepare-root`, `run-runtime` and every other verb are refused: images are
+  imported as root by `sudo recipe runtime fetch` (the installer runs it), and a
+  run by anyone else without an imported image stops and says to run it. The
+  result is a passwordless sandbox for Recipe-shaped instances from trusted
+  images, not a guarantee that it is harmless to the host: the code that unpacks
+  a trusted image runs as root and follows symlinks in it (R13, R14), every
+  user's workload runs as the same host uid (R15), and there are no per-user
+  caps (`docs/runtime-limits.md`, "What a shared host still exposes"). Any other
+  user cannot run a recipe in Ginux. The installed LevitateOS and AcornOS images
+  ship the rule and the standalone installer writes it for the group it picks;
+- **anyone else**: Recipe stops with the way forward (run as root, or ask an
+  administrator to install the rule). Recipes that start no program still run on
+  the host without any of this (`--execution auto`).
+
+The guard, helper, runtime, image tool and allocator must be root-owned files
+that no other user can write (`/usr/libexec/recipe`, `/usr/libexec/ginux`,
+`/usr/lib64/ginux`): a user-writable copy reached through the passwordless rule
+would be a root escalation. The state root `/var/lib/recipe/ginux` is created by
+the helper on first use and is shared by all users (one image import per host);
+instance names carry the uid and the pid. Instance directories are root-private
+(0700) and the helper streams an instance's console output to the caller, so one
+user cannot read another's builds through the host file system (workloads of
+different users still share one host uid: see R15). `docs/runtime-limits.md`
+lists what a shared host still exposes.
 
 ```sh
-sudo env GINUX_BIN="$GINUX_BIN" GINUX_ROOTFS="$GINUX_ROOTFS" \
-  GINUX_ROOT="$GINUX_ROOT" RECIPE_WORKER_BIN="$RECIPE_WORKER_BIN" \
+sudo env RECIPE_GINUX="$RECIPE_GINUX" RECIPE_IMAGE="$RECIPE_IMAGE" \
+  RECIPE_IMAGE_LAYOUT="$RECIPE_IMAGE_LAYOUT" RECIPE_WORKER_BIN="$RECIPE_WORKER_BIN" \
   "$RECIPE_WORKER_BIN" install tools/recipe/examples/hello.rhai --build-dir ./hello-work
 ```
-
 
 Only install commands required by a recipe in its compiler image. For example,
 a Git recipe needs Git there. An explicit Rust musl target needs its matching
@@ -638,7 +704,7 @@ existing prepared artifacts.
   (whether this system's C library can run it, from the same comparison
   `install` makes, and the message `install` would give, else null; the index
   does not carry them). The top level has `host_libc`, this system's C library
-  (`glibc`, `musl` or `unknown`). It needs no Ginux launcher, and a recipe that
+  (`glibc`, `musl` or `unknown`). It needs no Ginux, and a recipe that
   cannot be read is reported under `problems` instead of failing the list.
 - `index [FOLDER]` writes `index.json`, the file a source of recipes publishes
   so its recipes can be listed without downloading them: the folder's
@@ -720,13 +786,14 @@ existing prepared artifacts.
 ## Inputs and selected targets
 
 `NEEDS.inputs` maps names to `file`, `directory`, `file?` or `directory?`.
-`--input NAME=PATH` binds one declared input read-only at `/inputs/NAME`; missing
+`--input NAME=PATH` stages one declared input as a read-only copy at `/inputs/NAME`; missing
 required, undeclared, duplicate or wrong-kind inputs fail before setup. Use
 `--input DEP::NAME=PATH` for a dependency: inputs are never implicitly inherited.
 A host path in a define grants no filesystem access. Root `.git` and `target`
 directories are omitted from ordinary source imports. Input bytes, modes, link
 identity and link targets participate in state identity. Confined relative links
-and hardlinks are preserved. Named `rootfs`/`target`/`root` trees may contain absolute
+are preserved; hard links are not (the public lifecycle carries only directories,
+regular files and symlinks, so a file linked twice arrives as two files). Named `rootfs`/`target`/`root` trees may contain absolute
 rootfs symlink bytes, resolved within the tree; they never authorize following host
 paths. One invocation stages at most 100,000 entries, or, with such a tree,
 `NEEDS.storage_max_objects` when that is larger.
@@ -747,17 +814,18 @@ Use `--state-dir PATH` to choose a different state root.
 Identity includes the recipe/module/dependency closure, declared input content,
 custom defines, execution options and the root image, by content. Changed inputs
 start fresh state. Recipe itself (the coordinator and the worker) and the Ginux
-launcher enter it by declared behaviour versions, not by their bytes, so a
-rebuilt `recipe` or `GINUX_BIN` that behaves the same reuses saved state. The
+tools enter it by declared behaviour versions, not by their bytes, so a
+rebuilt `recipe` or `ginux` that behaves the same reuses saved state. The
 versions live in `src/identity.rs`: `ENGINE_BEHAVIOUR` (bumped with any Recipe
 change that can alter what a recipe produces: helper semantics, target metadata,
 staging, how inputs and outputs are materialized, the rendered Ginux config, a
 Rhai or archive-crate upgrade that changes results; not for a pure speed-up),
 `GINUX_BEHAVIOUR` (bumped when a Ginux change can alter what a workload observes:
-syscall results, VFS behaviour, credentials, clocks, signals, the snapshot or
-export format), the coordinator/worker records version, and the Ginux catalog
+syscall results, root layout, credentials, clocks, signals, the injected and
+extracted archive formats; 2 is the public lifecycle), the coordinator/worker records version, and the Ginux catalog
 and build-base contract digests Recipe pins and checks. `--exact-identity` (or
-`RECIPE_EXACT_IDENTITY=1`) also names the worker's and the launcher's bytes, so
+`RECIPE_EXACT_IDENTITY=1`) also names the worker's bytes and the four Ginux files'
+(CLI, helper, image tool, runtime) bytes, so
 only byte-identical tools reuse saved state; release builds use it. Exact and
 default identities never share saved state. A kept download or result becomes
 recoverable only after its archive and its record are durable together; an
@@ -771,7 +839,9 @@ diagnosis and choose a new state directory to start explicitly fresh.
 execution or publication. Published products are not saved state.
 
 Diagnostics live in `<state-root>/logs/<invocation-id>/`, outside invocation
-scratch: `worker.log`, `supervisor-stderr.log`, `authority.json` and `result.json`.
+scratch: `worker.log`, `supervisor-stderr.log` (the instance's audit log: the
+worker's stderr and the runtime's audit lines), `authority.json` (with the
+instance's name) and `result.json`.
 The authority receipt saves the actual declaration, effective constraints, pinned
 endpoints, rendered config and catalog/digest used for this instance. Logs are bounded;
 active leases protect running invocations, and up to 32 recent completed
@@ -785,11 +855,18 @@ The scratch pool is a private directory on disk, `~/.cache/recipe/scratch`
 `RECIPE_SCRATCH_DIR` to an absolute path to put it elsewhere. A set `TMPDIR`
 still selects `$TMPDIR/recipe-scratch-<uid>`, as recab uses it. Published outputs are kept in
 `<state-root>/exports` (normally `~/.local/state/recipe/exports`), not in the
-current directory. Where the scratch pool is on a filesystem
-with reflinks (XFS, Btrfs), the compiler image is verified and unpacked once
-per digest and boot into a private cache there, and each domain root is a new
-tree of copy-on-write clones of it; the cache itself is never given to a
-domain. Elsewhere every root is unpacked from the verified image.
+current directory. The compiler image is imported once per host into Ginux's
+state root (`/var/lib/recipe/ginux/cache/oci`, root-owned, about 1.3 GB). Each
+run is a new instance, `recipe-<uid>-<pid>-<random>`, with a private root:
+copy-on-write clones of a base root where the state root's file system has
+reflinks (XFS, Btrfs), a full expansion of the image elsewhere (slower: the
+whole image is expanded and re-owned per run). The instance is always deleted
+when the run ends, however it ends; if Recipe or the helper dies first, the next
+Recipe command that uses Ginux stops and deletes the leftover instances of dead
+runs of the same user (root: of every user). `recipe runtime remove` frees only
+the downloaded layouts: the imported image and base roots sit under the
+root-owned state root, which no public Ginux verb can shrink (`recipe runtime
+status` reports them as `system_bytes`).
 
 SIGINT/SIGTERM cancel execution and await descendant teardown. Cancellation and
 deadline failure keep nothing of the interrupted step and do not publish failed
@@ -799,19 +876,6 @@ worker that prints nothing is bounded separately by `RECIPE_OUTPUT_TIMEOUT_SECS`
 (default 300, range 1–86400): before its first output line, and for a line it
 has started but not finished, it has that long; a silent phase after the first
 line runs until the execution deadline.
-
-Where the Ginux launcher accepts `[storage] archive_import` (asked once per
-launcher digest with `instance-validate`), each invocation's config enables
-it, and `target_unpack_tree` hands a whole tree to Ginux as one stream instead
-of about five mediated calls per file. `RECIPE_ARCHIVE_IMPORT=0` leaves it off
-for debugging (`1` or empty keeps the default; anything else is an error).
-Outputs are the same either way (`docs/target-metadata.md`).
-
-Where the launcher accepts the `random` and `urandom` device assignments
-(probed once per launcher digest the same way), each domain's `[devices]`
-assignments hold them next to `null`, so `/dev/random` and `/dev/urandom` exist
-in the domain. `RECIPE_RANDOM_DEVICES=0` leaves them off (`1` or empty keeps
-the default; anything else is an error).
 
 ## Options
 
@@ -837,12 +901,23 @@ Run `recipe --help` and `recipe install --help` for the complete current syntax.
 | `--json-output FILE` | Final context result, separate from stderr diagnostics. |
 | `--progress-file PATH` | Keep PATH current with the recipe's `progress(done, total, what)` reports: one JSON object (`version`, `invocation`, `recipe`, `phase`, `what`, `done`, `total`, `started`, `updated`, `state` = `running`/`finished`/`failed`), replaced atomically at most once a second. |
 
-Storage accounts hardlink data once. Inputs, restored kept files and publications
-are bounded and validated; increasing a bound does not add a missing syscall or
-compiler capability. Network grants resolve/pin numeric TCP endpoints before
-launch, install the corresponding hostname map and mediate readiness/teardown.
-They do not isolate virtual hosts sharing an allowed IP and port. There is no
-UDP, proxy, listening service or native host-network fallback.
+Inputs, restored kept files and publications are bounded and validated;
+increasing a bound does not add a missing syscall or compiler capability.
+**There is no storage limit inside a run**: `storage_max_bytes` and
+`storage_max_objects` bound the archive taken out of the instance (an output
+over them fails the run with the storage message, after the fact), and a
+free-space watchdog cancels a run whose host disk drops below `max(2 GiB, 5 %)`,
+but a recipe can fill the host file system holding the state root while it runs.
+Network grants resolve and pin numeric TCP endpoints before the instance
+is created and install the hostname map (`/etc/hosts`, always present, with
+`localhost`). **A grant is a port**, not an address: the instance shares the
+host network and the contract lists `tcp:PORT` for each distinct granted port,
+so a program a recipe starts (`git`, `curl`, a build system) can connect to any
+address on a granted port, with no connection or byte cap, and can see the
+host's network. Recipe's own downloads are still held to the declared
+`HOST:PORT` at the pinned addresses and to `NEEDS.network_max_bytes` (the worker
+enforces both), and `network_usage` reports only what the worker counted.
+There is no UDP, proxy or listening service.
 
 `download(url, dest, sha256[, resume])` verifies staged bytes before replacing a
 valid destination. `git_checkout(url, exact_dest, full_commit)` requires a full
@@ -857,13 +932,9 @@ Recipes own version/URL/digest facts and literal NEEDS authority. Variant TOML
 keeps recipe selection and input path bindings. The Fedora rootfs/preseed declare
 8192 MiB; Alpine declares 4096 MiB. Fedora rootfs declares 196608 objects and
 Alpine rootfs declares 131072; use `inspect` on the selected recipe for its limits.
-`memory_mib` bounds each process's virtual address space, not aggregate tree RAM;
-storage also has its own byte/object accounting. Jobs select eligible real CPUs,
-not a virtual topology. Numeric IP/port grants are not DNS/HTTP identities.
-Configured raw clocks expose host realtime and monotonic time; vDSO clocks remain
-observable. Configured `sysinfo` returns zeros, not a memory-usage account.
-Bounded `poll`/`ppoll` is readiness support, without general signal interruption
-or restart semantics. Archive timestamps have whole-second precision. See
+`memory_mib` bounds each process's virtual address space, not aggregate tree RAM.
+Jobs select eligible real CPUs, not a virtual topology. Numeric IP/port grants
+are not DNS/HTTP identities. Archive timestamps have whole-second precision. See
 [supported runtime limits](docs/runtime-limits.md) before claiming isolation or
 Linux compatibility beyond these boundaries.
 
@@ -889,17 +960,21 @@ typed paths, endpoints, raised/lowered limits and contract digests. Invocation
 explain reads the retained receipt and available audit observations, so later
 source edits do not rewrite the explanation. A missing/truncated observation is
 reported as unknown. Finished results include `contract` and `network_usage`;
-a complete bounded endpoint summary produces warnings for unused grants, while
-an absent summary never labels unobserved connections unused. Diagnostics do
+`network_usage` is what the worker counted for Recipe's own downloads, so a
+program's connections are not in it (they are `unobserved`, never labeled
+unused), and a complete summary produces warnings for unused grants. Diagnostics do
 not become success/protocol evidence or grant additional authority.
 
 ## Validation and limits
 
-[Managed integration CI](docs/ci.md) describes launcher/image pins, runtime
+[Managed integration CI](docs/ci.md) describes Ginux/image pins, runtime
 privileges, catalog coverage and explicitly opted-in publication.
 
-Run focused real CLI/integration cases with the actual launcher and prepared
-image. Build a worker snapshot before a run and keep it unchanged for that run:
+Run focused real CLI/integration cases with the actual Ginux and prepared
+image (the preconditions are in the header of `tests/e2e.rs`: root or the sudoers
+rule, the five Ginux files installed root-owned, `RECIPE_GINUX`, `RECIPE_IMAGE`,
+`RECIPE_IMAGE_LAYOUT`). Build a worker snapshot before a run and keep it
+unchanged for that run:
 
 ```sh
 cargo test --offline -p levitate-recipe --test e2e --no-run
@@ -907,14 +982,14 @@ RECIPE_TEST_BIN=/absolute/path/to/recipe cargo test --offline \
   -p levitate-recipe --test e2e managed_target:: -- --test-threads=1
 ```
 
-The checkout's workspace and configured launch privileges are required. See the
+The checkout's workspace and the privileges above are required. See the
 superproject implementation checkpoint for exact tested revisions and remaining
 production/VM evidence. Real tool lifecycle, custom-rootfs, selected-target,
 link preservation and mediated acquisition are separately exercised;
 none implies general Linux syscall or every distro package support.
 
 For a release, set the version in source before verification, and retain
-artifact hashes with the matching source, worker, launcher and image provenance.
+artifact hashes with the matching source, worker, Ginux tools and image provenance.
 CI validates the selected commit. Publish the reviewed artifacts separately.
 
 License: MIT OR Apache-2.0.

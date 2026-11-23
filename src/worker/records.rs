@@ -29,7 +29,7 @@
 //!   [`MAX_LINE_BYTES`] including the newline. The coordinator relays them
 //!   live; a line that is not such a record (not JSON, another version,
 //!   another shape, too long) is kept as plain log text, never an error.
-//!   Standard error stays for the workload's and the launcher's own text.
+//!   Standard error stays for the workload's and the runtime's own text.
 //!
 //! Records carry no host paths except a host-mode request's offline cache:
 //! `invocation_id` values follow `[A-Za-z0-9_-]{1,64}`, and a result names
@@ -52,7 +52,10 @@ use serde::{Deserialize, Serialize};
 // 13: no checkpoint and ack frames, no saved state in the request or result.
 // 14: no frames: the request and the result are files, diagnostics and
 // progress are lines; the result names its invocation.
-pub const RECORDS_VERSION: u32 = 14;
+// 15: the network grant is its own request field for both runtimes
+// (`network`); the offline cache of a Ginux run is a copy of the declared
+// pins.
+pub const RECORDS_VERSION: u32 = 15;
 
 /// Longest line record, newline included. Derived from the record bounds
 /// that predate lines: a diagnostic carries at most
@@ -146,37 +149,52 @@ pub struct WorkerRequest {
     /// output the coordinator did not stage (it did not run the dependency,
     /// or a runtime dependency's `system` output in a system change) is `()`.
     pub dependencies: std::collections::BTreeMap<String, Vec<String>>,
-    /// Present exactly for a host-mode worker (`crate::execution`): what it
-    /// may reach. Its directories are below [`crate::domain::ENV_HOST_ROOT`].
-    /// Absent, and not serialized, for a Ginux worker.
+    /// Present exactly for a host-mode worker (`crate::execution`). Its
+    /// directories are below [`crate::domain::ENV_HOST_ROOT`]. Absent, and
+    /// not serialized, for a Ginux worker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<HostRun>,
+    /// The network rule the worker installs for Recipe's own downloads
+    /// (`crate::helpers::acquire::net`), in either runtime. A host-mode
+    /// worker without it reaches no endpoint at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<NetworkGrant>,
     /// The offline cache directory the worker reads (`crate::offline_cache`),
     /// read-only: a host path in a host run,
-    /// [`crate::domain::OFFLINE_CACHE`] in a Ginux run that has it bound.
+    /// [`crate::domain::OFFLINE_CACHE`] in a Ginux run, where it holds the
+    /// cached files of the recipe's declared pins
+    /// (`crate::inputs::inject_archive`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache: Option<String>,
 }
 
-/// What a host-mode worker may reach that a Ginux domain would have granted.
+/// Marks a host-mode worker's request. A host run's other rules (its
+/// directories, its network) come from the environment and [`NetworkGrant`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct HostRun {
-    /// Declared `HOST:PORT` → the addresses the coordinator pinned for it.
-    pub network: std::collections::BTreeMap<String, Vec<String>>,
-    /// The run's network byte cap (`crate::needs::Needs::network_budget`).
-    pub network_max_bytes: u64,
+pub struct HostRun {}
+
+/// What Recipe's own HTTP client may reach: each declared `HOST:PORT` to the
+/// addresses the coordinator pinned for it, and the run's network byte cap
+/// (`crate::needs::Needs::network_budget`). In a Ginux run the domain admits
+/// any address on a granted port (the shared network); this keeps the
+/// worker's own downloads to the pins and the cap.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkGrant {
+    pub pins: std::collections::BTreeMap<String, Vec<String>>,
+    pub max_bytes: u64,
 }
 
-fn check_host(host: &HostRun) -> Result<(), RecordError> {
-    if host.network.len() > crate::domain::MAX_NETWORK_ENDPOINTS
-        || host
-            .network
+fn check_network(network: &NetworkGrant) -> Result<(), RecordError> {
+    if network.pins.len() > crate::domain::MAX_NETWORK_ENDPOINTS
+        || network
+            .pins
             .values()
             .any(|pins| pins.is_empty() || pins.len() > crate::domain::MAX_NETWORK_ENDPOINTS)
-        || host.network_max_bytes == 0
+        || network.max_bytes == 0
     {
-        return Err(RecordError::invalid("invalid host run description"));
+        return Err(RecordError::invalid("invalid network grant"));
     }
     Ok(())
 }
@@ -238,8 +256,8 @@ impl WorkerRequest {
         {
             return Err(RecordError::invalid("invalid dependency outputs"));
         }
-        if let Some(host) = &self.host {
-            check_host(host)?;
+        if let Some(network) = &self.network {
+            check_network(network)?;
         }
         if self.cache.as_ref().is_some_and(|cache| {
             !crate::domain::valid_host_path(cache)
@@ -361,8 +379,8 @@ pub struct WorkerResult {
     /// A successful `latest`: the version `latest()` returned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest: Option<String>,
-    /// A host-mode worker's account of each declared endpoint (Ginux reports
-    /// it in its audit log instead). Absent from a Ginux worker's result.
+    /// The worker's account of each declared endpoint for Recipe's own
+    /// downloads; present when the request carried a network rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network_usage:
         Option<std::collections::BTreeMap<String, crate::helpers::acquire::net::EndpointUse>>,

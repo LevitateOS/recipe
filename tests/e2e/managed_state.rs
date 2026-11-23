@@ -3,12 +3,9 @@ use std::io::Write;
 use std::process::Stdio;
 
 fn retained_command(recipes: &Path, operation: &str) -> Command {
+    require_ginux();
     let mut command = recipe_command(recipes);
     command
-        .env(
-            "GINUX_BIN",
-            std::env::var_os("GINUX_BIN").expect("real Ginux launcher required"),
-        )
         .env("TMPDIR", recipes.parent().unwrap())
         .env_remove("RECIPE_WORKER")
         .env_remove("RECIPE_INVOCATION")
@@ -426,7 +423,6 @@ fn managed_state_defaults_to_application_state_without_a_checkout() {
     write_recipe(&recipes, "check", SOURCE);
     for builds in [true, false] {
         let output = recipe_command(&recipes)
-            .env("GINUX_BIN", std::env::var_os("GINUX_BIN").unwrap())
             .env("XDG_STATE_HOME", dir.path().join("application-state"))
             .env_remove("RECIPE_WORKER")
             .env_remove("RECIPE_INVOCATION")

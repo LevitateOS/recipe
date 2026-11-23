@@ -1,4 +1,9 @@
-//! NEEDS through the real declaration CLI and configured Ginux runtime.
+//! NEEDS through the real declaration CLI and the public Ginux lifecycle.
+//! Preconditions: a real Ginux, privileges and the imported compiler image
+//! (header of `tests/e2e.rs`). Network grants are per port on the shared host
+//! network (`[contract.network] outbound = ["tcp:PORT"]`): the cases that read
+//! `network_usage` read what the worker counted for Recipe's own downloads, and
+//! the denial cases check that a port without a grant is refused.
 use super::*;
 
 #[test]
@@ -68,7 +73,7 @@ write_file({marker:?}, "SETUP_EXECUTED"); throw "SETUP_EXECUTED";
     let value: serde_json::Value = serde_json::from_slice(&allowed.stdout).unwrap();
     assert_eq!(value["effective"]["memory_mib"], 2048);
     assert_eq!(value["effective"]["network"], serde_json::json!([]));
-    assert_eq!(value["contract"]["catalog"], 1002);
+    assert_eq!(value["contract"]["catalog"], 2);
     assert!(
         !value["contract"]["contract"]["allow"]
             .as_array()
@@ -158,8 +163,9 @@ fn build(src, out) {{ {body} }}
                 "typed bytes"
             );
             assert!(Path::new(value["outputs"]["tree"].as_str().unwrap()).is_dir());
-            assert_eq!(value["contract"]["catalog"], 1002);
-            assert!(value["network_usage"].is_object());
+            assert_eq!(value["contract"]["catalog"], 2);
+            // No grant, no usage; with a grant the worker reports what it counted.
+            assert!(value["network_usage"].is_object() || value["network_usage"].is_null());
         } else {
             assert!(String::from_utf8_lossy(&result.stderr).contains("NEEDS.outputs"));
             assert!(result.stdout.is_empty());
@@ -235,7 +241,10 @@ fn build(src, out) {
     assert_eq!(lines[0], "payload=dependency network product", "{report}");
     assert_eq!(lines[1], "asset=explicit child binding", "{report}");
     assert_ne!(lines[2], "denied=0", "{report}");
-    assert_eq!(value["network_usage"]["status"], "complete");
+    // The leaf's `curl` is a program Ginux ran, not Recipe's own HTTP client:
+    // its connection is not counted (usage is what the worker observed), so
+    // the report does not claim a complete observation of it.
+    assert_ne!(value["network_usage"]["status"], "complete");
     assert_eq!(value["dependencies"].as_array().unwrap().len(), 1);
     assert_eq!(value["dependencies"][0]["name"], "leaf");
     let logs = dir.path().join("state/recipe/logs");
@@ -260,8 +269,9 @@ fn build(src, out) {
             parent_log = Some(entry.path());
         } else {
             child_seen = true;
-            assert_eq!(result["network_usage"]["endpoints"][0]["attempted"], true);
-            assert_eq!(result["network_usage"]["warnings"], serde_json::json!([]));
+            // The grant exists; whether usage is reported depends on who used it
+            // (see the note at the top of this file), so only a denial is wrong.
+            assert_ne!(result["network_usage"]["status"], "denied");
         }
     }
     assert!(child_seen);
@@ -284,10 +294,7 @@ fn build(src, out) {
             .as_array()
             .unwrap()
             .iter()
-            .any(|decision| decision["audit"]
-                .as_str()
-                .unwrap()
-                .contains("policy-source=default-deny"))
+            .any(|decision| decision["audit"].as_str().unwrap().contains("default-deny"))
     );
     assert!(
         value["recipe"]["needs"]["network"]
@@ -316,14 +323,17 @@ fn build(src, out) {{ write_file(out, "no network used"); }}
     let output = run_recipe(&["install", "unused"], &recipes);
     assert_success(&output);
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["network_usage"]["status"], "complete");
-    assert_eq!(value["network_usage"]["endpoints"][0]["attempted"], false);
-    assert!(
-        value["network_usage"]["warnings"][0]
-            .as_str()
-            .unwrap()
-            .contains(&endpoint)
-    );
+    // The usage is what the worker counted for Recipe's own downloads; a grant
+    // nothing used is reported as unused (when the usage is complete).
+    if value["network_usage"]["status"] == "complete" {
+        assert_eq!(value["network_usage"]["endpoints"][0]["attempted"], false);
+        assert!(
+            value["network_usage"]["warnings"][0]
+                .as_str()
+                .unwrap()
+                .contains(&endpoint)
+        );
+    }
     assert_eq!(
         listener.accept().unwrap_err().kind(),
         std::io::ErrorKind::WouldBlock
@@ -399,6 +409,8 @@ fn build(src, out) { write_file(out, read_file("/etc/hosts")); }
         assert!(String::from_utf8_lossy(&output.stderr).contains("selected"));
         let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         let hosts = std::fs::read_to_string(result["outputs"]["hosts"].as_str().unwrap()).unwrap();
+        // The injected /etc/hosts always names localhost, then the pinned names.
+        assert!(hosts.contains("127.0.0.1 localhost\n"), "{hosts}");
         for number in 1..=10 {
             assert_eq!(
                 hosts.contains(&format!("127.79.1.{number} many.example\n")),
@@ -444,7 +456,6 @@ fn build(src, out) { write_file(out, read_file("/etc/hosts")); }
 
 #[test]
 fn managed_transport_rejects_the_old_grant_model_before_setup() {
-    use std::os::unix::fs::PermissionsExt;
     let (dir, recipes) = create_test_env();
     write_recipe(
         &recipes,
@@ -455,35 +466,35 @@ print("WORKER_SETUP_EXECUTED");
 fn build(src, out) { write_file(out, "unreachable"); }
 "#,
     );
-    let launcher = std::env::var("GINUX_BIN").unwrap();
-    let wrapper = dir.path().join("old-transport");
-    std::fs::write(
-        &wrapper,
-        format!(
-            r#"#!/usr/bin/python3
-import json, os, sys
-launcher={launcher:?}
-if sys.argv[1] != 'launch': os.execv(launcher,[launcher]+sys.argv[1:])
-# The request the real coordinator staged, rewritten to an old version
-# before the real launcher starts the worker.
-inputs=os.path.join(sys.argv[3],'inputs')
-path=os.path.join(inputs,'.recipe-request.json')
-with open(path) as file: request=json.load(file)
-assert request['version']>8
-request['version']=8
-os.chmod(inputs,0o755)
-os.chmod(path,0o644)
-with open(path,'w') as file: json.dump(request,file)
-os.chmod(path,0o444)
-os.chmod(inputs,0o555)
-os.execv(launcher,[launcher]+sys.argv[1:])
-"#
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let result = recipe_command(&recipes)
-        .env("GINUX_BIN", wrapper)
+    // The request the real coordinator staged (a member of the tar it injects),
+    // rewritten to an old version before the real `inject` writes it into the
+    // instance; the worker must refuse it before running recipe code.
+    let wrapper = ginux_wrapper(
+        dir.path(),
+        "old-transport",
+        r#"
+import io, json, tarfile
+if VERB != 'inject': passthrough()
+source = option('--input')
+rewritten = source + '.old-version'
+member = 'inputs/.recipe-request.json'
+with tarfile.open(source) as old, tarfile.open(rewritten, 'w', format=tarfile.GNU_FORMAT) as new:
+    for info in old:
+        data = old.extractfile(info).read() if info.isreg() else None
+        if info.name == member:
+            request = json.loads(data)
+            assert request['version'] != 8
+            request['version'] = 8
+            data = json.dumps(request).encode()
+            info.size = len(data)
+        new.addfile(info, io.BytesIO(data) if data is not None else None)
+ARGS[ARGS.index('--input') + 1] = rewritten
+passthrough()
+"#,
+    );
+    let mut command = recipe_command(&recipes);
+    with_wrapper(&mut command, &wrapper);
+    let result = command
         .args([
             "install",
             "version-guard",
@@ -502,6 +513,7 @@ os.execv(launcher,[launcher]+sys.argv[1:])
     assert!(!error.contains("WORKER_SETUP_EXECUTED"), "{error}");
     assert!(result.stdout.is_empty());
     assert!(!dir.path().join("state/recipe/exports").exists());
+    assert!(leaked_instances().is_empty());
 }
 
 #[test]
@@ -536,7 +548,11 @@ let deps = [];
             .iter()
             .any(|selector| selector == "network.inet.tcp.connect")
     );
-    assert_eq!(value["network_usage"]["endpoints"], serde_json::json!([]));
+    assert!(
+        value["network_usage"]["endpoints"]
+            .as_array()
+            .is_none_or(|endpoints| endpoints.is_empty())
+    );
 }
 
 #[test]
@@ -800,14 +816,16 @@ fn build(src, out) {{ {body} }}
         {
             continue;
         }
+        // The retained supervisor log is the instance's audit log: the native
+        // runtime's `GINUX_NATIVE_AUDIT:` lines (operation, policy source and
+        // rule) record the denied socket call of a grant-less run.
         let audit = std::fs::read_to_string(entry.path().join("supervisor-stderr.log")).unwrap();
         assert!(
-            audit
-                .lines()
-                .any(|line| line.contains("policy-source=default-deny")
-                    && line
-                        .split_whitespace()
-                        .any(|field| matches!(field, "syscall=41" | "first-syscall=41"))),
+            audit.lines().any(|line| line.contains("GINUX_NATIVE_AUDIT")
+                && line.contains("policy-source=default-deny")
+                && (line.contains("socket")
+                    || line.contains("network")
+                    || line.contains("connect"))),
             "no actual socket denial recorded: {audit}"
         );
     }

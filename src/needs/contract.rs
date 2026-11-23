@@ -2,23 +2,19 @@
 //! starting a workload or resolving a network hostname.
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
-use std::process::Command;
-use std::time::Duration;
 
 /// The Ginux runtime Recipe runs its workers on. Each kind has its own pins
-/// ([`Pins`]); [`RUNTIME`] is the one in use. Today that is the fork's
-/// configured `ginux launch`; the move to upstream's public lifecycle adds a
-/// kind here and edits this table, nothing else
-/// (`docs/ginux-public-lifecycle-migration.md`, section 6, Stage 2).
+/// ([`Pins`]); [`RUNTIME`] is the one in use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeKind {
-    /// `ginux launch CONFIG ROOT ...` (`crate::launch`).
-    ConfiguredLaunch,
+    /// Upstream's public instance lifecycle (`ginux import`, `inject`,
+    /// `start --wait`, `status`, `extract`, `delete`; `crate::launch`), the
+    /// native configured runtime under catalog 2.
+    PublicLifecycle,
 }
 
 /// The runtime kind Recipe uses.
-pub const RUNTIME: RuntimeKind = RuntimeKind::ConfiguredLaunch;
+pub const RUNTIME: RuntimeKind = RuntimeKind::PublicLifecycle;
 
 /// What Recipe pins about a runtime: the catalog it must select and the
 /// build-base digests it must report for the derived contract, with and
@@ -43,41 +39,29 @@ impl Pins {
     }
 }
 
+/// Stands where a digest is not derived yet. No Ginux reports it, so every
+/// validation fails, naming the digest Ginux did report
+/// ([`validate`]); `docs/ginux-cutover-design.md`, section 6, derives the
+/// real values with a built Ginux CLI and writes them into the row.
+pub const PLACEHOLDER_DIGEST: &str = "PLACEHOLDER-DERIVE-IN-VERIFICATION";
+
 impl RuntimeKind {
     /// The pins table: one row per runtime kind, the only place the values
     /// are written. Every reader goes through it.
     pub const fn pins(self) -> &'static Pins {
         match self {
             // The build-base digests Ginux must report for the derived contract, with and
-            // without an outbound grant. Reviewed after upstream cfebfdab: configured
-            // rt_sigpending and sigaltstack affect only the calling thread. Reviewed again
-            // for LevitateOS/ginux e5c781d7: tkill and tgkill reach only threads of the
-            // caller's own process (others: the kill subset). Reviewed again for
-            // LevitateOS/ginux 7cc8133e: preadv, readahead, fadvise64, sendfile,
-            // copy_file_range and the xattr calls add no authority beyond read, write and
-            // stat on the same descriptor or path. Reviewed again for
-            // LevitateOS/ginux 8afe55a6 (upstream Gates 18 and 19 merged): getpgid and
-            // getsid report the virtual process group and session. Reviewed again for
-            // LevitateOS/ginux d777b0ad (upstream Gates 20 to 22 merged): getrandom,
-            // sysinfo, pidfd and waitid changes alter results, not the catalog; digests
-            // unchanged. Reviewed again for LevitateOS/ginux abcc3337 (upstream Gates 23
-            // and 24 merged): sysinfo memory and reaped-sender credentials alter results,
-            // not the catalog; digests unchanged. Reviewed again for LevitateOS/ginux
-            // e3be44ce: a restarted task creation is settled apart from a signal
-            // handler's calls; supervision only, digests unchanged. Reviewed again for
-            // LevitateOS/ginux f9bef00a (upstream #273-#289, Gates 25 and 26 merged):
-            // the operator CLI, native clone policy, console descriptor mediation and
-            // native descriptor tables leave the instance schema and the configured
-            // catalog as they were; digests unchanged. Reviewed again for
-            // LevitateOS/ginux e3b71ac0 (upstream #291-#306, Gates 31-46 merged): the
-            // catalog grows from 215 to 216 operations with `sync`; `sync` and `syncfs`
-            // are now explicit EPERM contract denials (base-profile denials
-            // `syscall.sync` and `syscall.syncfs`, formerly unserved ENOSYS) and add no
-            // authority; both digests change. Fixed exclusions remain.
-            RuntimeKind::ConfiguredLaunch => &Pins {
-                catalog: 1002,
-                base_digest_network: "6fd467426ff939e7892af3bd55f2b3eb2845b0bb88a8ddefaf3af689df7bd7f3",
-                base_digest_offline: "32f20da74ff995f4cb15990d1b57c7f8a07cba293be459fce2841f37ff78ec00",
+            // without an outbound grant, under catalog 2. Each change is reviewed: for every
+            // `allow`/`deny` selector, `ginux inspect` and `ginux explain` on the two
+            // declaration-only configs ([`inspection_config`]); the review is recorded here.
+            // Public-lifecycle cutover (LevitateOS/ginux 8f4d53ba): catalog 1002 → 2; the
+            // configured operations lstat, readv, pipe, nanosleep, sendfile, link and
+            // rt_sigpending are not in catalog 2; selectors unchanged; both digests change
+            // and are not derived yet (docs/ginux-cutover-design.md, section 6).
+            RuntimeKind::PublicLifecycle => &Pins {
+                catalog: 2,
+                base_digest_network: PLACEHOLDER_DIGEST,
+                base_digest_offline: PLACEHOLDER_DIGEST,
             },
         }
     }
@@ -101,9 +85,80 @@ pub(crate) fn operation(name: &str) -> &str {
     }
 }
 
-/// Whether `options` grant any outbound endpoint, which selects the contract.
-fn connects(options: &crate::ExecutionOptions) -> bool {
-    !options.network_hosts.is_empty()
+/// The distinct TCP ports of the endpoints `options` declare, sorted. Known
+/// without resolving a host, so it is empty exactly when `options` declare no
+/// endpoint (an entry that does not parse is refused where the grant is
+/// resolved, `crate::inputs`). A run grants only the ports that kept a pinned
+/// address (`crate::inputs::network::NetworkPolicy::outbound`).
+pub(crate) fn outbound_ports(options: &crate::ExecutionOptions) -> Vec<u16> {
+    options
+        .network_hosts
+        .iter()
+        .filter_map(|grant| match grant.parse::<std::net::SocketAddr>() {
+            Ok(address) => Some(address.port()),
+            Err(_) => grant.rsplit_once(':')?.1.parse().ok(),
+        })
+        .filter(|port| *port != 0)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// The outbound side of a Ginux config: the TCP ports `[contract.network]
+/// outbound` grants, the `[network]` backend they need and the contract they
+/// select. The one place this is decided, for the declaration-only config
+/// ([`Outbound::declared`], [`inspection_config`]) and for a run's config
+/// (`crate::inputs::network::NetworkPolicy::outbound`, the ports that kept a
+/// pinned address). Ginux refuses an outbound list on any backend but
+/// `shared`, so no ports means backend `none` and the offline contract.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Outbound {
+    ports: Vec<u16>,
+}
+
+impl Outbound {
+    /// The grant of `ports`: distinct, sorted, port 0 dropped.
+    pub(crate) fn of(ports: impl IntoIterator<Item = u16>) -> Self {
+        Self {
+            ports: ports
+                .into_iter()
+                .filter(|port| *port != 0)
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    /// The ports `options` declare, unresolved: what `recipe inspect` and the
+    /// per-node check validate.
+    pub(crate) fn declared(options: &crate::ExecutionOptions) -> Self {
+        Self::of(outbound_ports(options))
+    }
+
+    /// The granted ports (`[contract.network] outbound`).
+    pub(crate) fn ports(&self) -> &[u16] {
+        &self.ports
+    }
+
+    /// Whether any port is granted: selects the contract and its digest.
+    pub(crate) fn network(&self) -> bool {
+        !self.ports.is_empty()
+    }
+
+    /// The `[network] backend`: `shared` with granted ports, else `none`.
+    pub(crate) fn backend(&self) -> &'static str {
+        if self.network() { "shared" } else { "none" }
+    }
+
+    /// The contract this grant selects.
+    pub(crate) fn contract(&self) -> Contract {
+        Contract::derived(self.network())
+    }
+
+    /// The `[network]` section of a config.
+    pub(crate) fn network_section(&self) -> String {
+        format!("\n[network]\nbackend = \"{}\"\n", self.backend())
+    }
 }
 
 /// Finite, version-pinned build base in upstream's hierarchical format.
@@ -116,11 +171,6 @@ pub struct Contract {
 }
 
 impl Contract {
-    /// The contract Recipe derives for resolved `options`.
-    pub(crate) fn of(options: &crate::ExecutionOptions) -> Self {
-        Self::derived(connects(options))
-    }
-
     pub fn derived(network: bool) -> Self {
         let mut allow = vec![
             "syscall.*",
@@ -172,6 +222,31 @@ impl Contract {
         )
     }
 
+    /// The contract's filesystem and network lists: everything readable, only
+    /// the writable trees written, and outbound TCP to `ports` (none: no
+    /// network section). Ginux derives grants from whether each list is
+    /// present, not from its entries, so these sections enter the contract
+    /// digest only by being there; [`inspection_config`] renders them as an
+    /// invocation config does.
+    pub fn render_lists(ports: &[u16]) -> String {
+        let mut out = format!(
+            "\n[contract.filesystem]\ndefault = \"deny\"\nread = [\"/\"]\nwrite = [\"{work}\", \"{out}\"]\ncreate = [\"{work}\", \"{out}\"]\n",
+            work = crate::domain::WORK,
+            out = crate::domain::OUT,
+        );
+        if !ports.is_empty() {
+            let outbound = ports
+                .iter()
+                .map(|port| format!("tcp:{port}"))
+                .collect::<Vec<_>>();
+            out.push_str(&format!(
+                "\n[contract.network]\ndefault = \"deny\"\noutbound = {}\n",
+                serde_json::to_string(&outbound).expect("string array")
+            ));
+        }
+        out
+    }
+
     /// Map the effective upstream rule back to its declaration/base owner.
     pub fn provenance(&self, source: &str, index: usize, operation: &str) -> String {
         if operation == TCP_CONNECT {
@@ -179,7 +254,10 @@ impl Contract {
                 "NEEDS.network has no effective outbound TCP grant (including caller narrowing)"
                     .into()
             } else {
-                "NEEDS.network (restricted by caller subset and pinned numeric endpoints)".into()
+                "NEEDS.network: outbound TCP on the shared host network to the ports of the \
+                 declared endpoints (caller narrowing included); only Recipe's own downloads are \
+                 held to the pinned addresses"
+                    .into()
             };
         }
         if source == "exact-deny" {
@@ -213,186 +291,145 @@ pub struct Receipt {
 }
 
 /// A declaration-only config: no image opening, DNS, staging or recipe setup.
-/// Actual invocation constraints are rendered and validated separately.
+/// Actual invocation constraints are rendered and validated separately
+/// (`crate::inputs::InstanceConfig::render`); the contract sections are the
+/// same text, so both give the same digest.
 pub fn inspection_config(options: &crate::ExecutionOptions) -> String {
+    let outbound = Outbound::declared(options);
     format!(
-        "schema_version = 1\n[instance]\nid = \"recipe-contract\"\nroot = \"oci:recipe-contract@sha256:{}\"\ninit = \"{}\"\nargs = []\nenvironment = []\n[resources]\nvcpus = {}\nmemory_mib = {}\n[execution]\nprofile = \"balanced\"\nbackend = \"ptrace-native\"\n{}\n[storage]\nassignments = []\n[devices]\nassignments = []\n[network]\nbackend = \"none\"\n[audit]\nenabled = true\n[failure]\npolicy = \"stop\"\n",
+        "schema_version = 1\n[instance]\nid = \"recipe-contract\"\nroot = \"local/recipe-contract@sha256:{}\"\ninit = \"{}\"\nargs = []\nenvironment = []\n[resources]\nvcpus = {}\nmemory_mib = {}\n[execution]\nprofile = \"balanced\"\nbackend = \"ptrace-native\"\n[access]\nuid = {}\ngid = {}\n{}{}\n[storage]\nassignments = []\n[devices]\nassignments = []\n{}\n[audit]\nenabled = true\n[failure]\npolicy = \"stop\"\n",
         "0".repeat(64),
         crate::domain::WORKER,
         options.jobs,
         options.memory_mib,
-        Contract::of(options).render()
+        crate::domain::UID,
+        crate::domain::UID,
+        outbound.contract().render(),
+        Contract::render_lists(outbound.ports()),
+        outbound.network_section(),
     )
 }
 
+/// Run `ginux validate FILE`, or `ginux explain FILE OPERATION` when
+/// `operation` is given, on `config` written to a private file. Both parse
+/// the file locally, unprivileged, and start nothing. A non-zero exit is an
+/// error carrying Ginux's own text.
 pub(crate) fn command(
-    launcher: &Path,
+    ginux: &crate::ginux::Ginux,
     config: &str,
-    operation: &str,
-    argument: Option<&str>,
+    operation: Option<&str>,
 ) -> Result<String> {
     use std::io::Write;
     let mut file = tempfile::NamedTempFile::new()?;
     file.write_all(config.as_bytes())?;
-    let mut command = Command::new(launcher);
-    command.arg(operation).arg(file.path());
-    if let Some(argument) = argument {
-        command.arg(argument);
-    }
-    let output = crate::process::Run::new(command)
-        .keep(crate::process::Keep::Limit(256 * 1024))
-        .deadline(Duration::from_secs(10))
-        .run()
-        .map_err(|error| anyhow::anyhow!("Ginux declaration validation failed: {error:?}"))?;
+    let (verb, call) = match operation {
+        None => ("validate", ginux.validate(file.path())?),
+        Some(operation) => ("explain", ginux.explain(file.path(), operation)?),
+    };
     ensure!(
-        output.exit.success(),
-        "Ginux {operation} rejected derived contract: {} {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        call.ok(),
+        "ginux {verb} rejected the derived contract: {} {}",
+        String::from_utf8_lossy(&call.stdout),
+        call.message()
     );
-    String::from_utf8(output.stdout).context("Ginux contract output is not UTF-8")
-}
-
-/// The environment variable that turns Ginux archive import off: `0` off,
-/// `1` or empty on where the launcher supports it; anything else is an error.
-pub const ARCHIVE_IMPORT_ENV: &str = "RECIPE_ARCHIVE_IMPORT";
-
-/// The environment variable that turns the `/dev/random` and `/dev/urandom`
-/// device assignments off: `0` off, `1` or empty on where the launcher
-/// supports them; anything else is an error.
-pub const RANDOM_DEVICES_ENV: &str = "RECIPE_RANDOM_DEVICES";
-
-/// Whether the launcher accepts a config feature newer than some Ginux builds.
-///
-/// A Ginux that predates the feature rejects any config carrying it, so the
-/// launcher is asked once: `instance-validate` on the declaration-only config
-/// of `options` with `table`'s `anchor` text replaced by `replacement`. It
-/// parses the whole config exactly as a launch would and starts no workload.
-/// Any failure of that probe reads as "not supported"; the invocation's own
-/// validation, without the feature, then reports a launcher that is broken for
-/// other reasons. The answer is kept in `cache` per launcher digest for the
-/// coordinator's lifetime. `env` overrides it: `0` off, `1` or empty probe,
-/// anything else an error.
-fn probe_feature(
-    launcher: &Path,
-    options: &crate::ExecutionOptions,
-    env: &str,
-    cache: &std::sync::Mutex<std::collections::BTreeMap<String, bool>>,
-    anchor: &str,
-    replacement: &str,
-    accepts: fn(&str) -> bool,
-) -> Result<bool> {
-    match std::env::var_os(env) {
-        None => {}
-        Some(value) => match value.to_str() {
-            Some("0") => return Ok(false),
-            Some("1" | "") => {}
-            _ => anyhow::bail!("{env} must be 1, 0 or empty"),
-        },
-    }
-    let digest = crate::retained::file_digest(launcher)?;
-    if let Some(known) = cache.lock().expect("probe cache").get(&digest) {
-        return Ok(*known);
-    }
-    let plain = inspection_config(options);
-    let config = plain.replace(anchor, replacement);
-    ensure!(
-        config != plain,
-        "{env} probe found no {anchor:?} in the config"
-    );
-    let supported = command(launcher, &config, "instance-validate", None)
-        .is_ok_and(|text| text.starts_with("Contract valid:") && accepts(&text));
-    cache.lock().expect("probe cache").insert(digest, supported);
-    Ok(supported)
-}
-
-/// Whether invocation configs for `launcher` enable `[storage]
-/// archive_import`, so a workload can unpack a whole tree as one stream
-/// (`crate::target::unpack_tree`). Probed by [`probe_feature`].
-pub(crate) fn archive_import(launcher: &Path, options: &crate::ExecutionOptions) -> Result<bool> {
-    use std::collections::BTreeMap;
-    use std::sync::Mutex;
-    static SUPPORTED: Mutex<BTreeMap<String, bool>> = Mutex::new(BTreeMap::new());
-    probe_feature(
-        launcher,
-        options,
-        ARCHIVE_IMPORT_ENV,
-        &SUPPORTED,
-        "\n[storage]\nassignments = []\n",
-        "\n[storage]\nassignments = []\narchive_import = true\n",
-        // An older launcher rejects the unknown field at validation.
-        |_| true,
-    )
-}
-
-/// Whether invocation configs for `launcher` assign the `random` and
-/// `urandom` devices (`/dev/random`, `/dev/urandom`) next to `null`. Probed by
-/// [`probe_feature`]. Validation does not check device names, so an older
-/// launcher accepts them and only fails when the launch starts: support is
-/// read from the `configured-devices=` list a launcher that serves them adds
-/// to its validation line.
-pub(crate) fn random_devices(launcher: &Path, options: &crate::ExecutionOptions) -> Result<bool> {
-    use std::collections::BTreeMap;
-    use std::sync::Mutex;
-    static SUPPORTED: Mutex<BTreeMap<String, bool>> = Mutex::new(BTreeMap::new());
-    probe_feature(
-        launcher,
-        options,
-        RANDOM_DEVICES_ENV,
-        &SUPPORTED,
-        "\n[devices]\nassignments = []\n",
-        "\n[devices]\nassignments = [\"random\", \"urandom\"]\n",
-        |text| {
-            text.split_whitespace()
-                .find_map(|field| field.strip_prefix("configured-devices="))
-                .is_some_and(|list| {
-                    let names: Vec<&str> = list.split(',').collect();
-                    names.contains(&"random") && names.contains(&"urandom")
-                })
-        },
-    )
+    String::from_utf8(call.stdout).context("ginux contract output is not UTF-8")
 }
 
 /// Validate the declaration-only contract of `options` ([`inspection_config`]).
-pub(crate) fn inspect(launcher: &Path, options: &crate::ExecutionOptions) -> Result<Receipt> {
-    validate(launcher, &inspection_config(options), options)
+pub(crate) fn inspect(
+    ginux: &crate::ginux::Ginux,
+    options: &crate::ExecutionOptions,
+) -> Result<Receipt> {
+    validate(ginux, &inspection_config(options), options)
 }
 
-/// Have Ginux validate `config`, which must carry the contract of `options`.
+/// Have Ginux validate `config`, a contract Recipe derived for `options`.
+///
+/// The outbound grant is read from `config` itself (a run grants only the
+/// declared ports that kept a pinned address, [`Outbound`]): its ports must be
+/// declared by `options`, and its contract and backend must be the ones that
+/// grant selects. The catalog is read from `config` too: `ginux validate`
+/// prints the catalog compiled into the CLI, whatever the config selects, so
+/// only its `digest=` is trusted.
 pub(crate) fn validate(
-    launcher: &Path,
+    ginux: &crate::ginux::Ginux,
     config: &str,
     options: &crate::ExecutionOptions,
 ) -> Result<Receipt> {
-    let network = connects(options);
-    let text = command(launcher, config, "instance-validate", None)?;
-    ensure!(
-        text.starts_with("Contract valid:"),
-        "Ginux does not implement required contract validation"
-    );
-    let value = |field: &str| {
-        text.split_whitespace()
-            .find_map(|word| word.strip_prefix(field))
-    };
-    ensure!(
-        value("configured-network-audit=") == Some("1"),
-        "Ginux lacks required configured endpoint audit/usage v1; select the NEEDS-capable configured runtime"
-    );
-    ensure!(
-        value("configured-denial-audit=") == Some("1"),
-        "Ginux lacks required configured bounded denial audit v1; select the NEEDS-capable configured runtime"
-    );
-    let catalog: u32 = value("catalog=")
-        .context("Ginux omitted selected catalog")?
-        .parse()?;
     let pins = pins();
+    let parsed: toml::Value = toml::from_str(config).context("invalid rendered Ginux config")?;
+    let contract = parsed
+        .get("contract")
+        .context("the rendered Ginux config has no contract")?;
+    let catalog = contract
+        .get("catalog")
+        .and_then(toml::Value::as_integer)
+        .context("the rendered Ginux config selects no catalog")?;
     ensure!(
-        catalog == pins.catalog,
-        "Ginux selected catalog {catalog}, expected {}",
+        catalog == i64::from(pins.catalog),
+        "the rendered Ginux config selects catalog {catalog}, expected {}",
         pins.catalog
     );
-    let digest = value("digest=")
-        .context("Ginux omitted contract digest")?
+    let ports = match contract
+        .get("network")
+        .and_then(|network| network.get("outbound"))
+    {
+        None => Vec::new(),
+        Some(list) => list
+            .as_array()
+            .context("the rendered Ginux config's outbound list is not a list")?
+            .iter()
+            .map(|entry| {
+                entry
+                    .as_str()
+                    .and_then(|entry| entry.strip_prefix("tcp:"))
+                    .and_then(|port| port.parse::<u16>().ok())
+                    .with_context(|| {
+                        format!("the rendered Ginux config grants {entry}, not a TCP port")
+                    })
+            })
+            .collect::<Result<_>>()?,
+    };
+    let outbound = Outbound::of(ports);
+    let declared = outbound_ports(options);
+    ensure!(
+        outbound.ports().iter().all(|port| declared.contains(port)),
+        "the rendered Ginux config grants outbound ports {:?}, NEEDS.network declares {declared:?}",
+        outbound.ports()
+    );
+    let derived = outbound.contract();
+    let list = |key: &str| -> Option<Vec<String>> {
+        contract
+            .get(key)?
+            .as_array()?
+            .iter()
+            .map(|rule| rule.as_str().map(str::to_owned))
+            .collect()
+    };
+    ensure!(
+        list("allow").as_ref() == Some(&derived.allow)
+            && list("deny").as_ref() == Some(&derived.deny),
+        "the rendered Ginux config's contract is not the one its outbound grant selects"
+    );
+    let backend = parsed
+        .get("network")
+        .and_then(|network| network.get("backend"))
+        .and_then(toml::Value::as_str);
+    ensure!(
+        backend == Some(outbound.backend()),
+        "the rendered Ginux config selects network backend {backend:?}, its outbound grant needs {:?}",
+        outbound.backend()
+    );
+    let network = outbound.network();
+    let text = command(ginux, config, None)?;
+    ensure!(
+        text.starts_with("Contract valid:"),
+        "ginux validate printed no contract: {text}"
+    );
+    let digest = text
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("digest="))
+        .context("ginux validate omitted the contract digest")?
         .to_owned();
     ensure!(
         digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
@@ -401,12 +438,19 @@ pub(crate) fn validate(
     let expected = pins.base_digest(network);
     ensure!(
         digest == expected,
-        "Ginux catalog-{} build-base digest changed: expected {expected}, got {digest}; review the catalog and derived grants explicitly",
-        pins.catalog
+        "Ginux catalog-{} build-base digest changed: expected {expected}, got {digest}; {}",
+        pins.catalog,
+        if expected == PLACEHOLDER_DIGEST {
+            "the public-lifecycle digests are not derived yet: derive both as \
+             docs/ginux-cutover-design.md, section 6, says and write them into \
+             RuntimeKind::PublicLifecycle (src/needs/contract.rs)"
+        } else {
+            "review the catalog and derived grants explicitly"
+        }
     );
     Ok(Receipt {
-        catalog,
+        catalog: pins.catalog,
         digest,
-        contract: Contract::derived(network),
+        contract: derived,
     })
 }

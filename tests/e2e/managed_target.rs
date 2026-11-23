@@ -1,4 +1,7 @@
-//! Actual supervised CLI checks of an explicitly selected installed target.
+//! Actual CLI checks of an explicitly selected installed target, run in a real
+//! Ginux instance on the public lifecycle. Preconditions: header of
+//! `tests/e2e.rs`. The target is staged as a copy (injected), not bound: hard
+//! links inside it become regular files in the instance.
 use super::*;
 use std::path::PathBuf;
 
@@ -18,12 +21,9 @@ fn build(src, out) {
 
 fn target_command(recipes: &Path, operation: &str, target: &Path) -> Command {
     let root = recipes.parent().unwrap();
+    require_ginux();
     let mut command = recipe_command(recipes);
     command
-        .env(
-            "GINUX_BIN",
-            std::env::var_os("GINUX_BIN").expect("real Ginux launcher required"),
-        )
         .env_remove("RECIPE_WORKER")
         .env_remove("RECIPE_INVOCATION")
         .args([operation, "check", "--recipes-path"])

@@ -4,10 +4,12 @@
 Ginux: install 15.1.0, run `rg`, update to pinned 15.2.0, reject a denied update
 without changing active software, then remove it without catalog/runtime access.
 It installs only into a new directory below `--artifacts` and retains logs.
-With the runtime selections below and whole-coordinator privileges:
+With the runtime selections below (`RECIPE_GINUX`, `RECIPE_IMAGE`, `RECIPE_IMAGE_LAYOUT`) and
+whole-coordinator privileges (root; the scripts also work for a member of the
+group a `recipe runtime stage --sudoers GROUP` rule names, without `sudo`):
 
 ```sh
-sudo -n --preserve-env=GINUX_BIN,GINUX_ROOTFS,GINUX_ROOT \
+sudo -n --preserve-env=RECIPE_GINUX,RECIPE_IMAGE,RECIPE_IMAGE_LAYOUT,GINUX_INSTANCE_HELPER \
   python3 tools/recipe/tests/consumers/user-packages.py \
   --binary "$PWD/target/debug/recipe" --recipe "$PWD/recipes/ripgrep.rhai" \
   --artifacts "$PWD/.artifacts/consumers/user-packages"
@@ -18,25 +20,30 @@ published package through Ginux. It checks producer-only execution, activation,
 file conflicts and preservation of an unmanaged profile:
 
 ```sh
-sudo -n --preserve-env=GINUX_BIN,GINUX_ROOTFS,GINUX_ROOT \
+sudo -n --preserve-env=RECIPE_GINUX,RECIPE_IMAGE,RECIPE_IMAGE_LAYOUT,GINUX_INSTANCE_HELPER \
   python3 tools/recipe/tests/consumers/package-boundaries.py \
   --binary "$PWD/target/debug/recipe" --program /absolute/published/package/bin/rg \
   --artifacts "$PWD/.artifacts/consumers/package-boundaries"
 ```
 
-`run.py` drives the real Recipe CLI, matching worker and configured Ginux
-launcher. It does not compile or execute the workload on the host. Select all
-three executables and the digest-verified compiler/acquisition image explicitly:
+`run.py` drives the real Recipe CLI, matching worker and the `ginux` CLI on the
+public lifecycle (the Ginux files are installed root-owned at
+`/usr/libexec/ginux`, or a root-owned wrapper is named by
+`GINUX_INSTANCE_HELPER`). It does not compile or execute the workload on the
+host. Select the three executables and the compiler/acquisition image (an OCI
+layout and the reference of its manifest digest) explicitly; the old
+`GINUX_BIN`, `GINUX_ROOT` and `GINUX_ROOTFS` are refused by Recipe and by the
+runner:
 
 ```sh
 export RECIPE_TEST_BIN=/absolute/path/to/recipe
 export RECIPE_WORKER_BIN="$RECIPE_TEST_BIN"
-export GINUX_BIN=/absolute/path/to/ginux
-export GINUX_ROOTFS=/absolute/path/to/rootfs.tar
-export GINUX_ROOT=oci:recipe-compiler@sha256:IMAGE_DIGEST
+export RECIPE_GINUX=/absolute/path/to/ginux
+export RECIPE_IMAGE_LAYOUT=/absolute/path/to/image.oci.tar
+export RECIPE_IMAGE=local/recipe-compiler@sha256:MANIFEST_DIGEST   # provenance.json "manifest_digest"
 
-# Run the whole coordinator with the launcher's documented bootstrap privileges.
-sudo -n --preserve-env=RECIPE_TEST_BIN,RECIPE_WORKER_BIN,GINUX_BIN,GINUX_ROOTFS,GINUX_ROOT \
+# Run the whole coordinator as root: the public lifecycle runs the Ginux helper through sudo.
+sudo -n --preserve-env=RECIPE_TEST_BIN,RECIPE_WORKER_BIN,RECIPE_GINUX,RECIPE_IMAGE,RECIPE_IMAGE_LAYOUT,GINUX_INSTANCE_HELPER \
   python3 tools/recipe/tests/consumers/run.py sqlite --output .artifacts/consumers/sqlite
 ```
 

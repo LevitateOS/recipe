@@ -1,8 +1,11 @@
-//! Coordinator-owned outbound grants. Workloads receive pinned addresses and
-//! immutable hostname mappings, never a host DNS or proxy capability.
+//! Coordinator-owned outbound grants: each `NEEDS.network` endpoint resolved
+//! once, by the coordinator, to pinned addresses. A Ginux run gets the ports
+//! that kept a pinned address (`[contract.network] outbound`, shared network,
+//! [`NetworkPolicy::outbound`]), an `/etc/hosts` naming the pins, and the pins
+//! themselves as the worker's network rule ([`NetworkPolicy::grant`]); a host
+//! run gets the rule.
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, SocketAddr};
-use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
@@ -14,12 +17,17 @@ pub(crate) struct NetworkPolicy {
     pub max_bytes: u64,
     hosts: String,
     pub host_endpoints: BTreeMap<String, Vec<String>>,
+    /// Whether `NEEDS.network` declares any endpoint, resolved or not.
+    declared: bool,
 }
 
 impl NetworkPolicy {
     pub fn resolve(options: &crate::ExecutionOptions) -> Result<Self> {
         if options.network_hosts.is_empty() {
-            return Ok(Self::default());
+            return Ok(Self {
+                max_bytes: options.network_max_bytes,
+                ..Self::default()
+            });
         }
         let mut endpoints = BTreeSet::new();
         let mut candidates = BTreeMap::new();
@@ -138,6 +146,7 @@ impl NetworkPolicy {
             max_bytes: options.network_max_bytes,
             host_endpoints,
             hosts: hosts.into_iter().collect(),
+            declared: true,
         })
     }
 }
@@ -197,11 +206,37 @@ fn resolve_host(host: &str) -> Result<BTreeSet<IpAddr>> {
     Ok(addresses)
 }
 
-/// The host-run counterpart of [`install_hosts`]: what a host worker's
-/// resolver may answer (`crate::helpers::acquire::net`).
 impl NetworkPolicy {
-    pub(crate) fn host_grants(&self) -> BTreeMap<String, Vec<String>> {
-        self.host_endpoints.clone()
+    /// The worker's network rule (`crate::worker::records::WorkerRequest`):
+    /// each resolved endpoint to its pinned addresses, and the byte cap. Sent
+    /// whenever `NEEDS.network` declares an endpoint, even when none resolved
+    /// (an offline cache), so the worker always installs its rule; none
+    /// without a network need.
+    pub(crate) fn grant(&self) -> Option<crate::worker::records::NetworkGrant> {
+        self.declared.then(|| crate::worker::records::NetworkGrant {
+            pins: self.host_endpoints.clone(),
+            max_bytes: self.max_bytes,
+        })
+    }
+
+    /// The outbound grant of a Ginux run's config: the ports of the endpoints
+    /// that kept at least one pinned address. A grant that did not resolve
+    /// (an offline cache) opens no port; none resolved means backend `none`
+    /// and the offline contract.
+    pub(crate) fn outbound(&self) -> crate::needs::contract::Outbound {
+        crate::needs::contract::Outbound::of(
+            self.host_endpoints
+                .values()
+                .flatten()
+                .filter_map(|pin| pin.parse::<SocketAddr>().ok())
+                .map(|pin| pin.port()),
+        )
+    }
+
+    /// The `/etc/hosts` of a Ginux run: localhost, then each pinned address
+    /// with the hostname it was resolved for. Every Ginux run gets it.
+    pub(crate) fn hosts_file(&self) -> String {
+        format!("127.0.0.1 localhost\n::1 localhost\n{}", self.hosts)
     }
 
     /// Refuse a host run whose pinned addresses reach this machine or its
@@ -327,35 +362,4 @@ fn internal_address(address: IpAddr) -> Option<&'static str> {
             }
         }
     }
-}
-
-pub(crate) fn install_hosts(policy: &NetworkPolicy, root: &Path) -> Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    if policy.endpoints.is_empty() {
-        return Ok(());
-    }
-    let etc = root.join("etc");
-    if !std::fs::symlink_metadata(&etc)?.is_dir() {
-        bail!("image /etc must be a directory");
-    }
-    // Image construction is finished and /etc is read-only. Replace a single
-    // leaf without following image symlinks, then seal it before launch.
-    let mode = std::fs::metadata(&etc)?.permissions().mode();
-    std::fs::set_permissions(&etc, std::fs::Permissions::from_mode(mode | 0o700))?;
-    let path = etc.join("hosts");
-    match std::fs::remove_file(&path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e.into()),
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
-    file.write_all(format!("127.0.0.1 localhost\n::1 localhost\n{}", policy.hosts).as_bytes())?;
-    file.set_permissions(std::fs::Permissions::from_mode(0o444))?;
-    std::fs::set_permissions(etc, std::fs::Permissions::from_mode(mode))?;
-    Ok(())
 }

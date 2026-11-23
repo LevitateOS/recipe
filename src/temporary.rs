@@ -1,11 +1,9 @@
 //! Coordinator-owned scratch directories with leases for crash recovery.
 //! A later invocation removes only abandoned `invocation-*` directories in
-//! this private pool; the verified image cache (`crate::inputs::image_cache`)
-//! lives beside them.
+//! this private pool.
 use anyhow::{Context, Result, bail};
 use fs2::FileExt;
 use std::fs::{self, File};
-use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
@@ -111,9 +109,9 @@ const HOST_POOL_PARENT: &str = "/var/lib/recipe";
 pub(crate) struct TemporaryDirectory {
     directory: tempfile::TempDir,
     data: std::path::PathBuf,
-    // Coordinator owns this lease through launcher teardown. Ginux closes
-    // inherited duplicates before workload; they do not extend its lifetime.
-    lease: File,
+    // Held (locked) for the directory's lifetime: a free lease tells a later
+    // invocation the directory is a crash leftover it may remove.
+    _lease: File,
 }
 
 impl TemporaryDirectory {
@@ -215,7 +213,7 @@ impl TemporaryDirectory {
         Ok(Self {
             directory,
             data,
-            lease,
+            _lease: lease,
         })
     }
 
@@ -226,10 +224,6 @@ impl TemporaryDirectory {
     /// The directory holding [`path`](Self::path) and the lease.
     pub(crate) fn container(&self) -> &Path {
         self.directory.path()
-    }
-
-    pub(crate) fn lease_fd(&self) -> RawFd {
-        self.lease.as_raw_fd()
     }
 }
 

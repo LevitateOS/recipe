@@ -1,10 +1,14 @@
-//! Real coordinator execution deadlines, interruption and durable diagnostics.
+//! Real coordinator execution deadlines, interruption and durable diagnostics
+//! on the public Ginux lifecycle. Preconditions: header of `tests/e2e.rs`.
+//! Every case ends with the run's instance gone (`ginux delete`), which these
+//! cases check through the state root.
 use super::*;
 use std::io::{BufRead, BufReader};
 use std::process::Stdio;
 use std::time::Duration;
 
 fn command(recipes: &Path, operation: &str) -> Command {
+    require_ginux();
     let mut command = recipe_command(recipes);
     command
         .args([operation, "check", "--recipes-path"])
@@ -88,6 +92,10 @@ fn build(src, out) { print("deadline work started"); exec_checked("/usr/bin/slee
             .unwrap()
             .contains("deadline work started")
     );
+    assert!(
+        leaked_instances().is_empty(),
+        "the deadline left an instance"
+    );
 }
 #[test]
 fn managed_interrupt_reaps_descendants_keeps_nothing_and_reports_cancelled() {
@@ -145,9 +153,12 @@ fn build(src, out) {
             }
         }
     }
+    // The ginux CLI, sudo, the helper, the supervisor and the workload.
     let mut tracked = Vec::new();
     descendants(child.id(), &mut tracked);
     assert!(!tracked.is_empty());
+    let pid = child.id();
+    assert_eq!(instances_of(pid).len(), 1);
     unsafe {
         assert_eq!(libc::kill(child.id() as i32, libc::SIGINT), 0);
     }
@@ -155,7 +166,14 @@ fn build(src, out) {
     let stderr = reader.join().unwrap();
     assert_eq!(status.code(), Some(130), "{stderr}");
     assert!(stderr.contains("backend cancelled"), "{stderr}");
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    // The signal reaches the CLI and sudo; sudo relays it to the helper, whose
+    // teardown stops the supervisor (up to about 7.5 s) before Recipe deletes
+    // the instance. Recipe has waited for all of that before it exits.
+    assert!(
+        instances_of(pid).is_empty(),
+        "the cancelled run's instance was not deleted"
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
     loop {
         let live = tracked.iter().any(|pid| {
             std::fs::read_to_string(format!("/proc/{pid}/stat"))
@@ -199,7 +217,6 @@ fn build(src, out) {
 
 #[test]
 fn managed_finalization_can_outlast_teardown_grace_within_execution_deadline() {
-    use std::os::unix::fs::PermissionsExt;
     let (dir, recipes) = create_test_env();
     write_recipe(
         &recipes,
@@ -210,22 +227,26 @@ const NEEDS = #{ outputs: #{ product: "file" } };
 fn build(src, out) { write_file(out, "domain-produced"); }
 "#,
     );
-    // Exercise the real supervisor/worker and delay only launcher completion.
-    // Final archive export can similarly outlast error-teardown's short grace.
+    // Exercise the real instance and worker and delay only the completion of
+    // `ginux start --wait`: the wrapper runs the real CLI, then sleeps.
+    // Final archive extraction can similarly outlast error-teardown's short grace.
     let completed = dir.path().join("completion-marker");
-    let launcher = dir.path().join("slow-completion");
-    std::fs::write(
-        &launcher,
-        "#!/bin/sh\ncase \"$1\" in instance-*) exec \"$RECIPE_TEST_REAL_GINUX\" \"$@\";; esac\n\"$RECIPE_TEST_REAL_GINUX\" \"$@\"\nstatus=$?\nsleep 12\nprintf complete > \"$RECIPE_TEST_COMPLETION_MARKER\"\nexit \"$status\"\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let output = command(&recipes, "install")
-        .env(
-            "RECIPE_TEST_REAL_GINUX",
-            std::env::var_os("GINUX_BIN").unwrap(),
-        )
-        .env("GINUX_BIN", launcher)
+    let wrapper = ginux_wrapper(
+        dir.path(),
+        "slow-completion",
+        r#"
+import time
+if VERB != 'start': passthrough()
+status = real()
+time.sleep(12)
+with open(os.environ['RECIPE_TEST_COMPLETION_MARKER'], 'w') as marker:
+    marker.write('complete')
+sys.exit(status)
+"#,
+    );
+    let mut command = command(&recipes, "install");
+    with_wrapper(&mut command, &wrapper);
+    let output = command
         .env("RECIPE_TEST_COMPLETION_MARKER", &completed)
         .args(["--timeout-secs", "30"])
         .output()
@@ -240,8 +261,7 @@ fn build(src, out) { write_file(out, "domain-produced"); }
 }
 
 #[test]
-fn managed_launcher_failure_after_worker_success_cannot_publish() {
-    use std::os::unix::fs::PermissionsExt;
+fn managed_start_failure_after_worker_success_cannot_publish() {
     let (dir, recipes) = create_test_env();
     write_recipe(
         &recipes,
@@ -252,23 +272,24 @@ const NEEDS = #{ outputs: #{ product: "file" } };
 fn build(src, out) { write_file(out, "actual domain output"); }
 "#,
     );
-    let launcher = dir.path().join("failed-launcher");
-    std::fs::write(
-        &launcher,
-        "#!/bin/sh\ncase \"$1\" in instance-*) exec \"$RECIPE_TEST_REAL_GINUX\" \"$@\";; esac\n\"$RECIPE_TEST_REAL_GINUX\" \"$@\" || exit \"$?\"\nexit 37\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let output = command(&recipes, "install")
-        .env(
-            "RECIPE_TEST_REAL_GINUX",
-            std::env::var_os("GINUX_BIN").unwrap(),
-        )
-        .env("GINUX_BIN", launcher)
-        .output()
-        .unwrap();
+    // The real run succeeds; the CLI Recipe sees then exits 37.
+    let wrapper = ginux_wrapper(
+        dir.path(),
+        "failed-start",
+        r#"
+if VERB != 'start': passthrough()
+sys.exit(real() or 37)
+"#,
+    );
+    let mut command = command(&recipes, "install");
+    with_wrapper(&mut command, &wrapper);
+    let output = command.output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("launcher exited with code 37"), "{stderr}");
+    assert!(
+        stderr.contains("ginux start exited with code 37"),
+        "{stderr}"
+    );
     assert!(!dir.path().join("retained/exports").exists());
+    assert!(leaked_instances().is_empty());
 }

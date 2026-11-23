@@ -1457,7 +1457,7 @@ struct EngineOptions<'a> {
     recipes_path: Option<&'a Path>,
     defines: &'a [String],
     inputs: &'a [String],
-    /// `--effects-root`: the live system root input `root`.
+    /// `--effects-root`: the system root, staged as the input `root`.
     effects_root: Option<&'a Path>,
     no_persist_state: bool,
     /// The store a package output will be activated in; None with
@@ -1489,7 +1489,7 @@ fn create_engine(recipe: &Path, options: &EngineOptions<'_>) -> Result<RecipeEng
         None if *no_persist_state => RecipeEngine::with_temporary_destination()?,
         None => RecipeEngine::new(levitate_recipe::default_destination(*state_dir, recipe)?),
     };
-    // The Ginux launcher is resolved when a recipe of the run needs Ginux;
+    // Ginux (the ginux CLI) is resolved when a recipe of the run needs it;
     // a run entirely on the host needs none.
     let mut engine = engine
         .with_state_persistence(!*no_persist_state)
@@ -2474,7 +2474,7 @@ fn show_info(recipe_path: &Path, search_path: Option<&Path>, json: bool) -> Resu
             }
             Some(blocker) if minimal => format!(
                 "in Ginux, in the full image: it asks for the minimal runtime image, but none is named \
-                 (GINUX_MINIMAL_ROOT with GINUX_MINIMAL_ROOTFS, or an installed minimal-reference) (it {blocker})"
+                 (RECIPE_MINIMAL_IMAGE, or an installed minimal-reference) (it {blocker})"
             ),
             Some(blocker) => format!("in Ginux (it {blocker})"),
         };

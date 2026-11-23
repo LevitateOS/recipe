@@ -1,296 +1,462 @@
-//! Host-owned, per-invocation filesystem for the configured Ginux launcher.
-//! An assembled image tar is selected by the coordinator and verified against
-//! the content digest in domain.root. No recipe code runs during preparation.
+//! What a run starts from, as files: the archive a Ginux instance receives
+//! ([`inject_archive`]) and the directories of a host run ([`stage_inputs`]).
+//! Every staged input is read from the invocation's private staging copy and
+//! checked against its discovery digest. No recipe code runs here.
 
-use std::collections::HashMap;
-use std::ffi::CString;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::io::{Read, Write};
+use std::os::unix::fs::{FileExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use super::PreparedInvocation;
+use super::{InputKind, PreparedInvocation, StagedInput};
 
+/// Largest worker executable Recipe hands to a run.
 const MAX_WORKER_BYTES: u64 = 512 * 1024 * 1024;
 
-/// Verified image bytes owned by one command's sequential dependency graph,
-/// made where an image cache is built from them (`image_cache`). Only this
-/// anonymous archive and the verified cache made from it are reused; every
-/// domain gets a fresh root.
-pub(crate) struct VerifiedImage {
-    root_reference: String,
-    snapshot: File,
+/// What [`inject_archive`] wrote: the worker's SHA-256 as it was appended
+/// (the caller compares it with the digest the run's identity used), the
+/// archive's size in bytes, and its member count, GNU long-name records
+/// included (the bounds `ginux inject` is given).
+#[derive(Debug, Clone)]
+pub(crate) struct Injected {
+    pub worker_digest: String,
+    pub bytes: u64,
+    pub members: u64,
 }
 
-impl VerifiedImage {
-    fn open(root_reference: &str, kind: crate::runtime::Image) -> Result<Self> {
-        let digest = crate::runtime::root_digest(root_reference)?;
-        // Snapshot and hash the same bytes into an unlinked file (a
-        // copy-on-write clone where the filesystem can). Later nodes read
-        // these verified bytes, never a potentially changed source path.
-        let (_, mut archive) = crate::runtime::open_rootfs(root_reference, kind).with_context(|| {
-            format!(
-                "cannot open the Ginux rootfs image; set {} to the assembled tar matching {root_reference}",
-                kind.rootfs_env()
-            )
-        })?;
-        let mut snapshot = tempfile::tempfile().context("cannot snapshot the rootfs image")?;
-        let (_, actual) = crate::fsx::snapshot_hashed(
-            &mut archive,
-            &mut snapshot,
-            crate::image::MAX_ARCHIVE_BYTES,
-        )?;
-        if actual != digest {
-            bail!("Ginux rootfs digest mismatch: expected {digest}, got {actual}");
+/// Write the one archive a fresh Ginux instance receives before it starts
+/// (`ginux inject NAME --input ARCHIVE --into /`): an uncompressed GNU tar
+/// of directories, regular files and symlinks only, names relative to the
+/// instance root without a leading `./`, every name once, parents first.
+///
+/// - `inputs/`: every staged input (directories 0555, files with their mode
+///   plus read for everyone, a hard link as a copy of its target, symlinks
+///   last), the input-modes manifest, the request file, the worker (0555);
+/// - `inputs/.recipe-offline-cache/sha256/<hex>`: the offline cache's files
+///   for the recipe's declared pins (`SOURCES` downloads and `PACKAGES`), when
+///   there is a cache; `request.cache` is set here accordingly;
+/// - `work/`, `work/build/`, `work/tools/`, `work/tmp/`, `out/` (0755);
+/// - `etc/hosts` (0444): localhost and the pinned network names;
+/// - the kept files the run starts from: each member of `restore` (a tar of
+///   `work/…` and `out/…` members) re-emitted under its own name, hard links
+///   as copies; without `restore`, the target view the inputs seed
+///   ([`seed_target`]).
+///
+/// `destination` must not exist. The request is encoded after the cache is
+/// decided, so it is complete when this returns.
+pub(crate) fn inject_archive(
+    invocation: &PreparedInvocation,
+    request: &mut crate::worker::records::WorkerRequest,
+    restore: Option<&Path>,
+    destination: &Path,
+) -> Result<Injected> {
+    if std::env::consts::OS != "linux" || std::env::consts::ARCH != "x86_64" {
+        bail!("Ginux execution currently requires Linux x86_64");
+    }
+    let cached = offline_payloads(invocation)?;
+    request.cache = (!cached.is_empty()).then(|| crate::domain::OFFLINE_CACHE.to_owned());
+
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .with_context(|| format!("cannot create {}", destination.display()))?;
+    let mut archive = Archive::new(std::io::BufWriter::with_capacity(1 << 20, file));
+    let inputs = crate::domain::INPUTS.trim_start_matches('/');
+    archive.dir(inputs, 0o555)?;
+    let input_name = |name: &str| format!("{inputs}/{name}");
+
+    for (index, input) in invocation.inputs.iter().enumerate() {
+        crate::cancellation::check()?;
+        crate::domain::validate_input_name(&input.name)?;
+        let name = input_name(&input.name);
+        archive.parents(&name, 0o555)?;
+        match &input.kind {
+            InputKind::Directory => archive.dir(&name, 0o555)?,
+            InputKind::Symlink(_) => {} // After every ordinary path.
+            InputKind::File | InputKind::Hardlink(_) => {
+                let (file, staged) = staged_copy(invocation, index)?;
+                archive.checked(&name, input.mode | 0o444, file, staged)?;
+            }
         }
-        Ok(Self {
-            root_reference: root_reference.to_owned(),
-            snapshot,
-        })
     }
+    for input in &invocation.inputs {
+        if let InputKind::Symlink(target) = &input.kind {
+            archive.symlink(&input_name(&input.name), target)?;
+        }
+    }
+    // Logical input permissions, apart from the read grants the copies need.
+    let modes = invocation
+        .inputs
+        .iter()
+        .map(|input| (input.name.clone(), input.mode))
+        .collect::<crate::domain::InputModes>();
+    let modes = serde_json::to_vec(&modes)?;
+    if modes.len() as u64 > crate::domain::MAX_INPUT_MODES_BYTES {
+        bail!("input permission manifest exceeds its bound");
+    }
+    archive.bytes(&input_name(crate::domain::INPUT_MODES_NAME), 0o444, &modes)?;
+
+    if !cached.is_empty() {
+        let folder = input_name(crate::domain::OFFLINE_CACHE_NAME);
+        archive.dir(&folder, 0o555)?;
+        archive.dir(&format!("{folder}/sha256"), 0o555)?;
+        for (hex, file) in cached {
+            crate::cancellation::check()?;
+            let size = file.metadata()?.len();
+            // The worker uses a cached file only when its bytes match the pin.
+            archive.file(&format!("{folder}/sha256/{hex}"), 0o444, size, file)?;
+        }
+    }
+
+    let encoded = request.encode()?;
+    archive.bytes(&input_name(crate::domain::REQUEST_NAME), 0o444, &encoded)?;
+
+    let worker_path = worker_binary()?;
+    let mut worker = crate::fsx::open_regular(&worker_path)
+        .with_context(|| format!("cannot open worker {}", worker_path.display()))?;
+    let mut header = [0u8; 20];
+    worker
+        .read_exact_at(&mut header, 0)
+        .context("worker is not an x86_64 ELF executable")?;
+    if &header[..7] != b"\x7fELF\x02\x01\x01" || header[18..20] != [62, 0] {
+        bail!("worker must be a Linux x86_64 ELF executable");
+    }
+    let size = worker.metadata()?.len();
+    if size > MAX_WORKER_BYTES {
+        bail!("the worker exceeds {MAX_WORKER_BYTES} bytes");
+    }
+    let worker_digest = archive.file(
+        &input_name(crate::domain::WORKER_NAME),
+        0o555,
+        size,
+        &mut worker,
+    )?;
+
+    // Owned by the workload once injected, so 0755 suffices.
+    for directory in crate::domain::WRITABLE_DIRS {
+        archive.dir(directory.trim_start_matches('/'), 0o755)?;
+    }
+    // `/etc` is the image's; the image carries no `etc/hosts` (Recipe's
+    // image rule), so this never meets an existing file.
+    archive.bytes(
+        "etc/hosts",
+        0o444,
+        invocation.network.hosts_file().as_bytes(),
+    )?;
+
+    match restore {
+        Some(restore) => reemit_restore(&mut archive, restore)
+            .with_context(|| format!("cannot add the kept files of {}", restore.display()))?,
+        None => {
+            let plan = seed_plan(invocation)?;
+            write_seed(invocation, &plan, &mut archive)?;
+        }
+    }
+
+    let members = archive.members;
+    let mut writer = archive.builder.into_inner()?;
+    writer.flush()?;
+    let file = writer.into_inner().map_err(|error| error.into_error())?;
+    let bytes = file.metadata()?.len();
+    Ok(Injected {
+        worker_digest,
+        bytes,
+        members,
+    })
 }
 
-/// Unpack the image `root_reference` into the new, private, empty `root`,
-/// hashing every byte as it is read instead of first copying the archive to a
-/// verified snapshot (`VerifiedImage`). On a filesystem without reflinks that
-/// snapshot is a second full copy of the image written to the disk for every
-/// root. The root is still only made of verified bytes when it is handed
-/// over: an archive that does not hash to the pinned digest (read to its
-/// end) fails here, before any domain starts, and `root` is removed with its
-/// invocation's directory. Each member is validated as it is unpacked either
-/// way (`unpack_image`).
-fn unpack_verified(root_reference: &str, kind: crate::runtime::Image, root: &Path) -> Result<()> {
-    let digest = crate::runtime::root_digest(root_reference)?;
-    let (_, archive) = crate::runtime::open_rootfs(root_reference, kind).with_context(|| {
-        format!(
-            "cannot open the Ginux rootfs image; set {} to the assembled tar matching {root_reference}",
-            kind.rootfs_env()
-        )
-    })?;
-    let mut hashed = Hashed {
-        input: std::io::BufReader::with_capacity(1 << 20, archive),
-        hash: sha2::Sha256::default(),
-        count: 0,
+/// The offline cache's files for the pins this recipe declares, by SHA-256:
+/// its `SOURCES` downloads and every package of its pins file. Downloads a
+/// recipe computes while it runs are not among them.
+fn offline_payloads(invocation: &PreparedInvocation) -> Result<Vec<(String, File)>> {
+    let Some(cache) = crate::offline_cache::dir()? else {
+        return Ok(Vec::new());
     };
-    let unpacked = unpack_image(&mut hashed, root);
-    crate::cancellation::check()?;
-    // The rest of the archive after its last member (the end blocks and any
-    // padding) counts as well. An archive that is not the pinned one is
-    // reported as such, whatever its unpacking made of it.
-    std::io::copy(&mut hashed, &mut std::io::sink())?;
-    let actual = hex::encode(sha2::Digest::finalize(hashed.hash));
-    if actual != digest {
-        bail!("Ginux rootfs digest mismatch: expected {digest}, got {actual}");
+    let declared = &invocation.declaration.declared;
+    let mut pins = std::collections::BTreeSet::new();
+    for source in declared.sources.values() {
+        if let crate::declarations::Origin::Url { sha256, .. } = &source.origin {
+            pins.insert(sha256.to_ascii_lowercase());
+        }
     }
-    unpacked
+    if let Some(file) = &declared.pins {
+        for section in &file.sections {
+            for package in &section.packages {
+                pins.insert(package.sha256.to_ascii_lowercase());
+            }
+        }
+    }
+    Ok(pins
+        .into_iter()
+        .filter_map(|hex| {
+            let file = crate::offline_cache::open(&cache, &hex)?;
+            Some((hex, file))
+        })
+        .collect())
 }
 
-/// A reader that hashes what it reads, bounded like a snapshot of the image.
+/// The staged copy holding input `index`'s bytes, and the input those bytes
+/// were discovered as: the input itself, or the target of a hard link.
+fn staged_copy(invocation: &PreparedInvocation, index: usize) -> Result<(File, &StagedInput)> {
+    let input = &invocation.inputs[index];
+    let (index, input) = match &input.kind {
+        InputKind::File => (index, input),
+        InputKind::Hardlink(target) => invocation
+            .inputs
+            .iter()
+            .enumerate()
+            .find(|(_, candidate)| candidate.name == *target && candidate.kind == InputKind::File)
+            .with_context(|| format!("input hardlink target is not regular: {}", input.name))?,
+        _ => bail!("input {} has no file contents", input.name),
+    };
+    let path = invocation.staging_dir().join(format!("input-{index}"));
+    let file = crate::fsx::open_regular(&path)
+        .with_context(|| format!("cannot open the staged copy of {}", input.name))?;
+    Ok((file, input))
+}
+
+/// A tar being written for `ginux inject` or a host restore: GNU headers,
+/// owner [`crate::domain::UID`], time 0; each name once, a directory named
+/// twice is written once.
+struct Archive<W: Write> {
+    builder: tar::Builder<W>,
+    names: HashSet<String>,
+    directories: HashSet<String>,
+    members: u64,
+}
+
+impl<W: Write> Archive<W> {
+    fn new(writer: W) -> Self {
+        Self {
+            builder: tar::Builder::new(writer),
+            names: HashSet::new(),
+            directories: HashSet::new(),
+            members: 0,
+        }
+    }
+
+    fn header(kind: tar::EntryType, mode: u32, size: u64) -> tar::Header {
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(kind);
+        header.set_mode(mode & 0o7777);
+        header.set_uid(crate::domain::UID);
+        header.set_gid(crate::domain::UID);
+        header.set_mtime(0);
+        header.set_size(size);
+        header
+    }
+
+    /// Take `name` for one member: relative, no `.`/`..`/empty component,
+    /// no NUL, not taken before. A name too long for the header adds a GNU
+    /// long-name record.
+    fn claim(&mut self, name: &str) -> Result<()> {
+        if name.is_empty()
+            || name.contains('\0')
+            || name
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+        {
+            bail!("invalid archive member name {name:?}");
+        }
+        if !self.names.insert(name.to_owned()) {
+            bail!("archive member named twice: {name}");
+        }
+        self.members += 1 + u64::from(name.len() >= 100);
+        Ok(())
+    }
+
+    /// Each missing parent directory of `name`, outermost first.
+    fn parents(&mut self, name: &str, mode: u32) -> Result<()> {
+        let mut end = 0;
+        while let Some(offset) = name[end..].find('/') {
+            end += offset;
+            self.dir(&name[..end], mode)?;
+            end += 1;
+        }
+        Ok(())
+    }
+
+    fn dir(&mut self, name: &str, mode: u32) -> Result<()> {
+        if self.directories.contains(name) {
+            return Ok(());
+        }
+        self.claim(name)?;
+        self.directories.insert(name.to_owned());
+        let mut header = Self::header(tar::EntryType::Directory, mode, 0);
+        self.builder
+            .append_data(&mut header, name, std::io::empty())
+            .with_context(|| format!("cannot write archive member {name}"))
+    }
+
+    /// A regular file of exactly `size` bytes from `data`; returns their
+    /// SHA-256.
+    fn file(&mut self, name: &str, mode: u32, size: u64, data: impl Read) -> Result<String> {
+        self.claim(name)?;
+        let mut header = Self::header(tar::EntryType::Regular, mode, size);
+        let mut hashed = Hashed {
+            inner: data.take(size),
+            hash: sha2::Sha256::default(),
+            count: 0,
+        };
+        self.builder
+            .append_data(&mut header, name, &mut hashed)
+            .with_context(|| format!("cannot write archive member {name}"))?;
+        if hashed.count != size {
+            bail!(
+                "{name} changed while it was archived: {} of {size} bytes",
+                hashed.count
+            );
+        }
+        Ok(hex::encode(sha2::Digest::finalize(hashed.hash)))
+    }
+
+    fn bytes(&mut self, name: &str, mode: u32, data: &[u8]) -> Result<()> {
+        self.file(name, mode, data.len() as u64, data).map(drop)
+    }
+
+    /// A staged input's bytes, checked against its discovery size and digest.
+    fn checked(&mut self, name: &str, mode: u32, file: File, input: &StagedInput) -> Result<()> {
+        let digest = self.file(name, mode, input.size, file)?;
+        if digest != hex::encode(input.sha256) {
+            bail!("staged input changed after discovery: /{name}");
+        }
+        Ok(())
+    }
+
+    fn symlink(&mut self, name: &str, target: impl AsRef<Path>) -> Result<()> {
+        let target = target.as_ref();
+        self.claim(name)?;
+        self.members += u64::from(target.as_os_str().len() >= 100);
+        let mut header = Self::header(tar::EntryType::Symlink, 0o777, 0);
+        self.builder
+            .append_link(&mut header, name, target)
+            .with_context(|| format!("cannot write archive member {name}"))
+    }
+}
+
+/// A reader that hashes and counts what it reads.
 struct Hashed<R> {
-    input: R,
+    inner: R,
     hash: sha2::Sha256,
     count: u64,
 }
 
 impl<R: Read> Read for Hashed<R> {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        let read = self.input.read(buffer)?;
+        let read = self.inner.read(buffer)?;
         self.count += read as u64;
-        if self.count > crate::image::MAX_ARCHIVE_BYTES {
-            return Err(std::io::Error::other(format!(
-                "the rootfs image exceeds its bound of {} bytes",
-                crate::image::MAX_ARCHIVE_BYTES
-            )));
-        }
         sha2::Digest::update(&mut self.hash, &buffer[..read]);
         Ok(read)
     }
 }
 
-/// The verified bytes of `root_reference` (of kind `kind`, which selects its
-/// tar), verified now unless `image` already holds them, positioned at their
-/// start.
-pub(super) fn verified_snapshot<'a>(
-    image: &'a mut Option<VerifiedImage>,
-    root_reference: &str,
-    kind: crate::runtime::Image,
-) -> Result<&'a mut File> {
-    if image
-        .as_ref()
-        .is_none_or(|image| image.root_reference != root_reference)
+/// `left` bytes of `file` from `position`, without moving any file offset.
+struct At<'a> {
+    file: &'a File,
+    position: u64,
+    left: u64,
+}
+
+impl Read for At<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let want = buffer
+            .len()
+            .min(usize::try_from(self.left).unwrap_or(usize::MAX));
+        if want == 0 {
+            return Ok(0);
+        }
+        let read = self.file.read_at(&mut buffer[..want], self.position)?;
+        self.position += read as u64;
+        self.left -= read as u64;
+        Ok(read)
+    }
+}
+
+/// A restore member's name relative to the instance root: `./` and a
+/// trailing `/` dropped; it must lie in one of the writable trees.
+fn restore_name(path: &Path) -> Result<String> {
+    let text = path
+        .to_str()
+        .with_context(|| format!("kept file name is not UTF-8: {}", path.display()))?;
+    let name = text
+        .trim_start_matches("./")
+        .trim_end_matches('/')
+        .to_owned();
+    if !name
+        .split('/')
+        .next()
+        .is_some_and(|root| crate::domain::WRITABLE_ROOTS.contains(&root))
     {
-        *image = Some(VerifiedImage::open(root_reference, kind)?);
+        bail!("kept file outside the writable trees: {text:?}");
     }
-    let image = image.as_mut().expect("verified image initialized");
-    image.snapshot.seek(SeekFrom::Start(0))?;
-    Ok(&mut image.snapshot)
+    Ok(name)
 }
 
-/// Owns the isolated root until the launcher and worker have been reaped.
-pub(crate) struct PreparedRoot {
-    directory: crate::temporary::TemporaryDirectory,
-    pub(crate) worker_digest: String,
-    /// The read-only binds the launcher makes in its own mount namespace
-    /// before it starts ([`super::InputKind::Bind`]): (host folder, empty
-    /// folder under this root's `inputs`).
-    binds: Vec<(CString, CString)>,
-    /// Whether the offline cache is bound at [`crate::domain::OFFLINE_CACHE`].
-    offline_cache: bool,
-}
-
-impl PreparedRoot {
-    pub(crate) fn lease_fd(&self) -> std::os::fd::RawFd {
-        self.directory.lease_fd()
-    }
-    pub(crate) fn path(&self) -> &Path {
-        self.directory.path()
-    }
-    pub(crate) fn binds(&self) -> &[(CString, CString)] {
-        &self.binds
-    }
-    /// The offline cache directory the worker reads, a domain path, when this
-    /// root has it.
-    pub(crate) fn offline_cache(&self) -> Option<String> {
-        self.offline_cache
-            .then(|| crate::domain::OFFLINE_CACHE.to_owned())
-    }
-}
-
-/// Make the private Ginux root of one invocation. `request` is the worker's
-/// request record: its offline cache is set here (this root decides whether
-/// the cache is bound), then it is staged with the other inputs.
-pub(crate) fn prepare_root(
-    invocation: &PreparedInvocation,
-    image: &mut Option<VerifiedImage>,
-    request: &mut crate::worker::records::WorkerRequest,
-) -> Result<PreparedRoot> {
-    if std::env::consts::OS != "linux" || std::env::consts::ARCH != "x86_64" {
-        bail!("Ginux execution currently requires Linux x86_64");
-    }
-    let mut root = PreparedRoot {
-        worker_digest: String::new(),
-        directory: crate::temporary::TemporaryDirectory::new()?,
-        binds: Vec::new(),
-        offline_cache: false,
-    };
-    // A clone of the verified image's cached tree where the filesystem can
-    // clone; otherwise the image unpacked here and verified as it unpacks
-    // (see image_cache).
-    let kind = invocation.root_image;
-    let unpacked =
-        !super::image_cache::populate(&invocation.root_reference, kind, image, root.path())?;
-    if unpacked {
-        // Verified bytes already at hand (the cache's build made them) are
-        // unpacked as they are; otherwise the image is hashed as it unpacks.
-        if image
-            .as_ref()
-            .is_some_and(|image| image.root_reference == invocation.root_reference)
-        {
-            unpack_image(
-                verified_snapshot(image, &invocation.root_reference, kind)?,
-                root.path(),
-            )?;
-        } else {
-            unpack_verified(&invocation.root_reference, kind, root.path())?;
+/// Every member of the kept-files tar `path` into `archive` under its own
+/// name: directories (those the skeleton already has are not repeated),
+/// regular files, symlinks, and hard links as copies of their target's bytes
+/// (`ginux inject` accepts no hard link).
+fn reemit_restore<W: Write>(archive: &mut Archive<W>, path: &Path) -> Result<()> {
+    let file = File::open(path)?;
+    let source = file.try_clone()?;
+    let mut kept = tar::Archive::new(std::io::BufReader::with_capacity(1 << 20, file));
+    // Regular members by name: (data offset in the tar, size, mode).
+    let mut regular = HashMap::<String, (u64, u64, u32)>::new();
+    for entry in kept.entries()? {
+        crate::cancellation::check()?;
+        let mut entry = entry?;
+        let name = restore_name(&entry.path()?)?;
+        let mode = entry.header().mode()?;
+        match entry.header().entry_type() {
+            tar::EntryType::Directory => archive.dir(&name, mode)?,
+            tar::EntryType::Regular | tar::EntryType::Continuous => {
+                let position = entry.raw_file_position();
+                let size = entry.size();
+                archive.file(&name, mode, size, &mut entry)?;
+                regular.insert(name, (position, size, mode));
+            }
+            tar::EntryType::Symlink => {
+                let target = entry
+                    .link_name()?
+                    .with_context(|| format!("kept symlink {name} has no target"))?
+                    .into_owned();
+                archive.symlink(&name, &target)?;
+            }
+            tar::EntryType::Link => {
+                let target = entry
+                    .link_name()?
+                    .with_context(|| format!("kept hard link {name} has no target"))?;
+                let target = restore_name(&target)?;
+                let &(position, size, mode) = regular
+                    .get(&target)
+                    .with_context(|| format!("kept hard link {name} names no earlier file"))?;
+                archive.file(
+                    &name,
+                    mode,
+                    size,
+                    At {
+                        file: &source,
+                        position,
+                        left: size,
+                    },
+                )?;
+            }
+            other => bail!("kept file {name} is of an unsupported kind ({other:?})"),
         }
     }
-
-    super::network::install_hosts(&invocation.network, root.path())?;
-    let inputs = root
-        .path()
-        .join(crate::domain::INPUTS.trim_start_matches('/'));
-    // The offline cache's `sha256` folder, bound read-only like a live root's
-    // folders: the domain reads the payloads in place, and nothing of the
-    // cache is copied or linked into this root. A file is still used only
-    // when its bytes match the pin (`crate::helpers::acquire::download`).
-    // It is not an input, so it enters no identity: a run's results never
-    // depend on it. Decided before staging, because the request names it.
-    let mut cache_payloads = None;
-    if let Some(cache) = crate::offline_cache::dir()?
-        && cache.join("sha256").is_dir()
-    {
-        if super::can_bind() {
-            cache_payloads = Some(cache.join("sha256"));
-            root.offline_cache = true;
-        } else {
-            crate::diagnostics::diag!(
-                "recipe: the offline cache {} is not given to this Ginux run: binding it \
-                 read-only needs root with CAP_SYS_ADMIN and a / that is a mount (not a chroot)",
-                cache.display()
-            );
-        }
-    }
-    request.cache = root.offline_cache();
-    stage_inputs(invocation, &inputs, request)?;
-    use std::os::unix::ffi::OsStrExt;
-    let path = |path: &Path| CString::new(path.as_os_str().as_bytes()).map_err(anyhow::Error::from);
-    root.binds = invocation
-        .binds()
-        .map(|(host, name)| Ok((path(host)?, path(&inputs.join(name))?)))
-        .collect::<Result<_>>()?;
-    if let Some(payloads) = cache_payloads {
-        let folder = inputs.join(crate::domain::OFFLINE_CACHE_NAME);
-        std::fs::create_dir(&folder)?;
-        std::fs::create_dir(folder.join("sha256"))?;
-        root.binds
-            .push((path(&payloads)?, path(&folder.join("sha256"))?));
-    }
-    let worker_path = worker_binary()?;
-    let mut worker = crate::fsx::open_regular(&worker_path)
-        .with_context(|| format!("cannot open worker {}", worker_path.display()))?;
-    let mut header = [0u8; 20];
-    worker
-        .read_exact(&mut header)
-        .context("worker is not an x86_64 ELF executable")?;
-    if &header[..7] != b"\x7fELF\x02\x01\x01" || header[18..20] != [62, 0] {
-        bail!("worker must be a Linux x86_64 ELF executable");
-    }
-    worker.seek(SeekFrom::Start(0))?;
-    let mut destination = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(inputs.join(crate::domain::WORKER_NAME))?;
-    root.worker_digest =
-        crate::fsx::snapshot_hashed(&mut worker, &mut destination, MAX_WORKER_BYTES)?.1;
-    destination.set_permissions(std::fs::Permissions::from_mode(0o555))?;
-
-    // No shared cached tree or mutable hardlinks are handed to the domain (an
-    // input's only other name is this invocation's private staged copy).
-    // Write syscalls still require Ginux storage mediation; these directories
-    // do not grant native host filesystem access.
-    for path in crate::domain::WRITABLE_DIRS {
-        let directory = root.path().join(path.trim_start_matches('/'));
-        std::fs::create_dir(&directory)?;
-        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o777))?;
-    }
-    seal_inputs(&inputs)?;
-    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o555))?;
-    // An unpacked root is the whole runtime image written anew (about 1.2 GB
-    // on a filesystem without reflinks, ext4 among them). Left dirty, the
-    // kernel writes it back while the run is under way, and a program's page
-    // faults and reads then wait behind that writeback, uninterruptibly, for
-    // seconds. Ginux stops every running task before it lets one task's
-    // path or file-mapping call proceed and gives up after 5 s: such a wait
-    // aborted runs ("launch supervision failure: argument peer interrupt
-    // timed out", root effects after an update). So the run starts only once
-    // the root is on the disk. A cloned root writes no data and is not
-    // flushed.
-    if unpacked {
-        crate::fsx::sync_filesystem(root.path())?;
-    }
-    Ok(root)
+    Ok(())
 }
 
-/// Put the staged inputs into `inputs` (created here): each file by hard link
-/// to its private staged copy where both share a filesystem, else as a copy;
-/// either way every byte is read back and checked against its discovery
-/// digest. Then write the input permission manifest and the worker's request
-/// file ([`crate::domain::REQUEST_NAME`]).
-/// [`seal_inputs`] then makes them read-only. Shared by the Ginux root and
-/// the host run.
+/// Put the staged inputs of a host run into `inputs` (created here): each
+/// file by hard link to its private staged copy where both share a
+/// filesystem, else as a copy; either way every byte is read back and checked
+/// against its discovery digest. Then write the input permission manifest and
+/// the worker's request file ([`crate::domain::REQUEST_NAME`]).
+/// [`seal_inputs`] then makes them read-only.
 pub(crate) fn stage_inputs(
     invocation: &PreparedInvocation,
     inputs: &Path,
@@ -310,12 +476,6 @@ pub(crate) fn stage_inputs(
                 if !std::fs::symlink_metadata(&path)?.is_dir() {
                     bail!("input directory collision: {}", input.name);
                 }
-                continue;
-            }
-            // The empty folder the launcher binds the host folder on
-            // (`crate::launch`); a host run is never given one.
-            super::InputKind::Bind => {
-                std::fs::create_dir(inputs.join(&input.name))?;
                 continue;
             }
             super::InputKind::Hardlink(_) => continue,
@@ -362,8 +522,8 @@ pub(crate) fn stage_inputs(
                 input.name
             );
         }
-        // Explicitly imported bytes must be readable after Ginux drops to its
-        // domain uid, even when the coordinator read a host-private 0600 file.
+        // Explicitly imported bytes must be readable by the worker's
+        // identity, even when the coordinator read a host-private 0600 file.
         destination.set_permissions(std::fs::Permissions::from_mode(input.mode | 0o444))?;
     }
     for input in &invocation.inputs {
@@ -454,7 +614,7 @@ fn ensure_parents(root: &Path, relative: &Path) -> Result<()> {
         match std::fs::symlink_metadata(&directory) {
             Ok(metadata) if metadata.is_dir() => {}
             Ok(_) => bail!(
-                "rootfs image entry traverses a non-directory: {}",
+                "input entry traverses a non-directory: {}",
                 relative.display()
             ),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -466,97 +626,12 @@ fn ensure_parents(root: &Path, relative: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn unpack_image(snapshot: impl Read, root: &Path) -> Result<()> {
-    let mut archive = tar::Archive::new(snapshot);
-    let mut validator = crate::image::Validator::default();
-    let mut directories = HashMap::new();
-    for entry in archive.entries()? {
-        crate::cancellation::check()?;
-        let mut entry = entry?;
-        let relative = crate::image::member_path(&entry.path()?)?;
-        let kind = entry.header().entry_type();
-        if relative.as_os_str().is_empty() && kind.is_dir() {
-            continue;
-        }
-        if relative.as_os_str().is_empty() {
-            bail!("empty rootfs image entry");
-        }
-        let link = entry.link_name()?.map(|link| link.into_owned());
-        validator.check(
-            &relative,
-            kind,
-            entry.size(),
-            entry.header().mode()?,
-            link.as_deref(),
-        )?;
-        let mode = crate::image::installed_mode(entry.header().mode()?);
-        ensure_parents(root, &relative)?;
-        let destination = root.join(&relative);
-        if kind.is_dir() {
-            match std::fs::symlink_metadata(&destination) {
-                Ok(metadata) if metadata.is_dir() => {}
-                Ok(_) => bail!(
-                    "rootfs directory conflicts with a file: {}",
-                    relative.display()
-                ),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    std::fs::create_dir(&destination)?
-                }
-                Err(error) => return Err(error.into()),
-            }
-            directories.insert(destination, mode);
-        } else if kind.is_file() {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&destination)?;
-            let count = std::io::copy(&mut entry, &mut file)?;
-            if count != entry.size() {
-                bail!("truncated rootfs image entry: {}", relative.display());
-            }
-            file.set_permissions(std::fs::Permissions::from_mode(mode))?;
-            // Written back while the rest unpacks, so the flush before the
-            // run (`prepare_root`) finds little left to wait for.
-            crate::fsx::start_writeback(&file);
-        } else if kind.is_symlink() {
-            // Absolute symlinks are meaningful inside chroot (e.g. /proc/mounts).
-            // They are never traversed while constructing or cleaning the root.
-            std::os::unix::fs::symlink(link.expect("validated symlink target"), destination)?;
-        } else {
-            // A hardlink aliases an earlier verified regular file in this
-            // private snapshot; host sources and shared caches stay separate.
-            let target = crate::image::member_path(&link.expect("validated hardlink target"))?;
-            ensure_parents(root, &target)?;
-            std::fs::hard_link(root.join(target), destination)?;
-        }
-    }
-    // Include implicitly-created parent directories too.
-    let mut image_directories = walkdir::WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    image_directories.sort_by_key(|entry| std::cmp::Reverse(entry.depth()));
-    for entry in image_directories {
-        if entry.depth() > 0 && entry.file_type().is_dir() {
-            let mode = directories.get(entry.path()).copied().unwrap_or(0o555);
-            std::fs::set_permissions(entry.path(), std::fs::Permissions::from_mode(mode))?;
-        }
-    }
-    Ok(())
-}
-
-/// Seed the owned target from explicitly selected, already verified input bytes.
-/// Read only the invocation snapshot, never the original host input pathname.
-///
-/// The `target` input (the caller's tree) seeds the recipe's one output, a
-/// directory, before `build` runs (docs/recipe-format.md, section 3.6); the
-/// dependencies' merged tools seed `/work/tools`.
-pub(crate) fn seed_target(
-    invocation: &PreparedInvocation,
-    root: &Path,
-    destination: &Path,
-) -> Result<bool> {
-    use super::InputKind;
+/// The inputs that seed a run's target view (docs/recipe-format.md, section
+/// 3.6): the `target` input (the caller's tree) as the recipe's one
+/// directory output, and the dependencies' merged tools as `/work/tools`.
+/// Each entry is (input index, member name relative to the domain root); the
+/// flag says whether `target` is among them.
+fn seed_plan(invocation: &PreparedInvocation) -> Result<(Vec<(usize, String)>, bool)> {
     let outputs = &invocation.declaration.needs.outputs;
     let target_output = match outputs.iter().collect::<Vec<_>>().as_slice() {
         [(name, crate::needs::PathKind::Directory)] => Some(
@@ -567,11 +642,12 @@ pub(crate) fn seed_target(
         _ => None,
     };
     let target_output = target_output.as_deref();
+    let tools = crate::domain::TOOLS.trim_start_matches('/');
     let mapping = |name: &str| -> Option<String> {
         let seeds = target_output
             .map(|output| ("target", output))
             .into_iter()
-            .chain([(crate::domain::DEPENDENCY_TOOLS, "work/tools")]);
+            .chain([(crate::domain::DEPENDENCY_TOOLS, tools)]);
         for (source, destination) in seeds {
             if name == source || name.starts_with(&format!("{source}/")) {
                 return Some(format!(
@@ -582,11 +658,6 @@ pub(crate) fn seed_target(
         }
         None
     };
-    let selected: Vec<_> = invocation
-        .inputs
-        .iter()
-        .filter(|input| mapping(&input.name).is_some())
-        .collect();
     if target_output.is_none() && invocation.inputs.iter().any(|input| input.name == "target") {
         bail!(
             "a target input seeds the recipe's one directory output; this recipe declares {} output(s): {}",
@@ -598,86 +669,77 @@ pub(crate) fn seed_target(
                 .join(", ")
         );
     }
-    if selected.is_empty() {
-        return Ok(false);
-    }
+    let selected: Vec<(usize, String)> = invocation
+        .inputs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, input)| mapping(&input.name).map(|name| (index, name)))
+        .collect();
     for name in ["target", crate::domain::DEPENDENCY_TOOLS] {
-        if selected.iter().any(|input| input.name == name)
-            && !selected
-                .iter()
-                .any(|input| input.name == name && input.kind == InputKind::Directory)
-        {
+        let named = |kind: Option<&InputKind>| {
+            selected.iter().any(|(index, _)| {
+                let input = &invocation.inputs[*index];
+                input.name == name && kind.is_none_or(|kind| input.kind == *kind)
+            })
+        };
+        if named(None) && !named(Some(&InputKind::Directory)) {
             bail!("{name} input must be a directory tree");
         }
+    }
+    let target = selected
+        .iter()
+        .any(|(index, _)| invocation.inputs[*index].name == "target");
+    Ok((selected, target))
+}
+
+/// Write the seed members of `plan` ([`seed_plan`]) from the staged copies:
+/// the output tree first when `target` is seeded (every parent precedes its
+/// entries), hard links as copies, symlinks last.
+fn write_seed<W: Write>(
+    invocation: &PreparedInvocation,
+    (plan, target): &(Vec<(usize, String)>, bool),
+    archive: &mut Archive<W>,
+) -> Result<()> {
+    if *target {
+        archive.dir(crate::domain::OUT.trim_start_matches('/'), 0o755)?;
+    }
+    for (index, name) in plan {
+        crate::cancellation::check()?;
+        let input = &invocation.inputs[*index];
+        match &input.kind {
+            InputKind::Directory => archive.dir(name, input.mode)?,
+            InputKind::Symlink(_) => {}
+            InputKind::File | InputKind::Hardlink(_) => {
+                let (file, staged) = staged_copy(invocation, *index)?;
+                archive.checked(name, input.mode, file, staged)?;
+            }
+        }
+    }
+    for (index, name) in plan {
+        if let InputKind::Symlink(target) = &invocation.inputs[*index].kind {
+            archive.symlink(name, target)?;
+        }
+    }
+    Ok(())
+}
+
+/// Seed a host run's target view into the new tar `destination`, from the
+/// staged copies of the selected inputs ([`seed_plan`]); false, and no file,
+/// when no input seeds anything. A Ginux run gets the same members inside
+/// its injected archive ([`inject_archive`]).
+pub(crate) fn seed_target(invocation: &PreparedInvocation, destination: &Path) -> Result<bool> {
+    let plan = seed_plan(invocation)?;
+    if plan.0.is_empty() {
+        return Ok(false);
     }
     let file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(destination)?;
-    let mut archive = tar::Builder::new(file);
-    if selected.iter().any(|input| input.name == "target") {
-        // The output's parent, as the restore expects every parent before
-        // its entries.
-        let mut header = tar::Header::new_ustar();
-        header.set_mode(0o755);
-        header.set_uid(crate::domain::UID);
-        header.set_gid(crate::domain::UID);
-        header.set_mtime(0);
-        header.set_entry_type(tar::EntryType::Directory);
-        header.set_size(0);
-        header.set_cksum();
-        archive.append_data(
-            &mut header,
-            crate::domain::OUT.trim_start_matches('/'),
-            std::io::empty(),
-        )?;
-    }
-    for input in selected {
-        let name = mapping(&input.name).expect("selected seed input");
-        let mut header = tar::Header::new_ustar();
-        header.set_mode(input.mode);
-        header.set_uid(crate::domain::UID);
-        header.set_gid(crate::domain::UID);
-        header.set_mtime(0);
-        match &input.kind {
-            InputKind::Directory => {
-                header.set_entry_type(tar::EntryType::Directory);
-                header.set_size(0);
-                header.set_cksum();
-                archive.append_data(&mut header, name, std::io::empty())?;
-            }
-            InputKind::Symlink(target) => {
-                header.set_entry_type(tar::EntryType::Symlink);
-                header.set_size(0);
-                header.set_cksum();
-                archive.append_link(&mut header, name, target)?;
-            }
-            InputKind::Hardlink(target) if mapping(target).is_some() => {
-                header.set_entry_type(tar::EntryType::Link);
-                header.set_size(0);
-                let link = mapping(target).unwrap();
-                archive.append_link(&mut header, name, link)?;
-            }
-            InputKind::Bind => bail!("a bound input cannot seed a target: {}", input.name),
-            InputKind::File | InputKind::Hardlink(_) => {
-                let mut file = crate::fsx::open_regular(
-                    &root
-                        .join(crate::domain::INPUTS.trim_start_matches('/'))
-                        .join(&input.name),
-                )?;
-                if file.metadata()?.len() != input.size {
-                    bail!("target snapshot size changed: {}", input.name);
-                }
-                header.set_entry_type(tar::EntryType::Regular);
-                header.set_size(input.size);
-                header.set_cksum();
-                archive.append_data(&mut header, name, &mut file)?;
-            }
-        }
-    }
-    archive.finish()?;
-    // Scratch for this launch only, read back from the page cache and
-    // removed with the run directory: nothing to make durable.
-    archive.into_inner()?;
+    let mut archive = Archive::new(std::io::BufWriter::new(file));
+    write_seed(invocation, &plan, &mut archive)?;
+    // Scratch for this run only, read back from the page cache and removed
+    // with the run directory: nothing to make durable.
+    archive.builder.into_inner()?.flush()?;
     Ok(true)
 }

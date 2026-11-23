@@ -1,33 +1,15 @@
-//! Runs a recipe graph: each recipe in a Ginux domain through the launcher,
-//! or on the host (`crate::execution`, `crate::host`).
-use anyhow::{Context, Result, bail};
+//! Runs a recipe graph: each recipe in a Ginux instance through the public
+//! lifecycle (`crate::ginux`, `crate::launch`), or on the host
+//! (`crate::execution`, `crate::host`).
+use crate::ginux::Ginux;
+use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-
-/// Verified executable used to start the Ginux domain.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GinuxLauncher {
-    path: PathBuf,
-}
-
-impl GinuxLauncher {
-    /// Resolve and validate the required GINUX_BIN executable.
-    pub fn from_env() -> Result<Self> {
-        Ok(Self {
-            path: resolve_launcher()?,
-        })
-    }
-
-    /// The executable selected for this invocation.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-}
 
 /// Run one executable recipe operation and its dependency graph.
 ///
 /// Each recipe runs where `crate::execution` places it: in Ginux through
-/// `explicit` (or the launcher `GINUX_BIN` names, resolved only when some
-/// recipe needs Ginux), or on the host. Prepare immutable inputs, execute,
+/// `explicit` (or the Ginux the environment names, `crate::runtime::ginux_setup`,
+/// resolved only when some recipe needs Ginux), or on the host. Prepare immutable inputs, execute,
 /// and return the run's result (`crate::launch::finish_outputs`) only after
 /// successful completion and validated publication. Persistence retains
 /// separate state/files pairs.
@@ -39,34 +21,36 @@ impl GinuxLauncher {
 /// the host (docs/recipe-format.md, section 2.9). What is done already is
 /// decided per run from Recipe's records (`crate::launch::start`).
 pub(crate) fn run(
-    explicit: Option<&GinuxLauncher>,
+    explicit: Option<&Ginux>,
     invocation: &crate::launch::Invocation<'_>,
 ) -> Result<serde_json::Value> {
     Runner {
         explicit,
-        launcher: None,
+        ginux: None,
     }
     .run(invocation)
 }
 
 struct Runner<'l> {
-    explicit: Option<&'l GinuxLauncher>,
-    launcher: Option<GinuxLauncher>,
+    explicit: Option<&'l Ginux>,
+    ginux: Option<Ginux>,
 }
 
 impl Runner<'_> {
-    /// The Ginux launcher, resolved the first time a recipe needs it.
-    fn launcher(&mut self) -> Result<PathBuf> {
-        if self.launcher.is_none() {
-            self.launcher = Some(match self.explicit {
-                Some(launcher) => launcher.clone(),
-                None => GinuxLauncher::from_env()?,
+    /// Ginux, resolved the first time a recipe needs it.
+    fn ginux(&mut self) -> Result<Ginux> {
+        if self.ginux.is_none() {
+            self.ginux = Some(match self.explicit {
+                Some(ginux) => ginux.clone(),
+                None => Ginux::from_env()?,
             });
         }
-        Ok(self.launcher.as_ref().unwrap().path.clone())
+        Ok(self.ginux.clone().expect("resolved above"))
     }
 
     fn run(&mut self, invocation: &crate::launch::Invocation<'_>) -> Result<serde_json::Value> {
+        // A stale variable of the fork's launcher stops every run.
+        crate::runtime::refuse_gone_variables()?;
         invocation
             .options
             .validate()
@@ -153,7 +137,7 @@ impl Runner<'_> {
             }
             let effective = node.needs.resolve(&execution.narrowing, &execution)?;
             if !placements.last().unwrap().host {
-                crate::needs::contract::inspect(&self.launcher()?, &effective)?;
+                crate::needs::contract::inspect(&self.ginux()?, &effective)?;
             }
             executions.push(execution);
         }
@@ -164,7 +148,6 @@ impl Runner<'_> {
             state_dir: invocation.state_dir,
             outputs: Vec::new(),
         };
-        let mut image = None;
         let system = invocation
             .options
             .defines
@@ -272,7 +255,6 @@ impl Runner<'_> {
                                 dependency.name
                             ),
                             path: path.clone(),
-                            live: false,
                         });
                         if kind == crate::needs::PathKind::Directory && name == "tools" {
                             crate::target::merge_tree(&path, &tools)?;
@@ -283,12 +265,10 @@ impl Runner<'_> {
                     crate::inputs::ExtraInput {
                         name: crate::domain::DEPENDENCY_INPUT.into(),
                         path: dependencies,
-                        live: false,
                     },
                     crate::inputs::ExtraInput {
                         name: crate::domain::DEPENDENCY_TOOLS.into(),
                         path: tools,
-                        live: false,
                     },
                 ]);
                 internal.extend(product_inputs);
@@ -320,20 +300,17 @@ impl Runner<'_> {
                 finish: if main { invocation.finish } else { None },
                 // latest() and cleanup("manual") see no kept files and keep
                 // nothing: no saved files are restored into their run, and
-                // none are kept after it. Nor does a run given a live system
-                // root: its folders are bound, not hashed, so its identity
-                // cannot tell one root from another.
+                // none are kept after it.
                 persist_state: invocation.persist_state
                     && !matches!(
                         operation,
                         crate::worker::records::Operation::Latest
                             | crate::worker::records::Operation::Cleanup
-                    )
-                    && !bindings[&node.recipe].iter().any(|input| input.live),
+                    ),
                 ..*invocation
             };
             let result = self
-                .run_single(&child, &internal, node, placement.host, &mut image)
+                .run_single(&child, &internal, node, placement.host)
                 .with_context(|| format!("running recipe {}", node.recipe.display()))?;
             if !main {
                 staged
@@ -444,13 +421,12 @@ impl Runner<'_> {
         dependency_inputs: &[crate::inputs::ExtraInput],
         expected: &crate::needs::Declaration,
         host: bool,
-        image: &mut Option<crate::inputs::VerifiedImage>,
     ) -> Result<serde_json::Value> {
-        let launcher = if host { None } else { Some(self.launcher()?) };
+        let ginux = if host { None } else { Some(self.ginux()?) };
         let place = if host {
             "on the host"
         } else {
-            "in the Ginux domain"
+            "in a Ginux instance"
         };
         let operation = invocation.operation;
         invocation
@@ -462,7 +438,7 @@ impl Runner<'_> {
             invocation.search_path,
             invocation.inputs,
             &invocation.options.execution,
-            launcher.as_deref(),
+            ginux.as_ref(),
             dependency_inputs,
             operation != crate::worker::records::Operation::Latest,
         )
@@ -486,15 +462,15 @@ impl Runner<'_> {
             },
             ..*invocation
         };
-        let report = match &launcher {
-            Some(launcher) => crate::launch::run_domain(&prepared, &invocation, launcher, image)?,
+        let report = match &ginux {
+            Some(ginux) => crate::launch::run_domain(&prepared, &invocation, ginux)?,
             None => crate::host::run_host(&prepared, &invocation)?,
         };
         crate::diagnostics::diag!(
             "recipe: invocation {} finished {place}: ok={} ({} exit {}; result {})",
             prepared.invocation_id,
             report.result.ok,
-            if host { "worker" } else { "launcher" },
+            if host { "worker" } else { "ginux start" },
             report
                 .launcher_code
                 .map(|code| code.to_string())
@@ -508,18 +484,12 @@ impl Runner<'_> {
                 .failure
                 .clone()
                 .expect("a failed result carries its failure");
-            let diagnostics = crate::invocation_log::retained(
-                invocation.state_dir,
-                Path::new(&prepared.invocation_id),
-            );
-            return Err(
-                anyhow::Error::new(WorkloadFailure(failure, diagnostics)).context(
-                    crate::failure::Category::Workload.error(format!(
-                        "`{operation}` failed {place} (invocation {})",
-                        prepared.invocation_id
-                    )),
-                ),
-            );
+            return Err(anyhow::Error::new(WorkloadFailure(failure)).context(
+                crate::failure::Category::Workload.error(format!(
+                    "`{operation}` failed {place} (invocation {})",
+                    prepared.invocation_id
+                )),
+            ));
         }
         report.summary.ok_or_else(|| {
             anyhow::Error::new(crate::failure::Category::Protocol.error(format!(
@@ -569,60 +539,9 @@ fn system_present() -> Result<Vec<Present>> {
     Ok(serde_json::from_str(&text)?)
 }
 
-/// Resolve Ginux from `GINUX_BIN`, or the launcher shipped with the OS.
-///
-/// A missing, empty, nonexistent, or unexecutable value is an explicit
-/// `startup` failure — never a silent fallback to host execution.
-fn resolve_launcher() -> Result<PathBuf> {
-    let raw = match std::env::var("GINUX_BIN") {
-        Ok(value) => value,
-        Err(std::env::VarError::NotPresent) => {
-            crate::runtime::launcher().to_string_lossy().into_owned()
-        }
-        Err(error) => return Err(error).context("GINUX_BIN is not valid UTF-8"),
-    };
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        bail!(crate::failure::Category::Startup.error(
-            "GINUX_BIN is empty \
-             (no launcher to start)"
-        ));
-    }
-    let path = PathBuf::from(trimmed);
-    let meta = std::fs::metadata(&path).with_context(|| {
-        crate::failure::Category::Startup.error(format!(
-            "ginux launcher {} is missing or inaccessible",
-            path.display()
-        ))
-    })?;
-    if !meta.is_file() {
-        bail!(
-            crate::failure::Category::Startup
-                .error(format!("ginux launcher {} is not a file", path.display()))
-        );
-    }
-    if !is_executable(&meta) {
-        bail!(crate::failure::Category::Startup.error(format!(
-            "ginux launcher {} is not executable",
-            path.display()
-        )));
-    }
-    Ok(path)
-}
-
-/// True when the current user could exec this file (owner/group/other exec bit).
-fn is_executable(meta: &std::fs::Metadata) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    meta.permissions().mode() & 0o111 != 0
-}
-
 /// The worker's account of a failed workload, kept typed.
 #[derive(Debug)]
-pub(crate) struct WorkloadFailure(
-    pub crate::worker::records::FailureInfo,
-    /// The retained diagnostics directory of the failed invocation, if there is one.
-    pub Option<PathBuf>,
-);
+pub(crate) struct WorkloadFailure(pub crate::worker::records::FailureInfo);
 
 impl std::fmt::Display for WorkloadFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

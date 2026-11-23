@@ -130,11 +130,6 @@ fn run_inner(
     };
     let run_started = Instant::now();
     let inputs = root.join(crate::domain::INPUTS.trim_start_matches('/'));
-    // Only a Ginux launcher binds a folder (`crate::inputs::prepare_invocation`
-    // copies a live root for a host run).
-    if prepared.binds().next().is_some() {
-        return Err(startup(anyhow::anyhow!("a host run cannot bind an input")));
-    }
     // The worker learns its root from the environment (`ENV_HOST_ROOT`),
     // which it reads as UTF-8.
     root.to_str()
@@ -143,10 +138,7 @@ fn run_inner(
     let request = crate::launch::request(
         prepared,
         invocation,
-        Some(crate::worker::records::HostRun {
-            network: prepared.network.host_grants(),
-            network_max_bytes: prepared.execution.network_max_bytes,
-        }),
+        Some(crate::worker::records::HostRun {}),
         offline_cache_text().map_err(startup)?,
     );
     crate::inputs::stage_inputs(prepared, &inputs, &request).map_err(startup)?;
@@ -204,7 +196,7 @@ fn run_inner(
             crate::launch::Start::Run { restore } => restore,
         };
     if !restore {
-        restore = crate::inputs::seed_target(prepared, &root, &restore_path).map_err(|error| {
+        restore = crate::inputs::seed_target(prepared, &restore_path).map_err(|error| {
             Category::Startup.wrap(error, "cannot seed the requested target view")
         })?;
     }

@@ -21,6 +21,12 @@ path = "src/bin/recipe.rs"
 name = "recipe-image"
 path = "src/bin/recipe-image.rs"
 
+# Installed root-owned at /usr/libexec/recipe/recipe-ginux-guard; the sudoers
+# rule names it instead of Ginux's helper.
+[[bin]]
+name = "recipe-ginux-guard"
+path = "src/bin/recipe-ginux-guard.rs"
+
 [dependencies]
 # Pinned exactly: `internals` APIs are version-sensitive. Users: `//! extends:` merging
 # (AST `+=`, src/core/executor.rs), setup/hook evaluation via GlobalRuntimeState/Caches and

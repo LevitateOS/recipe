@@ -1,10 +1,19 @@
-//! Real public-library execution against the configured Ginux supervisor.
+//! Real public-library execution on the public Ginux lifecycle.
+//!
+//! Preconditions: a real Ginux, privileges and the imported compiler image, as
+//! in the header of `tests/e2e.rs`: RECIPE_GINUX, RECIPE_IMAGE,
+//! RECIPE_IMAGE_LAYOUT, RECIPE_WORKER_BIN, the Ginux files root-owned (or
+//! GINUX_INSTANCE_HELPER), root or the sudoers rule with
+//! RECIPE_GINUX_STATE_ROOT/RECIPE_GINUX_RUN_ROOT naming its roots, and none of
+//! the old GINUX_BIN/GINUX_ROOT* variables. This test process sets
+//! RECIPE_WORKER=1 and RECIPE_INVOCATION=spoofed-public-call itself.
 use levitate_recipe::{ExecutionMode, ExecutionOptions, RecipeEngine};
 
 #[test]
 fn library_ginux_run_ignores_spoofed_worker_environment() {
-    // Configure GINUX_BIN, GINUX_ROOTFS, RECIPE_WORKER_BIN and deliberately set
-    // RECIPE_WORKER=1/RECIPE_INVOCATION=spoofed-public-call in the test process.
+    // Configure RECIPE_GINUX, RECIPE_IMAGE[_LAYOUT], RECIPE_WORKER_BIN and
+    // deliberately set RECIPE_WORKER=1/RECIPE_INVOCATION=spoofed-public-call in
+    // the test process.
     assert_eq!(std::env::var("RECIPE_WORKER").unwrap(), "1");
     let directory = tempfile::tempdir().unwrap();
     let recipe = directory.path().join("library.rhai");
@@ -23,8 +32,8 @@ fn library_ginux_run_ignores_spoofed_worker_environment() {
     let report = result["outputs"]["report"].as_str().unwrap();
     assert_eq!(std::fs::read_to_string(report).unwrap(), "/work/build");
     assert_eq!(
-        engine.launcher().unwrap().path(),
-        std::path::Path::new(&std::env::var_os("GINUX_BIN").unwrap())
+        std::path::Path::new(engine.ginux().unwrap().cli()),
+        std::path::Path::new(&std::env::var_os("RECIPE_GINUX").unwrap())
     );
     assert_eq!(std::fs::read_to_string(&recipe).unwrap(), source);
 }

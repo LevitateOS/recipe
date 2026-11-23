@@ -88,58 +88,6 @@ fn left_out_of_system_root(entry: &walkdir::DirEntry) -> bool {
     reject_secret_bearing_host(entry.path(), SYSTEM_ROOT_INPUT).is_err()
 }
 
-/// A [`SYSTEM_ROOT_INPUT`] given live ([`ExtraInput::live`]): only its top
-/// level is read. Each top-level folder that [`left_out_of_system_root`] keeps
-/// becomes an [`InputKind::Bind`], each top-level link is kept as a link, and
-/// top-level files (a swap file, `.autorelabel`) are left out: the effects
-/// recipe reads none. Nothing below the top level is listed, hashed or copied.
-fn discover_live_root(collector: &mut Collector<'_>, extra: &ExtraInput) -> Result<()> {
-    if extra.name != SYSTEM_ROOT_INPUT {
-        bail!(
-            "input preparation failure: only the system root input {SYSTEM_ROOT_INPUT:?} is bound live, not {:?}",
-            extra.name
-        );
-    }
-    if !std::fs::symlink_metadata(&extra.path)?.is_dir() {
-        bail!(
-            "input preparation failure: the system root {} is not a directory",
-            extra.path.display()
-        );
-    }
-    collector.stage_kind(&extra.name, &extra.path, InputKind::Directory)?;
-    let mut links = HashMap::new();
-    for entry in walkdir::WalkDir::new(&extra.path)
-        .min_depth(1)
-        .max_depth(1)
-        .follow_links(false)
-        .sort_by_file_name()
-    {
-        let entry = entry.context("input preparation failure: cannot list the system root")?;
-        if left_out_of_system_root(&entry) {
-            continue;
-        }
-        let relative = entry
-            .file_name()
-            .to_str()
-            .context("input preparation failure: non-Unicode name in the system root")?;
-        let name = format!("{}/{relative}", extra.name);
-        if entry.file_type().is_dir() {
-            collector.stage_kind(&name, entry.path(), InputKind::Bind)?;
-        } else if entry.file_type().is_symlink() {
-            let target = std::fs::read_link(entry.path())?;
-            let target = target
-                .to_str()
-                .context("input preparation failure: non-Unicode symlink")?;
-            links.insert(relative.to_owned(), target.to_owned());
-            collector.stage_kind(&name, entry.path(), InputKind::Symlink(target.to_owned()))?;
-        }
-    }
-    for relative in links.keys() {
-        validate_tree_link(relative, &links, true)?;
-    }
-    Ok(())
-}
-
 /// Kind and link bytes participate in the retained input identity.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum InputKind {
@@ -149,12 +97,6 @@ pub enum InputKind {
     Hardlink(String),
     /// Relative target confined to the explicitly selected source tree.
     Symlink(String),
-    /// A host folder of a live system root ([`ExtraInput::live`]) that the
-    /// launcher binds read-only at this name for the run, in its own mount
-    /// namespace (`crate::launch`): never hashed, copied or sealed. Its
-    /// identity is not known, so a run with one keeps no state
-    /// (`crate::backend`).
-    Bind,
 }
 
 /// One staged host file and its `/inputs/NAME` identity.
@@ -180,12 +122,6 @@ pub struct ExtraInput {
     pub name: String,
     /// Host file to stage at `/inputs/{name}`.
     pub path: PathBuf,
-    /// The root of a system change given to its effects recipe
-    /// ([`SYSTEM_ROOT_INPUT`]): its top-level folders are bound read-only for
-    /// a Ginux run as root ([`InputKind::Bind`]) instead of hashed and copied.
-    /// Anywhere else it is staged like any input
-    /// (`super::prepare_invocation`).
-    pub live: bool,
 }
 
 /// Discovery result consumed by [`super::prepare_invocation`][crate::inputs].
@@ -242,9 +178,7 @@ pub fn discover_inputs(
     for extra in extra_inputs {
         crate::domain::validate_input_name(&extra.name)?;
         let meta = std::fs::symlink_metadata(&extra.path)?;
-        if extra.live {
-            discover_live_root(&mut collector, extra)?;
-        } else if meta.is_dir() {
+        if meta.is_dir() {
             let filesystem_tree = filesystem_tree(&extra.name);
             let system_root = extra.name == SYSTEM_ROOT_INPUT;
             let mut links = HashMap::new();

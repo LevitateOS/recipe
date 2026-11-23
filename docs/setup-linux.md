@@ -1,9 +1,19 @@
 # Linux bootstrap and operator setup
 
 The verified host baseline is Rocky Linux 10.2, x86-64, kernel 6.12, glibc 2.39.
-The Ginux coordinator runs as root or as an ordinary user; an ordinary user
-needs unprivileged user namespaces (Ginux `ccc492a2` or later). Image production,
-source compilation and package generation run as the ordinary operator.
+
+**Status (2026-11-23): the public-lifecycle cutover is written and has never
+been run.** Recipe no longer uses the downstream `ginux launch`; it runs
+recipes through Ginux's public lifecycle ([cutover design](ginux-cutover-design.md),
+[migration plan](ginux-public-lifecycle-migration.md), section 6). Sections below
+that still describe the old runtime (the historical source pair, the image
+hashes of `rootfs.tar`, `GINUX_BIN`/`GINUX_ROOTFS`/`GINUX_ROOT`) are history,
+kept until the verification pass replaces them with a recorded tuple. The
+current setup is in "Configure the complete coordinator". The Ginux coordinator
+now needs root or a sudoers rule: every privileged step is the Ginux helper run
+as root behind Recipe's guard, which `sudo` runs ([README, Privileges](../README.md#privileges)); the user-namespace
+path and its AppArmor profile are gone. Image production, source compilation and
+package generation run as the ordinary operator.
 
 The maintained sources are [LevitateOS/recipe](https://github.com/LevitateOS/recipe)
 and [LevitateOS/ginux](https://github.com/LevitateOS/ginux). Upstream Ginux leads;
@@ -12,7 +22,8 @@ Reconcile new upstream behavior and replace our changes when upstream covers it.
 The pinned version also includes upstream Gate 11 PR #249 at
 `9759daaec8589a7e2d2cc9e1c9ec1f398b6e958f`, ahead of its merge into main.
 Gate 11 remains partial against its performance budget. Recipe selects explicit
-downstream catalog 1002, separate from Gate 11 upstream catalog 2.
+downstream catalog 1002, separate from Gate 11 upstream catalog 2 (historical:
+Recipe now selects catalog 2).
 This source delivery does not claim distro boot/install or complete security
 acceptance. Do not substitute a migration binary, private image cache or test CA.
 The reproducible baseline below is Recipe `e7bfc166` with Ginux `28f4368f`.
@@ -65,9 +76,15 @@ cargo build --locked --release --bins
 cargo install --locked --path . --bins --root /absolute/path/to/recipe-tools
 ```
 
-Set `GINUX_BIN` to `maintained-ginux/target/x86_64-unknown-linux-gnu/release/ginux`.
-The launcher is built from the maintained source, and the worker is the same
-`recipe` executable as the coordinator. An extracted source crate also supports
+Historical build (old runtime): `GINUX_BIN` was
+`maintained-ginux/target/x86_64-unknown-linux-gnu/release/ginux`. The public
+lifecycle needs the CLI, helper, image tool, runtime and allocator instead:
+`cargo build --release -p ginux-cli -p ginux-oci -p ginux-allocator` and
+`cargo build --release -p ginux-init --bin ginux --target x86_64-unknown-linux-gnu`
+in the maintained checkout, with the helper script
+`scripts/ginux-host-instance-helper.sh`; the four files are installed
+root-owned (`recipe runtime stage` does it into a root tree, with the
+sudoers rule). The worker is the same `recipe` executable as the coordinator. An extracted source crate also supports
 the two Cargo commands above; it includes the release lock and image producer.
 
 This installs `recipe` (coordinator and worker) and `recipe-image` (bootstrap
@@ -106,8 +123,10 @@ contains twelve RPMs, including ISO tools. Current recorded reproduction hashes:
 
 Both were reproduced byte-for-byte on the development host and the clean Rocky
 host with Rust 1.99.1 and 1.99.0 respectively (both use RPM 4.19.1.1).
-Verify `rootfs.tar` against its
-`provenance.json`, including every selected input digest. The old eight-RPM
+Verify the layout against its
+`provenance.json`, including every selected input digest (the tar digests of
+this table belong to the old `rootfs.tar` form; the identity is now the manifest
+digest and the hashes will be re-recorded in verification). The old eight-RPM
 `c089…` receipt does not identify either current manifest's output.
 
 Existing output directories are rejected. Wrong input hashes and missing
@@ -119,47 +138,72 @@ complete fresh directory; never consume it based only on the path's existence.
 
 ## Configure the complete coordinator
 
-Select the exact compatible launcher, image and matching worker explicitly:
+Select the CLI, the image (an OCI layout and the reference of its manifest
+digest) and the matching worker explicitly. `recipe-image` writes the layout and
+`provenance.json` (`manifest_digest`, `layer_sha256`):
 
 ```sh
 export RECIPE_BIN=/absolute/path/to/recipe-tools/bin/recipe
-export GINUX_BIN=/absolute/path/to/maintained-ginux
-export GINUX_ROOTFS=/absolute/path/to/acquisition-image/rootfs.tar
-export GINUX_ROOT="oci:recipe-compiler@sha256:$(jq -er .sha256 /absolute/path/to/acquisition-image/provenance.json)"
+export RECIPE_GINUX=/absolute/path/to/ginux
+export RECIPE_IMAGE_LAYOUT=/absolute/path/to/acquisition-image/image.oci.tar
+export RECIPE_IMAGE="local/recipe-compiler@sha256:$(jq -er .manifest_digest /absolute/path/to/acquisition-image/provenance.json)"
 export RECIPE_WORKER_BIN="$RECIPE_BIN"
 ```
 
-If `GINUX_ROOTFS` is not set, Recipe looks for the tar its install ships, then in
-`$XDG_CACHE_HOME/recipe/images/<digest>.tar`, and downloads it there when it is absent
-(`recipe runtime fetch`; `RECIPE_RUNTIME_URL` names another address).
+Recipe's guard (`recipe-ginux-guard`, `/usr/libexec/recipe/`), the Ginux helper,
+image tool, runtime and allocator must be installed root-owned at
+`/usr/libexec/recipe/`, `/usr/libexec/ginux/` and `/usr/lib64/ginux/` (the helper
+may be reached through a root-owned wrapper named by `GINUX_INSTANCE_HELPER`),
+and the host needs `sudo`.
+`GINUX_BIN`, `GINUX_ROOT`, `GINUX_ROOTFS`, `GINUX_MINIMAL_ROOT` and
+`GINUX_MINIMAL_ROOTFS` are refused by Recipe: a stale shell must not select a
+runtime.
+
+If `RECIPE_IMAGE_LAYOUT` is not set, Recipe looks for the layout its install ships,
+then in `$XDG_CACHE_HOME/recipe/images/<manifest digest>.oci.tar`, and downloads
+it there when it is absent (`recipe runtime fetch`; `RECIPE_RUNTIME_URL` names
+another address). Ginux imports it once per host, as root: the guard allows no
+`import-image`, so run `sudo recipe runtime fetch` (the installer does) before
+anyone but root runs a recipe in Ginux. It also lists the image in the guard's
+root-owned allowlist `/usr/libexec/recipe/runtime-images`, without which the
+guard refuses the image for every caller except root.
 
 A recipe with `NEEDS.runtime: "minimal"` (a root's effects recipe) runs in the minimal
 runtime image (`bootstrap/README.md`, "Minimal runtime image"). Select it the same way,
 or leave it out and such a recipe runs in the image above:
 
 ```sh
-export GINUX_MINIMAL_ROOTFS=/absolute/path/to/prepared-image-minimal/rootfs.tar
-export GINUX_MINIMAL_ROOT="oci:recipe-minimal@sha256:$(jq -er .sha256 /absolute/path/to/prepared-image-minimal/provenance.json)"
+export RECIPE_MINIMAL_IMAGE_LAYOUT=/absolute/path/to/prepared-image-minimal/image.oci.tar
+export RECIPE_MINIMAL_IMAGE="local/recipe-minimal@sha256:$(jq -er .manifest_digest /absolute/path/to/prepared-image-minimal/provenance.json)"
 ```
 
-Each run unpacks the image into a private scratch directory on disk,
-`~/.cache/recipe/scratch` (`/root/.cache/recipe/scratch` for root). It needs
-about 1.3 GB per run (about 8 MB for a run in the minimal image). Set `RECIPE_SCRATCH_DIR` to an absolute path to use
-another disk; it wins over `TMPDIR`, which, when set, keeps `$TMPDIR/recipe-scratch-<uid>`. Published
-outputs go to `<state-dir>/exports`, not into the current directory.
+Every run is an instance of Ginux with a private root under the state root
+(`/var/lib/recipe/ginux`, root-owned, created by the helper). The first import
+copies the image there (about 1.3 GB); each run then needs a private root
+(copy-on-write clones on XFS or Btrfs, a full expansion elsewhere, about 1.3 GB
+per run, about 8 MB in the minimal image) and is deleted when the run ends.
+`RECIPE_GINUX_STATE_ROOT` and `RECIPE_GINUX_RUN_ROOT` select other roots (every
+level root-owned). The coordinator's own scratch pool (`~/.cache/recipe/scratch`;
+`RECIPE_SCRATCH_DIR`, or `TMPDIR`) holds the run directory (the instance
+configuration and the tars that go in and out). Published outputs go to
+`<state-dir>/exports`, not into the current directory.
 
-Verify these source and artifact selections against the recorded release tuple. With `GINUX_ROOT` omitted, the default is the
-corrected bare Rocky base, which has no compiler. Explicit prepared images need
-their own provenance digest; a mismatched root identity is rejected.
+Verify these source and artifact selections against the recorded release tuple
+(none is recorded yet for the public lifecycle). Without `RECIPE_IMAGE` and an
+installed `root-reference` there is no default image.
 
-Run the whole coordinator with bootstrap privileges; wrapping only the launcher
-in sudo breaks its inherited control channels. Use explicit work/state paths:
+Run the whole coordinator as root, or as an administrator after
+`recipe runtime stage --sudoers GROUP` installed the rule (the rule is a
+passwordless sandbox for Recipe-shaped instances from trusted images, not an
+unconditional guarantee: `runtime-limits.md`, "What a shared host still
+exposes") and `sudo recipe runtime fetch` imported the image. Use explicit
+work/state paths:
 
 ```sh
 export RECIPE_WORK=/absolute/path/to/new-example-work
 mkdir -p "$RECIPE_WORK"
-sudo env GINUX_BIN="$GINUX_BIN" GINUX_ROOTFS="$GINUX_ROOTFS" \
-  GINUX_ROOT="$GINUX_ROOT" RECIPE_WORKER_BIN="$RECIPE_WORKER_BIN" \
+sudo env RECIPE_GINUX="$RECIPE_GINUX" RECIPE_IMAGE="$RECIPE_IMAGE" \
+  RECIPE_IMAGE_LAYOUT="$RECIPE_IMAGE_LAYOUT" RECIPE_WORKER_BIN="$RECIPE_WORKER_BIN" \
   "$RECIPE_BIN" install examples/hello.rhai --build-dir "$RECIPE_WORK/build" \
   --state-dir "$RECIPE_WORK/state" --json-output "$RECIPE_WORK/hello.json"
 ```

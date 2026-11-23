@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Real CLI/Ginux ripgrep install, update, failed update and offline removal.
 
-Run the whole script with the native launcher's bootstrap privileges and the
-same GINUX_BIN/GINUX_ROOTFS/GINUX_ROOT selections as ordinary Recipe execution.
+Run the whole script as root (or as a member of the group the sudoers rule of
+`recipe runtime stage --sudoers GROUP` names) with the same RECIPE_GINUX/
+RECIPE_IMAGE/RECIPE_IMAGE_LAYOUT selections as ordinary Recipe execution.
 All installed files, state, publications and logs stay below --artifacts.
 """
 
@@ -35,7 +36,7 @@ def main():
     def invoke(label, *command, success=True, offline=False):
         selected_env = env.copy()
         if offline:
-            selected_env.update(GINUX_BIN="/missing-ginux", GINUX_ROOTFS="/missing-rootfs")
+            selected_env.update(RECIPE_GINUX="/missing-ginux", RECIPE_IMAGE_LAYOUT="/missing-layout")
         with (root / f"{label}.json").open("w") as out, (root / f"{label}.log").open("w") as err:
             result = subprocess.run(base + list(command), cwd=root, env=selected_env,
                                     stdout=out, stderr=err, timeout=600)

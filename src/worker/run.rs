@@ -16,8 +16,8 @@
 //!   to [`crate::domain::RESULT`], after a stale result (one a restored
 //!   archive brought back) is removed at start. The staging file is created
 //!   and allocated ([`crate::domain::RESULT_RESERVE_BYTES`]) before any
-//!   recipe code runs, so a run that fills its storage quota still records
-//!   its failure. When even the request is
+//!   recipe code runs, so a run that fills its disk still records its
+//!   failure. When even the request is
 //!   unusable, the worker still writes a failed result, so the coordinator
 //!   learns why.
 //! - A failed result says what failed ([`FailureKind`]): a phase (with its
@@ -156,8 +156,8 @@ pub fn run_worker() -> Result<()> {
     for stale in [crate::domain::RESULT, crate::domain::RESULT_STAGING] {
         let _ = std::fs::remove_file(crate::domain::local(stale));
     }
-    // The result's space is taken now, while the run's storage is still
-    // free: a recipe that later fills the quota can still report that.
+    // The result's space is taken now, while the run's disk is still free: a
+    // recipe that later fills it can still report that.
     let result_file = reserve_result()?;
 
     // (1) The request file. When the request itself is unusable, still write
@@ -182,11 +182,29 @@ pub fn run_worker() -> Result<()> {
         crate::domain::MAIN_RECIPE
     ));
 
+    // The network rule for Recipe's own downloads, in either runtime: the
+    // declared endpoints at their pinned addresses, within the byte cap. A
+    // host-mode worker without one reaches nothing.
+    let network = request.network.clone().or_else(|| {
+        request
+            .host
+            .is_some()
+            .then(|| crate::worker::records::NetworkGrant {
+                pins: Default::default(),
+                max_bytes: request.options.execution.network_max_bytes,
+            })
+    });
+    if let Some(network) = network
+        && let Err(error) = crate::helpers::acquire::net::install(&network.pins, network.max_bytes)
+    {
+        let failure = request_failure(format!("cannot install the network rule: {error:#}"));
+        return write_result(result_file, &invocation_id, Err(failure));
+    }
     // A host-mode worker sets up its confinement before any recipe code:
-    // its directories, its network grant, and a kernel filter that refuses
-    // to start any program at all.
-    if let Some(host) = &request.host
-        && let Err(error) = enter_host_mode(host)
+    // its directories and a kernel filter that refuses to start any program
+    // at all.
+    if request.host.is_some()
+        && let Err(error) = enter_host_mode()
     {
         let failure = request_failure(format!("cannot enter host mode: {error:#}"));
         return write_result(result_file, &invocation_id, Err(failure));
@@ -252,8 +270,8 @@ fn ensure_internal_entry() -> Result<(String, bool)> {
     Ok((id, host))
 }
 
-/// Take the host run's directories and network grant, then forbid `execve`.
-fn enter_host_mode(host: &crate::worker::records::HostRun) -> Result<()> {
+/// Check the host run's directories, then forbid `execve`.
+fn enter_host_mode() -> Result<()> {
     shed_privileges()?;
     let root = crate::domain::host_root()
         .context("a host-mode worker has no host root")?
@@ -270,7 +288,6 @@ fn enter_host_mode(host: &crate::worker::records::HostRun) -> Result<()> {
             path.display()
         );
     }
-    crate::helpers::acquire::net::install(&host.network, host.network_max_bytes)?;
     forbid_programs()
 }
 
@@ -552,8 +569,7 @@ fn reserve_result() -> Result<ResultFile> {
                 "cannot reserve {size} B for the result file {}{}",
                 staging.display(),
                 if full {
-                    " before the recipe started: the run's storage is already full \
-                     (raise its storage limit)"
+                    " before the recipe started: the disk holding the run is already full"
                 } else {
                     ""
                 }

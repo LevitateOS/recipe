@@ -1615,7 +1615,7 @@ fn effects_recipe(cli: &Cli, root: &Path, held: &Receipt) -> (Run, Option<Receip
     let mut wrote = None;
     let mut run = || -> Result<usize> {
         let mut args = producer_args(cli)?;
-        // Bound read-only for the run, not copied (README, "Root effects").
+        // Staged into the run as a copy (README, "Root effects").
         args.push("--effects-root".into());
         args.push(root.display().to_string());
         let produced = produce_with(cli, root, None, &recipe, &args, "effects")?;

@@ -10,15 +10,16 @@
 //! - caller-supplied extra inputs (assets, declared source closure, caches),
 //!
 //! and renders the domain-facing artifacts launch consumes: an invocation id,
-//! the allowlisted environment (interfaces §5), and the domain config text
+//! the allowlisted environment (interfaces §5), and the instance config text
 //! (interfaces §2). Nothing staged embeds an absolute host checkout path or
 //! a secret: host files are selected explicitly, copied under relative
-//! `/inputs/NAME` domain paths, and referenced only by content hash. The one
-//! exception is the live system root of an effects run, whose top-level
-//! folders the launcher binds read-only instead (`InputKind::Bind`).
+//! `/inputs/NAME` domain paths, and referenced only by content hash. A live
+//! system root is copied like any other input. A Ginux run receives them as
+//! one archive ([`inject_archive`]), a host run as a directory
+//! ([`stage_inputs`]).
 //!
-//! Launch, channel transport, retained storage and result export live in
-//! `launch`, `retained` and `publication`. Literal dependency and module closures preserve
+//! Launch, retained storage and result export live in `launch`, `retained`
+//! and `publication`. Literal dependency and module closures preserve
 //! their relative directory layout. Unsupported input discovery fails with an explicit error
 //! instead of silently staging the wrong bytes.
 //!
@@ -28,20 +29,14 @@
 mod config;
 mod discover;
 mod env;
-mod image_cache;
-pub(crate) use image_cache::{
-    cached_bytes as image_cache_bytes, remove_caches as remove_image_caches,
-};
 mod network;
 mod root;
 
-pub(crate) use root::{
-    VerifiedImage, prepare_root, seal_inputs, seed_target, stage_inputs, worker_binary,
-};
+pub(crate) use root::{inject_archive, seal_inputs, seed_target, stage_inputs, worker_binary};
 
 pub(crate) use config::InstanceConfig;
 
-/// Name of the staged domain config inside the staging directory.
+/// Name of the rendered instance config inside the staging directory.
 const CONFIG_FILE: &str = "config.toml";
 pub(crate) use discover::{ExtraInput, InputKind, SYSTEM_ROOT_INPUT, StagedInput, discover_inputs};
 pub(crate) use env::{allowlisted_env, invocation_id};
@@ -50,8 +45,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
 
-/// Staged invocation inputs; launch verifies and materializes the selected image
-/// and worker into a fresh root before launching Ginux.
+/// Staged invocation inputs; launch hands them, the worker and the request to
+/// a fresh Ginux instance ([`inject_archive`]) or to a host run.
 ///
 /// The staging directory is a fresh per-invocation temp dir holding one file
 /// per regular input under an internal indexed name plus `config.toml`.
@@ -68,17 +63,15 @@ pub struct PreparedInvocation {
     pub(crate) network: network::NetworkPolicy,
     pub(crate) execution: crate::ExecutionOptions,
     pub(crate) declaration: crate::needs::Declaration,
-    /// The Ginux contract the launcher validated; None for a host run, which
-    /// has no Ginux configuration (`crate::execution`).
+    /// The Ginux contract `ginux validate` checked; None for a host run,
+    /// which has no Ginux configuration (`crate::execution`).
     pub(crate) contract: Option<crate::needs::contract::Receipt>,
     staging: crate::temporary::TemporaryDirectory,
 }
 
 impl PreparedInvocation {
-    pub(crate) fn lease_fd(&self) -> std::os::fd::RawFd {
-        self.staging.lease_fd()
-    }
-    /// The staged domain config the launcher reads.
+    /// The rendered instance config of a Ginux run ([`InstanceConfig::render`]),
+    /// the file `ginux import` reads.
     pub(crate) fn config_path(&self) -> PathBuf {
         self.staging.path().join(CONFIG_FILE)
     }
@@ -86,15 +79,6 @@ impl PreparedInvocation {
     /// Fresh per-invocation staging directory holding the input files and `config.toml`.
     pub fn staging_dir(&self) -> &Path {
         self.staging.path()
-    }
-
-    /// The host folders the launcher binds read-only into `/inputs` for this
-    /// run ([`InputKind::Bind`]), as (host folder, input name).
-    pub(crate) fn binds(&self) -> impl Iterator<Item = (&Path, &str)> {
-        self.inputs
-            .iter()
-            .filter(|input| input.kind == InputKind::Bind)
-            .map(|input| (input.host_path.as_path(), input.name.as_str()))
     }
 }
 
@@ -107,39 +91,18 @@ impl PreparedInvocation {
 /// paths in `extends:`/`import`, missing/unreadable inputs, secret-bearing
 /// or non-regular files) and on any §2 limit overflow.
 ///
-/// `launcher` is the Ginux launcher for a Ginux run; None prepares a host
-/// run, which stages the same inputs and resolves the same network grant but
-/// renders no Ginux configuration.
+/// `ginux` is the Ginux CLI for a Ginux run; None prepares a host run, which
+/// stages the same inputs and resolves the same network grant but renders no
+/// Ginux configuration.
 pub fn prepare_invocation(
     recipe: &Path,
     search_path: Option<&Path>,
     extra_inputs: &[ExtraInput],
     options: &crate::ExecutionOptions,
-    launcher: Option<&Path>,
+    ginux: Option<&crate::ginux::Ginux>,
     dependency_inputs: &[ExtraInput],
     require_inputs: bool,
 ) -> Result<PreparedInvocation> {
-    // A live system root is bound read-only by the launcher, which needs a
-    // Ginux run and root (`crate::launch`); anywhere else it is copied.
-    let copied;
-    let extra_inputs = if extra_inputs.iter().any(|input| input.live)
-        && (launcher.is_none() || !can_bind())
-    {
-        crate::diagnostics::diag!(
-            "recipe: the system root is copied into this run, not bound read-only: \
-             binding it needs root with CAP_SYS_ADMIN, a Ginux run and a / that is a mount (not a chroot)"
-        );
-        copied = extra_inputs
-            .iter()
-            .map(|input| ExtraInput {
-                live: false,
-                ..input.clone()
-            })
-            .collect::<Vec<_>>();
-        &copied[..]
-    } else {
-        extra_inputs
-    };
     let graph = crate::needs::declarations(recipe, search_path)?;
     let declaration = graph.last().context("empty recipe graph")?.clone();
     declaration.needs.validate_inputs(
@@ -179,21 +142,17 @@ pub fn prepare_invocation(
     let env = allowlisted_env(&invocation_id)?;
 
     let network = network::NetworkPolicy::resolve(options)?;
-    let ginux = launcher
-        .map(|launcher| -> Result<_> {
-            let archive_import = crate::needs::contract::archive_import(launcher, options)?;
-            let random_devices = crate::needs::contract::random_devices(launcher, options)?;
+    let ginux = ginux
+        .map(|ginux| -> Result<_> {
             let config = InstanceConfig::for_invocation(
                 &invocation_id,
                 &env,
                 options,
                 declaration.needs.runtime,
-                network.clone(),
-                archive_import,
-                random_devices,
+                network.outbound(),
             )?;
             let config_text = config.render()?;
-            let contract = crate::needs::contract::validate(launcher, &config_text, options)?;
+            let contract = crate::needs::contract::validate(ginux, &config_text, options)?;
             Ok((config, config_text, contract))
         })
         .transpose()?;
@@ -247,36 +206,6 @@ pub fn prepare_invocation(
         contract,
         staging,
     })
-}
-
-/// Whether a launcher started by this process can bind a live system root
-/// (`crate::launch`): this process is root (Ginux then runs the workload as
-/// its unprivileged host user) with `CAP_SYS_ADMIN` (to enter a mount
-/// namespace and mount), and its `/` is a mount root, so the launcher's
-/// namespace can be made a slave of the host's (in a chroot it cannot, and a
-/// bind would propagate back to the host).
-fn can_bind() -> bool {
-    /// `CAP_SYS_ADMIN`, the capability `unshare(CLONE_NEWNS)` and `mount` need.
-    const CAP_SYS_ADMIN: u32 = 21;
-    if unsafe { libc::geteuid() } != 0 {
-        return false;
-    }
-    let admin = std::fs::read_to_string("/proc/self/status")
-        .ok()
-        .and_then(|status| {
-            status
-                .lines()
-                .find_map(|line| line.strip_prefix("CapEff:"))
-                .and_then(|caps| u64::from_str_radix(caps.trim(), 16).ok())
-        })
-        .is_some_and(|caps| caps & (1 << CAP_SYS_ADMIN) != 0);
-    let mut stat: libc::statx = unsafe { std::mem::zeroed() };
-    let root = unsafe { libc::statx(libc::AT_FDCWD, c"/".as_ptr(), 0, 0, &mut stat) } == 0;
-    let mount_root = libc::STATX_ATTR_MOUNT_ROOT as u64;
-    admin
-        && root
-        && stat.stx_attributes_mask & mount_root != 0
-        && stat.stx_attributes & mount_root != 0
 }
 
 /// Last-line defense over actual path values, after the field owners validate
@@ -393,7 +322,6 @@ pub(crate) fn bind_inputs(
         bindings.get_mut(recipe).unwrap().push(ExtraInput {
             name: name.into(),
             path: input.path.clone(),
-            live: input.live,
         });
     }
     for node in graph {

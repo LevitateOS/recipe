@@ -37,7 +37,7 @@ fn serve_response(
     (url, server)
 }
 
-fn accept_request(listener: &TcpListener) -> (TcpStream, String) {
+pub(super) fn accept_request(listener: &TcpListener) -> (TcpStream, String) {
     // This includes coordinator image/input preparation before a workload
     // can connect. It is a fixture startup allowance, not the HTTP read or
     // production download timeout; concurrent full-image checks can exceed
@@ -587,4 +587,58 @@ fn build(src, out) {{
         std::fs::read(result["outputs"]["product"].as_str().unwrap()).unwrap(),
         payload
     );
+}
+
+#[test]
+fn managed_program_reaches_an_undeclared_address_on_a_granted_port() {
+    // Documents an accepted regression of the public lifecycle (docs/runtime-limits.md):
+    // a grant is a port on the shared host network (`tcp:PORT`), not an
+    // address. Recipe's own downloads still reach only the declared
+    // `HOST:PORT` (the worker enforces that, see the redirect cases above),
+    // but a program the recipe starts can connect to any address on the
+    // granted port, with no connection or byte cap. If a later Ginux
+    // enforces destination grants, this case is the one to turn around.
+    let (_dir, recipes) = create_test_env();
+    let granted = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = granted.local_addr().unwrap().port();
+    let undeclared = TcpListener::bind(("127.0.0.2", port))
+        .expect("the same port on a second loopback address must be free");
+    undeclared.set_nonblocking(true).unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, received) = accept_request(&undeclared);
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nreached"
+        )
+        .unwrap();
+        received
+    });
+    write_recipe(
+        &recipes,
+        "reach",
+        &format!(
+            r#"
+const RECIPE_API = 1;
+const NEEDS = #{{ outputs: #{{ product: "file" }}, network: ["127.0.0.1:{port}"] }};
+fn build(src, out) {{
+    let status = exec("curl", ["--noproxy", "*", "--max-time", "5", "-fsS", "http://127.0.0.2:{port}/undeclared"]);
+    write_file(out, status.to_string());
+}}
+"#
+        ),
+    );
+    let output = recipe_command(&recipes)
+        .args(["install", "reach", "--no-persist-state", "--recipes-path"])
+        .arg(&recipes)
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let received = server.join().unwrap();
+    assert!(received.starts_with("GET /undeclared"), "{received}");
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(result["outputs"]["product"].as_str().unwrap()).unwrap(),
+        "0"
+    );
+    drop(granted);
 }

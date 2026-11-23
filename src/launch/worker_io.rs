@@ -1,28 +1,31 @@
 //! The coordinator's side of a running worker, shared by both runtimes (the
-//! configured Ginux launch, [`super::configured`], and the host run,
-//! `crate::host`): reading its line records from standard output, draining
-//! standard error to a capped log, reaping it, and reading its result file
-//! afterwards ([`crate::worker::records`]).
+//! Ginux instance, [`super::lifecycle`], and the host run, `crate::host`):
+//! reading its line records, draining standard error to a capped log, reaping
+//! it, and reading its result file afterwards ([`crate::worker::records`]).
 //!
 //! - Lines: one [`LineRecord`] per line, relayed live to `diagnostics.rs`
 //!   and `worker.log` (diagnostics) or the `--progress-file` (progress). A
 //!   line that is not a record is kept as plain log text (bounded like the
 //!   diagnostics, never an error). A diagnostic record that breaks the
 //!   budget rules is a `protocol` failure, as it always was.
+//! - Where the lines come from ([`LineSource`]): the host worker's standard
+//!   output pipe ([`DeadlinePipe`]), or the standard output of `ginux start
+//!   --wait --stream-console` ([`ConsoleStream`]), which carries the Ginux
+//!   instance's console: the worker's standard output through a
+//!   pseudo-terminal (each line ends `\r\n`; the runtime's own `GINUX_` lines
+//!   precede the worker's).
 //! - Stall deadline: before the first line the worker has the output timeout
 //!   (`RECIPE_OUTPUT_TIMEOUT_SECS`, 300 s by default) to say something; once
 //!   it has, a silent phase may run until the separate execution deadline,
 //!   but a line, once its first byte arrived, must be complete within the
-//!   output timeout. "No complete output line in N seconds" replaces the
-//!   frame deadline of the frame protocol, with the same default and bound.
-//! - The stream ends at end of file (the worker, and in Ginux the launcher,
-//!   exited). Only then is the result file read: from the export archive of
-//!   a Ginux run ([`result_from_archive`]), from the run directory of a host
-//!   run ([`result_from_tree`]). Either is untrusted: bounded, strictly
-//!   parsed, and it must name this invocation. No valid result is a
-//!   [`missing_result`] `protocol` failure, which the runtime enriches with
-//!   the run's outcome exactly as a stream that ended without a result frame
-//!   was.
+//!   output timeout.
+//! - The stream ends at end of file (the host worker, or the `ginux start
+//!   --wait` process, exited). Only then is the result file read: from the
+//!   extracted archive of a Ginux run ([`result_from_archive`]), from the run
+//!   directory of a host run ([`result_from_tree`]). Either is untrusted:
+//!   bounded, strictly parsed, and it must name this invocation. No valid
+//!   result is a [`missing_result`] `protocol` failure, which the runtime
+//!   enriches with the run's outcome.
 
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, AsRawFd};
@@ -44,7 +47,7 @@ const OUTPUT_TIMEOUT: Duration = Duration::from_secs(300);
 /// The environment variable that overrides [`OUTPUT_TIMEOUT`].
 pub(crate) const OUTPUT_TIMEOUT_ENV: &str = "RECIPE_OUTPUT_TIMEOUT_SECS";
 
-/// Bound on log collection: launcher/worker stderr beyond this many bytes is
+/// Bound on log collection: worker/supervisor log beyond this many bytes is
 /// still drained (so a chatty worker never blocks on a full pipe) but not
 /// retained.
 const LOG_CAP_BYTES: u64 = crate::invocation_log::MAX_LOG_BYTES;
@@ -53,8 +56,8 @@ const LOG_CAP_BYTES: u64 = crate::invocation_log::MAX_LOG_BYTES;
 /// the remaining supervised execution deadline instead.
 pub(crate) const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
-/// How often the line pump looks whether the launcher (or host worker) has
-/// exited while it waits for output.
+/// How often the line pump looks whether the host worker (or `ginux start
+/// --wait`) has exited while it waits for output.
 const EXIT_CHECK: Duration = Duration::from_millis(250);
 
 /// Bytes of log tail attached to failure diagnostics.
@@ -110,14 +113,15 @@ pub(crate) fn progress_file(
 /// with a `protocol` category (or cancellation); the caller enriches them
 /// with the run's outcome.
 ///
-/// Once `child` (the launcher, or the host worker) has exited, a process
-/// still holding its standard output gets [`SHUTDOWN_GRACE`] to close it;
-/// then what is already buffered is relayed and the pump returns, and the
-/// caller's [`reap_launcher`] ends the process group.
-pub(crate) fn pump_lines(
+/// Once `child` (the host worker, or `ginux start --wait`) has exited, a
+/// process still holding the pipe gets [`SHUTDOWN_GRACE`] to close it; then
+/// what is already buffered is relayed and the pump returns, and the caller
+/// ends the process group.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pump_lines<I: LineInput>(
     invocation: &str,
     child: &mut Child,
-    stdout: std::process::ChildStdout,
+    stdout: I,
     worker_diagnostics: &mut std::fs::File,
     worker_started: &mut bool,
     timeout: Duration,
@@ -126,7 +130,7 @@ pub(crate) fn pump_lines(
 ) -> Result<Instant> {
     let execution_deadline = Instant::now() + execution;
     let startup_deadline = Instant::now() + timeout;
-    let mut stdout = DeadlinePipe::new(stdout, timeout)?;
+    let mut stdout = stdout.into_source(timeout)?;
     let mut lines = LineReader::default();
     let mut budget = crate::worker::records::DiagnosticBudget::default();
     let mut plain_bytes = 0usize;
@@ -141,7 +145,7 @@ pub(crate) fn pump_lines(
         if grace_end.is_none()
             && child
                 .try_wait()
-                .map_err(|err| classify_stream_error(invocation, "watch the launcher", err))?
+                .map_err(|err| classify_stream_error(invocation, "watch the worker process", err))?
                 .is_some()
         {
             grace_end = Some(Instant::now() + SHUTDOWN_GRACE);
@@ -176,6 +180,17 @@ pub(crate) fn pump_lines(
                     return Err(classify_stream_error(invocation, "read worker output", err));
                 }
             };
+        // Runtime text (a Ginux console's `GINUX_` lines) is the source's,
+        // not the worker's.
+        let line = if cut {
+            line
+        } else {
+            match stdout.accept(line) {
+                Some(line) => line,
+                None if last => return Ok(execution_deadline),
+                None => continue,
+            }
+        };
         *worker_started = true;
         let record = if cut { None } else { LineRecord::parse(&line) };
         match record {
@@ -242,9 +257,9 @@ impl LineReader {
     /// it arrived, the line must be complete within `timeout`. A wait that
     /// reaches `slice` before those deadlines returns `WouldBlock`, keeping
     /// the partial line for the next call.
-    fn next(
+    fn next<S: LineSource>(
         &mut self,
-        pipe: &mut DeadlinePipe<std::process::ChildStdout>,
+        pipe: &mut S,
         idle: Instant,
         timeout: Duration,
         execution_deadline: Instant,
@@ -299,6 +314,57 @@ impl LineReader {
     }
 }
 
+/// A source of worker output lines for [`pump_lines`]: a read waits at most
+/// until the deadline last set and then fails with `TimedOut`; `Ok(0)` is the
+/// end of the stream.
+pub(crate) trait LineSource: Read {
+    /// The absolute deadline of the next reads, and the execution deadline
+    /// (which names the timeout in its message).
+    fn set_deadline(&mut self, deadline: Instant, execution_deadline: Instant);
+    /// One complete line as read; None when it is the source's own text and
+    /// no worker output.
+    fn accept(&mut self, line: Vec<u8>) -> Option<Vec<u8>> {
+        Some(line)
+    }
+}
+
+impl<T: LineSource + ?Sized> LineSource for &mut T {
+    fn set_deadline(&mut self, deadline: Instant, execution_deadline: Instant) {
+        (**self).set_deadline(deadline, execution_deadline);
+    }
+    fn accept(&mut self, line: Vec<u8>) -> Option<Vec<u8>> {
+        (**self).accept(line)
+    }
+}
+
+/// What [`pump_lines`] reads from: the host worker's standard output, or a
+/// source the caller keeps (`&mut ConsoleStream`).
+pub(crate) trait LineInput {
+    type Source: LineSource;
+    fn into_source(self, timeout: Duration) -> std::io::Result<Self::Source>;
+}
+
+impl LineInput for std::process::ChildStdout {
+    type Source = DeadlinePipe<std::process::ChildStdout>;
+    fn into_source(self, timeout: Duration) -> std::io::Result<Self::Source> {
+        DeadlinePipe::new(self, timeout)
+    }
+}
+
+impl<'a, T: LineSource> LineInput for &'a mut T {
+    type Source = &'a mut T;
+    fn into_source(self, _timeout: Duration) -> std::io::Result<Self::Source> {
+        Ok(self)
+    }
+}
+
+impl<T: AsRawFd + Read> LineSource for DeadlinePipe<T> {
+    fn set_deadline(&mut self, deadline: Instant, execution_deadline: Instant) {
+        self.deadline = deadline;
+        self.execution_deadline = Some(execution_deadline);
+    }
+}
+
 /// A nonblocking pipe read under one absolute deadline. Nonblocking
 /// descriptors prevent a poll/read race from turning the next read into an
 /// unbounded wait.
@@ -320,10 +386,6 @@ impl<T: AsRawFd> DeadlinePipe<T> {
             deadline: Instant::now() + timeout,
             execution_deadline: None,
         })
-    }
-    fn set_deadline(&mut self, deadline: Instant, execution_deadline: Instant) {
-        self.deadline = deadline;
-        self.execution_deadline = Some(execution_deadline);
     }
     fn reset(&mut self, timeout: Duration) {
         self.deadline = Instant::now() + timeout;
@@ -355,17 +417,7 @@ impl<T: AsRawFd> DeadlinePipe<T> {
                 return Ok(());
             }
             if left.is_zero() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    if self
-                        .execution_deadline
-                        .is_some_and(|deadline| Instant::now() >= deadline)
-                    {
-                        "supervised execution deadline expired"
-                    } else {
-                        "complete worker output line deadline expired"
-                    },
-                ));
+                return Err(timed_out(self.execution_deadline));
             }
         }
     }
@@ -390,6 +442,176 @@ impl<T: AsRawFd + Read> Read for DeadlinePipe<T> {
                 result => return result,
             }
         }
+    }
+}
+
+/// The `TimedOut` error of a source whose deadline passed.
+fn timed_out(execution_deadline: Option<Instant>) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        if execution_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            "supervised execution deadline expired"
+        } else {
+            "complete worker output line deadline expired"
+        },
+    )
+}
+
+/// Bytes of a Ginux console's own `GINUX_` lines kept for the supervisor log.
+const MAX_RUNTIME_TEXT: usize = 64 * 1024;
+
+/// How often [`ConsoleStream`] looks at the free space of the Ginux state
+/// root, at most.
+const DISK_CHECK: Duration = Duration::from_secs(1);
+
+/// The longest single wait of a [`ConsoleStream`] read, so the free-space
+/// check runs while the console is silent.
+const DISK_SLICE: Duration = Duration::from_millis(250);
+
+/// The worker's line records as a Ginux instance writes them: the standard
+/// output of `ginux start --wait --stream-console`, where the helper copies
+/// the instance console (the worker's standard output through the
+/// pseudo-terminal of `script(1)`) and nothing else. The instance directory
+/// and its logs are root-private; nothing is read from them.
+///
+/// - The terminal turns each `\n` into `\r\n`; one trailing `\r` is removed
+///   from every line. Nothing is ever written to the console's input, so
+///   there is no echo.
+/// - Lines starting `GINUX_` are the runtime's (its start summary precedes
+///   the worker's first line): kept for the supervisor log
+///   ([`ConsoleStream::runtime_text`]), never relayed.
+/// - While it waits (in slices of at most [`DISK_SLICE`]) it watches, at
+///   most every [`DISK_CHECK`], the free space of the filesystem holding the
+///   instance roots: below 2 GiB or 5 %, whichever is larger, or when the
+///   free space cannot be read, the read fails and
+///   [`ConsoleStream::low_disk`] says why. Ginux bounds no instance storage,
+///   so this is the only brake on a run filling the disk.
+pub(crate) struct ConsoleStream {
+    pipe: DeadlinePipe<std::process::ChildStdout>,
+    deadline: Instant,
+    execution_deadline: Option<Instant>,
+    runtime: Vec<u8>,
+    watch: PathBuf,
+    next_check: Instant,
+    low_disk: Option<String>,
+}
+
+impl ConsoleStream {
+    /// Read `stdout` (of `ginux start --wait --stream-console`), watching the
+    /// free space of `watch` (the state root).
+    pub(crate) fn new(stdout: std::process::ChildStdout, watch: PathBuf) -> std::io::Result<Self> {
+        Ok(Self {
+            pipe: DeadlinePipe::new(stdout, Duration::ZERO)?,
+            deadline: Instant::now(),
+            execution_deadline: None,
+            runtime: Vec::new(),
+            watch,
+            next_check: Instant::now(),
+            low_disk: None,
+        })
+    }
+
+    /// The runtime's own lines seen on the console, each ending in `\n`.
+    pub(crate) fn runtime_text(&self) -> &[u8] {
+        &self.runtime
+    }
+
+    /// Why the run was stopped for lack of disk space, if it was.
+    pub(crate) fn low_disk(&self) -> Option<&str> {
+        self.low_disk.as_deref()
+    }
+
+    fn check_disk(&mut self) -> std::io::Result<()> {
+        if let Some(message) = &self.low_disk {
+            return Err(std::io::Error::other(message.clone()));
+        }
+        if Instant::now() < self.next_check {
+            return Ok(());
+        }
+        self.next_check = Instant::now() + DISK_CHECK;
+        let path = self.watch.display();
+        let message = match free_space(&self.watch) {
+            Ok((free, total)) => {
+                let floor = (2u64 << 30).max(total / 20);
+                if free >= floor {
+                    return Ok(());
+                }
+                format!(
+                    "the host disk holding {path} is nearly full ({} MiB free, the run stops \
+                     below {} MiB); the run was stopped so it cannot fill it",
+                    free >> 20,
+                    floor >> 20
+                )
+            }
+            Err(error) => format!(
+                "cannot read the free space of the host disk holding {path} ({error}); the run \
+                 was stopped because Recipe cannot keep it from filling that disk"
+            ),
+        };
+        self.low_disk = Some(message.clone());
+        Err(std::io::Error::other(message))
+    }
+}
+
+/// Free and total bytes of the filesystem holding `path` (`statvfs`).
+fn free_space(path: &Path) -> std::io::Result<(u64, u64)> {
+    let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+        .map_err(std::io::Error::other)?;
+    let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(name.as_ptr(), &mut stats) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let unit = stats.f_frsize as u64;
+    Ok((
+        (stats.f_bavail as u64).saturating_mul(unit),
+        (stats.f_blocks as u64).saturating_mul(unit),
+    ))
+}
+
+impl Read for ConsoleStream {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            self.check_disk()?;
+            // Wait in slices so the disk check runs while nothing arrives;
+            // the pipe checks cancellation while it waits.
+            self.pipe.deadline = (Instant::now() + DISK_SLICE).min(self.deadline);
+            self.pipe.execution_deadline = self.execution_deadline;
+            match self.pipe.read(bytes) {
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::TimedOut
+                        && Instant::now() < self.deadline => {}
+                Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
+                    return Err(timed_out(self.execution_deadline));
+                }
+                read => return read,
+            }
+        }
+    }
+}
+
+impl LineSource for ConsoleStream {
+    fn set_deadline(&mut self, deadline: Instant, execution_deadline: Instant) {
+        self.deadline = deadline;
+        self.execution_deadline = Some(execution_deadline);
+    }
+
+    fn accept(&mut self, mut line: Vec<u8>) -> Option<Vec<u8>> {
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+        if line.starts_with(b"GINUX_") {
+            if self.runtime.len() < MAX_RUNTIME_TEXT {
+                let room = MAX_RUNTIME_TEXT - self.runtime.len();
+                self.runtime
+                    .extend_from_slice(&line[..line.len().min(room.saturating_sub(1))]);
+                self.runtime.push(b'\n');
+            }
+            return None;
+        }
+        Some(line)
     }
 }
 
@@ -431,12 +653,12 @@ pub(crate) fn missing_result(invocation: &str, reason: &str) -> anyhow::Error {
     )))
 }
 
-/// The result file of a run whose `work` tree is in the export archive
-/// `archive` (a Ginux export: members `work/…`, `out/…`). The archive is
-/// untrusted: bounded like a publication (`crate::publication::prepare`),
-/// the member must appear once, as a regular file within
-/// [`crate::domain::MAX_RESULT_BYTES`]. No archive (the supervisor exports
-/// only after a clean exit) is no result.
+/// The result file of a run whose `work` tree is in the archive `archive`
+/// (a Ginux `extract` of `/work` and `/out`: members `work/…`, `out/…`). The
+/// archive is untrusted: bounded like a publication
+/// (`crate::publication::prepare`), the member must appear once, as a regular
+/// file within [`crate::domain::MAX_RESULT_BYTES`]. No archive (nothing is
+/// extracted unless the workload exited) is no result.
 pub(crate) fn result_from_archive(
     archive: &Path,
     invocation: &str,
@@ -517,9 +739,9 @@ pub(crate) fn result_from_tree(
 // Process shutdown
 // ---------------------------------------------------------------------------
 
-/// Await actual launcher (or host worker) completion, including a final
-/// export. Failure and interruption use short teardown; successful work keeps
-/// its execution budget.
+/// Await the host worker's completion. Failure and interruption use short
+/// teardown; successful work keeps its execution budget. (A Ginux run ends
+/// its `ginux start --wait` process with `crate::ginux::stop_group`.)
 pub(crate) fn reap_launcher(child: &mut Child, mut deadline: Instant) -> Result<Option<i32>> {
     let mut interrupted = false;
     loop {
@@ -533,7 +755,7 @@ pub(crate) fn reap_launcher(child: &mut Child, mut deadline: Instant) -> Result<
         }
         match child.try_wait() {
             Ok(Some(status)) => {
-                // A malformed launcher may leave a child holding its pipes.
+                // A malformed worker may leave a child holding its pipes.
                 unsafe {
                     libc::kill(-(child.id() as i32), libc::SIGKILL);
                 }
@@ -551,7 +773,7 @@ pub(crate) fn reap_launcher(child: &mut Child, mut deadline: Instant) -> Result<
                 let _ = child.wait();
                 crate::cancellation::check()?;
                 if let Err(error) = result {
-                    return Err(error).context("cannot reap configured launcher");
+                    return Err(error).context("cannot reap the worker");
                 }
                 bail!(
                     crate::failure::Category::Deadline
@@ -560,6 +782,101 @@ pub(crate) fn reap_launcher(child: &mut Child, mut deadline: Instant) -> Result<
             }
         }
     }
+}
+
+/// The line `ginux start --wait --stream-console` writes to its standard
+/// error, after everything else, before the audit log's tail on a non-zero
+/// outcome: `ginux: audit log (last N bytes):`.
+const AUDIT_MARKER: (&[u8], &[u8]) = (b"ginux: audit log (last ", b" bytes):");
+
+/// Split the drained standard error of `ginux start --wait --stream-console`
+/// (`cli_log`, written by [`spawn_stderr_drain`]) at the audit marker
+/// ([`AUDIT_MARKER`], the last such line): what follows it (the tail of the
+/// instance's audit log: the worker's standard error and the runtime's audit
+/// lines) goes to `supervisor_log` followed by `extra` (the console's
+/// runtime lines) within the retention cap, and `cli_log` keeps what
+/// precedes it. Returns the supervisor log with its tail for failure
+/// messages, and the tail of the CLI's own text. Without a marker (a clean
+/// outcome, or a CLI that died first) the supervisor log holds only `extra`.
+pub(crate) fn split_cli_log(
+    cli_log: &Path,
+    supervisor_log: &Path,
+    extra: &[u8],
+) -> (DrainedLog, String) {
+    let mut bytes = Vec::new();
+    if let Ok(file) = std::fs::File::open(cli_log) {
+        let _ = file.take(LOG_CAP_BYTES).read_to_end(&mut bytes);
+    }
+    let marker = audit_marker(&bytes);
+    let (cli, audit) = match marker {
+        Some((start, end)) => (&bytes[..start], &bytes[end..]),
+        None => (&bytes[..], &[][..]),
+    };
+    if marker.is_some()
+        && let Err(error) = std::fs::write(cli_log, cli)
+    {
+        crate::diagnostics::diag!(
+            "recipe: warning: cannot rewrite {}: {error}",
+            cli_log.display()
+        );
+    }
+    let mut retained: u64 = 0;
+    match std::fs::File::create(supervisor_log) {
+        Ok(mut out) => {
+            for part in [audit, extra] {
+                let take = part
+                    .len()
+                    .min(LOG_CAP_BYTES.saturating_sub(retained) as usize);
+                if take > 0 && out.write_all(&part[..take]).is_ok() {
+                    retained += take as u64;
+                }
+            }
+        }
+        Err(error) => crate::diagnostics::diag!(
+            "recipe: warning: supervisor log {} is incomplete: {error}",
+            supervisor_log.display()
+        ),
+    }
+    let tail = |part: &[u8]| {
+        String::from_utf8_lossy(&part[part.len().saturating_sub(LOG_TAIL_BYTES)..])
+            .trim()
+            .to_owned()
+    };
+    let total = (audit.len() + extra.len()) as u64;
+    (
+        DrainedLog {
+            total_bytes: total,
+            discarded_bytes: total.saturating_sub(retained),
+            tail: tail(audit),
+        },
+        tail(cli),
+    )
+}
+
+/// The byte range of the last [`AUDIT_MARKER`] line in `bytes`, newline
+/// included.
+fn audit_marker(bytes: &[u8]) -> Option<(usize, usize)> {
+    let (prefix, suffix) = AUDIT_MARKER;
+    let mut found = None;
+    let mut start = 0;
+    while start < bytes.len() {
+        let end = bytes[start..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(bytes.len(), |at| start + at + 1);
+        let line = &bytes[start..end];
+        let line = line.strip_suffix(b"\n").unwrap_or(line);
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if let Some(rest) = line.strip_prefix(prefix)
+            && let Some(count) = rest.strip_suffix(suffix)
+            && !count.is_empty()
+            && count.iter().all(u8::is_ascii_digit)
+        {
+            found = Some((start, end));
+        }
+        start = end;
+    }
+    found
 }
 
 // ---------------------------------------------------------------------------
@@ -573,7 +890,7 @@ pub(crate) struct DrainedLog {
     pub tail: String,
 }
 
-/// Drain launcher stderr to a log file with a retention cap, so a chatty
+/// Drain a child's stderr to a log file with a retention cap, so a chatty
 /// worker can never block on a full stderr pipe. Bytes past the cap are
 /// still consumed (and counted) but discarded. The log is never parsed.
 pub(crate) struct Drain {

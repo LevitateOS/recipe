@@ -1,4 +1,5 @@
-//! Managed Rhai package recipes executed through the configured Ginux launcher.
+//! Managed Rhai package recipes executed in Ginux instances through the
+//! public Ginux lifecycle (or, for a recipe that starts no program, on the host).
 //!
 //! Every recipe starts with `const RECIPE_API = 1;` and states its facts in
 //! literal declarations (`NEEDS`, `PACKAGE`, `SOURCES`, `FILES`, `PACKAGES`,
@@ -77,8 +78,8 @@ mod temporary;
 pub mod updates;
 mod worker;
 
-pub use backend::GinuxLauncher;
 pub use execution::ExecutionMode;
+pub use ginux::Ginux;
 pub use options::ExecutionOptions;
 
 /// The default destination (lock and saved-state scope) for `recipe` under
@@ -101,6 +102,15 @@ pub mod bin_support {
     pub use crate::worker::records::{MAX_DIAGNOSTIC_BYTES, MAX_DIAGNOSTIC_RECORDS};
     pub use crate::worker::run_worker;
 
+    /// Import the image layout `layout` into Ginux's cache unless the image
+    /// `reference` names is there already (`recipe runtime fetch`); the
+    /// manifest digest `ginux import-image` prints must be the reference's.
+    pub fn import_image(reference: &str, layout: &std::path::Path) -> anyhow::Result<()> {
+        let ginux = crate::ginux::Ginux::from_env()?;
+        ginux.ensure_image(reference, layout)?;
+        Ok(())
+    }
+
     /// The last event of a change, for a front end (`--machine-events`):
     /// `done`, or `failed` with the step that failed where the worker named
     /// one, and Recipe's own message as the reason.
@@ -112,21 +122,12 @@ pub mod bin_support {
                     .downcast_ref::<crate::backend::WorkloadFailure>()
                     .and_then(|failure| failure.0.phase)
                     .map(crate::lifecycle::Phase::name);
-                let mut event = serde_json::json!({
+                serde_json::json!({
                     "event": "failed",
                     "recipe": recipe,
                     "step": step,
                     "reason": format!("{error:#}"),
-                });
-                // A connection Ginux refused during the run, if its log holds one.
-                let refused = error
-                    .downcast_ref::<crate::backend::WorkloadFailure>()
-                    .and_then(|failure| failure.1.as_deref())
-                    .and_then(crate::needs::report::refused_connection);
-                if let Some(refused) = refused {
-                    event["refused"] = refused;
-                }
-                event
+                })
             }
         }
     }
@@ -154,9 +155,10 @@ pub struct RecipeEngine {
     keep: bool,
     execution: ExecutionOptions,
     state_dir: Option<PathBuf>,
-    /// Explicit launcher selection; None resolves Ginux from the environment
+    /// Explicit Ginux selection; None resolves Ginux from the environment
+    /// (`RECIPE_GINUX`, `RECIPE_GINUX_STATE_ROOT`, `RECIPE_GINUX_RUN_ROOT`)
     /// when a recipe of the operation runs in Ginux (`crate::execution`).
-    launcher: Option<GinuxLauncher>,
+    ginux: Option<Ginux>,
     /// Owns `build_dir` when it is a throwaway destination; removed on drop.
     _temporary: Option<tempfile::TempDir>,
 }
@@ -173,7 +175,7 @@ impl RecipeEngine {
             keep: false,
             execution: ExecutionOptions::default(),
             state_dir: None,
-            launcher: None,
+            ginux: None,
             _temporary: None,
         }
     }
@@ -187,18 +189,16 @@ impl RecipeEngine {
         Ok(engine)
     }
 
-    /// Configure the required Ginux executable.
-    pub fn with_launcher(mut self, launcher: GinuxLauncher) -> Self {
-        self.launcher = Some(launcher);
+    /// Use this Ginux (its CLI and Recipe's state and run roots).
+    pub fn with_ginux(mut self, ginux: Ginux) -> Self {
+        self.ginux = Some(ginux);
         self
     }
 
-    /// Resolve the Ginux executable before executing recipe code.
-    pub fn launcher(&self) -> Result<GinuxLauncher> {
-        self.launcher
-            .clone()
-            .map(Ok)
-            .unwrap_or_else(GinuxLauncher::from_env)
+    /// The Ginux recipes of this engine run in: the one given with
+    /// [`Self::with_ginux`], else the one the environment names.
+    pub fn ginux(&self) -> Result<Ginux> {
+        self.ginux.clone().map(Ok).unwrap_or_else(Ginux::from_env)
     }
 
     /// Set the recipes path for module resolution
@@ -243,25 +243,17 @@ impl RecipeEngine {
     /// Source imports exclude root .git/target metadata; contained links are preserved.
     /// Named rootfs/target trees preserve filesystem links and permissions.
     pub fn add_input(&mut self, name: String, path: PathBuf) {
-        self.inputs.push(inputs::ExtraInput {
-            name,
-            path,
-            live: false,
-        });
+        self.inputs.push(inputs::ExtraInput { name, path });
     }
 
     /// Give the recipe the root of a system change as its read-only input
-    /// `root`, live: in a Ginux run as root, each of the root's top-level
-    /// folders (but `var`, `boot`, `home`, ...) is bound read-only into the
-    /// domain for the run, not hashed or copied, and the run keeps no state;
-    /// anywhere else the root is copied like [`Self::add_input`] would
-    /// (README, "Root effects"). The system scope gives it to the root's
-    /// effects recipe.
+    /// `root`: its folders (but `var`, `boot`, `home`, ...) are copied into
+    /// the run like [`Self::add_input`] would. The system scope gives it to
+    /// the root's effects recipe.
     pub fn add_system_root(&mut self, path: PathBuf) {
         self.inputs.push(inputs::ExtraInput {
             name: inputs::SYSTEM_ROOT_INPUT.into(),
             path,
-            live: true,
         });
     }
 
@@ -355,7 +347,7 @@ impl RecipeEngine {
         let no_dependencies = Default::default();
         let no_inputs = Vec::new();
         backend::run(
-            self.launcher.as_ref(),
+            self.ginux.as_ref(),
             &launch::Invocation {
                 operation,
                 recipe,

@@ -2,14 +2,18 @@
 
 Rhai-based recipe executor for LevitateOS. The coordinator (`recipe` CLI /
 `RecipeEngine`) stages inputs and starts a worker (the same binary) that runs
-the recipe: inside a Ginux domain, or, for a recipe that starts no program, as
-a confined host process (`src/execution.rs`, `src/host.rs`).
+the recipe: inside a Ginux instance on Ginux's public lifecycle (`create`,
+`inject`, `start --wait`, `status`, `extract`, `delete`, through the `ginux`
+CLI; its root-owned helper runs behind Recipe's root-owned guard, the only program `sudo` runs), or, for a recipe that starts no
+program, as a confined host process (`src/execution.rs`, `src/host.rs`).
 
 Read these instead of copies here; each fact has one home:
 
 | For | Read |
 | --- | --- |
-| Running recipes, environment (`GINUX_BIN`, `GINUX_ROOTFS`, `GINUX_ROOT`, `RECIPE_WORKER_BIN`), options, state and logs | `README.md`, `docs/man/recipe.1` |
+| Running recipes, environment (`RECIPE_GINUX`, `RECIPE_IMAGE`, `RECIPE_IMAGE_LAYOUT`, `RECIPE_GINUX_STATE_ROOT`, `RECIPE_WORKER_BIN`; the old `GINUX_BIN`/`GINUX_ROOT*` are refused), privileges (root, or the `recipe-ginux` sudoers rule, which names only the guard), options, state and logs | `README.md`, `docs/man/recipe.1` |
+| What the public lifecycle does not provide (no storage limit in a run, per-port network grants) | `docs/runtime-limits.md` |
+| The Ginux cutover: design, status, what is unverified | `docs/ginux-cutover-design.md` (fixed record), `docs/ginux-public-lifecycle-migration.md` section 6 |
 | Writing recipes: API 1 declarations, functions, constants, steps and states, interruption and restarting, `deps`/`build_deps`, `extends` | `WRITING_RECIPES.md`, `docs/man/recipe-recipe.5`; the full contract is `docs/recipe-format.md` |
 | Helper catalog | `HELPERS_AUDIT.md`, `docs/man/recipe-helpers.7` (registration: `src/helpers/mod.rs`) |
 | Compiler images | `bootstrap/README.md`, `src/bin/recipe-image.rs` |
@@ -53,6 +57,16 @@ Read these instead of copies here; each fact has one home:
   where both places are on one disk; a download two programs name goes only when
   neither needs it; `remove` frees everything at once; nothing is hidden in
   `storage`. There are no earlier versions and no go-back.
+- Ginux is reached only through the public lifecycle: `src/ginux.rs` is the one
+  module that spawns the `ginux` CLI, and `src/launch/lifecycle.rs` is the one
+  entry point that runs a recipe in an instance. Do not call `ginux launch`,
+  never name the helper in the sudoers rule (it names only `recipe-ginux-guard`; the
+  helper's other verbs are root), add a second runtime or keep an old spelling of an environment variable (the
+  old `GINUX_BIN`, `GINUX_ROOT`, `GINUX_ROOTFS`, `GINUX_MINIMAL_ROOT[FS]` stop
+  Recipe with the name of their replacement). The limits Ginux's public
+  lifecycle does not give (storage inside a run, per-destination network) are
+  accepted regressions and are written down in `docs/runtime-limits.md`: never
+  claim them in code, error text or docs.
 - The domain layout (`/inputs`, `/work`, `/out`) is defined
   once in `src/domain.rs`; the coordinator/worker records (the request file, the
   result file, the diagnostic and progress lines) in `src/worker/records.rs`;
@@ -66,10 +80,12 @@ Read these instead of copies here; each fact has one home:
 src/
 ├── bin/recipe.rs, bin/recipe/     CLI (and the private worker entry); system_route.rs is `--system` scope
 ├── bin/recipe-image.rs            compiler-image producer
+├── bin/recipe-ginux-guard.rs      root-owned guard the sudoers rule names: Recipe's instance verbs on `recipe-<uid>-*` only, config check (`--check-config`), clears the environment, then runs the Ginux helper
 ├── lib.rs                         RecipeEngine (library API)
-├── backend.rs, launch/, host.rs   coordinator: invocation → Ginux or host run (launch/configured.rs is `ginux launch`)
+├── backend.rs, launch/, host.rs   coordinator: invocation → Ginux or host run (launch/lifecycle.rs runs one instance through the guard; worker_io.rs reads the console records the helper streams)
+├── ginux.rs                       the `ginux` CLI wrapper: one method per verb, the status record, the outcome
 ├── execution.rs                   where each recipe runs (host or Ginux)
-├── inputs/                        input discovery, staging, domain config, root
+├── inputs/                        input discovery, staging, instance config, the injected tar (inject_archive)
 ├── declarations.rs                the literal declarations (API line, ABOUT, PACKAGE, SOURCES, FILES, PACKAGES, ACCOUNTS, UPSTREAM, RERUN, functions, imports)
 ├── pins.rs                        the `NAME.pins` file beside a recipe with PACKAGES
 ├── needs.rs, needs/               NEEDS declarations, derived Ginux contract, authority reports
@@ -79,7 +95,7 @@ src/
 ├── core/                          engine: invocation, lifecycle, deps, events, output
 │   └── executor/private/builtin/  the steps Recipe does itself: fetch.rs, place.rs, system.rs
 ├── helpers/                       Rhai-facing helpers (tree.rs: put, put_link, tree_text, enable_service)
-└── domain.rs, failure.rs, diagnostics.rs, process.rs, fsx.rs, image.rs   shared leaves
+└── domain.rs, failure.rs, diagnostics.rs, process.rs, fsx.rs, image.rs   shared leaves (image.rs: the OCI layout writer and layer validator)
 ```
 
 ## Commands
@@ -90,6 +106,11 @@ cargo check
 cargo clippy
 ```
 
-Integration tests need a real Ginux launcher, a prepared compiler image and
-privileges; see "Reproduction" in the superproject's
-`docs/recipe-local-validation.md`. Unit tests are prohibited (see `AGENTS.md`).
+Integration tests need a real Ginux (`RECIPE_GINUX`, the five Ginux files
+root-owned at `/usr/libexec/ginux`), the compiler image as an OCI layout
+(`RECIPE_IMAGE`, `RECIPE_IMAGE_LAYOUT`) and root or the sudoers rule; the
+preconditions of each suite are in its header (`tests/e2e.rs` has the common
+ones). See "Reproduction" in the superproject's `docs/recipe-local-validation.md`.
+Unit tests are prohibited (see `AGENTS.md`). The cutover is written and has never
+been run: the catalog and the two build-base digests in `src/needs/contract.rs`
+are placeholders until `docs/ginux-cutover-design.md` section 6 derives them.

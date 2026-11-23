@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
 """Execute real managed CLI/library/image catalogs; never executes Recipe units.
 
-Build unprivileged first (see .github/workflows/ci.yml). Runtime requires Linux
-ptrace/coordinator privileges on a disposable host. Each case has retained logs,
-a complete enumerated catalog, bounded execution and owned-process checks.
+Build unprivileged first (see .github/workflows/ci.yml). Runtime requires root on
+a disposable host whose Ginux helper, image tool, runtime and allocator are
+installed at Recipe's compiled-in paths (/usr/libexec/ginux, /usr/lib64/ginux)
+with the same bytes as --ginux-dir. Each case has retained logs, a complete
+enumerated catalog, bounded execution and owned-process checks.
 --full-products also requires explicit builder binary/recipe/repository inputs.
 """
 from pathlib import Path
 import argparse,atexit,concurrent.futures,hashlib,json,os,re,shutil,signal,subprocess,sys,tempfile,time
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--build-json',type=Path,required=True)
-parser.add_argument('--ginux',type=Path,required=True)
+parser.add_argument('--ginux-dir',type=Path,required=True,help='the five Ginux files: ginux-cli, ginux-helper, ginux-image, ginux-runtime, libginux_allocator.so')
 parser.add_argument('--ginux-source',required=True)
-parser.add_argument('--image',type=Path,required=True)
-parser.add_argument('--image-sha256',required=True)
+parser.add_argument('--image',type=Path,required=True,help='the compiler image layout tar (image.oci.tar)')
+parser.add_argument('--image-digest',required=True,help='its manifest digest')
 parser.add_argument('--output',type=Path,required=True)
 parser.add_argument('--full-products',action='store_true')
 args=parser.parse_args()
 if not re.fullmatch('[0-9a-f]{40}',args.ginux_source):parser.error('Ginux source must be a complete commit SHA')
-if not re.fullmatch('[0-9a-f]{64}',args.image_sha256):parser.error('image must be pinned by SHA-256')
+if not re.fullmatch('[0-9a-f]{64}',args.image_digest):parser.error('image must be pinned by its manifest digest')
 root=Path(__file__).resolve().parent.parent
 out=args.output.resolve();out.mkdir(parents=True,exist_ok=False)
 def sha(p):
@@ -38,15 +40,34 @@ for line in args.build_json.read_text().splitlines():
  path=str(Path(message['executable']).resolve())
  artifacts[name]={'path':path,'sha256':sha(path)}
 if set(artifacts)!={'recipe','recipe-image','e2e','library_backend','image_producer'}:raise RuntimeError('build must contain both binaries and all three integration targets')
-for name,path in [('ginux',args.ginux),('image',args.image)]:
- path=path.resolve();artifacts[name]={'path':str(path),'sha256':sha(path)}
-if artifacts['image']['sha256']!=args.image_sha256:raise RuntimeError('image SHA-256 mismatch')
+# The Ginux files the runs use: the CLI from --ginux-dir (RECIPE_GINUX), the
+# others where the CLI and the helper find them through sudo.
+GINUX={'ginux-cli':None,'ginux-helper':'/usr/libexec/ginux/ginux-helper','ginux-image':'/usr/libexec/ginux/ginux-image',
+ 'ginux-runtime':'/usr/libexec/ginux/ginux-runtime','libginux_allocator.so':'/usr/lib64/ginux/libginux_allocator.so'}
+for name,installed in GINUX.items():
+ path=(args.ginux_dir/name).resolve(strict=True);artifacts[name]={'path':str(path),'sha256':sha(path)}
+ if installed is not None and sha(installed)!=artifacts[name]['sha256']:raise RuntimeError(installed+' is not the --ginux-dir '+name)
+path=args.image.resolve();artifacts['image']={'path':str(path),'sha256':sha(path)}
+def layout_manifest(tar):
+ import tarfile
+ with tarfile.open(tar) as archive:
+  members={m.name.removeprefix('./'):m for m in archive.getmembers()}
+  index=json.load(archive.extractfile(members['index.json']))
+  if len(index['manifests'])!=1:raise RuntimeError('image layout names more than one manifest')
+  digest=index['manifests'][0]['digest'].removeprefix('sha256:')
+  if hashlib.sha256(archive.extractfile(members['blobs/sha256/'+digest]).read()).hexdigest()!=digest:raise RuntimeError('image manifest blob does not match its digest')
+  return digest
+if layout_manifest(artifacts['image']['path'])!=args.image_digest:raise RuntimeError('image manifest digest mismatch')
 environment={
  'RECIPE_TEST_BIN':artifacts['recipe']['path'],
  'RECIPE_WORKER_BIN':artifacts['recipe']['path'],
- 'GINUX_BIN':artifacts['ginux']['path'],
- 'GINUX_ROOTFS':artifacts['image']['path'],
- 'GINUX_ROOT':'oci:recipe-compiler@sha256:'+args.image_sha256,
+ 'RECIPE_GINUX':artifacts['ginux-cli']['path'],
+ 'RECIPE_IMAGE_LAYOUT':artifacts['image']['path'],
+ 'RECIPE_IMAGE':'local/recipe-compiler@sha256:'+args.image_digest,
+ # The runs are root and use the fixtures' own state roots, which Recipe's
+ # guard refuses (it allows only /var/lib/recipe/ginux): a root caller names
+ # the installed helper itself.
+ 'GINUX_INSTANCE_HELPER':GINUX['ginux-helper'],
 }
 # A root run starts a host-side worker as an unprivileged uid, which must be able
 # to execute it. A build tree under a private home is out of its reach, so the

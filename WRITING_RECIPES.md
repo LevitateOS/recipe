@@ -101,19 +101,19 @@ cleans up the downloads and the unpacked source unless you pass `--keep`.
 
 ## NEEDS
 
-What the recipe may use. Ginux and the host confinement enforce it; callers can
-only narrow it.
+What the recipe may use. Ginux and the host confinement enforce it as far as
+each can (see the limits after this table); callers can only narrow it.
 
 | Field | Meaning |
 | --- | --- |
 | `inputs` | name to `"file"`, `"directory"`, `"file?"` or `"directory?"` |
 | `defines` | name to its default value; `()` means required |
 | `outputs` | name to `"file"` or `"directory"` |
-| `network` | `"host:port"` endpoints, redirect hosts included |
+| `network` | `"host:port"` endpoints, redirect hosts included; Ginux grants the port of each (below) |
 | `network_max_bytes` | bytes the recipe downloads, default 8 GiB; Recipe adds 64 KiB per file and a quarter for retries (docs/recipe-format.md, 2.1) |
-| `memory_mib` | default 2048 |
-| `storage_max_objects` | default 16384 |
-| `storage_max_bytes` | default bounded by memory |
+| `memory_mib` | default 2048; per-process address space |
+| `storage_max_objects` | default 16384; bounds the archive taken out of the run |
+| `storage_max_bytes` | default bounded by memory; bounds the archive taken out of the run |
 | `timeout_secs` | default 3600, 1 to 86400 |
 | `runtime` | `"minimal"` for a recipe whose programs are the tools of a root it is given: its Ginux run is unpacked from the small minimal image (shell, coreutils, findutils, sed, grep) instead of the full compiler image; left out otherwise (docs/recipe-format.md, 2.1) |
 
@@ -130,8 +130,27 @@ input is `()` when it was not given; a supplied path must still have its kind.
 `--network-host` selects a subset and resource flags select lower limits;
 widening fails with the declaration field to edit. Read
 [runtime limits](docs/runtime-limits.md) when choosing grants: memory is
-per-process address space, CPU selection is real affinity, network authority is
-numeric IP:port and archive timestamps have whole-second precision.
+per-process address space, CPU selection is real affinity and archive timestamps
+have whole-second precision.
+
+Two limits do not exist inside a Ginux run, and a recipe must not assume them:
+
+- **Network grants are per port.** The instance shares the host network and
+  Ginux grants `tcp:PORT` for each distinct port of `network`. A program the
+  recipe starts (`git`, `curl`, a build system) can connect to any address on a
+  granted port, with no connection or byte cap. Only Recipe's own downloads
+  (`download`, `download_exact`, the `SOURCES` fetches) are held to the declared
+  `HOST:PORT` and to `network_max_bytes`. Declare the endpoints you mean, and
+  prefer `SOURCES` or `download` over a program's own fetching.
+- **There is no storage limit while the run lives.** `storage_max_bytes` and
+  `storage_max_objects` bound the archive Recipe takes out of the run: an output
+  over them fails the run afterwards. A runaway recipe can fill the host disk
+  (a watchdog cancels the run when the free space of Ginux's state root falls
+  below the larger of 2 GiB and 5 %).
+
+A recipe that runs in Ginux also needs the host to allow it: root, or an
+administrator's sudoers rule (`recipe runtime stage --sudoers GROUP`); see
+README, "Privileges".
 
 ### Defines
 

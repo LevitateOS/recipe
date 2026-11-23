@@ -1,4 +1,12 @@
-//! Real source-tree copy, kept-result restart and named artifact publication.
+//! Real source-tree copy, kept-result restart and named artifact publication
+//! on the public Ginux lifecycle. Preconditions: header of `tests/e2e.rs`.
+//!
+//! Storage is the instance root on the host filesystem: there is no storage
+//! limit inside the run (accepted regression, `docs/runtime-limits.md`). The
+//! bound that remains is on the way out: `ginux extract --max-bytes` refuses
+//! outputs over `storage_max_bytes` after the run. Inputs and outputs travel
+//! as tars of directories, regular files and symlinks, so hard links do not
+//! survive: a file linked twice arrives as two independent files.
 use super::*;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
@@ -10,6 +18,8 @@ fn managed_storage_preserves_source_modes_links_and_restart_identity() {
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::write(bin.join("tool"), "original").unwrap();
     std::fs::set_permissions(bin.join("tool"), std::fs::Permissions::from_mode(0o600)).unwrap();
+    // Staged inputs have no hard links (the injector accepts none): this
+    // arrives as a second regular file with the same bytes.
     std::fs::hard_link(bin.join("tool"), bin.join("tool-alias")).unwrap();
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
     std::os::unix::fs::symlink("/usr/bin/tool", source.join("absolute-link")).unwrap();
@@ -59,10 +69,15 @@ fn verify(out) {
         let root = std::path::PathBuf::from(result["outputs"]["rootfs"].as_str().unwrap());
         let file = root.join("usr/bin/tool");
         assert_eq!(
+            std::fs::read(&file).unwrap(),
+            std::fs::read(root.join("usr/bin/tool-alias")).unwrap()
+        );
+        assert_ne!(
             std::fs::metadata(&file).unwrap().ino(),
             std::fs::metadata(root.join("usr/bin/tool-alias"))
                 .unwrap()
-                .ino()
+                .ino(),
+            "hard links are not carried through the instance"
         );
         assert_eq!(std::fs::metadata(&file).unwrap().mode() & 0o777, 0o600);
         assert_eq!(
@@ -203,4 +218,42 @@ fn build(src, out) {
     }
     file.read_exact(&mut tail).unwrap();
     assert_eq!(&tail, b"tailproof");
+}
+
+#[test]
+fn managed_storage_refuses_outputs_over_the_declared_bound_at_extract() {
+    // The run itself is not limited. The archive of `/work` and `/out` is
+    // bounded by `storage_max_bytes` (plus tar overhead per object): a sparse
+    // 256 MiB file under a 16 MiB bound is refused when the outputs are taken
+    // out, with the storage message, and nothing is published.
+    let (dir, recipes) = create_test_env();
+    write_recipe(
+        &recipes,
+        "check",
+        r#"
+const RECIPE_API = 1;
+const NEEDS = #{ outputs: #{ payload: "file" } };
+fn build(src, out) { exec_checked("/usr/bin/truncate", ["-s", "268435456", out]); }
+"#,
+    );
+    let output = recipe_command(&recipes)
+        .args(["install", "check", "--no-persist-state", "--recipes-path"])
+        .arg(&recipes)
+        .arg("--build-dir")
+        .arg(dir.path().join("destination"))
+        .arg("--state-dir")
+        .arg(dir.path().join("state"))
+        .args([
+            "--storage-max-bytes",
+            "16777216",
+            "--storage-max-objects",
+            "100",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success() && output.stdout.is_empty());
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostics.contains("exceed"), "{diagnostics}");
+    assert!(!dir.path().join("state/recipe/exports").exists());
+    assert!(leaked_instances().is_empty());
 }

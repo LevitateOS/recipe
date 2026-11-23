@@ -418,3 +418,46 @@ fn build(src, out) {
         "recovered after stalled Git"
     );
 }
+
+#[test]
+fn managed_git_reaches_an_undeclared_address_on_a_granted_port() {
+    // Documents an accepted regression of the public lifecycle (docs/runtime-limits.md):
+    // the grant is the port, not the address, so `git` run by a recipe can
+    // connect to any address on a granted port. The fixture server on the
+    // undeclared address proves the connection by receiving it.
+    use std::io::Write;
+    use std::net::TcpListener;
+    let (_dir, recipes) = create_test_env();
+    let granted = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = granted.local_addr().unwrap().port();
+    let undeclared = TcpListener::bind(("127.0.0.2", port))
+        .expect("the same port on a second loopback address must be free");
+    undeclared.set_nonblocking(true).unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, received) = super::downloads::accept_request(&undeclared);
+        stream
+            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        received
+    });
+    write_recipe(
+        &recipes,
+        "git-payload",
+        &format!(
+            r#"
+const RECIPE_API = 1;
+const NEEDS = #{{ outputs: #{{ product: "file" }}, network: ["127.0.0.1:{port}"] }};
+fn build(src, out) {{
+    // The transfer itself fails (404); what matters is that git got through.
+    exec("git", ["ls-remote", "http://127.0.0.2:{port}/undeclared.git"]);
+    write_file(out, "attempted");
+}}
+"#
+        ),
+    );
+    let output = git_command(&recipes, None).output().unwrap();
+    assert_success(&output);
+    let received = server.join().unwrap();
+    assert!(received.contains("/undeclared.git"), "{received}");
+    drop(granted);
+}

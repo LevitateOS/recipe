@@ -1,0 +1,24 @@
+# Recipe runs every build that starts a program inside a Ginux instance.
+# Ginux's privileged helper runs as root. This rule does not name the helper:
+# it names Recipe's guard, /usr/libexec/recipe/recipe-ginux-guard, a root-owned
+# program that runs the helper only for Recipe's own instance verbs (import,
+# inject, start, status, stop, delete, extract), on instances named
+# recipe-<uid>-* of the caller's own uid (uid 0 may use any uid's), after it
+# has re-rendered the instance config Recipe imports from validated fields and
+# cleared the environment. For a caller other than root the config's image must
+# be listed in the root-owned allowlist /usr/libexec/recipe/runtime-images.
+# Every other helper verb (prepare-root, run-runtime, ...; also import-image,
+# which root runs through 'sudo recipe runtime fetch') and every other instance
+# name is refused before anything is touched.
+# The members of @GROUP@ (the administrators, who may become root anyway) may
+# run the guard on Recipe's own state and run roots without a password, so
+# Recipe can create, start and delete its instances from trusted images. That
+# is a passwordless sandbox for Recipe-shaped instances; it is not
+# unconditionally harmless to the host: the code that unpacks and prepares a
+# trusted image runs as root and follows symlinks in the image, every user's
+# workload runs as the same host uid, and nothing caps a member's disk or
+# instance use (docs/runtime-limits.md, "What a shared host still exposes").
+# Other users cannot run Ginux; recipes that start no program still run on the
+# host for them.
+# Written by 'recipe runtime stage --sudoers @GROUP@'.
+%@GROUP@ ALL=(root) NOPASSWD: /usr/libexec/recipe/recipe-ginux-guard --protocol 1 --state-root /var/lib/recipe/ginux --run-root /run/recipe/ginux *

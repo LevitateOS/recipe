@@ -186,7 +186,7 @@ struct Pending {
     generation: u64,
 }
 
-/// The SHA-256 of the file at `path`, in hex (the launcher's exact identity).
+/// The SHA-256 of the file at `path`, in hex (the worker's exact identity).
 pub(crate) fn file_digest(path: &Path) -> Result<String> {
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     Ok(hex::encode(Sha256::digest(bytes)))
@@ -201,7 +201,7 @@ impl Retained {
         key: &str,
         prepared: &PreparedInvocation,
         worker_digest: &str,
-        launcher: Option<&Path>,
+        ginux: Option<&crate::ginux::Ginux>,
         options: &InvocationOptions,
         host_root: Option<&Path>,
         downloads: bool,
@@ -260,14 +260,17 @@ impl Retained {
         // The executing tools are named by their declared behaviour versions
         // (`crate::identity`); exact identity also names their bytes. The two
         // never share an identity: `tools` is null in one and set in the other.
-        let tools = match (*exact_identity, launcher) {
+        let tools = match (*exact_identity, ginux) {
             (false, _) => None,
-            (true, Some(launcher)) => {
-                let launcher_digest = file_digest(launcher)
-                    .context("cannot read the ginux launcher for the exact identity")?;
-                Some((worker_digest.to_owned(), launcher_digest))
+            (true, Some(ginux)) => {
+                // The four Ginux files (CLI, helper, image tool, runtime):
+                // the SHA-256 of their four SHA-256s, in that order.
+                let ginux_digest = ginux
+                    .digest()
+                    .context("cannot read the Ginux files for the exact identity")?;
+                Some((worker_digest.to_owned(), ginux_digest))
             }
-            // A host run has no launcher; the worker alone executes it.
+            // A host run has no Ginux; the worker alone executes it.
             (true, None) => Some((worker_digest.to_owned(), String::new())),
         };
         let inputs_value = serde_json::to_value(&inputs)?;
@@ -451,7 +454,7 @@ impl Retained {
 
     /// Copy the current generation's archive to the private restore input
     /// `path` and check the copied bytes against the record (never verify one
-    /// pathname read and then let the launcher consume a second mutable
+    /// pathname read and then let the run consume a second mutable
     /// read). True when `path` holds it; false when there is no generation or
     /// its archive changed ([`Self::verify_current`]), and `path` is left
     /// absent.

@@ -45,9 +45,7 @@ The native recipe helpers are:
   `root` is removed as it is written, so a domain never holds the tree twice.
 - `target_unpack_tree(archive, root)`: make that tree again under an empty `root`
   (`target::unpack_tree`); each member's parent must be a directory an earlier
-  member made, and each name appears once. Where the domain's owned storage
-  offers Ginux archive import (below), the tree goes to the supervisor as one
-  tar stream; elsewhere it is made member by member. Both leave the same tree.
+  member made, and each name appears once. It is made member by member (below).
 - `target_capture_apks(root, archive_directories)`: read the installed APK database
   and the exact selected package archives, including their concatenated gzip/tar
   members. Every installed package must have an available archive. Collect these
@@ -77,60 +75,26 @@ The native recipe helpers are:
   create there. The system change creates them, with those of the tree's own
   `usr/lib/sysusers.d/*.conf`, the way the OS builder does, then resolves the names.
 
-## Unpacking a tree through archive import
+## Unpacking a tree
 
-A tree of 200,000 files costs about five mediated calls per member when it is
-made member by member (`openat`, `write`, `fchmod`, `futimens`, `close`).
-Ginux can instead take one tar stream for an owned directory and apply each
-member itself (Ginux `docs/archive-import.md`): one mediated `write` per MiB.
-Recipe enables it in each invocation's config (`[storage] archive_import =
-true`) when the launcher accepts the field; `RECIPE_ARCHIVE_IMPORT=0` turns it
-off. A Ginux that predates the field rejects the whole config, so the
-coordinator first asks the launcher, once per launcher digest for its
-lifetime: `instance-validate` on the declaration-only config with the field
-added, which parses the config as a launch would and starts nothing. Any
-failure of that probe means "not supported".
+`target::unpack_tree` makes the tree member by member (`openat`, `write`,
+`fchmod`, `futimens`, `close` per member) wherever it runs. The faster
+one-stream import the retired downstream launcher offered (`[storage]
+archive_import`, `RECIPE_ARCHIVE_IMPORT`, the `ioctl` path in `src/target.rs`)
+is gone with that launcher: the public Ginux lifecycle has no such stream, and
+the cost is speed only, never a different tree. A tree of 200,000 files costs
+about five calls per member inside the instance.
 
-`target::unpack_tree` asks for a stream on `root` (`ioctl` `0x40104701`, flag
-2, clear set-user-ID, set-group-ID and sticky bits). `ENOTTY` or `EINVAL`
-(not offered: field off, older Ginux, storage Ginux does not own, a plain
-host) selects the member-by-member path. Otherwise it writes the archive's
-members again as canonical tar, with ordinary 1 MiB writes and a final
-`fsync`:
+The result: the same names, kinds, modes, modification times (whole seconds),
+link targets and manifest bytes. Hardlinks inside a tree that crosses the
+instance boundary (an input staged into it, or an output taken out) arrive as
+regular files: the public lifecycle carries only directories, regular files and
+symlinks. A hardlink made inside a run by `target_unpack_tree` or by the recipe
+itself stays one inode for as long as the tree stays in that run.
 
-- in the archive's order, except that each directory member follows its
-  contents, so creating them does not move its time after it is set;
-- directories with their permission bits and the owner's `rwx`, files with
-  their permission bits; ownership is never sent;
-- hardlinks after their targets and symbolic links as written, the manifest
-  as the plain file it is. `target::write_tree` writes no extended
-  attributes, so the stream never carries any.
-
-After the stream, ordinary calls apply what it could not: symbolic links
-whose target is longer than its 255-byte long-link record are made one by
-one; the time of any directory that gained a name after its member is set
-again (only an archive out of `write_tree`'s order, or such a link, causes
-that); and every recorded mode the stream did not give (set-user-ID,
-set-group-ID and sticky bits, directories without the owner's `rwx`) is
-applied, children before their directory. Owned storage refuses special bits
-to an individual `chmod` as it does on the member-by-member path, so a tree
-recording them fails either way; staging trees made in a domain never carry
-them, as their real modes live in the manifest.
-
-The result matches the member-by-member path: the same names, kinds, modes,
-modification times (whole seconds), link targets, hardlinks and manifest
-bytes. Only access and change times, which no tree records, can differ. A
-failure in the stream is a hard error naming the stream's errno and the first
-member of the failed write that is not in place; it never falls back after a
-partial import, and members already applied remain, as on the other path.
-
-`target_extract_rpm` stays member by member. Its per-file extraction leaves
-creation-time modification times, which `target_pack_tree` then records,
-whereas an import always sets one; it resolves member paths through
-directory links an earlier member made (an import refuses those with
-`ELOOP`); and it makes hardlinks only at the end, to what their targets
-resolve to then. Per-package roots are small; the trees worth streaming are
-the ones `target_unpack_tree` makes.
+`target_extract_rpm` also works member by member. Its per-file extraction leaves
+creation-time modification times, which `target_pack_tree` then records, and it
+resolves member paths through directory links an earlier member made.
 
 The compiler image must contain the selected package/extraction tools. Installing
 one only on the coordinator does not make it available in Ginux. The acquisition
@@ -162,7 +126,7 @@ uses real Ginux execution, publication, reimport,
 composition and EROFS packing. It checks non-root ownership,
 setuid/sticky modes, absolute symlinks, hardlinks, raw file capabilities and
 rejection of a changed privileged payload. Run it with the documented Ginux
-bootstrap privileges and a compatible launcher/image.
+privileges (root or the sudoers rule) and a compatible Ginux and image.
 
 Actual recstrap mount/copy deployment is a separate libvirt fixture consuming
 the exact produced EROFS image; see the superproject's

@@ -6,6 +6,14 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 /// assembly. Actual recstrap deployment runs separately in the retained PRD12
 /// libvirt fixture, using this exact image on an EROFS-zstd-capable kernel. No host chown/chmod is used to install
 /// package privileges into staging.
+///
+/// Runs in a real Ginux instance on the public lifecycle (preconditions: the
+/// header of `tests/e2e.rs`) and needs `RECIPE_TEST_BUILDER` and
+/// `RECIPE_TEST_REPO_ROOT`. Hard link identity crosses the instance boundary
+/// as regular files (the injector and `extract` carry no hard links), so the
+/// alias check on the final tar holds only if the target metadata manifest
+/// records the link; if it fails, that is a regression of the cutover to fix in
+/// `target_finalize`/`write_tar`, not a test to weaken.
 #[test]
 fn cli_target_metadata_survives_publication_reimport_and_erofs_production() {
     let (dir, recipes) = create_test_env();

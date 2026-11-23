@@ -1,4 +1,7 @@
 //! Explicit bootstrap composer. Consumes pinned local artifacts; runs no Rhai.
+//! Writes the compiler (or minimal) image as a one-layer OCI image layout
+//! (`levitate_recipe::image::write_layout_record`); the manifest digest is
+//! the image's identity (`local/recipe-compiler@sha256:<manifest>`).
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
@@ -22,7 +25,10 @@ struct Cli {
     manifest: PathBuf,
     #[arg(long)]
     input_root: PathBuf,
-    /// Fresh directory receiving rootfs.tar and provenance.json.
+    /// Fresh directory receiving the one-layer OCI image layout (`oci-layout`,
+    /// `index.json`, `blobs/sha256/*`), its tar `image.oci.tar` (what
+    /// `ginux import-image` and `recipe runtime stage` take) and
+    /// `provenance.json` (with `manifest_digest`, the image's identity).
     #[arg(long)]
     output: PathBuf,
 }
@@ -173,13 +179,15 @@ fn main() -> Result<()> {
         bail!("Rust archive is missing a selected component");
     }
 
-    let image_path = output.path().join("rootfs.tar");
+    // The layer: written into the staging directory, then linked into the
+    // layout as its one blob (`image::write_layout_record`).
+    let layer_path = output.path().join("layer.tar");
     let image = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&image_path)?;
+        .open(&layer_path)?;
     let mut writer = tar::Builder::new(image);
-    // Every emitted member passes the consumer's rules in consumer order.
+    // Every emitted member passes the image rules in layer order.
     let mut validator = image::Validator::default();
     let mut seen = HashSet::new();
     let mut emitted = HashSet::new();
@@ -192,7 +200,10 @@ fn main() -> Result<()> {
         if !seen.insert(path.clone()) {
             bail!("duplicate base image entry: {path}");
         }
-        if additions.contains_key(&path) || kept.as_ref().is_some_and(|kept| !kept.contains(&path))
+        // Recipe injects /etc/hosts into every run (`image::HOSTS`).
+        if path == image::HOSTS
+            || additions.contains_key(&path)
+            || kept.as_ref().is_some_and(|kept| !kept.contains(&path))
         {
             continue;
         }
@@ -213,6 +224,7 @@ fn main() -> Result<()> {
         }
         emitted.insert(path);
     }
+    additions.remove(image::HOSTS);
     // Additions go in path order, except that a hardlink waits for a later
     // pass until its target has been written.
     let mut pending = additions.into_iter().collect::<Vec<_>>();
@@ -255,20 +267,27 @@ fn main() -> Result<()> {
     }
     writer.finish()?;
     writer.into_inner()?.sync_all()?;
-    let mut image = File::open(&image_path)?;
-    let (size, digest) =
-        fsx::copy_hashed(&mut image, &mut std::io::sink(), image::MAX_ARCHIVE_BYTES)?;
-    let record = serde_json::json!({"version":1,"image":"rootfs.tar","sha256":digest,"bytes":size,"inputs":manifest});
+    let layout_path = output.path().join("image");
+    let layout = image::write_layout_record(&layer_path, &layout_path)?;
+    // The layout holds the layer as its blob now.
+    fs::remove_file(&layer_path)?;
+    let record = serde_json::json!({
+        "version": 1,
+        "image": image::LAYOUT_TAR,
+        "manifest_digest": layout.manifest,
+        "layer_sha256": layout.layer,
+        "bytes": layout.layer_bytes,
+        "inputs": manifest,
+    });
     let mut provenance = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(output.path().join("provenance.json"))?;
+        .open(layout_path.join("provenance.json"))?;
     serde_json::to_writer_pretty(&mut provenance, &record)?;
     provenance.write_all(b"\n")?;
     provenance.sync_all()?;
-    File::open(output.path())?.sync_all()?;
-    publish_directory(output.path(), &cli.output)?;
-    let _ = output.keep();
+    File::open(&layout_path)?.sync_all()?;
+    publish_directory(&layout_path, &cli.output)?;
     File::open(parent)?.sync_all()?;
     println!("{}", serde_json::to_string_pretty(&record)?);
     Ok(())

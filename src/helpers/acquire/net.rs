@@ -1,15 +1,20 @@
-//! The network rule of a host run: Recipe's HTTP client reaches only the
-//! `NEEDS.network` endpoints, at the addresses the coordinator pinned.
+//! The network rule of Recipe's own downloads: its HTTP client reaches only
+//! the `NEEDS.network` endpoints, at the addresses the coordinator pinned.
 //!
-//! In a Ginux run the domain enforces the grant and nothing here is installed.
-//! In a host run the worker installs [`HostNetwork`] from its request:
+//! The worker installs [`HostNetwork`] from its request's network rule
+//! (`crate::worker::records::NetworkGrant`) in a host run and in a Ginux run
+//! alike. A Ginux run's domain admits outbound TCP to any address on a
+//! granted port (the shared host network) with no byte cap, so this rule is
+//! what holds Recipe's own transfers to the pins and the cap there; programs
+//! a recipe starts are held only to the ports. The rule:
 //!
 //! - every agent gets a resolver that answers only `HOST:PORT` pairs the
 //!   recipe declared, with the coordinator's pinned addresses, and refuses
-//!   everything else (other hosts, other ports, redirects to either);
+//!   everything else (other hosts, other ports, redirects to either), without
+//!   asking the system resolver or `/etc/hosts`;
 //! - response bodies are counted against the run's network byte cap (bodies
 //!   only; the cap, `crate::needs::Needs::network_budget`, carries an
-//!   allowance for the handshakes and headers Ginux counts and this does not);
+//!   allowance for handshakes, headers and retries);
 //! - each declared endpoint records whether it was attempted (resolved for a
 //!   connection) and connected (answered), the shape the coordinator reports
 //!   as `network_usage`.
@@ -38,7 +43,7 @@ pub(crate) struct HostNetwork {
 static NETWORK: OnceLock<HostNetwork> = OnceLock::new();
 
 /// The run's network byte cap, as the coordinator resolved it; set for every
-/// run (Ginux or host) so a failure on the cap can name it.
+/// run so a failure on the cap can name it.
 static LIMIT: OnceLock<u64> = OnceLock::new();
 
 /// Remember the run's network byte cap ([`limit_reached`] names it).
@@ -46,7 +51,7 @@ pub(crate) fn set_limit(max_bytes: u64) {
     let _ = LIMIT.set(max_bytes);
 }
 
-/// The error a host run's counted body returns past the cap.
+/// The error a counted body returns past the cap.
 #[derive(Debug)]
 struct LimitReached;
 
@@ -58,14 +63,12 @@ impl std::fmt::Display for LimitReached {
 
 impl std::error::Error for LimitReached {}
 
-/// Whether `error` is the run's network byte cap: Ginux answers a send or a
-/// receive past `[network] max_bytes` with EDQUOT; a host run's counted body
-/// returns [`LimitReached`].
+/// Whether `error` is the run's network byte cap: a counted body returns
+/// [`LimitReached`] past it.
 pub(crate) fn is_limit(error: &std::io::Error) -> bool {
-    error.raw_os_error() == Some(libc::EDQUOT)
-        || error
-            .get_ref()
-            .is_some_and(|inner| inner.downcast_ref::<LimitReached>().is_some())
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.downcast_ref::<LimitReached>().is_some())
 }
 
 /// The message of a transfer stopped by the run's network byte cap; `what`
@@ -83,7 +86,7 @@ pub(crate) fn limit_reached(what: &str) -> String {
     )
 }
 
-/// Install the host run's grant: declared endpoint → pinned addresses.
+/// Install the run's rule: declared endpoint → pinned addresses, and the cap.
 pub(crate) fn install(
     grants: &BTreeMap<String, Vec<String>>,
     max_bytes: u64,
@@ -108,7 +111,7 @@ pub(crate) fn install(
             used: AtomicU64::new(0),
             usage: Mutex::new(usage),
         })
-        .map_err(|_| anyhow::anyhow!("host network policy is already installed"))
+        .map_err(|_| anyhow::anyhow!("the network rule is already installed"))
 }
 
 /// The use each declared endpoint saw, keyed as declared (normalized).
@@ -141,7 +144,7 @@ impl ureq::Resolver for GrantResolver {
     fn resolve(&self, netloc: &str) -> std::io::Result<Vec<SocketAddr>> {
         let network = NETWORK
             .get()
-            .expect("resolver exists only with a host network");
+            .expect("resolver exists only with a network rule");
         let key = normalize(netloc);
         match network.grants.get(&key) {
             Some(addresses) => {
@@ -174,7 +177,7 @@ impl ureq::Resolver for GrantResolver {
     }
 }
 
-/// An agent builder with the host run's resolver when one is installed.
+/// An agent builder with the run's resolver when a rule is installed.
 /// Returns the hop record [`finished`] reads.
 pub(crate) fn agent(builder: ureq::AgentBuilder) -> (ureq::AgentBuilder, Option<HopRecord>) {
     if NETWORK.get().is_none() {
@@ -223,7 +226,8 @@ pub(crate) fn call(
     result
 }
 
-/// A response body, counted against `network_max_bytes` in a host run.
+/// A response body, counted against `network_max_bytes` when a rule is
+/// installed.
 pub(crate) fn body(response: ureq::Response) -> Box<dyn Read + Send + Sync + 'static> {
     let reader = response.into_reader();
     if NETWORK.get().is_none() {
@@ -239,7 +243,7 @@ impl Read for Counted {
         let count = self.0.read(buffer)?;
         let network = NETWORK
             .get()
-            .expect("counted body exists only with a host network");
+            .expect("counted body exists only with a network rule");
         let used = network.used.fetch_add(count as u64, Ordering::Relaxed) + count as u64;
         if used > network.max_bytes {
             return Err(std::io::Error::other(LimitReached));

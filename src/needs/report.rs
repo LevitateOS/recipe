@@ -2,8 +2,8 @@
 //! `inspect`, `diff` and `explain` commands, and the endpoint use a finished
 //! run recorded. Nothing here evaluates recipe code.
 use super::{Narrowing, contract, declaration, declarations};
-use anyhow::{Context, Result, ensure};
-use std::collections::{BTreeMap, BTreeSet};
+use anyhow::{Context, Result};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Full declaration/input/contract preflight without executing setup or a workload.
@@ -19,7 +19,6 @@ pub fn validate(
         .map(|(name, path)| crate::inputs::ExtraInput {
             name: name.clone(),
             path: path.clone(),
-            live: false,
         })
         .collect::<Vec<_>>();
     crate::inputs::bind_inputs(&graph, &supplied, search, true)?;
@@ -43,7 +42,7 @@ pub fn inspect(
     let execution = main
         .needs
         .resolve(narrowing, &crate::ExecutionOptions::default())?;
-    let launcher = crate::GinuxLauncher::from_env()?;
+    let ginux = crate::ginux::Ginux::from_env()?;
     let mut dependency_contracts = Vec::new();
     for node in nodes.iter().take(nodes.len() - 1) {
         let effective = node.needs.resolve(
@@ -52,11 +51,11 @@ pub fn inspect(
                 .dependency_narrowing(narrowing, &crate::ExecutionOptions::default().host_libc)?,
             &crate::ExecutionOptions::default(),
         )?;
-        let receipt = contract::inspect(launcher.path(), &effective)?;
+        let receipt = contract::inspect(&ginux, &effective)?;
         dependency_contracts.push(serde_json::json!({"declaration":node,"contract":receipt,
             "effective":limits(&effective)}));
     }
-    let contract = contract::inspect(launcher.path(), &execution)?;
+    let contract = contract::inspect(&ginux, &execution)?;
     Ok(
         serde_json::json!({"recipe":main.recipe,"api":crate::declarations::API,"needs":main.needs,
         "effective":limits(&execution),
@@ -186,16 +185,11 @@ pub fn explain_recipe(
     let execution = node
         .needs
         .resolve(narrowing, &crate::ExecutionOptions::default())?;
-    let launcher = crate::GinuxLauncher::from_env()?;
+    let ginux = crate::ginux::Ginux::from_env()?;
     let config = contract::inspection_config(&execution);
-    let receipt = contract::validate(launcher.path(), &config, &execution)?;
+    let receipt = contract::validate(&ginux, &config, &execution)?;
     let operation = contract::operation(operation);
-    let text = contract::command(
-        launcher.path(),
-        &config,
-        "instance-explain",
-        Some(operation),
-    )?;
+    let text = contract::command(&ginux, &config, Some(operation))?;
     let rule = text
         .lines()
         .find_map(|line| line.strip_prefix("Rule: "))
@@ -215,7 +209,9 @@ pub fn explain_recipe(
 }
 
 /// Explain recorded authority/audits from a retained invocation, independently
-/// of today's recipe source or launcher. Absence/truncation is explicit.
+/// of today's recipe source or Ginux. The runtime's audit lines
+/// (`GINUX_NATIVE_AUDIT: … operation=OP policy-source=S policy-rule=N …`) are
+/// in the supervisor log copy; absence and truncation are explicit.
 pub fn explain_invocation(directory: &Path, operation: &str) -> Result<serde_json::Value> {
     let crate::invocation_log::Recorded {
         authority,
@@ -227,7 +223,7 @@ pub fn explain_invocation(directory: &Path, operation: &str) -> Result<serde_jso
     let text = String::from_utf8_lossy(&supervisor_log);
     let mut decisions = Vec::new();
     for line in text.lines() {
-        if !line.starts_with("ginux: audit ") && !line.starts_with("ginux: denial-summary ") {
+        if !line.starts_with("GINUX_NATIVE_AUDIT: ") {
             continue;
         }
         let fields = line
@@ -242,18 +238,7 @@ pub fn explain_invocation(directory: &Path, operation: &str) -> Result<serde_jso
             .get("policy-rule")
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(0);
-        let connect = operation == contract::TCP_CONNECT;
-        let recipe_rule = if connect && fields.get("egress") == Some(&"denied") {
-            "NEEDS.network/caller subset: decoded numeric endpoint is outside the pinned grant"
-                .to_owned()
-        } else if connect && fields.get("result") == Some(&"-122") {
-            "NEEDS.network_max_bytes/caller byte cap: shared send+receive budget exhausted"
-                .to_owned()
-        } else if connect && fields.get("result") == Some(&"-24") {
-            "Ginux fixed connection/descriptor bound; no NEEDS field widens this limit".to_owned()
-        } else {
-            receipt.contract.provenance(source, index, operation)
-        };
+        let recipe_rule = receipt.contract.provenance(source, index, operation);
         decisions.push(serde_json::json!({"audit":line,"recipe_rule":recipe_rule}));
     }
     Ok(
@@ -261,113 +246,28 @@ pub fn explain_invocation(directory: &Path, operation: &str) -> Result<serde_jso
         "operation":operation,"contract_digest":receipt.digest,"pinned_endpoints":authority["pinned_endpoints"],"execution":authority["execution"],
         "decisions":decisions,"audit_discarded_bytes":result["log_discarded_bytes"],
         "network_usage":result["network_usage"],
-        "phase":"Ginux entry/exit is recorded; recipe phase is not correlated across diagnostic streams",
-        "limitation":"No matching audit means unobserved, never an implicit allow or successful connection"}),
+        "phase":"Ginux entry is recorded; recipe phase is not correlated across diagnostic streams",
+        "limitation":"No matching audit means unobserved, never an implicit allow or successful connection; \
+         the runtime records no destination address, so a program's connection to an undeclared \
+         address on a granted port is not reported"}),
     )
 }
 
-/// The first connection a retained invocation's supervisor log records as
-/// denied: the endpoint as the audit line names it (a numeric address) and the
-/// network endpoints the recipe declared. None when no denial was recorded or
-/// the record cannot be read.
-pub fn refused_connection(directory: &Path) -> Option<serde_json::Value> {
-    let recorded = crate::invocation_log::Recorded::read(directory).ok()?;
-    let text = String::from_utf8_lossy(&recorded.supervisor_log);
-    let endpoint = text.lines().find_map(|line| {
-        if !line.starts_with("ginux: audit ") {
-            return None;
-        }
-        let fields = line
-            .split_whitespace()
-            .filter_map(|part| part.split_once('='))
-            .collect::<BTreeMap<_, _>>();
-        (fields.get("egress") == Some(&"denied"))
-            .then(|| {
-                fields
-                    .get("network-endpoint")
-                    .map(|endpoint| (*endpoint).to_owned())
-            })
-            .flatten()
-    })?;
-    let declared = recorded.authority["declaration"]["needs"]["network"].clone();
-    Some(
-        serde_json::json!({"endpoint": endpoint, "declared": if declared.is_array() { declared } else { serde_json::json!([]) }}),
-    )
-}
-
-/// Advisory endpoint use from the supervisor's bounded final summary. Missing
-/// records are unknown, never false/unused; syscall audit truncation is separate.
-pub(crate) fn network_usage(
-    host_endpoints: &BTreeMap<String, Vec<String>>,
-    diagnostics: &crate::invocation_log::InvocationLog,
-    discarded: u64,
-) -> serde_json::Value {
-    let observed = (|| -> Result<_> {
-        let bytes = diagnostics.supervisor_log()?;
-        ensure!(discarded == 0, "supervisor log truncated");
-        let text = String::from_utf8_lossy(&bytes);
-        let mut count = None;
-        let mut usage = BTreeMap::new();
-        for line in text
-            .lines()
-            .filter_map(|line| line.strip_prefix("ginux: network-summary "))
-        {
-            let fields = line
-                .split_whitespace()
-                .filter_map(|part| part.split_once('='))
-                .collect::<BTreeMap<_, _>>();
-            if fields.get("version") == Some(&"1") {
-                ensure!(count.is_none(), "duplicate network summary");
-                count = Some(
-                    fields
-                        .get("endpoints")
-                        .context("summary count missing")?
-                        .parse::<usize>()?,
-                );
-            } else if let Some(endpoint) = fields.get("endpoint") {
-                let endpoint = endpoint.parse::<std::net::SocketAddr>()?.to_string();
-                let attempted = fields
-                    .get("attempted")
-                    .context("attempt state missing")?
-                    .parse::<bool>()?;
-                let connected = fields
-                    .get("connected")
-                    .context("connection state missing")?
-                    .parse::<bool>()?;
-                ensure!(
-                    usage.insert(endpoint, (attempted, connected)).is_none(),
-                    "duplicate endpoint summary"
-                );
-            }
-        }
-        let expected = host_endpoints
-            .values()
-            .flatten()
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        ensure!(
-            count == Some(expected.len())
-                && usage.keys().cloned().collect::<BTreeSet<_>>() == expected,
-            "complete configured endpoint summary unavailable"
-        );
-        Ok(usage)
-    })();
-    match observed {
-        Ok(usage) => usage_report(host_endpoints, |_, pins| {
-            (
-                pins.iter().any(|pin| usage[pin].0),
-                pins.iter().any(|pin| usage[pin].1),
-            )
-        }),
-        Err(error) => {
-            serde_json::json!({"status":"unobserved","reason":error.to_string(),"warnings":[],
-            "declared":host_endpoints.keys().collect::<Vec<_>>() })
-        }
+/// Endpoint use of a Ginux run whose worker reported none. A run without a
+/// network grant has no endpoint to account for and is complete; a run with
+/// one always has a worker report ([`host_network_usage`]), since the worker
+/// counts Recipe's own downloads there too, so missing use is unobserved.
+pub(crate) fn network_usage(host_endpoints: &BTreeMap<String, Vec<String>>) -> serde_json::Value {
+    if host_endpoints.is_empty() {
+        return usage_report(host_endpoints, |_, _| (false, false));
     }
+    serde_json::json!({"status":"unobserved","reason":"the worker reported no network use","warnings":[],
+        "declared":host_endpoints.keys().collect::<Vec<_>>() })
 }
 
-/// The same report from a host run, whose worker counted each declared
-/// endpoint itself (`crate::helpers::acquire::net`) instead of Ginux.
+/// The report from the worker's own account of each declared endpoint
+/// (`crate::helpers::acquire::net`), in a host run and a Ginux run alike.
+/// It covers Recipe's own downloads, not programs a recipe starts.
 pub(crate) fn host_network_usage(
     host_endpoints: &BTreeMap<String, Vec<String>>,
     usage: &BTreeMap<String, crate::helpers::acquire::net::EndpointUse>,

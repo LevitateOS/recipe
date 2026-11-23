@@ -24,8 +24,9 @@ jobs:
       msrv: '1.93'
 
   managed-integration:
-    # On demand only (Actions > CI > Run workflow): it builds Ginux and a compiler
-    # image and runs whole catalogs, too costly for every push.
+    # On demand only (Actions > CI > Run workflow): it builds Ginux, installs its
+    # root-run tools on the runner and builds a compiler image, then runs whole
+    # catalogs as root, too costly for every push.
     # These pins identify the maintained delivery source and C/runtime image.
     # Missing pins fail the job; they never silently skip acceptance.
     if: github.event_name == 'workflow_dispatch'
@@ -46,10 +47,10 @@ jobs:
           spec = json.loads(Path('bootstrap/managed-ci.json').read_text())
           pins = {'GINUX_REPOSITORY': spec['ginux_repository'],
                   'GINUX_SOURCE_SHA': spec['ginux_revision'],
-                  'RECIPE_IMAGE_SHA256': spec['image_sha256']}
+                  'RECIPE_IMAGE_DIGEST': spec['image_digest']}
           assert re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', pins['GINUX_REPOSITORY'])
           assert re.fullmatch(r'[0-9a-f]{40}', pins['GINUX_SOURCE_SHA'])
-          assert re.fullmatch(r'[0-9a-f]{64}', pins['RECIPE_IMAGE_SHA256'])
+          assert re.fullmatch(r'[0-9a-f]{64}', pins['RECIPE_IMAGE_DIGEST'])
           with open(os.environ['GITHUB_ENV'], 'a') as output:
               for name, value in pins.items():
                   output.write(f'{name}={value}\n')
@@ -65,14 +66,31 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential git curl erofs-utils rpm2cpio rpm jq ripgrep xz-utils bzip2 pkg-config libssl-dev
           rustup toolchain install 1.99.0 --profile minimal --component clippy --component rustfmt
-          rustup target add --toolchain 1.99.0 x86_64-unknown-linux-gnu
-      - name: Build selected launcher
+          rustup target add --toolchain 1.99.0 x86_64-unknown-linux-gnu x86_64-unknown-linux-musl
+      - name: Build and install the selected Ginux tools
         working-directory: .artifacts/ginux-source
         run: |
           test "$(git rev-parse HEAD)" = "$GINUX_SOURCE_SHA"
-          # Only the launcher: `make build` also builds Ginux's operator CLI,
-          # which Recipe does not use and which needs a second Rust target.
+          # As distro-builder builds them (recipe::ginux::tools): the runtime
+          # freestanding (the checkout's target flags), the ginux CLI and image
+          # tool static musl, the allocator for the host.
           cargo build -p ginux-init --bin ginux --release --target x86_64-unknown-linux-gnu
+          RUSTFLAGS='' CC_x86_64_unknown_linux_musl=gcc cargo build --release --target-dir target/host \
+            -p ginux-cli -p ginux-oci --target x86_64-unknown-linux-musl
+          RUSTFLAGS='' cargo build --release --target-dir target/host -p ginux-allocator
+          tools="$GITHUB_WORKSPACE/.artifacts/managed-ci/ginux"
+          mkdir -p "$tools"
+          install -m 0755 target/host/x86_64-unknown-linux-musl/release/ginux-cli "$tools/ginux-cli"
+          install -m 0755 scripts/ginux-host-instance-helper.sh "$tools/ginux-helper"
+          install -m 0755 target/host/x86_64-unknown-linux-musl/release/ginux-oci "$tools/ginux-image"
+          install -m 0755 target/x86_64-unknown-linux-gnu/release/ginux "$tools/ginux-runtime"
+          install -m 0755 target/host/release/libginux_allocator.so "$tools/libginux_allocator.so"
+          # The helper runs as root through sudo and finds its tools only at
+          # these paths; root-owned, writable by nobody else.
+          sudo install -D -o root -g root -m 0755 "$tools/ginux-helper" /usr/libexec/ginux/ginux-helper
+          sudo install -D -o root -g root -m 0755 "$tools/ginux-image" /usr/libexec/ginux/ginux-image
+          sudo install -D -o root -g root -m 0755 "$tools/ginux-runtime" /usr/libexec/ginux/ginux-runtime
+          sudo install -D -o root -g root -m 0755 "$tools/libginux_allocator.so" /usr/lib64/ginux/libginux_allocator.so
       - name: Produce pinned C/runtime image from public inputs
         run: |
           mkdir -p .artifacts/managed-ci
@@ -91,9 +109,9 @@ jobs:
         run: |
           sudo python3 scripts/managed-integration.py \
             --build-json .artifacts/managed-ci/build.json \
-            --ginux .artifacts/ginux-source/target/x86_64-unknown-linux-gnu/release/ginux \
+            --ginux-dir .artifacts/managed-ci/ginux \
             --ginux-source "$GINUX_SOURCE_SHA" \
-            --image .artifacts/managed-ci/image/rootfs.tar --image-sha256 "$RECIPE_IMAGE_SHA256" \
+            --image .artifacts/managed-ci/image/image.oci.tar --image-digest "$RECIPE_IMAGE_DIGEST" \
             --output .artifacts/managed-ci/results
       - uses: actions/upload-artifact@v7
         if: always()
