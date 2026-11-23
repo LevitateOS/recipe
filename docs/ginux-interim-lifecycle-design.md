@@ -637,3 +637,27 @@ Hand-offs: WP3 → WP2 the dependency commit (before WP2 compiles); WP3/WP4 → 
 - **Q12. Should private roots share one `cache/oci`?** Recommend no (each state root has its own),
   which keeps `materialize` untouched and avoids cross-root cache writers; importing the same image
   into several roots costs disk once per root.
+
+## 7. Addendum: `inject` (added 2026-11-23)
+
+The mirror of `extract` (decision D7 of `docs/ginux-public-lifecycle-migration.md`): a tar goes
+into a stopped instance root.
+
+- Helper grammar: `inject NAME --max-bytes N --max-members N --max-path N PATH` (tar on stdin).
+- Image tool: `ginux-image inject-tree ROOT MAX_BYTES MAX_MEMBERS MAX_PATH PATH`.
+- CLI: `ginux inject NAME --input FILE --into PATH [--max-bytes N] [--max-members N] [--max-path N]`
+  (defaults as `extract`).
+- Exit codes: 0/64/65/66/69/70/73/74/75/76 as in section 1.6 (65 also for a conflict with an
+  existing path; 76 also for the retained-name-memory bound).
+- Rules: the tar is read with the caller's rights and written below PATH of a STOPPED instance
+  root, creating PATH and missing parents. Only regular files, directories and symlinks. Never
+  overwrites: an existing path is a conflict (65), except that an existing real directory is
+  accepted and left completely untouched. Every component goes through `openat2`
+  beneath/no-symlinks. Privileges are dropped to uid 65534 first. Setuid bits are cleared. Member
+  names must be relative without a leading `./` (a producer must not use `tar -C dir .`). Bounds on
+  bytes, members, path length, depth and retained name memory (76). Data after the end-of-archive
+  marker must be zero. NOT atomic: on failure the instance is deleted and recreated. The injector
+  holds the per-instance lock until it exits.
+- The review findings (existing directories untouched, name-memory budget, trailing zero bytes,
+  `openat2` probe before the first write, lock held through `exec`) are part of the committed
+  behaviour.

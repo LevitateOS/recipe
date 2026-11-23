@@ -600,12 +600,36 @@ outcome with `status --format json`; a process that can signal uid 65534 can
 stall an export that holds the instance lock; the end-to-end tests rely on
 fixture behaviour that was only read, not run.
 
-**A gap Stage 3 does not cover (Stage 4 prerequisite).** Nothing in the public
-lifecycle puts files INTO an instance. Recipe's worker binary, the request
-file and the staged inputs (`/inputs/...`) have to reach the instance root, but
-`volumes` are not served (N12/U7), the state root must be root-owned (so
-Recipe, running unprivileged, cannot write into `instances/NAME/root`), and no
-helper verb copies files in. This is decision D7 in section 7.
+**Stage 3 addendum: `inject` (D7, 2026-11-23).** Written and committed in the
+fork as `aa403109` (image tool `inject-tree`), `4911e52c` (helper verb) and
+`8f4d53ba` (CLI `ginux inject NAME --input FILE --into PATH`), on top of
+`3e3e81f3`; not pushed. It is the mirror of `extract`. Behaviour: a tar read
+with the caller's rights is written below a directory of a STOPPED instance
+root, creating the directory and missing parents; only regular files,
+directories and symlinks; never overwrites (an existing path is a conflict,
+exit 65, except that an existing real directory is accepted and left completely
+untouched); every component goes through `openat2` beneath/no-symlinks;
+privileges are dropped to uid 65534 first; setuid bits are cleared; member
+names must be relative without a leading `./` (so a producer must not use
+`tar -C dir .`); bounds on bytes, members, path length, depth and retained name
+memory (exit 76); data after the end-of-archive marker must be zero. It is NOT
+atomic: on failure the instance is deleted and recreated. The injector holds
+the per-instance lock until it exits. Verified like the rest (Rust unit tests:
+`ginux-cli` 34, `ginux-oci` 52; clippy; fmt; inventory scripts; `test-cli.sh`;
+an independent security review whose findings were fixed). NOT run: the root
+end-to-end script `scripts/test-public-lifecycle.py` (it now has inject cases,
+including through the CLI). What Stage 4 must do with it: stage the worker
+binary, the request file and the inputs as one tar with relative names and
+inject it at `/` (or `/inputs`) of a created instance before `start --wait`,
+then `extract` the result path.
+
+**A gap Stage 3 did not cover, now covered by `inject` (Stage 4 prerequisite).**
+Nothing in the public lifecycle puts files INTO an instance. Recipe's worker
+binary, the request file and the staged inputs (`/inputs/...`) have to reach
+the instance root, but `volumes` are not served (N12/U7), the state root must
+be root-owned (so Recipe, running unprivileged, cannot write into
+`instances/NAME/root`), and no helper verb copied files in. This was decision
+D7 in section 7, decided 2026-11-23: the interim fork verb `inject` (above).
 
 **Stage 4 — the cutover (one change set).** When every need Recipe depends on
 is available through the public lifecycle, whether from upstream or from
@@ -680,13 +704,14 @@ the public lifecycle.
   `/var/lib/ginux` reached through `sudo` is not what a standalone user
   install should need.
 - **D7. How do Recipe's worker, request file and staged inputs get into an
-  instance?** OPEN (found 2026-11-23, Stage 4 prerequisite). The public
-  lifecycle has no way to put files into an instance (see the gap in section
-  6). Options: (a) an interim fork verb that injects a tar of inputs into a
-  created instance, the mirror of `extract`; (b) wrap the inputs as an extra
-  layer of the imported image layout (works with `import-image`, but copies the
-  inputs on every run); (c) wait for U7 (volumes). No recommendation beyond
-  that (a) is the smallest and mirrors `extract`.
+  instance?** DECIDED 2026-11-23 by the owner: option (a), an interim fork verb
+  `inject` (the mirror of `extract`), written and committed in the fork (see
+  the Stage 3 addendum in section 6). The public lifecycle has no way to put
+  files into an instance. Options were: (a) an interim fork verb that injects a
+  tar of inputs into a created instance, the mirror of `extract`; (b) wrap the
+  inputs as an extra layer of the imported image layout (works with
+  `import-image`, but copies the inputs on every run); (c) wait for U7
+  (volumes). (a) was the smallest and mirrors `extract`.
 
 ## 8. Risks
 
