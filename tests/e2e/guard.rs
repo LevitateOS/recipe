@@ -6,8 +6,9 @@
 //! - the config cases run the REAL `recipe install --execution ginux` up to
 //!   the point where it hands its rendered instance config to `ginux validate
 //!   FILE`; a stand-in `ginux` CLI (a shell script named by `RECIPE_GINUX`)
-//!   keeps a copy of that file and fails, so the text under test is exactly
-//!   what Recipe imports. They then run the guard's dry run
+//!   answers the declaration-only contract check before it with the pinned
+//!   digest, keeps a copy of the run's config and fails, so the text under
+//!   test is exactly what Recipe imports. They then run the guard's dry run
 //!   `recipe-ginux-guard --check-config FILE` (exit 0 accepts, 65 refuses)
 //!   on it and on mutated copies;
 //! - the image allowlist cases run `--check-config --image-allowlist LIST
@@ -47,7 +48,14 @@ fn guard_bin() -> std::path::PathBuf {
 }
 
 /// The config text Recipe renders for a recipe that starts a program, as the
-/// real binary hands it to `ginux validate`.
+/// real binary hands it to `ginux validate` for the run.
+///
+/// Recipe validates two configs: first the declaration-only contract of each
+/// recipe (`instance.id = "recipe-contract"`, `contract::inspection_config`),
+/// then the run's own config. The stand-in answers the first as Ginux would,
+/// with the build-base digest Recipe pins, and keeps a copy of the second.
+/// The pinned digest is read from Recipe itself: a first run answers with a
+/// digest no pin has and Recipe's refusal names the one it expects.
 fn rendered_config(dir: &Path, recipes: &Path) -> String {
     write_recipe(
         recipes,
@@ -62,35 +70,54 @@ fn rendered_config(dir: &Path, recipes: &Path) -> String {
          while [ \"$#\" -gt 0 ]; do\n\
          \tcase \"$1\" in --state-root|--run-root) shift 2 ;; *) break ;; esac\n\
          done\n\
+         if [ \"$1\" = validate ] && grep -qx 'id = \"recipe-contract\"' \"$2\"; then\n\
+         \techo \"Contract valid: digest=$GUARD_TEST_DIGEST\"\n\
+         \texit 0\n\
+         fi\n\
          if [ \"$1\" = validate ] && [ ! -e \"$GUARD_TEST_CAPTURE\" ]; then cp \"$2\" \"$GUARD_TEST_CAPTURE\"; fi\n\
          echo 'stand-in ginux: refusing every verb' >&2\n\
          exit 1\n",
     )
     .unwrap();
     std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let output = host_command(recipes)
-        .env("RECIPE_GINUX", &cli)
-        .env("RECIPE_IMAGE", MANIFEST)
-        .env_remove("RECIPE_IMAGE_LAYOUT")
-        .env_remove("RECIPE_MINIMAL_IMAGE")
-        .env("GUARD_TEST_CAPTURE", &capture)
-        .args([
-            "install",
-            "guarded",
-            "--execution",
-            "ginux",
-            "--recipes-path",
-        ])
-        .arg(recipes)
-        .output()
-        .unwrap();
-    // The stand-in refuses the run: that is how the test stops before any instance.
-    assert!(!output.status.success());
+    let run = |digest: &str| {
+        let output = host_command(recipes)
+            .env("RECIPE_GINUX", &cli)
+            .env("RECIPE_IMAGE", MANIFEST)
+            .env_remove("RECIPE_IMAGE_LAYOUT")
+            .env_remove("RECIPE_MINIMAL_IMAGE")
+            .env("GUARD_TEST_CAPTURE", &capture)
+            .env("GUARD_TEST_DIGEST", digest)
+            .args([
+                "install",
+                "guarded",
+                "--execution",
+                "ginux",
+                "--recipes-path",
+            ])
+            .arg(recipes)
+            .output()
+            .unwrap();
+        // The stand-in refuses the run: that is how the test stops before any instance.
+        assert!(!output.status.success());
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    };
+    let unknown = "0".repeat(64);
+    let stderr = run(&unknown);
+    let pinned = stderr
+        .split_once("build-base digest changed: expected ")
+        .and_then(|(_, rest)| rest.split_once(&format!(", got {unknown}")))
+        .map(|(expected, _)| expected.to_owned())
+        .unwrap_or_else(|| {
+            panic!("Recipe did not name its pinned build-base digest; stderr:\n{stderr}")
+        });
+    assert!(
+        !capture.exists(),
+        "Recipe validated a run config with an unpinned contract"
+    );
+    let stderr = run(&pinned);
     std::fs::read_to_string(&capture).unwrap_or_else(|error| {
-        panic!(
-            "Recipe never passed a config to `ginux validate` ({error}); stderr:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        )
+        panic!("Recipe never passed a run config to `ginux validate` ({error}); stderr:\n{stderr}")
     })
 }
 

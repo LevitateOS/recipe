@@ -785,19 +785,25 @@ pub(crate) fn reap_launcher(child: &mut Child, mut deadline: Instant) -> Result<
 }
 
 /// The line `ginux start --wait --stream-console` writes to its standard
-/// error, after everything else, before the audit log's tail on a non-zero
-/// outcome: `ginux: audit log (last N bytes):`.
+/// error, after everything else, before the audit log's tail and the
+/// supervisor's summary lines (its exit status, the runtime command's, the
+/// state of the runtime's outcome record) on a non-zero outcome:
+/// `ginux: audit log (last N bytes):`.
 const AUDIT_MARKER: (&[u8], &[u8]) = (b"ginux: audit log (last ", b" bytes):");
 
 /// Split the drained standard error of `ginux start --wait --stream-console`
 /// (`cli_log`, written by [`spawn_stderr_drain`]) at the audit marker
 /// ([`AUDIT_MARKER`], the last such line): what follows it (the tail of the
-/// instance's audit log: the worker's standard error and the runtime's audit
-/// lines) goes to `supervisor_log` followed by `extra` (the console's
-/// runtime lines) within the retention cap, and `cli_log` keeps what
-/// precedes it. Returns the supervisor log with its tail for failure
-/// messages, and the tail of the CLI's own text. Without a marker (a clean
-/// outcome, or a CLI that died first) the supervisor log holds only `extra`.
+/// instance's audit log: the worker's standard error, the runtime's audit
+/// lines and the supervisor's own errors, then the supervisor's summary)
+/// goes to `supervisor_log` followed by `extra` (the console's runtime
+/// lines) within the retention cap, and `cli_log` keeps what precedes it.
+/// Returns the supervisor log with its tail for failure messages, and the
+/// tail of the CLI's own text. Without a marker (a clean outcome, or a CLI
+/// that died first) the supervisor log holds only `extra`. The tail (read
+/// only after a failed run) says when there was no marker or nothing after
+/// it, and ends with the console's runtime lines, which tell whether the
+/// runtime started.
 pub(crate) fn split_cli_log(
     cli_log: &Path,
     supervisor_log: &Path,
@@ -842,12 +848,24 @@ pub(crate) fn split_cli_log(
             .trim()
             .to_owned()
     };
+    let mut failure_tail = match marker {
+        None => {
+            "ginux start printed no audit log (no marker line on its standard error)".to_owned()
+        }
+        Some(_) if tail(audit).is_empty() => "the instance's audit log is empty".to_owned(),
+        Some(_) => tail(audit),
+    };
+    let console = tail(extra);
+    if !console.is_empty() {
+        failure_tail.push_str("\n[console] ");
+        failure_tail.push_str(&console);
+    }
     let total = (audit.len() + extra.len()) as u64;
     (
         DrainedLog {
             total_bytes: total,
             discarded_bytes: total.saturating_sub(retained),
-            tail: tail(audit),
+            tail: failure_tail,
         },
         tail(cli),
     )

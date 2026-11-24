@@ -59,12 +59,9 @@ use super::worker_io::{self, DrainedLog, SHUTDOWN_GRACE, exit_message};
 use crate::failure::Category;
 use crate::ginux::{Ginux, Outcome, OutcomeRecord, exit};
 use crate::inputs::PreparedInvocation;
+use crate::invocation_log::{CLI_LOG, INSTANCE_RECORD};
 use crate::worker::records::{WorkerRequest, WorkerResult};
 
-/// The `ginux start --wait` standard error, beside the invocation's logs.
-const CLI_LOG: &str = "ginux-cli.log";
-/// The instance name of the invocation, beside its logs.
-const INSTANCE_RECORD: &str = "instance.json";
 /// The directories extracted after a run.
 const EXTRACTED: [&str; 2] = [crate::domain::WORK, crate::domain::OUT];
 /// Slack on the injection bounds over what the tar holds.

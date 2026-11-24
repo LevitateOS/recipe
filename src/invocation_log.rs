@@ -24,12 +24,25 @@ pub(crate) const WORKER_LOG: &str = "worker.log";
 /// The instance's `audit.log` (the worker's standard error and the runtime's
 /// audit lines), kept after the run. The CLI's own stderr is `ginux-cli.log`.
 pub(crate) const SUPERVISOR_LOG: &str = "supervisor-stderr.log";
+/// The standard error of `ginux start --wait --stream-console`, without the
+/// audit tail (`crate::launch::worker_io::split_cli_log`).
+pub(crate) const CLI_LOG: &str = "ginux-cli.log";
+/// The name of the Ginux instance the invocation ran in.
+pub(crate) const INSTANCE_RECORD: &str = "instance.json";
 /// The declaration, effective constraints and contract the invocation ran under.
 const AUTHORITY: &str = "authority.json";
 /// Format version of [`AUTHORITY`].
 const AUTHORITY_VERSION: u64 = 1;
 /// Files an invocation directory may contain.
-const FILES: [&str; 5] = [LEASE, RESULT, WORKER_LOG, SUPERVISOR_LOG, AUTHORITY];
+const FILES: [&str; 7] = [
+    LEASE,
+    RESULT,
+    WORKER_LOG,
+    SUPERVISOR_LOG,
+    CLI_LOG,
+    INSTANCE_RECORD,
+    AUTHORITY,
+];
 /// Inactive invocation directories kept, including the one being created.
 const RETAINED_INVOCATIONS: usize = 32;
 /// Largest `result.json` or `authority.json`.
