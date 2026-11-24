@@ -39,12 +39,6 @@ impl Pins {
     }
 }
 
-/// Stands where a digest is not derived yet. No Ginux reports it, so every
-/// validation fails, naming the digest Ginux did report
-/// ([`validate`]); `docs/ginux-cutover-design.md`, section 6, derives the
-/// real values with a built Ginux CLI and writes them into the row.
-pub const PLACEHOLDER_DIGEST: &str = "PLACEHOLDER-DERIVE-IN-VERIFICATION";
-
 impl RuntimeKind {
     /// The pins table: one row per runtime kind, the only place the values
     /// are written. Every reader goes through it.
@@ -56,12 +50,18 @@ impl RuntimeKind {
             // declaration-only configs ([`inspection_config`]); the review is recorded here.
             // Public-lifecycle cutover (LevitateOS/ginux 8f4d53ba): catalog 1002 → 2; the
             // configured operations lstat, readv, pipe, nanosleep, sendfile, link and
-            // rt_sigpending are not in catalog 2; selectors unchanged; both digests change
-            // and are not derived yet (docs/ginux-cutover-design.md, section 6).
+            // rt_sigpending are not in catalog 2; selectors unchanged; both digests change.
+            // Derived for catalog 2 against LevitateOS/ginux 5ca4e54b (docs/ginux-cutover-design.md,
+            // section 6), twice and independently with the same results: Recipe's
+            // managed-integration CI run 45298702489 (Ginux 5ca4e54b, Recipe 66d046f), whose
+            // "build-base digest changed" error reported the offline digest for 91 cases and the
+            // network digest for 9, and a by-hand render of `inspection_config` against Ginux
+            // 1dd255ac (same contract code) validated with both `ginux validate` and
+            // `instance-validate`. Port lists do not change the digest.
             RuntimeKind::PublicLifecycle => &Pins {
                 catalog: 2,
-                base_digest_network: PLACEHOLDER_DIGEST,
-                base_digest_offline: PLACEHOLDER_DIGEST,
+                base_digest_network: "5c382b108027c3f9c3c2aaa371f4a1f5fad3e2bd60b2a33102a878cfcf4fe12d",
+                base_digest_offline: "a52529e93a62357d55d955628eecc5e15feb91802e6f2645ace20dfde11056a9",
             },
         }
     }
@@ -438,15 +438,9 @@ pub(crate) fn validate(
     let expected = pins.base_digest(network);
     ensure!(
         digest == expected,
-        "Ginux catalog-{} build-base digest changed: expected {expected}, got {digest}; {}",
+        "Ginux catalog-{} build-base digest changed: expected {expected}, got {digest}; \
+         review the catalog and derived grants explicitly",
         pins.catalog,
-        if expected == PLACEHOLDER_DIGEST {
-            "the public-lifecycle digests are not derived yet: derive both as \
-             docs/ginux-cutover-design.md, section 6, says and write them into \
-             RuntimeKind::PublicLifecycle (src/needs/contract.rs)"
-        } else {
-            "review the catalog and derived grants explicitly"
-        }
     );
     Ok(Receipt {
         catalog: pins.catalog,

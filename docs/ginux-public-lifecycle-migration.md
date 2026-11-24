@@ -691,9 +691,9 @@ and the OS builder still pass images through that code. Next step: fix in the
 fork, report upstream. There are also no per-uid instance, disk or cache caps,
 and the byte, extract and free-space bounds are Recipe's, enforced in the
 client, so a member who calls the guard directly bypasses them. The catalog
-(2) and both build-base digests in `RuntimeKind::PublicLifecycle` are
-**placeholders** (`PLACEHOLDER-DERIVE-IN-VERIFICATION`): every Ginux validation
-fails by design until they are derived. What must happen in verification, in
+(2) and both build-base digests in `RuntimeKind::PublicLifecycle` are derived
+(Ginux 5ca4e54b; network `5c382b10...`, offline `a52529e9...`; the review note
+sits above the pins row). The steps below record how they were derived, in
 this order (design section 6, then the single pass):
 
 1. Derive the catalog and the two digests with a built fork binary (`cargo build
