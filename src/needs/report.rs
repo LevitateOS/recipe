@@ -282,6 +282,40 @@ pub(crate) fn host_network_usage(
     })
 }
 
+/// The report of a Ginux run whose worker gave its account. A recipe runs in
+/// Ginux because it can start programs (`crate::execution`), and a program
+/// can use a granted endpoint without the worker seeing it: the domain admits
+/// any address on a granted port and audits no destination. An endpoint
+/// Recipe's own downloads reached is known used; one they did not reach is
+/// unobserved (`attempted` null), never unused, and then the account as a
+/// whole is `unobserved`, not complete.
+pub(crate) fn domain_network_usage(
+    host_endpoints: &BTreeMap<String, Vec<String>>,
+    usage: &BTreeMap<String, crate::helpers::acquire::net::EndpointUse>,
+) -> serde_json::Value {
+    let report = host_network_usage(host_endpoints, usage);
+    let endpoints = report["endpoints"].as_array().cloned().unwrap_or_default();
+    if endpoints
+        .iter()
+        .all(|endpoint| endpoint["attempted"] == true)
+    {
+        return report;
+    }
+    let endpoints = endpoints
+        .into_iter()
+        .map(|mut endpoint| {
+            if endpoint["attempted"] != true {
+                endpoint["attempted"] = serde_json::Value::Null;
+                endpoint["connected"] = serde_json::Value::Null;
+            }
+            endpoint
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({"status":"unobserved",
+        "reason":"programs the recipe starts are not counted; an endpoint Recipe's own downloads did not reach may have been used by one",
+        "endpoints":endpoints,"warnings":[]})
+}
+
 /// `network_usage` for a complete account: per declared endpoint, whether it
 /// was attempted and whether it connected; unused endpoints are warnings.
 fn usage_report(

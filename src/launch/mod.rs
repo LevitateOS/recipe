@@ -154,7 +154,7 @@ pub(crate) fn recorded(
             .and_then(|summary| summary.get("network_usage"))
             .cloned()
             .unwrap_or_else(|| match &report.result.network_usage {
-                Some(usage) => crate::needs::report::host_network_usage(
+                Some(usage) => crate::needs::report::domain_network_usage(
                     &prepared.network.host_endpoints,
                     usage,
                 ),
@@ -266,10 +266,11 @@ fn run_domain_inner(
     let mut summary = None;
     if outcome.result.ok {
         // Recipe's own downloads are counted by the worker; nothing else
-        // in the domain is observed (no network audit on this path).
+        // in the domain is observed (no network audit on this path), so an
+        // endpoint they did not reach is unobserved, not unused.
         let usage = match &outcome.result.network_usage {
             Some(usage) => {
-                crate::needs::report::host_network_usage(&prepared.network.host_endpoints, usage)
+                crate::needs::report::domain_network_usage(&prepared.network.host_endpoints, usage)
             }
             None => crate::needs::report::network_usage(&prepared.network.host_endpoints),
         };

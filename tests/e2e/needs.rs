@@ -241,10 +241,11 @@ fn build(src, out) {
     assert_eq!(lines[0], "payload=dependency network product", "{report}");
     assert_eq!(lines[1], "asset=explicit child binding", "{report}");
     assert_ne!(lines[2], "denied=0", "{report}");
-    // The leaf's `curl` is a program Ginux ran, not Recipe's own HTTP client:
-    // its connection is not counted (usage is what the worker observed), so
-    // the report does not claim a complete observation of it.
-    assert_ne!(value["network_usage"]["status"], "complete");
+    // The printed result is the parent's run, which has no grant: there is no
+    // endpoint to account for, so its account is complete and empty (its own
+    // curl was refused, `denied` above). The leaf's usage is in its log below.
+    assert_eq!(value["network_usage"]["status"], "complete", "{value}");
+    assert_eq!(value["network_usage"]["endpoints"], serde_json::json!([]));
     assert_eq!(value["dependencies"].as_array().unwrap().len(), 1);
     assert_eq!(value["dependencies"][0]["name"], "leaf");
     let logs = dir.path().join("state/recipe/logs");
@@ -269,9 +270,14 @@ fn build(src, out) {
             parent_log = Some(entry.path());
         } else {
             child_seen = true;
-            // The grant exists; whether usage is reported depends on who used it
-            // (see the note at the top of this file), so only a denial is wrong.
-            assert_ne!(result["network_usage"]["status"], "denied");
+            // The leaf's `curl` is a program Ginux ran, not Recipe's own HTTP
+            // client: the worker did not count its connection, so the report
+            // must neither claim a complete observation nor call the endpoint
+            // it used unused (`domain_network_usage`).
+            let usage = &result["network_usage"];
+            assert_eq!(usage["status"], "unobserved", "{usage}");
+            assert!(usage["endpoints"][0]["attempted"].is_null(), "{usage}");
+            assert_eq!(usage["warnings"], serde_json::json!([]), "{usage}");
         }
     }
     assert!(child_seen);
@@ -816,19 +822,30 @@ fn build(src, out) {{ {body} }}
         {
             continue;
         }
-        // The retained supervisor log is the instance's audit log: the native
-        // runtime's `GINUX_NATIVE_AUDIT:` lines (operation, policy source and
-        // rule) record the denied connect of a grant-less run. Recipe's
-        // offline contract denies `syscall.connect` by name
-        // (`Contract::derived`), and Ginux reports a call that both an
-        // explicit syscall deny and the default deny of
-        // `network.inet.tcp.connect` refuse under the explicit rule
-        // (`EffectiveContract::runtime_rule`), so the source is `exact-deny`.
+        // The retained supervisor log is the instance's audit log: one
+        // `GINUX_NATIVE_AUDIT:` line per mediated call, with its operation and
+        // the `action` the runtime took. A grant-less run's curl is refused
+        // before it can connect: the instance is configured with
+        // `[network] backend = "none"`, so Ginux has no network backend to
+        // mediate `socket()` through and denies it (ENOSYS) as an
+        // implementation decision. The contract itself admits the call —
+        // `syscall.*` in `Contract::derived`'s allow list matches
+        // `syscall.socket`, hence `policy-source=exact-allow` on a line whose
+        // `action=deny` — and only `syscall.connect` is denied by name, which
+        // a curl without a socket never reaches. The policy source therefore
+        // says which rule matched, not who refused; the assertion requires
+        // what matters: a network socket or connect call of this run that the
+        // runtime denied. A run that attempted no network call records
+        // neither and fails here.
         let audit = std::fs::read_to_string(entry.path().join("supervisor-stderr.log")).unwrap();
         assert!(
-            audit.lines().any(|line| line.contains("GINUX_NATIVE_AUDIT")
-                && line.contains(" operation=syscall.connect policy-source=exact-deny ")),
-            "no actual connect denial recorded: {audit}"
+            audit
+                .lines()
+                .any(|line| line.contains("GINUX_NATIVE_AUDIT:")
+                    && (line.contains(" operation=syscall.socket ")
+                        || line.contains(" operation=syscall.connect "))
+                    && line.contains(" action=deny ")),
+            "no denied network socket or connect call recorded: {audit}"
         );
     }
 }
