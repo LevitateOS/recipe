@@ -224,23 +224,23 @@ relative `packages/` path and verify its manifest SHA-256 before composition.
 
 | Input | Source |
 | --- | --- |
-| `cpp-14.3.1-4.4.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/c/cpp-14.3.1-4.4.el10.x86_64.rpm) |
-| `gcc-14.3.1-4.4.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/g/gcc-14.3.1-4.4.el10.x86_64.rpm) |
-| `glibc-devel-2.39-145.el10_2.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/g/glibc-devel-2.39-145.el10_2.x86_64.rpm) |
-| `kernel-headers-6.12.0-211.73.1.el10_2.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/k/kernel-headers-6.12.0-211.73.1.el10_2.x86_64.rpm) |
-| `libmpc-1.3.1-7.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/l/libmpc-1.3.1-7.el10.x86_64.rpm) |
-| `make-4.4.1-9.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/m/make-4.4.1-9.el10.x86_64.rpm) |
-| `diffutils-3.10-8.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/d/diffutils-3.10-8.el10.x86_64.rpm) |
-| `libpkgconf-2.1.0-3.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/l/libpkgconf-2.1.0-3.el10.x86_64.rpm) |
-| `pkgconf-2.1.0-3.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/p/pkgconf-2.1.0-3.el10.x86_64.rpm) |
-| `pkgconf-m4-2.1.0-3.el10.noarch.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/p/pkgconf-m4-2.1.0-3.el10.noarch.rpm) |
-| `pkgconf-pkg-config-2.1.0-3.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/p/pkgconf-pkg-config-2.1.0-3.el10.x86_64.rpm) |
-| `git-core-2.52.0-1.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/g/git-core-2.52.0-1.el10.x86_64.rpm) |
-| `cpio-2.15-3.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/BaseOS/x86_64/os/Packages/c/cpio-2.15-3.el10.x86_64.rpm) |
-| `libburn-1.5.6-6.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/l/libburn-1.5.6-6.el10.x86_64.rpm) |
-| `libisoburn-1.5.6-6.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/l/libisoburn-1.5.6-6.el10.x86_64.rpm) |
-| `libisofs-1.5.6-6.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/l/libisofs-1.5.6-6.el10.x86_64.rpm) |
-| `xorriso-1.5.6-6.el10.x86_64.rpm` | [official RPM](https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/x/xorriso-1.5.6-6.el10.x86_64.rpm) |
+| `cpp-14.3.1-4.4.el10.x86_64.rpm` | [official RPM](https://dl.rockylinux.org/vault/rocky/10.2/AppStream/x86_64/os/Packages/c/cpp-14.3.1-4.4.el10.x86_64.rpm) |
+| `gcc-14.3.1-4.4.el10.x86_64.rpm` | [official RPM](https://dl.rockylinux.org/vault/rocky/10.2/AppStream/x86_64/os/Packages/g/gcc-14.3.1-4.4.el10.x86_64.rpm) |
+| `glibc-devel-2.39-145.el10_2.x86_64.rpm` | [official RPM](https://dl.rockylinux.org/vault/rocky/10.2/AppStream/x86_64/os/Packages/g/glibc-devel-2.39-145.el10_2.x86_64.rpm) |
+| `kernel-headers-6.12.0-211.73.1.el10_2.x86_64.rpm` | [official RPM](https://dl.rockylinux.org/vault/rocky/10.2/AppStream/x86_64/os/Packages/k/kernel-headers-6.12.0-211.73.1.el10_2.x86_64.rpm) |
+| `libmpc-1.3.1-7.el10.x86_64.rpm` | [official RPM](https://dl.rockylinux.org/vault/rocky/10.2/AppStream/x86_64/os/Packages/l/libmpc-1.3.1-7.el10.x86_64.rpm) |
+| `make-4.4.1-9.el10.x86_64.rpm` | [official RPM](https://dl.rockylinux.org/vault/rocky/10.2/BaseOS/x86_64/os/Packages/m/make-4.4.1-9.el10.x86_64.rpm) |
+| `diffutils-3.10-8.el10.x86_64.rpm` | [official RPM](https://dl.rockylinux.org/vault/rocky/10.2/BaseOS/x86_64/os/Packages/d/diffutils-3.10-8.el10.x86_64.rpm) |
+| `libpkgconf-2.1.0-3.el10.x86_64.rpm` | [official RPM](https://dl.rockylinux.org/vault/rocky/10.2/BaseOS/x86_64/os/Packages/l/libpkgconf-2.1.0-3.el10.x86_64.rpm) |
+| `pkgconf-2.1.0-3.el10.x86_64.rpm` | [official RPM](https://dl.rockylinux.org/vault/rocky/10.2/BaseOS/x86_64/os/Packages/p/pkgconf-2.1.0-3.el10.x86_64.rpm) |
+| `pkgconf-m4-2.1.0-3.el10.noarch.rpm` | [official RPM](https://dl.rockylinux.org/vault/rocky/10.2/BaseOS/x86_64/os/Packages/p/pkgconf-m4-2.1.0-3.el10.noarch.rpm) |
+| `pkgconf-pkg-config-2.1.0-3.el10.x86_64.rpm` | [official RPM](https://dl.rockylinux.org/vault/rocky/10.2/BaseOS/x86_64/os/Packages/p/pkgconf-pkg-config-2.1.0-3.el10.x86_64.rpm) |
+| `git-core-2.52.0-1.el10.x86_64.rpm` | [official RPM](https://dl.rockylinux.org/vault/rocky/10.2/AppStream/x86_64/os/Packages/g/git-core-2.52.0-1.el10.x86_64.rpm) |
+| `cpio-2.15-3.el10.x86_64.rpm` | [official RPM](https://dl.rockylinux.org/vault/rocky/10.2/BaseOS/x86_64/os/Packages/c/cpio-2.15-3.el10.x86_64.rpm) |
+| `libburn-1.5.6-6.el10.x86_64.rpm` | [official RPM](https://dl.rockylinux.org/vault/rocky/10.2/AppStream/x86_64/os/Packages/l/libburn-1.5.6-6.el10.x86_64.rpm) |
+| `libisoburn-1.5.6-6.el10.x86_64.rpm` | [official RPM](https://dl.rockylinux.org/vault/rocky/10.2/AppStream/x86_64/os/Packages/l/libisoburn-1.5.6-6.el10.x86_64.rpm) |
+| `libisofs-1.5.6-6.el10.x86_64.rpm` | [official RPM](https://dl.rockylinux.org/vault/rocky/10.2/AppStream/x86_64/os/Packages/l/libisofs-1.5.6-6.el10.x86_64.rpm) |
+| `xorriso-1.5.6-6.el10.x86_64.rpm` | [official RPM](https://dl.rockylinux.org/vault/rocky/10.2/AppStream/x86_64/os/Packages/x/xorriso-1.5.6-6.el10.x86_64.rpm) |
 
 With the exact inputs present, run from the workspace root:
 
