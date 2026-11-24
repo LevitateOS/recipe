@@ -33,7 +33,8 @@ pub(crate) struct Injected {
 /// instance root without a leading `./`, every name once, parents first.
 ///
 /// - `inputs/`: every staged input (directories 0555, files with their mode
-///   plus read for everyone, a hard link as a copy of its target, symlinks
+///   without write bits plus read for everyone, a hard link as a copy of its
+///   target, symlinks
 ///   last), the input-modes manifest, the request file, the worker (0555);
 /// - `inputs/.recipe-offline-cache/sha256/<hex>`: the offline cache's files
 ///   for the recipe's declared pins (`SOURCES` downloads and `PACKAGES`), when
@@ -79,7 +80,10 @@ pub(crate) fn inject_archive(
             InputKind::Symlink(_) => {} // After every ordinary path.
             InputKind::File | InputKind::Hardlink(_) => {
                 let (file, staged) = staged_copy(invocation, index)?;
-                archive.checked(&name, input.mode | 0o444, file, staged)?;
+                // Read-only in the instance: injected files belong to the
+                // workload's own host uid, so an owner write bit would let
+                // it change its inputs.
+                archive.checked(&name, (input.mode & !0o222) | 0o444, file, staged)?;
             }
         }
     }

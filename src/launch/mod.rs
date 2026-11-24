@@ -16,9 +16,9 @@
 //!   way into it.
 //! - [`worker_io`]: the coordinator's side of a running worker that both
 //!   runtimes share: its line records (a pipe on the host, the instance
-//!   console that `ginux start --wait --stream-console` passes to its
-//!   standard output in Ginux), its standard error log and the audit-log
-//!   tail, reaping, and reading its result file ([`crate::worker::records`]).
+//!   console that `ginux start --wait --stream-console --full-audit` passes
+//!   to its standard output in Ginux), its standard error log and the audit
+//!   log, reaping, and reading its result file ([`crate::worker::records`]).
 //!
 //! No path here evaluates recipe code on the host.
 

@@ -24,9 +24,10 @@
 //!   is created from the invocation's config, and the tar injected into its
 //!   root. From then on the instance is deleted however the run ends
 //!   (success, failure, cancellation, panic): [`Instance`]'s drop.
-//! - `ginux start NAME --wait --stream-console` runs in its own process
-//!   group, dies with the coordinator (`PDEATHSIG`; the helper then tears the
-//!   instance down), and its standard error is drained to `ginux-cli.log`.
+//! - `ginux start NAME --wait --stream-console --full-audit` runs in its own
+//!   process group, dies with the coordinator (`PDEATHSIG`; the helper then
+//!   tears the instance down), and its standard error is drained to
+//!   `ginux-cli.log`.
 //!   The worker's line records arrive on its standard output, the instance
 //!   console the helper copies there ([`super::worker_io::ConsoleStream`]),
 //!   under the stall, execution, free-space and cancellation rules of
@@ -36,9 +37,9 @@
 //!   own 1 s relay grace), then SIGKILL after [`SHUTDOWN_GRACE`].
 //! - After it exited: `status --format json` is the authority on how the run
 //!   ended; the CLI's exit code is recorded and checked against it, never
-//!   trusted alone. The instance directory is root-private: the tail of its
-//!   audit log (worker standard error, runtime audit), which the helper
-//!   appends to the CLI's standard error after a marker line on a non-zero
+//!   trusted alone. The instance directory is root-private: its audit log
+//!   (worker standard error, runtime audit; the last 16 MiB), which the
+//!   helper appends to the CLI's standard error after a marker line on every
 //!   outcome, becomes the invocation's supervisor log
 //!   ([`super::worker_io::split_cli_log`]).
 //! - Only a workload that exited has a result: `/work` and `/out` are
@@ -203,7 +204,7 @@ pub(crate) fn run(spec: LaunchSpec<'_>) -> Result<RunOutcome> {
         .spawn()
         .map_err(|error| {
             anyhow::Error::new(Category::Startup.error(format!(
-                "cannot run {} start {name} --wait --stream-console for invocation \
+                "cannot run {} start {name} --wait --stream-console --full-audit for invocation \
                  {invocation}: {error}",
                 ginux.cli().display()
             )))
@@ -212,7 +213,11 @@ pub(crate) fn run(spec: LaunchSpec<'_>) -> Result<RunOutcome> {
         .stderr
         .take()
         .context(Category::Startup.error("ginux start stderr was not piped"))?;
-    let cli_drain = worker_io::spawn_stderr_drain(stderr, diagnostics.file(CLI_LOG));
+    let cli_drain = worker_io::spawn_stderr_drain(
+        stderr,
+        diagnostics.file(CLI_LOG),
+        worker_io::CLI_LOG_CAP_BYTES,
+    );
     let stdout = child
         .stdout
         .take()
@@ -251,7 +256,7 @@ pub(crate) fn run(spec: LaunchSpec<'_>) -> Result<RunOutcome> {
     // the instance down). After end of stream it has exited already.
     let status = crate::ginux::stop_group(&mut child, SHUTDOWN_GRACE);
     let cli_exit = status.and_then(|status| status.code());
-    let _ = worker_io::join_drain(cli_drain);
+    let cli_drained = worker_io::join_drain(cli_drain);
     // Diagnostics are not fsynced (see `crate::invocation_log`).
     drop(worker_diagnostics);
 
@@ -279,6 +284,7 @@ pub(crate) fn run(spec: LaunchSpec<'_>) -> Result<RunOutcome> {
         &diagnostics.file(CLI_LOG),
         &diagnostics.file(crate::invocation_log::SUPERVISOR_LOG),
         console.runtime_text(),
+        &cli_drained,
     );
     if !cli_tail.is_empty() {
         drained.tail = if drained.tail.is_empty() {

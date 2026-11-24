@@ -14,13 +14,13 @@ enum PrivilegeCommand {
 }
 
 fn run_command(cmd: &str, args: &[String]) -> Result<crate::process::Finished, Box<EvalAltResult>> {
-    let mut command = Command::new(cmd);
+    let mut command = crate::process::program_command(cmd, None);
     command.args(args);
     cmd::capture(command)
 }
 
 fn run_checked(cmd: &str, args: &[String]) -> Result<(), Box<EvalAltResult>> {
-    let mut command = Command::new(cmd);
+    let mut command = crate::process::program_command(cmd, None);
     command.args(args);
     cmd::run_checked(command)
 }
@@ -173,7 +173,16 @@ fn argv_command(
     args: rhai::Array,
     options: rhai::Map,
 ) -> Result<Command, Box<EvalAltResult>> {
-    let mut command = Command::new(program);
+    // The PATH the child gets when `env` sets one; otherwise the overlay's.
+    let explicit_path = options
+        .get("env")
+        .and_then(|vars| vars.clone().try_cast::<rhai::Map>())
+        .and_then(|vars| vars.get("PATH").cloned())
+        .and_then(|value| value.into_string().ok());
+    let mut command = crate::process::program_command(
+        program,
+        explicit_path.as_deref().map(std::ffi::OsStr::new),
+    );
     command.args(args.into_iter().map(|value| value.to_string()));
     for (key, value) in options {
         match key.as_str() {

@@ -288,6 +288,13 @@ fn the_guard_accepts_the_config_recipe_renders_and_refuses_each_widening_of_it()
     let allow_default = set_line(&config, "[contract]", "default", "default = \"allow\"");
     let other_catalog = set_line(&config, "[contract]", "catalog", "catalog = 1");
     let write_root = set_line(&config, "[contract.filesystem]", "write", "write = [\"/\"]");
+    let no_input_deny = mutate(&config, "deny = [\"/inputs\"]\n", "");
+    let other_deny = set_line(
+        &config,
+        "[contract.filesystem]",
+        "deny",
+        "deny = [\"/inputs/main.rhai\"]",
+    );
     let storage = set_line(
         &config,
         "[storage]",
@@ -335,6 +342,8 @@ fn the_guard_accepts_the_config_recipe_renders_and_refuses_each_widening_of_it()
         ("default-allow", &allow_default),
         ("catalog", &other_catalog),
         ("write-root", &write_root),
+        ("no-input-deny", &no_input_deny),
+        ("other-deny", &other_deny),
         ("storage", &storage),
         ("device", &device),
         ("audit-off", &no_audit),
@@ -418,7 +427,15 @@ fn the_guard_refuses_other_verbs_and_other_instance_names_before_touching_anythi
         vec![],
         // Recipe's verbs in the right shape on instances of another uid, of
         // no uid, and on names that are paths.
-        vec!["start", "recipe-0-1-ab", "--wait", "1", "1"],
+        vec![
+            "start",
+            "recipe-0-1-ab",
+            "--wait",
+            "1",
+            "1",
+            "--stream-console",
+            "--full-audit",
+        ],
         vec![
             "start",
             "recipe-4243-1-ab",
@@ -426,6 +443,7 @@ fn the_guard_refuses_other_verbs_and_other_instance_names_before_touching_anythi
             "1",
             "1",
             "--stream-console",
+            "--full-audit",
         ],
         vec!["delete", "recipe-4243-1-ab"],
         vec!["status", "other-4242-1-ab", "--format", "json"],
@@ -485,6 +503,45 @@ fn the_guard_refuses_other_verbs_and_other_instance_names_before_touching_anythi
             "--wait",
             "1",
             "1",
+        ],
+        // Recipe always asks for the whole audit log, after the console.
+        vec!["start", "recipe-4242-1-ab", "--wait", "1", "1"],
+        vec![
+            "start",
+            "recipe-4242-1-ab",
+            "--wait",
+            "1",
+            "1",
+            "--stream-console",
+        ],
+        vec![
+            "start",
+            "recipe-4242-1-ab",
+            "--audit",
+            "--wait",
+            "1",
+            "1",
+            "--stream-console",
+            "--full-audit",
+        ],
+        vec![
+            "start",
+            "recipe-4242-1-ab",
+            "--wait",
+            "1",
+            "1",
+            "--full-audit",
+            "--stream-console",
+        ],
+        vec![
+            "start",
+            "recipe-4242-1-ab",
+            "--wait",
+            "1",
+            "1",
+            "--stream-console",
+            "--full-audit",
+            "--full-audit",
         ],
         vec!["status", "recipe-4242-1-ab", "--format", "text"],
         vec!["stop", "recipe-4242-1-ab", "--force"],
@@ -607,14 +664,7 @@ fn the_guard_lets_recipes_requests_through_only_as_root() {
             "123",
             "456",
             "--stream-console",
-        ],
-        vec![
-            "start",
-            "recipe-4242-1-ab",
-            "--audit",
-            "--wait",
-            "123",
-            "456",
+            "--full-audit",
         ],
         vec!["status", "recipe-4242-1-ab", "--format", "json"],
         vec!["status", "recipe-4242-probe"],

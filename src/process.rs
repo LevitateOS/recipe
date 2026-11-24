@@ -51,7 +51,7 @@ pub(crate) fn environment(name: &str) -> Option<OsString> {
 /// A `git` command that works on the repository of its working directory:
 /// inherited variables that point git elsewhere are removed.
 pub(crate) fn git() -> std::process::Command {
-    let mut command = std::process::Command::new("git");
+    let mut command = program_command("git", None);
     for name in GIT_REPOSITORY_LOCATORS {
         command.env_remove(name);
     }
@@ -70,13 +70,53 @@ const GIT_REPOSITORY_LOCATORS: [&str; 6] = [
 
 /// Find an executable regular file named `program` on the child's PATH.
 pub(crate) fn find_program(program: &str) -> Option<std::path::PathBuf> {
+    find_program_in(OsStr::new(program), &environment("PATH")?)
+}
+
+/// Find an executable regular file named `program` on `path`.
+fn find_program_in(program: &OsStr, path: &OsStr) -> Option<std::path::PathBuf> {
     use std::os::unix::fs::PermissionsExt;
-    std::env::split_paths(&environment("PATH")?)
+    std::env::split_paths(path)
         .map(|dir| dir.join(program))
         .find(|path| {
             std::fs::metadata(path)
                 .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
         })
+}
+
+/// A command for `program`. When `program` is a bare name and the child's
+/// PATH is set on the command (`path`: an explicit per-command PATH) or by
+/// the thread overlay ([`push_environment`]; the dependency tools' PATH), the
+/// name is resolved on that PATH here and kept as `argv[0]`.
+///
+/// Rust's standard library starts a command that sets PATH and names its
+/// program without a `/` through `fork` and `execvp`, and every other
+/// command through `posix_spawn` (a `vfork`-style clone); resolving the name
+/// first makes every child start the same way. Build the command with this
+/// before adding anything else to it. A name not found on that PATH, or
+/// found only through a relative PATH entry (looked up from the child's
+/// working directory, which this process does not share), is left to the
+/// standard library, so the child fails or starts exactly as it did.
+pub(crate) fn program_command(program: &str, path: Option<&OsStr>) -> Command {
+    let overlay = || COMMAND_ENV.with(|env| env.borrow().get(OsStr::new("PATH")).cloned());
+    let resolved = if program.contains('/') {
+        None
+    } else {
+        match path {
+            Some(path) => find_program_in(OsStr::new(program), path),
+            None => overlay().and_then(|path| find_program_in(OsStr::new(program), &path)),
+        }
+        .filter(|found| found.is_absolute())
+    };
+    match resolved {
+        Some(resolved) => {
+            use std::os::unix::process::CommandExt;
+            let mut command = Command::new(resolved);
+            command.arg0(program);
+            command
+        }
+        None => Command::new(program),
+    }
 }
 
 /// Where live child output goes while it runs.

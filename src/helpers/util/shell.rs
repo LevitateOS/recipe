@@ -6,7 +6,7 @@ use rhai::EvalAltResult;
 use std::process::Command;
 
 fn command(dir: Option<&str>, script: &str) -> Command {
-    let mut command = Command::new("sh");
+    let mut command = crate::process::program_command("sh", None);
     command.args(["-c", script]);
     if let Some(dir) = dir {
         command.current_dir(dir);

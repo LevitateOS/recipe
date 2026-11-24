@@ -818,15 +818,17 @@ fn build(src, out) {{ {body} }}
         }
         // The retained supervisor log is the instance's audit log: the native
         // runtime's `GINUX_NATIVE_AUDIT:` lines (operation, policy source and
-        // rule) record the denied socket call of a grant-less run.
+        // rule) record the denied connect of a grant-less run. Recipe's
+        // offline contract denies `syscall.connect` by name
+        // (`Contract::derived`), and Ginux reports a call that both an
+        // explicit syscall deny and the default deny of
+        // `network.inet.tcp.connect` refuse under the explicit rule
+        // (`EffectiveContract::runtime_rule`), so the source is `exact-deny`.
         let audit = std::fs::read_to_string(entry.path().join("supervisor-stderr.log")).unwrap();
         assert!(
             audit.lines().any(|line| line.contains("GINUX_NATIVE_AUDIT")
-                && line.contains("policy-source=default-deny")
-                && (line.contains("socket")
-                    || line.contains("network")
-                    || line.contains("connect"))),
-            "no actual socket denial recorded: {audit}"
+                && line.contains(" operation=syscall.connect policy-source=exact-deny ")),
+            "no actual connect denial recorded: {audit}"
         );
     }
 }

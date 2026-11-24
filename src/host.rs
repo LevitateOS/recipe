@@ -264,6 +264,7 @@ fn run_inner(
     let drain = crate::launch::worker_io::spawn_stderr_drain(
         stderr,
         diagnostics.file(crate::invocation_log::SUPERVISOR_LOG),
+        crate::launch::worker_io::LOG_CAP_BYTES,
     );
 
     let mut progress = crate::launch::worker_io::progress_file(

@@ -24,8 +24,8 @@ pub(crate) const WORKER_LOG: &str = "worker.log";
 /// The instance's `audit.log` (the worker's standard error and the runtime's
 /// audit lines), kept after the run. The CLI's own stderr is `ginux-cli.log`.
 pub(crate) const SUPERVISOR_LOG: &str = "supervisor-stderr.log";
-/// The standard error of `ginux start --wait --stream-console`, without the
-/// audit tail (`crate::launch::worker_io::split_cli_log`).
+/// The standard error of `ginux start --wait --stream-console --full-audit`,
+/// without the audit log (`crate::launch::worker_io::split_cli_log`).
 pub(crate) const CLI_LOG: &str = "ginux-cli.log";
 /// The name of the Ginux instance the invocation ran in.
 pub(crate) const INSTANCE_RECORD: &str = "instance.json";

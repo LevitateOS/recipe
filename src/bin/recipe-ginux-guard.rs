@@ -78,7 +78,7 @@ const NOPERM: i32 = 77;
 /// The instance config Recipe renders, the only one `import` accepts. The
 /// source of truth is `InstanceConfig::render` in `src/inputs/config.rs`, with
 /// the values it takes from `src/domain.rs` (`WORKER`, `WORKER_ARGS`, `UID`,
-/// `WORK`, `OUT`, `MAX_NETWORK_ENDPOINTS`), `src/inputs/env.rs`
+/// `INPUTS`, `WORK`, `OUT`, `MAX_NETWORK_ENDPOINTS`), `src/inputs/env.rs`
 /// (`allowlisted_env`), `src/options.rs` (`jobs`, `memory_mib` bounds) and
 /// `src/needs/contract.rs` (`Contract::derived`, `render_lists`, `Outbound`).
 /// Change this together with them.
@@ -141,6 +141,7 @@ mod shape {
     ];
     pub const FS_READ: [&str; 1] = ["/"];
     pub const FS_WRITE: [&str; 2] = ["/work", "/out"];
+    pub const FS_DENY: [&str; 1] = ["/inputs"];
     pub const DEVICES: [&str; 3] = ["null", "random", "urandom"];
     pub const MAX_PORTS: usize = 8;
 }
@@ -426,12 +427,18 @@ fn parse<'a>(args: &[&'a str], caller: u32) -> Checked<Request<'a>> {
             check_member_path(verb, path)?;
             exec(name)
         }
+        // `ginux start NAME --wait --stream-console --full-audit`, as the
+        // CLI passes it on (`src/ginux.rs` `start_command`).
         (
             "start",
-            [name, "--wait", pid, start]
-            | [name, "--audit", "--wait", pid, start]
-            | [name, "--wait", pid, start, "--stream-console"]
-            | [name, "--audit", "--wait", pid, start, "--stream-console"],
+            [
+                name,
+                "--wait",
+                pid,
+                start,
+                "--stream-console",
+                "--full-audit",
+            ],
         ) => {
             if number(pid).is_none() || number(start).is_none() {
                 return Err(shape("--wait takes a PID and a START number"));
@@ -1138,11 +1145,12 @@ fn sanitize(bytes: &[u8], name: Option<&str>, images: Images<'_>) -> Checked<Str
     contract.exact_list("deny", &deny(shared))?;
 
     let filesystem = contract.table("filesystem", "contract.filesystem")?;
-    filesystem.only(&["default", "read", "write", "create"])?;
+    filesystem.only(&["default", "read", "write", "create", "deny"])?;
     filesystem.exact("default", "deny")?;
     filesystem.exact_list("read", &shape::FS_READ)?;
     filesystem.exact_list("write", &shape::FS_WRITE)?;
     filesystem.exact_list("create", &shape::FS_WRITE)?;
+    filesystem.exact_list("deny", &shape::FS_DENY)?;
 
     let mut ports = Vec::new();
     if shared {
@@ -1360,8 +1368,9 @@ fn render(config: &Config) -> String {
         list(&deny(shared)),
     ));
     out.push_str(&format!(
-        "\n[contract.filesystem]\ndefault = \"deny\"\nread = {}\nwrite = {write}\ncreate = {write}\n",
+        "\n[contract.filesystem]\ndefault = \"deny\"\nread = {}\nwrite = {write}\ncreate = {write}\ndeny = {}\n",
         list(&shape::FS_READ),
+        list(&shape::FS_DENY),
         write = list(&shape::FS_WRITE),
     ));
     if shared {

@@ -50,7 +50,16 @@ pub(crate) const OUTPUT_TIMEOUT_ENV: &str = "RECIPE_OUTPUT_TIMEOUT_SECS";
 /// Bound on log collection: worker/supervisor log beyond this many bytes is
 /// still drained (so a chatty worker never blocks on a full pipe) but not
 /// retained.
-const LOG_CAP_BYTES: u64 = crate::invocation_log::MAX_LOG_BYTES;
+pub(crate) const LOG_CAP_BYTES: u64 = crate::invocation_log::MAX_LOG_BYTES;
+
+/// Bound on the standard error of `ginux start --wait --stream-console
+/// --full-audit` (`ginux-cli.log`): the audit log the helper prints, at most
+/// [`LOG_CAP_BYTES`], which the CLI's sanitizer may grow up to four times
+/// (each control or invalid byte becomes `\xNN`), plus 1 MiB for the CLI's
+/// own text before the marker and the supervisor's summary lines after the
+/// log, so the end of the log is not cut off. [`split_cli_log`] reads it into
+/// memory once after the run: at most 65 MiB, bounded.
+pub(crate) const CLI_LOG_CAP_BYTES: u64 = 4 * LOG_CAP_BYTES + 1024 * 1024;
 
 /// Grace for teardown after failure/cancellation. Successful final export uses
 /// the remaining supervised execution deadline instead.
@@ -784,34 +793,43 @@ pub(crate) fn reap_launcher(child: &mut Child, mut deadline: Instant) -> Result<
     }
 }
 
-/// The line `ginux start --wait --stream-console` writes to its standard
-/// error, after everything else, before the audit log's tail and the
+/// The line `ginux start --wait --stream-console --full-audit` writes to its
+/// standard error once, after everything else, before the audit log (its
+/// last 16 MiB; a cut log adds a line saying how much was left out) and the
 /// supervisor's summary lines (its exit status, the runtime command's, the
-/// state of the runtime's outcome record) on a non-zero outcome:
+/// state of the runtime's outcome record), on every outcome:
 /// `ginux: audit log (last N bytes):`.
 const AUDIT_MARKER: (&[u8], &[u8]) = (b"ginux: audit log (last ", b" bytes):");
 
-/// Split the drained standard error of `ginux start --wait --stream-console`
-/// (`cli_log`, written by [`spawn_stderr_drain`]) at the audit marker
-/// ([`AUDIT_MARKER`], the last such line): what follows it (the tail of the
-/// instance's audit log: the worker's standard error, the runtime's audit
-/// lines and the supervisor's own errors, then the supervisor's summary)
-/// goes to `supervisor_log` followed by `extra` (the console's runtime
-/// lines) within the retention cap, and `cli_log` keeps what precedes it.
-/// Returns the supervisor log with its tail for failure messages, and the
-/// tail of the CLI's own text. Without a marker (a clean outcome, or a CLI
-/// that died first) the supervisor log holds only `extra`. The tail (read
-/// only after a failed run) says when there was no marker or nothing after
-/// it, and ends with the console's runtime lines, which tell whether the
-/// runtime started.
+/// Split the drained standard error of `ginux start --wait --stream-console
+/// --full-audit` (`cli_log`, written by [`spawn_stderr_drain`] within
+/// [`CLI_LOG_CAP_BYTES`]) at the audit marker ([`AUDIT_MARKER`], the first
+/// such line: the helper prints it once, and what follows it includes the
+/// worker's own standard error, which may contain the same text): what
+/// follows it (the instance's audit log: the worker's standard error, the
+/// runtime's audit lines and the supervisor's own errors, then the
+/// supervisor's summary) goes to `supervisor_log` followed by `extra` (the
+/// console's runtime lines, which never appear in the audit log: they are
+/// the runtime's standard output) within [`LOG_CAP_BYTES`]: the newest
+/// bytes of the audit part (the helper keeps the newest bytes too, and the
+/// supervisor's summary is last), cut at a line start, and all of `extra`;
+/// `cli_log` keeps what precedes the marker. Returns the supervisor log with
+/// its tail for failure messages, and the tail of the CLI's own text.
+/// Without a marker (a CLI that died first) the supervisor log holds only
+/// `extra`. The tail (read only after a failed run) is the end of what the
+/// CLI really wrote: the audit part's end, or `drained`'s tail (the drain's
+/// last bytes) when the drain had to discard past [`CLI_LOG_CAP_BYTES`]; it
+/// says when there was no marker or nothing after it, and ends with the
+/// console's runtime lines, which tell whether the runtime started.
 pub(crate) fn split_cli_log(
     cli_log: &Path,
     supervisor_log: &Path,
     extra: &[u8],
+    drained: &DrainedLog,
 ) -> (DrainedLog, String) {
     let mut bytes = Vec::new();
     if let Ok(file) = std::fs::File::open(cli_log) {
-        let _ = file.take(LOG_CAP_BYTES).read_to_end(&mut bytes);
+        let _ = file.take(CLI_LOG_CAP_BYTES).read_to_end(&mut bytes);
     }
     let marker = audit_marker(&bytes);
     let (cli, audit) = match marker {
@@ -826,15 +844,23 @@ pub(crate) fn split_cli_log(
             cli_log.display()
         );
     }
+    let extra = &extra[..extra.len().min(LOG_CAP_BYTES as usize)];
+    let room = LOG_CAP_BYTES as usize - extra.len();
+    let kept_audit = if audit.len() <= room {
+        audit
+    } else {
+        let cut = &audit[audit.len() - room..];
+        // Start at the first whole line of what fits.
+        cut.iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(&cut[cut.len()..], |at| &cut[at + 1..])
+    };
     let mut retained: u64 = 0;
     match std::fs::File::create(supervisor_log) {
         Ok(mut out) => {
-            for part in [audit, extra] {
-                let take = part
-                    .len()
-                    .min(LOG_CAP_BYTES.saturating_sub(retained) as usize);
-                if take > 0 && out.write_all(&part[..take]).is_ok() {
-                    retained += take as u64;
+            for part in [kept_audit, extra] {
+                if !part.is_empty() && out.write_all(part).is_ok() {
+                    retained += part.len() as u64;
                 }
             }
         }
@@ -849,6 +875,13 @@ pub(crate) fn split_cli_log(
             .to_owned()
     };
     let mut failure_tail = match marker {
+        _ if drained.discarded_bytes > 0 => format!(
+            "ginux start wrote {} bytes to its standard error, more than the {} kept; its \
+             end:\n{}",
+            drained.total_bytes,
+            CLI_LOG_CAP_BYTES,
+            drained.tail.trim()
+        ),
         None => {
             "ginux start printed no audit log (no marker line on its standard error)".to_owned()
         }
@@ -860,7 +893,7 @@ pub(crate) fn split_cli_log(
         failure_tail.push_str("\n[console] ");
         failure_tail.push_str(&console);
     }
-    let total = (audit.len() + extra.len()) as u64;
+    let total = (audit.len() + extra.len()) as u64 + drained.discarded_bytes;
     (
         DrainedLog {
             total_bytes: total,
@@ -871,11 +904,10 @@ pub(crate) fn split_cli_log(
     )
 }
 
-/// The byte range of the last [`AUDIT_MARKER`] line in `bytes`, newline
+/// The byte range of the first [`AUDIT_MARKER`] line in `bytes`, newline
 /// included.
 fn audit_marker(bytes: &[u8]) -> Option<(usize, usize)> {
     let (prefix, suffix) = AUDIT_MARKER;
-    let mut found = None;
     let mut start = 0;
     while start < bytes.len() {
         let end = bytes[start..]
@@ -890,11 +922,11 @@ fn audit_marker(bytes: &[u8]) -> Option<(usize, usize)> {
             && !count.is_empty()
             && count.iter().all(u8::is_ascii_digit)
         {
-            found = Some((start, end));
+            return Some((start, end));
         }
         start = end;
     }
-    found
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -908,15 +940,19 @@ pub(crate) struct DrainedLog {
     pub tail: String,
 }
 
-/// Drain a child's stderr to a log file with a retention cap, so a chatty
-/// worker can never block on a full stderr pipe. Bytes past the cap are
-/// still consumed (and counted) but discarded. The log is never parsed.
+/// Drain a child's stderr to a log file with a retention cap of `cap` bytes,
+/// so a chatty worker can never block on a full stderr pipe. Bytes past the
+/// cap are still consumed (and counted) but discarded.
 pub(crate) struct Drain {
     stop: Arc<AtomicBool>,
     thread: std::thread::JoinHandle<DrainedLog>,
 }
 
-pub(crate) fn spawn_stderr_drain(stderr: std::process::ChildStderr, log_path: PathBuf) -> Drain {
+pub(crate) fn spawn_stderr_drain(
+    stderr: std::process::ChildStderr,
+    log_path: PathBuf,
+    cap: u64,
+) -> Drain {
     let stop = Arc::new(AtomicBool::new(false));
     let stopping = stop.clone();
     let thread = std::thread::spawn(move || {
@@ -956,9 +992,9 @@ pub(crate) fn spawn_stderr_drain(stderr: std::process::ChildStderr, log_path: Pa
                 Ok(n) => {
                     total += n as u64;
                     if let Some(out) = file.as_mut()
-                        && retained < LOG_CAP_BYTES
+                        && retained < cap
                     {
-                        let room = (LOG_CAP_BYTES - retained) as usize;
+                        let room = (cap - retained) as usize;
                         let take = room.min(n);
                         if let Err(error) = out.write_all(&buf[..take]) {
                             lost(error);

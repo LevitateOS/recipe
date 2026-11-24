@@ -296,20 +296,21 @@ impl Ginux {
         )
     }
 
-    /// The `ginux start NAME --wait --stream-console` command: the helper
-    /// copies the instance console to its standard output, which the CLI
-    /// passes through unchanged and which carries nothing else; on a
-    /// non-zero outcome its standard error ends with the audit log's tail
-    /// after [`crate::launch::worker_io`]'s marker line. The caller owns the
-    /// process group, the parent-death signal and the streams, and has
-    /// called [`Ginux::require_privilege`].
+    /// The `ginux start NAME --wait --stream-console --full-audit` command:
+    /// the helper copies the instance console to its standard output, which
+    /// the CLI passes through unchanged and which carries nothing else; after
+    /// every run, whatever its outcome, its standard error ends with the
+    /// audit log (its last 16 MiB) after [`crate::launch::worker_io`]'s
+    /// marker line. The caller owns the process group, the parent-death
+    /// signal and the streams, and has called [`Ginux::require_privilege`].
     pub(crate) fn start_command(&self, name: &str) -> Command {
         let mut command = self.command();
         command
             .arg("start")
             .arg(name)
             .arg("--wait")
-            .arg("--stream-console");
+            .arg("--stream-console")
+            .arg("--full-audit");
         command
     }
 
@@ -697,8 +698,8 @@ impl OutcomeRecord {
 
 /// One instance's `status --format json` record. Its log paths are not
 /// read: instance directories are root-private, so the console arrives on
-/// `start --wait --stream-console`'s standard output and the audit log's tail
-/// on its standard error.
+/// `start --wait --stream-console --full-audit`'s standard output and the
+/// audit log on its standard error.
 #[derive(Debug, Clone)]
 pub(crate) struct Status {
     pub running: bool,

@@ -223,16 +223,26 @@ impl Contract {
     }
 
     /// The contract's filesystem and network lists: everything readable, only
-    /// the writable trees written, and outbound TCP to `ports` (none: no
-    /// network section). Ginux derives grants from whether each list is
-    /// present, not from its entries, so these sections enter the contract
-    /// digest only by being there; [`inspection_config`] renders them as an
-    /// invocation config does.
+    /// the writable trees written, writes under the inputs refused, and
+    /// outbound TCP to `ports` (none: no network section). Ginux derives
+    /// grants from whether the read, write, create and outbound lists are
+    /// present, not from their entries, and `deny` grants nothing, so these
+    /// sections enter the contract digest only by being there;
+    /// [`inspection_config`] renders them as an invocation config does.
+    ///
+    /// The native runtime checks paths only against `deny` (write opens,
+    /// creation, renames, links, unlinks and mode changes under it fail with
+    /// EPERM); `write` and `create` are not enforced by path. The injected
+    /// inputs belong to the workload's own host uid: they are kept unchanged
+    /// by their injected modes (no write bits) together with this deny, which
+    /// is a check of the path strings the workload passes, not a complete
+    /// barrier against a workload set on defeating it (docs/runtime-limits.md).
     pub fn render_lists(ports: &[u16]) -> String {
         let mut out = format!(
-            "\n[contract.filesystem]\ndefault = \"deny\"\nread = [\"/\"]\nwrite = [\"{work}\", \"{out}\"]\ncreate = [\"{work}\", \"{out}\"]\n",
+            "\n[contract.filesystem]\ndefault = \"deny\"\nread = [\"/\"]\nwrite = [\"{work}\", \"{out}\"]\ncreate = [\"{work}\", \"{out}\"]\ndeny = [\"{inputs}\"]\n",
             work = crate::domain::WORK,
             out = crate::domain::OUT,
+            inputs = crate::domain::INPUTS,
         );
         if !ports.is_empty() {
             let outbound = ports
